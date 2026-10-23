@@ -1,0 +1,52 @@
+{
+  "theme": "dark",
+  "chat_font_size": 14,
+  "auto_translate": false,
+  "active_model": "qwen2.5-7b-instruct-abliterated-v2",
+  "engineer_model": "qwen2.5-coder-7b-instruct",
+  "engineer_model_name": "",
+  "rp_model_name": "",
+  "assistant_model_name": "",
+  "compute_device_mode": "Auto",
+  "background_path": "C:\\NeonRoute\\backgrounds\\bg_9. Пустыня.jpg",
+  "background_dim_opacity": 102,
+  "context_length": 24576,
+  "context_length_roleplay": 24576,
+  "context_length_assistant": 14336,
+  "context_length_engineer": 28672,
+  "default_sampling_roleplay": {
+    "temperature": 1.0,
+    "min_p": 0.05,
+    "top_p": 0.95,
+    "repeat_penalty": 1.02,
+    "max_tokens": 4096,
+    "is_dm_mode": false
+  },
+  "default_sampling_assistant": {
+    "temperature": 0.8,
+    "min_p": 0.05,
+    "repeat_penalty": 1.05,
+    "max_tokens": 2496
+  },
+  "default_sampling_engineer": {
+    "temperature": 0.1,
+    "min_p": 0.0,
+    "repeat_penalty": 1.0,
+    "max_tokens": 2048
+  },
+  "auto_generate_art": true,
+  "visualizer_settings": {
+    "auto_generate_art": false,
+    "steps": 28,
+    "cfg_scale": 6.0,
+    "sampler_name": "DPM++ 2M",
+    "denoising_strength": 0.35,
+    "default_style": "realistic"
+  },
+  "translation_settings": {
+    "temperature": 0.2,
+    "max_tokens_limit": 4096
+  },
+  "assistant_avatar_path": "C:\\NeonRoute\\characters\\assistant_avatar.png",
+  "user_name": "Виктор"
+}

@@ -1,0 +1,265 @@
+{
+  "anime": {
+    "model_key": "anime",
+    "title": "MeinaHentai v5",
+    "triggers": [
+      "аниме",
+      "манга",
+      "anime",
+      "manga",
+      "2d",
+      "2д",
+      "вайфу",
+      "waifu",
+      "селл-шейдинг",
+      "тян",
+      "тянка",
+      "кун",
+      "чиби",
+      "chibi",
+      "новелла",
+      "visual novel",
+      "анимешн"
+    ],
+    "llm_guidance": "Target Engine: MeinaHentai v5 (2D Anime). Style syntax: Danbooru tags, clean lineart, anime aesthetic, vibrant saturated colors, crisp cel shading. Negative guidance: Strip all photographic textures and realism; strictly preserve flat 2D anime cel-shading and anchor anatomy using the canonical 'easynegative' embedding. Strictly avoid photorealism, raw photo, and 3D cgi tokens. Example: [IMAGE_PROMPT: 1girl, solo, silver hair, detailed anime eyes, beautiful expression, elegant stylish dress, clean lineart, anime aesthetic, cel shaded, vibrant colors, dynamic anime studio lighting, highres, masterpiece]",
+    "archetypes": {
+      "solo": {
+        "width": 512,
+        "height": 768,
+        "extra_negative": "",
+        "force_adetailer": true
+      },
+      "pair": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "fused bodies, cloned face, extra limbs",
+        "force_adetailer": true
+      },
+      "scenery": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": false
+      },
+      "closeup": {
+        "width": 512,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": true
+      }
+    }
+  },
+  "artistic": {
+    "model_key": "artistic",
+    "title": "DreamShaper 8",
+    "triggers": [
+      "мультфильм",
+      "мультипликацион",
+      "мультипликац",
+      "мультяш",
+      "мультяшн",
+      "мультяшка",
+      "мультяшный",
+      "мультик",
+      "cartoon",
+      "disney",
+      "pixar",
+      "анимация",
+      "иллюстрация",
+      "рисунок",
+      "сказка",
+      "концепт-арт",
+      "цифровой арт",
+      "3d",
+      "3д",
+      "cgi",
+      "скульпт",
+      "sculpt",
+      "octane",
+      "unreal engine",
+      "clay",
+      "рендер",
+      "дракон",
+      "монстр",
+      "магия",
+      "аура",
+      "пламя",
+      "fairytale",
+      "fantasy art"
+    ],
+    "llm_guidance": "Target Engine: DreamShaper 8 (Digital Art / 3D / Fantasy / Cartoon). Style syntax: digital concept art, octane 3d render, unreal engine 5, volumetric lighting, chiaroscuro. For cartoons: Pixar and Disney 3d animation aesthetic, stylized expressive features, playful mood, soft ambient occlusion. Negative guidance: Keep negative rules minimal; avoid bloated token lists because heavy negatives destroy volumetric lighting, painterly contrast, and scene composition. Strictly avoid 35mm photo terms. Example: [IMAGE_PROMPT: cute stylized 3d cartoon character, Pixar animation aesthetic, expressive large eyes, charming smile, vibrant saturated colors, soft volumetric studio lighting, smooth 3d render, highly detailed, octane render]",
+    "archetypes": {
+      "solo": {
+        "width": 512,
+        "height": 768,
+        "extra_negative": "",
+        "force_adetailer": true
+      },
+      "pair": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "(conjoined twins, fused bodies, cloned face:1.2), extra limbs",
+        "force_adetailer": true
+      },
+      "scenery": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": false
+      },
+      "closeup": {
+        "width": 512,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": true
+      }
+    }
+  },
+  "cyberrealistic": {
+    "model_key": "cyberrealistic",
+    "title": "CyberRealistic Classic",
+    "triggers": [
+      "гламур",
+      "glamour",
+      "модель",
+      "подиум",
+      "корсет",
+      "кружево",
+      "шелк",
+      "латекс",
+      "кожа",
+      "чулки",
+      "белье",
+      "нижнее белье",
+      "студийное фото",
+      "эльф",
+      "elf",
+      "вампир",
+      "vampire",
+      "суккуб",
+      "succubus",
+      "косплей",
+      "cosplay",
+      "демон",
+      "бальное платье",
+      "готика",
+      "gothic",
+      "глянец",
+      "ню",
+      "голая",
+      "голую",
+      "обнаженная",
+      "обнаженную",
+      "чувственн",
+      "эротика",
+      "эротическ",
+      "будуар",
+      "будуарн",
+      "sensual",
+      "nude"
+    ],
+    "llm_guidance": "Target Engine: CyberRealistic Classic (Glamour / High Fashion / Semi-Realism). Style syntax: glamorous studio portrait, softbox rim lighting, catchlight in eyes, intricate lace, glossy latex, silk fabrics, symmetrical delicate facial features, sharp focus. Negative guidance: Suppress cartoon stylization, 3D CGI gloss, and diffusion artifacts while retaining glamour skin and fabric textures. Example: [IMAGE_PROMPT: elegant high-fashion studio portrait, intricate black silk corset, delicate lace detailing, dramatic studio rim lighting, symmetrical delicate face, expressive piercing eyes, glossy lips, shallow depth of field, 8k resolution] Composition directive: For pairs or bedroom interior scenes, append '--ar wide'. For solo high-fashion glamour portraits, append '--ar tall'.",
+    "archetypes": {
+      "solo": {
+        "width": 512,
+        "height": 768,
+        "extra_negative": "",
+        "force_adetailer": true
+      },
+      "pair": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "(conjoined twins, fused bodies, cloned face:1.2), extra limbs",
+        "force_adetailer": true
+      },
+      "scenery": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": false
+      },
+      "closeup": {
+        "width": 512,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": true
+      }
+    }
+  },
+  "realistic": {
+    "model_key": "realistic",
+    "title": "Realistic Vision v6.0",
+    "triggers": [
+      "фото",
+      "photo",
+      "raw",
+      "35mm",
+      "портрет",
+      "человек",
+      "мужчина",
+      "женщина",
+      "броня",
+      "экзоскелет",
+      "тактическ",
+      "милитари",
+      "киборг",
+      "робот",
+      "металл",
+      "оружие",
+      "солдат",
+      "спецназ",
+      "хром",
+      "armor",
+      "exoskeleton",
+      "tactical",
+      "cyborg",
+      "robot",
+      "military",
+      "scifi",
+      "sci-fi",
+      "автомобиль",
+      "машина",
+      "техника",
+      "реализм",
+      "улица",
+      "город",
+      "пейзаж",
+      "замок",
+      "лес",
+      "горы",
+      "девушка",
+      "девушку",
+      "девушки",
+      "окно",
+      "комната",
+      "постель"
+    ],
+    "llm_guidance": "Target Engine: Realistic Vision v6.0 (Photorealism / Heavy Sci-Fi / Tactical Armor). Style syntax: RAW photo, 35mm photograph, authentic skin texture, cinematic anamorphic lighting, candid shot. For armor/tech: scratched composite armor plates, matte carbon fiber, weathered steel, glowing tactical sensors, realistic mechanical joints. Negative guidance: Strictly eliminate 3D, CGI renders, and artificial smoothness to enforce authentic analogue film grain, binding the 'badhandv4' anatomical embedding. Strictly avoid 3D, CGI, render, cartoon, or illustration terms. Example: [IMAGE_PROMPT: RAW photo, 35mm photograph, heavy sci-fi tactical exo-armor, scratched composite plating, glowing blue optical sensors, weathered metal, cinematic rim lighting, rain-slicked concrete, realistic depth of field, 8k uhd] Composition directive: For couples, pairs, two people side-by-side, or wide horizon scenery, append '--ar wide' inside the tag. For single characters or full-body solo portraits, append '--ar tall'. For close-up face portraits, append '--ar square'. Example pair: [IMAGE_PROMPT: RAW photo, 35mm photograph, 1man and 1woman standing close together, authentic skin texture, cinematic rim lighting --ar wide]",
+    "archetypes": {
+      "solo": {
+        "width": 512,
+        "height": 768,
+        "extra_negative": "",
+        "force_adetailer": true
+      },
+      "pair": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "(conjoined twins, fused bodies, cloned face:1.2), extra limbs",
+        "force_adetailer": true
+      },
+      "scenery": {
+        "width": 768,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": false
+      },
+      "closeup": {
+        "width": 512,
+        "height": 512,
+        "extra_negative": "",
+        "force_adetailer": true
+      }
+    }
+  }
+}

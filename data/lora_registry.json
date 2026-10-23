@@ -1,0 +1,35 @@
+{
+  "characters": {
+    "ciri": {
+      "file_name": "ciri",
+      "weight": 0.8,
+      "triggers": [
+        "цири",
+        "ciri",
+        "zireael"
+      ],
+      "activation_tags": "ciri, white hair, green eyes, scar on left cheek"
+    },
+    "tifa": {
+      "file_name": "tifa",
+      "weight": 0.75,
+      "triggers": [
+        "тифа",
+        "tifa",
+        "lockhart"
+      ],
+      "activation_tags": "tifa lockhart, brown eyes, long black hair"
+    }
+  },
+  "utility": {
+    "add_detail": {
+      "file_name": "add_detail",
+      "weight": 0.35,
+      "allowed_styles": [
+        "realistic",
+        "cyberrealistic",
+        "artistic"
+      ]
+    }
+  }
+}

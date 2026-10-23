@@ -1,0 +1,46 @@
+{
+  "close_up": {
+    "orientation": "portrait",
+    "base_width": 512,
+    "base_height": 768,
+    "steps": 26,
+    "hires_scale": 1.25,
+    "hires_denoise": 0.25,
+    "adetailer_face": false,
+    "adetailer_face_denoise": 0.25,
+    "adetailer_hands": false
+  },
+  "medium": {
+    "orientation": "portrait",
+    "base_width": 512,
+    "base_height": 768,
+    "steps": 26,
+    "hires_scale": 1.25,
+    "hires_denoise": 0.32,
+    "adetailer_face": true,
+    "adetailer_face_denoise": 0.28,
+    "adetailer_hands": false
+  },
+  "full_body": {
+    "orientation": "portrait",
+    "base_width": 512,
+    "base_height": 768,
+    "steps": 26,
+    "hires_scale": 1.25,
+    "hires_denoise": 0.32,
+    "adetailer_face": true,
+    "adetailer_face_denoise": 0.28,
+    "adetailer_hands": false
+  },
+  "wide": {
+    "orientation": "landscape",
+    "base_width": 768,
+    "base_height": 512,
+    "steps": 26,
+    "hires_scale": 1.25,
+    "hires_denoise": 0.30,
+    "adetailer_face": false,
+    "adetailer_face_denoise": 0.30,
+    "adetailer_hands": false
+  }
+}

@@ -1,0 +1,12 @@
+__pycache__/
+logs/
+outputs/
+*.pyc
+*.log
+.venv/
+data/cache/
+data/vector_memory/
+history/
+
+workspace/
+workspace/*

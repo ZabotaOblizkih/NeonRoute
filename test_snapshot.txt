@@ -1,0 +1,669 @@
+
+=== ФАЙЛ: test_architect_artifact_classification_and_freeze.py ===
+class TestDocumentHeuristicAndEphemeralSync - """Проверка снятия конфликта эвристик ключевых слов с фазой Архитектора.""":
+    def test_document_task_not_blocked_by_script_code_program()  # """Если в запросе есть маркеры документа/таблицы, слова 'скрипт', 'код', 'программу' не блокируют детекцию."""
+    def test_non_document_tasks_rejected()  # """Задачи без маркеров документов или чистые игры/GUI корректно отклоняются."""
+    def test_is_ephemeral_synchronized_with_document_artifact()  # """is_ephemeral строго синхронизирован с artifact_type == 'document'."""
+class TestArchitectArtifactClassificationAndForcedReset - """Проверка контракта Архитектора и принудительного сброса verification_script.""":
+    def test_gui_app_verification_script_forcibly_cleared()  # """Для gui_app скрипт верификации, даже если возвращен моделью, сбрасывается в None."""
+    def test_cli_tool_verification_script_forcibly_cleared()  # """Для cli_tool скрипт верификации принудительно сбрасывается в None."""
+    def test_module_retains_verification_script()  # """Для backend-модулей verification_script сохраняется и выполняется."""
+class TestVerificationFreezeTurnRevision - """Проверка механизма ревизии верификатора на ходе 2 и заморозки на ходе 3.""":
+    def test_turn2_revision_allowed_on_type_or_assertion_error()  # """Если на ходе 1 тест упал с TypeError/AssertionError, на ходе 2 ревизия test_*.py разрешена."""
+    def test_freeze_blocks_test_modification_on_turn_3()  # """Начиная с хода 3 любая попытка модификации проверочного скрипта намертво блокируется."""
+class TestEngineerControllerSeamlessDispatch - """Проверка бесшовного проброса задач таблиц и отчетов в контроллере.""":
+    def test_is_ephemeral_doc_request_matches_table_and_report_keywords()
+    def test_dispatch_ephemeral_doc_worker_does_not_hijack_to_analysis_or_debug()  # """Запросы на генерацию таблиц/отчетов не сваливаются в read-only is_analysis и не путаются с отладкой."""
+
+=== ФАЙЛ: test_architect_single_source_of_truth.py ===
+class TestArchitectMatrixAndDynamicPrompts - """1. Проверка матрицы форматов Архитектора и динамических системных промптов Инженера.""":
+    def test_architect_prompt_matrix_and_addons()
+    def test_dynamic_engineer_prompts()
+class TestEngineerModelPriorityAndWsFiles - """2. Проверка приоритета engineer_model и сбора файлов данных.""":
+    def test_engineer_model_priority()
+    def test_extended_workspace_data_files()
+class TestArchitectVerdictDispatchAndAuxiliaryProtection - """3. Сквозная обработка вердикта Архитектора, защита от перехвата и детерминированное завершение.""":
+    def test_verification_script_cleared_for_pygame_and_tkinter()
+    def test_auxiliary_file_does_not_hijack_existing_target()
+    def test_deterministic_completion_for_excel_document()
+class TestCodeEngineDefectsFixes - """4. Проверка исправления дефектов в CodeEngine (наследование и ключевые слова удаления).""":
+    def test_oop_inheritance_avoids_missing_method()
+    def test_intentional_deletion_bypasses_anti_truncation_guard()
+class TestSandboxTestFileExclusionFromGuiSmoke - """5. Проверка исключения тестов из GUI Smoke-теста.""":
+    def test_run_script_excludes_test_file_from_gui_smoke()
+
+=== ФАЙЛ: test_art_director.py ===
+class TestInventoryGearLogic - """Проверка распределения оружия и фильтрации мирных сцен.""":
+    def test_peaceful_scene_strips_all_weapons()
+    def test_distribute_gear_by_companion_names()
+    def test_unarmed_items_ignored()
+class TestMixGuidanceTags - """Проверка подмешивания и дедупликации llm_guidance тегов модели.""":
+    def test_mix_guidance_no_duplicates()
+    def test_mix_guidance_respects_max_tags()
+    def test_mix_guidance_empty_inputs()
+class TestSymmetrizeBreakChunks - """Проверка синхронизации окружения для мульти-персонажей через BREAK.""":
+    def test_no_break_returns_unchanged()
+    def test_symmetrizes_both_chunks()
+    def test_does_not_duplicate_existing_location()
+class TestDirectArtPlan - """Проверка прямого ручного инференса (!арт / !art).""":
+    def test_build_direct_plan_basic_flags()
+    def test_build_direct_plan_hires_and_resolution()
+    def test_build_direct_plan_negative_override()
+class TestPlanGenerationLogic - """Проверка логики сборки плана генерации (plan_generation).""":
+    def test_plan_generation_strips_cli_flags()
+    def test_plan_generation_human_vs_scenery_adetailer()
+    def test_plan_generation_preserves_lora_tags()
+class TestArtDirectorRefactoring - """Тесты на новые требования: бакеты SDXL, очистка промптов, фиксация ADetailer и изоляция режимов.""":
+    def test_clean_context_subtag()
+    def test_sdxl_geometry_buckets()
+    def test_adetailer_two_slot_contract()
+    def test_sdxl_disables_hires_fix_to_prevent_oom()
+    def test_assistant_mode_isolation()
+    def test_plan_from_visual_intent_sdxl_and_mode_isolation()
+    def test_is_xl_model_comprehensive()
+    def test_composite_model_identity_and_ar_handling()
+
+=== ФАЙЛ: test_art_director_refactor.py ===
+class TestArtDirectorArchitectureSuite:
+    def test_01_buckets_resolution_difference()
+    def test_02_is_xl_false_positive_guard()
+    def test_03_vram_oom_guard_logic()
+    def test_04_adetailer_two_slot_contract()
+    def test_05_clean_context_subtag_sanitization()
+    def test_06_location_duplicate_prevention()
+    def test_07_explicit_ar_portrait_preserved_for_pair()
+    def test_08_scenery_without_humans_disables_adetailer()
+    def test_09_assistant_flow_regex_neg_ar_isolation()
+    def test_10_cast_extractor_schema_no_none_in_enum()
+
+=== ФАЙЛ: test_artdirector_skoz.py ===
+
+=== ФАЙЛ: test_assistant_flow.py ===
+class TestAssistantArtTriggers - """Проверка фильтрации запросов на арт в режиме ассистента.""":
+    def test_empty_query_returns_false()
+    def test_ordinary_questions_return_false()
+    def test_technical_exclusions_override_verbs()
+    def test_roleplay_sensual_triggers_are_ignored_in_assistant_mode()
+    def test_explicit_art_triggers_pass()
+class TestAssistantDirective - """Проверка генерации системной директивы SD 1.5.""":
+    def test_directive_contains_rules_and_model_hint()
+class TestAssistantResponseAndSelfPortrait - """Проверка обработки ответа, детекции автопортрета и Seed Lock.""":
+    def test_self_portrait_detection_sets_elaria_target()
+    def test_polite_addressing_is_not_self_portrait()
+    def test_seed_lock_preserves_previous_seed()
+    def test_fallback_dialogue_when_only_image_tag_generated()
+class TestAssistantMemoryExtractionGuard - """Проверка условий запуска пассивной памяти LanceDB.""":
+    def test_memory_extraction_skipped_during_initialization()
+    def test_memory_extraction_triggered_on_plain_text()
+    def test_art_responses_bypass_memory_extraction()
+
+=== ФАЙЛ: test_autonomous_engineer_cycle.py ===
+class TestSubagentEngineerAutonomousCycle:
+    def test_extract_error_fingerprint_empty()
+    def test_extract_error_fingerprint_test_failures()
+    def test_extract_error_fingerprint_traceback()
+    def test_extract_error_fingerprint_plain_error()
+    def test_syntax_validator_exempts_tests()
+    def test_loop_detection_terminates_at_max_same_error_retries()
+    def test_max_turns_exceeded()
+    def test_context_compaction_structure()
+
+=== ФАЙЛ: test_character_ingestion_methods.py ===
+class TestCharacterIngestionPipeline - """Проверка всех путей импорта файлов карточек.""":
+    def test_direct_file_drop_into_characters_folder()  # """Сценарий 1: Пользователь сам закинул .json в папку data/characters/."""
+    def test_import_external_json_via_file_dialog()  # """Сценарий 2: Пользователь нажал «Импорт .json» и выбрал файл через системный диалог."""
+    def test_import_from_chub_download_callback()  # """Сценарий 3: Скачивание карточки через встроенный каталог Chub.ai."""
+
+=== ФАЙЛ: test_characters_gallery.py ===
+class TestThumbnailCache - """Проверка генерации и кэширования миниатюр аватаров.""":
+    def test_cached_avatar_fallback_on_none_or_missing()
+class TestGreetingPagination - """Проверка переключения альтернативных приветствий и защиты текста от затирания.""":
+    def test_single_greeting_navigation_buttons_disabled()
+    def test_multi_greeting_navigation_and_paging()
+    def test_save_current_greeting_preserves_edits_on_switch()
+class TestLanguageToggling - """Проверка переключения отображения RU / EN.""":
+    def test_toggle_card_language_swaps_content()
+class TestGroupCardAndPartySelector - """Проверка поведения инспектора сопартийцев для одиночных и групповых карточек.""":
+    def test_solo_card_strictly_hides_party_container()
+    def test_group_card_reveals_party_chips_and_switches_dna()
+class TestLorebookGuardrailsAndTaskCleanup - """Проверка блокировки лорбуков и очистки фоновых задач.""":
+    def test_lorebook_disables_start_dialog_and_hides_visual_dna()
+    def test_start_dialog_with_lorebook_shows_notice_and_does_not_emit_signal()
+    def test_cleanup_dialog_tasks_aborts_active_workers()
+
+=== ФАЙЛ: test_cinematic_pipeline.py ===
+
+=== ФАЙЛ: test_direct_command_parser.py ===
+class TestDirectCommandNumericParams - """Проверка извлечения базовых параметров генерации (steps, cfg, denoise, seed).""":
+    def test_extract_steps_and_cfg()
+    def test_extract_denoising_strength()
+    def test_extract_seed()
+class TestDirectCommandHiresAndAdetailer - """Проверка флагов Hires.fix и ADetailer.""":
+    def test_hires_boolean_flags()
+    def test_hires_scale_factor()
+    def test_adetailer_flag()
+class TestDirectCommandResolutionAndModels - """Проверка соотношения сторон, явных разрешений и подмены модели.""":
+    def test_aspect_ratio_wide()
+    def test_aspect_ratio_tall()
+    def test_aspect_ratio_square()
+    def test_custom_size_and_w_h()
+    def test_model_override()
+class TestDirectCommandNegativePrompt - """Проверка корректного отделения позитивного и негативного промптов.""":
+    def test_no_negative_prompt()
+    def test_cli_negative_flag()
+    def test_cli_neg_short_flag()
+    def test_russian_negative_triggers()
+    def test_parse_user_negative_trigger_helper()
+
+=== ФАЙЛ: test_e2e_gallery_pipeline.py ===
+class TestGalleryPipelineE2E:
+    def test_01_gallery_load_and_selection_lifecycle()  # """Проверка: загрузка списка, выбор карточки и работа миксина dna_party_mixin."""
+    def test_02_create_new_character()  # """Проверка: создание нового персонажа через кнопку '+ Создать'."""
+    def test_03_edit_and_save_character()  # """Проверка: редактирование полей в UI и нажатие 'Сохранить изменения'."""
+    def test_04_greetings_pagination_and_language_toggle()  # """Проверка: пагинация по альтернативным приветствиям и кнопка RU/EN."""
+    def test_05_chub_download_callback_pipeline()  # """Проверка: симуляция колбэка скачивания с Chub.ai."""
+    def test_06_delete_character_lifecycle()  # """Проверка: удаление карточки через диалог с очисткой файлов."""
+    def test_07_start_session_signal_emission()  # """Проверка: нажатие кнопки 'Начать диалог' передает карточку наружу через сигнал."""
+
+=== ФАЙЛ: test_e2e_switching.py ===
+class TestE2ESwitchingFlow:
+    def test_e2e_rapid_art_click_during_llm_reload()  # """Сквозной сценарий:"""
+
+=== ФАЙЛ: test_engineer_pipeline.py ===
+class TestEngineerPipeline:
+    def test_01_ast_skeletonizer_functions_and_classes()  # """Проверяет компрессию кода: сохранение сигнатур, docstrings и замену тел на '...'."""
+    def test_02_ast_skeletonizer_extract_symbol()  # """Проверяет точечное извлечение исходного кода функции или метода по имени."""
+    def test_03_code_validator_syntax_error_detection()  # """Проверяет детектор синтаксических ошибок (SyntaxError) до записи на диск."""
+    def test_04_code_validator_ast_safety_guard_banned_modules()  # """Проверяет блокировку опасных системных и сетевых модулей (AST Safety Guard)."""
+    def test_05_code_validator_missing_entry_point()  # """Проверяет требование наличия точки входа в исполняемом скрипте."""
+    def test_06_code_validator_missing_event_loop()  # """Проверяет обязательность цикла событий для оконных приложений (Tkinter / Pygame)."""
+    def test_07_code_validator_undefined_names_scope_guard()  # """Проверяет обнаружение необъявленных переменных (NameError) через symtable."""
+    def test_08_code_validator_unreferenced_methods()  # """Проверяет детектор методов, которые объявлены в классе, но нигде не вызваны."""
+    def test_09_code_validator_openpyxl_anti_pattern_guard()  # """Проверяет перехват распространённых ошибок openpyxl (.formula и мутация стилей)."""
+    def test_10_code_validator_in_memory_ast_linter_missing_imports()  # """Проверяет автоматическое внедрение забытых стандартных и офисных импортов."""
+    def test_11_code_validator_lazy_token_guard()  # """Проверяет блокировку ленивых комментариев модели ('# rest of code')."""
+    def test_12_code_validator_anti_truncation_abnormal_shrinkage()  # """Проверяет перехват аномального физического сжатия файла более чем на 75%."""
+    def test_13_code_validator_cross_module_contracts()  # """Проверяет вызовы несуществующих методов между проектируемыми файлами."""
+    def test_14_patch_applier_exact_match()  # """Проверяет точное применение патча SEARCH/REPLACE."""
+    def test_15_patch_applier_indent_shift()  # """Проверяет автоматическую адаптацию отступов при вставке блока внутрь метода."""
+    def test_16_patch_applier_multiple_blocks()  # """Проверяет последовательное применение нескольких диффов к одному файлу."""
+    def test_17_ast_skeletonizer_ellipsis_formatting()  # """Проверяет формат заглушек ASTSkeletonizer с многоточием '...'."""
+    def test_18_sandbox_manager_clean_workspace_filename()  # """Проверяет нормализацию имён файлов и срез path traversal (../)."""
+    def test_19_sandbox_manager_path_isolation_guards()  # """Проверяет запрет записи за пределы папки workspace."""
+    def test_20_sandbox_manager_ignored_directories()  # """Проверяет фильтрацию системных и служебных каталогов."""
+    def test_21_code_validator_test_files_bypass_entry_point()  # """Проверяет, что проверочные сьюты test_*.py освобождены от проверки точки входа."""
+    def test_22_execution_sandbox_traceback_pruner()  # """Проверяет очистку логов исключений от системного шума site-packages."""
+    def test_23_patch_applier_fuzzy_normalized_quotes_and_spaces()  # """Проверяет нечёткий патчер: толерантность к кавычкам и пробелам вокруг операторов."""
+    def test_24_patch_applier_fuzzy_sequence_matcher_tolerance()  # """Проверяет Fuzzy Matcher: успешное нахождение блока при расхождении строк до 85%."""
+    def test_25_tool_engine_write_file_in_memory_ast_guard()  # """Проверяет in-memory AST-чекер: блокировку битого Python-кода до записи на диск."""
+    def test_26_headless_monkey_patch_bootstrap_integrity()  # """Проверяет синтаксическую корректность встроенного раннера Headless Monkey-Patch."""
+
+=== ФАЙЛ: test_engineer_refactoring_decomposition.py ===
+def test_engineer_prompts_structure()
+def test_engineer_diagnostics_functionality()
+def test_extract_crash_slice()
+def test_code_validator_methods()
+def test_subagent_engineer_backward_compatibility()
+
+=== ФАЙЛ: test_entities_and_dynamic_tokens_removal.py ===
+def test_entities_json_files_absent_on_disk()
+def test_entities_json_path_not_in_art_director()
+def test_geometry_aspect_ratio_buckets_extra_neg()
+def test_entity_mapper_no_disk_access()
+def test_build_negative_prompt_strictly_two_sources()
+
+=== ФАЙЛ: test_environment_doctor.py ===
+def test_dependency_catalog_structure()
+def test_environment_doctor_check_missing_mocked()
+def test_pip_install_worker_success()
+def test_pip_install_worker_failure()
+def test_dependency_dialog_ui_and_actions()
+def test_excel_directives_in_engineer_prompts()
+def test_main_window_menu_and_dialog_integration()
+def test_menu_builder_help_actions()
+
+=== ФАЙЛ: test_execution_first_guard.py ===
+class TestExecutionFirstCodeIntegrity - """Проверка очищенного от эвристик CodeValidator.validate_code_integrity.""":
+    def test_ephemeral_or_non_maintenance_skips_check()
+    def test_syntax_error_detected()
+    def test_lazy_token_guard_blocks_truncation()
+    def test_c_style_lazy_markers_rejected()
+    def test_top_level_ellipsis_stub_detected()
+    def test_abnormal_physical_shrink_without_deletion_keywords_blocked()
+    def test_abnormal_physical_shrink_with_deletion_keywords_allowed()
+    def test_full_refactoring_freedom_no_false_positives()  # """Модель переносит функции в класс, меняет процедурный main на ООП,"""
+class TestTargetArtifactFixation - """Проверка фиксации target_artifact в фазе Архитектора.""":
+    def test_target_artifact_fixed_from_context_hint_in_maintenance()
+class TestGuaranteedRollbackOnFailure - """Проверка гарантированного отката при сбое выполнения скрипта.""":
+    def test_rollback_workspace_called_on_run_failure()
+
+=== ФАЙЛ: test_extract_pure_py.py ===
+def test_extract_pure_py_empty()
+def test_extract_pure_py_closed_python_blocks()
+def test_extract_pure_py_multiple_blocks_selects_largest()
+def test_extract_pure_py_any_closed_block_without_lang()
+def test_extract_pure_py_unclosed_block()
+def test_extract_pure_py_unwrapped_with_intro_text()
+def test_extract_pure_py_unwrapped_def_start()
+def test_ast_parse_syntax_error_handling()
+def test_run_worker_syntax_error_returns_error_result()
+def test_run_worker_unclosed_markdown_extracts_and_runs()
+def test_extract_pure_py_prioritizes_modified_code_over_longer_original()
+def test_extract_pure_py_fallback_when_all_identical()
+def test_extract_pure_py_multiple_diff_blocks_selects_largest_diff()
+
+=== ФАЙЛ: test_gallery_extracted_modules_e2e.py ===
+class TestGalleryExtractedModulesE2E:
+    def test_01_package_exports_and_class_inheritance()  # """Проверка архитектурной целостности:"""
+    def test_02_dna_party_mixin_solo_character_pipeline()  # """Тестирование GalleryDnaPartyMixin на одиночной карточке:"""
+    def test_03_dna_party_mixin_party_character_pipeline()  # """Тестирование GalleryDnaPartyMixin на групповой карточке:"""
+    def test_04_dna_party_mixin_direct_art_dispatch()  # """Тестирование вызова генерации арта напрямую из галереи (_on_gallery_generate_art_clicked):"""
+    def test_05_dna_party_mixin_lora_callbacks()  # """Тестирование внедрения тегов LoRA в поле внешности персонажа (_on_lora_installed_for_card):"""
+    def test_06_translation_mixin_toggle_and_state()  # """Тестирование GalleryTranslationMixin:"""
+    def test_07_dialog_lifecycle_and_cleanup()  # """Тестирование безопасного закрытия и очистки фоновых задач:"""
+
+=== ФАЙЛ: test_git_sandbox.py ===
+class TestGitSandboxManagerUnit - """Модульные тесты для защищённого GitSandboxManager.""":
+    def test_is_git_available_false_when_no_git()  # """Если git отсутствует в системе, возвращается False."""
+    def test_is_git_available_true_when_git_exists()  # """Если git найден, возвращается True."""
+    def test_init_repo_creates_gitignore_and_zip_fallback_when_no_git()  # """При отсутствии git init_repo переключается в режим ZIP и возвращает True."""
+    def test_init_repo_executes_git_commands_when_git_available()  # """init_repo вызывает git init, user.name, user.email, core.longpaths и baseline commit."""
+    def test_checkpoint_git_mode()  # """checkpoint вызывает git add -A и git commit."""
+    def test_checkpoint_zip_fallback()  # """checkpoint при отсутствии git сохраняет ZIP-снапшот."""
+    def test_rollback_git_mode()  # """rollback выполняет git reset --hard HEAD и git clean -fd."""
+    def test_rollback_zip_fallback()  # """rollback при отсутствии git восстанавливает файлы из ZIP-снапшота."""
+    def test_record_and_pop_failure()  # """record_failure сохраняет JSON журнала сбоя, а pop_last_failure атомарно его забирает."""
+    def test_create_backup_bundle_zip_fallback()  # """create_backup_bundle при отсутствии git создаёт zip-архив в backups."""
+    def test_cleanup_stale_lock()  # """_cleanup_stale_lock корректно удаляет зависший index.lock."""
+class TestSubagentEngineerGitIntegration - """Интеграционные тесты вызовов GitSandboxManager в subagent_engineer.py.""":
+    def test_init_repo_called_on_execute_worker_start()  # """При старте execute_worker репозиторий инициализируется через GitSandboxManager.init_repo(ws_dir)."""
+    def test_create_checkpoint_called_before_each_turn()  # """Перед ходом создается чекпоинт: GitSandboxManager.create_checkpoint(ws_dir, f'turn_{turn}')."""
+    def test_rollback_on_syntax_error_when_git_available()  # """При синтаксической ошибке и доступном Git вызывается GitSandboxManager.rollback."""
+    def test_rollback_on_patch_failure_when_git_available()  # """При ошибке применения patch_file вызывается GitSandboxManager.rollback(ws_dir)."""
+    def test_fallback_file_backups_when_git_unavailable()  # """Если Git недоступен, откат выполняется через file_backups."""
+class TestContextCalibration - """Тестирование калибровки передачи контекста файлов под 7B модели.""":
+    def test_file_under_or_equal_600_lines_passed_fully()  # """Файлы <= 600 строк передаются целиком."""
+    def test_file_over_600_lines_passed_as_ast_skeleton()  # """Файлы > 600 строк передаются строго через компактный AST-скелет."""
+class TestToolEngineGitCheckpoint - """Тестирование инструмента git_checkpoint в ToolEngine.""":
+    def test_execute_git_checkpoint_invokes_manager()
+    def test_execute_tool_call_git_checkpoint()
+    def test_subagent_engineer_handles_git_checkpoint_only()  # """Если модель вернула только git_checkpoint без файлов, возвращается успех."""
+    def test_checkpoint_on_successful_target_artifact()  # """При успешном выполнении целевого артефакта вызывается checkpoint."""
+    def test_record_failure_on_loop_detected()  # """При зацикливании ошибки вызывается GitSandboxManager.record_failure."""
+
+=== ФАЙЛ: test_integration_gallery_to_model.py ===
+class TestEndToEndGalleryToModelPipeline:
+    def test_full_pipeline_from_gallery_to_llm_messages()
+    def test_lorebook_card_is_strictly_blocked_from_session_start()
+
+=== ФАЙЛ: test_integration_pipeline.py ===
+class TestEndToEndRoleplayToArtPipeline - """Сквозной сценарий: от импорта карточки персонажа до генерации финального плана кадра.""":
+    def test_full_character_rp_to_art_pipeline()
+class TestEndToEndDirectCommandPipeline - """Сквозной сценарий: от ручной команды со слешем (!арт) до параметров инференса.""":
+    def test_direct_art_command_full_pass()
+
+=== ФАЙЛ: test_integration_roleplay_turn.py ===
+class TestEndToEndRoleplayTurnPipeline - """Сквозной тест живого игрового цикла.""":
+    def test_full_roleplay_turn_from_prompt_to_art_plan()
+
+=== ФАЙЛ: test_macro_engine.py ===
+class TestMacroEngineBasicSubstitutions - """Проверка базовых строковых замен и краевых случаев.""":
+    def test_empty_or_none_returns_empty_string()
+    def test_user_tag_variants()
+    def test_char_tag_variants()
+    def test_chub_tavern_start_separator()
+class TestMacroEngineRandomPicker - """Проверка макроса случайного выбора {{random: opt1, opt2, ...}}.""":
+    def test_random_single_option()
+    def test_random_strips_whitespace()
+    def test_random_empty_options()
+    def test_random_mocked_choice()
+class TestMacroEngineDiceRolls - """Проверка парсера бросков костей {{roll: XdY[+-Z]}}.""":
+    def test_simple_roll_mocked()
+    def test_roll_with_addition_and_subtraction()
+    def test_roll_clamps_limits()
+    def test_roll_unmocked_bounds()
+class TestMacroEngineCombined - """Комплексная сквозная проверка нескольких макросов в одном тексте.""":
+    def test_full_roleplay_prompt()
+
+=== ФАЙЛ: test_mode_isolation.py ===
+class TestModeIsolation:
+    def test_session_manager_singleton_and_save()
+    def test_teardown_aborts_generation_and_saves_outgoing_session()
+    def test_transition_isolation_clears_chat_history()
+    def test_transition_without_session_data_finds_or_creates_isolated_session()
+    def test_teardown_engineer_resets_flags()
+    def test_teardown_roleplay_resets_flags()
+
+=== ФАЙЛ: test_model_router.py ===
+class TestNormalizeModelChoice - """Проверка очистки UI-заглушек и пользовательского выбора модели.""":
+    def test_empty_and_falsy_inputs()
+    def test_ui_auto_placeholders()
+    def test_valid_custom_styles_preserved()
+class TestModelProfileManagement - """Проверка загрузки, сохранения и поиска профилей моделей.""":
+    def test_save_profiles_guarantees_single_default()
+    def test_update_profile_resets_other_defaults()
+    def test_get_profile_lookup_variants()
+    def test_get_checkpoint_for_model()
+class TestMatchingLogic - """Проверка сопоставления запросов с профилями моделей.""":
+    def test_empty_profiles_returns_none()
+    def test_style_triggers_priority()
+    def test_neutral_prompt_falls_back_to_default_model()
+    def test_vector_matching_with_mocked_embeddings()
+class TestPreRoute - """Проверка предварительной классификации запросов в чате.""":
+    def test_non_visual_query_is_ignored()
+    def test_visual_query_detects_style_and_guidance()
+
+=== ФАЙЛ: test_office_readiness_and_atomic_patch.py ===
+def test_signatures_preserved()
+def test_wait_for_file_ready_success()
+def test_wait_for_file_ready_timeout_on_missing()
+def test_wait_for_file_ready_timeout_on_non_zip()
+def test_create_excel_and_word_generation()
+def test_patch_file_transactional_atomic_and_fsync()
+def test_patch_file_transactional_syntax_error_rollback()
+
+=== ФАЙЛ: test_patch_gemini4argon.py ===
+def test_atomic_write_json()
+def test_markdown_fence_and_think_stripping()
+def test_roleplay_flow_image_tag_sub()
+def test_assistant_role_label_regex()
+def test_chub_safe_extraction()
+
+=== ФАЙЛ: test_patches_direct.py ===
+def test_git_sandbox_init_and_gitignore()
+def test_git_sandbox_failure_memory_lifecycle()
+def test_git_sandbox_checkpoint_and_rollback()
+def test_environment_doctor_catalog_and_performance()
+def test_tool_engine_git_checkpoint()
+def test_engineer_planner_injects_failure_context()
+def test_main_window_has_open_dependency_dialog()
+
+=== ФАЙЛ: test_queue_and_switching.py ===
+class TestTaskQueueAndVRAM:
+    def test_01_lock_is_reentrant()  # """Проверка типа замка:"""
+    def test_02_abort_tasks_by_type_does_not_deadlock()  # """Проверка отсутствия Deadlock:"""
+    def test_03_abort_memory_does_not_affect_llm_task()  # """Проверка изоляции типов:"""
+    def test_04_hardware_engine_contract_check()  # """Статическая проверка файла hardware_engine.py:"""
+
+=== ФАЙЛ: test_refactoring_v086.py ===
+def test_lora_paths_centralization()  # """Task 1.1: Verify FORGE_LORA_DIRS and DEFAULT_FORGE_LORA_DIR."""
+def test_clean_cache_worker_active_log()  # """Task 1.2: Check active log truncation and file lock handling."""
+def test_atomic_art_director_save()  # """Task 1.3: Verify save_art_director_models atomic persistence."""
+def test_civitai_worker_signals()  # """Task 2.1: CivitaiParamsWorker initialization and signal existence."""
+def test_memory_db_mutex()  # """Task 2.2: Verify _EMBED_INIT_LOCK exists in memory_db."""
+def test_repetition_loop_optimization()  # """Task 2.3: Verify repetition loop optimizations."""
+def test_vram_arbiter_forge_release()  # """Task 3.1: Verify _release_forge_vram socket validation."""
+def test_workspace_launcher_security()  # """Task 3.2: Verify subprocess command construction avoids shell=True."""
+def test_tavern_parser_null_extensions()  # """Task 4.1: Verify null extensions does not raise AttributeError."""
+def test_rp_cast_extractor_balanced_brackets()  # """Task 4.2: Verify balanced brackets extraction with think block removed and final json chosen."""
+
+=== ФАЙЛ: test_refactoring_v087.py ===
+def test_session_manager_load_session_adds_missing_ids()
+def test_session_manager_get_lm_studio_messages_flattens_old_multimodal()
+def test_forge_client_unload_checkpoint_idempotency()
+def test_sandbox_guard_remove_outside_workspace()
+def test_forge_client_txt2img_sanitization_and_typing()
+
+=== ФАЙЛ: test_regex_filter.py ===
+class TestExtractImagePrompt - """Проверка извлечения промпта генерации изображений из текста ответа.""":
+    def test_empty_or_none_inputs()
+    def test_extract_standard_image_prompt()
+    def test_extract_tag_variations_and_markdown_cleaning()
+    def test_cleans_trailing_speaker_labels()
+    def test_no_image_prompt_present()
+class TestProcessOutputThinkingTags - """Проверка удаления тегов цепочки рассуждений (<think>, <thought>).""":
+    def test_strip_closed_thinking_tags()
+    def test_strip_thought_synonym_multiline()
+    def test_strip_unclosed_thinking_tag_on_stream_cutoff()
+    def test_case_insensitive_tags()
+class TestProcessOutputSystemArtifacts - """Проверка очистки служебных токенов моделей и напоминаний.""":
+    def test_strip_model_special_tokens()
+    def test_strip_system_reminder()
+    def test_strip_trailing_model_flags()
+class TestDialogueFormattingAndCustomRules - """Проверка типографики диалогов и кастомных правил персонажа.""":
+    def test_normalize_dialogue_hyphens_to_em_dash()
+    def test_apply_custom_regex_rules()
+    def test_custom_rules_resilience_to_broken_regex()
+
+=== ФАЙЛ: test_roleplay_flow.py ===
+class TestRoleplayArtTriggers - """Проверка явных, чувственных триггеров и списка технических исключений.""":
+    def test_empty_query_returns_false()
+    def test_ordinary_dialogue_returns_false()
+    def test_technical_exclusions_override_art_verbs()
+    def test_explicit_triggers()
+    def test_sensual_and_clothing_triggers()
+class TestRoleplayArtDirectiveGeneration - """Проверка генерации подсказок режиссуры сцены для LLM.""":
+    def test_standard_companion_directive()
+    def test_environment_scene_directive()
+    def test_minor_safety_hard_guardrails()
+class TestResponseProcessingAndAmbiguityGate - """Проверка извлечения промпта из ответа модели и фильтрации мусора.""":
+    def test_extract_image_prompt_and_clean_dialogue()
+    def test_ambiguity_gate_blocks_meaningless_prompts()
+class TestMemoryExtractionTriggerGuard - """Проверка условий запуска асинхронного извлечения сущностей сцены.""":
+    def test_skips_extraction_during_initialization()
+    def test_skips_extraction_when_history_too_short()
+    def test_triggers_extraction_when_valid()
+
+=== ФАЙЛ: test_roleplay_prompt_builder.py ===
+class TestRoleplayPromptBuilderMacrosAndPersona - """Проверка макросов и интеграции персонажа игрока.""":
+    def test_process_macros_standalone()
+    def test_user_persona_block_assembly()
+class TestGrammarAndPOVAgreement - """Проверка грамматического согласования родов и стиля повествования.""":
+    def test_female_user_and_male_bot_first_person()
+    def test_male_user_and_female_bot_third_person()
+class TestArchetypePromptGeneration - """Проверка генерации специальных блоков для всех ключевых архетипов.""":
+    def test_litrpg_system_archetype()
+    def test_dating_sim_archetype()
+    def test_horror_archetype()
+    def test_cyoa_archetype()
+    def test_reverse_rp_archetype()
+    def test_detective_archetype()
+    def test_group_companions_archetype()
+    def test_environment_and_dm_mode()
+class TestCustomInstructionsAndGuardrails - """Проверка авторских инструкций и правил безопасности отыгрыша.""":
+    def test_author_system_prompt_macro_expansion()
+    def test_non_godmoding_guardrail()
+    def test_dict_input_auto_conversion()
+
+=== ФАЙЛ: test_rp_card_integrity.py ===
+def test_chub_client_lossless_download()  # """Проверяет, что ChubClient не теряет description и personality при download_card."""
+def test_macro_engine_replaces_start_marker()  # """Проверяет, что MacroEngine заменяет <START> на разделитель сцен, а не склеивает примеры."""
+def test_tavern_parser_preserves_rpg_blocks_and_depth_prompt()  # """Проверяет, что TavernParser сохраняет extra_rpg_blocks даже при наличии scenario_ru, а также извлекает depth_prompt."""
+def test_narrative_pov_detection()  # """Проверяет точное определение 1-го vs 3-го лица в CharacterCard."""
+def test_session_manager_adaptive_pov_and_stats()  # """Проверяет, что SessionManager.get_lm_studio_messages() в РП-режиме:"""
+def test_structured_output_json_schema_stability()  # """Проверяет, что schema_payload не содержит None в enum и совместим с GBNF LM Studio."""
+
+=== ФАЙЛ: test_rp_cast_inventory_injection.py ===
+class TestRPCastFormatting - """Проверка форматирования структуры cast_data в RPCastManager.""":
+    def test_format_empty_or_none_returns_empty()
+    def test_format_full_cast_data()
+    def test_get_cast_prompt_block_loads_from_manager()
+class TestRoleplayPromptBuilderInjection - """Проверка инъекции активного каста в RoleplayPromptBuilder.build.""":
+    def test_build_without_active_cast()
+    def test_build_with_active_cast_block()
+class TestSessionManagerCastIntegration - """Проверка связки SessionManager и RPCastManager в Якоре 1.""":
+    def test_get_lm_studio_messages_injects_cast_into_system_prompt()
+    def test_cast_block_never_evicted_under_token_pressure()  # """Проверяет, что блок каста в Якоре 1 никогда не вытесняется даже при переполнении бюджета токенов."""
+    def test_isolation_assistant_and_engineer_modes()  # """Проверяет, что для режимов assistant и engineer инъекция каста не применяется."""
+
+=== ФАЙЛ: test_sampling_hot_reload.py ===
+def test_user_settings_dialog_signal_declaration()
+def test_user_settings_dialog_save_emits_settings_applied()
+def test_chat_flow_controller_update_config()
+def test_chat_flow_controller_sampling_priority()
+def test_main_window_settings_applied_handling()
+
+=== ФАЙЛ: test_sandbox_path_traversal.py ===
+def test_validate_write_path_valid_file()
+def test_validate_write_path_non_existent_nested_file()
+def test_validate_write_path_traversal_blocked()
+def test_validate_write_path_absolute_escape_blocked()
+def test_validate_write_path_instance_and_class_call()
+def test_audit_hook_chdir_outside_workspace_blocked()
+def test_audit_hook_write_outside_workspace_blocked()
+def test_audit_hook_append_outside_workspace_blocked()
+def test_audit_hook_read_outside_workspace_allowed_for_imports()
+def test_audit_hook_rename_outside_workspace_blocked()
+def test_validate_write_path_tempfile_allowed()
+def test_ast_guard_allowed_and_banned_imports()
+def test_run_script_cwd_is_workspace_dir()
+def test_make_doc_excel_openpyxl_and_tempfile()
+def test_audit_hook_write_and_delete_in_root_and_windows_blocked()
+
+=== ФАЙЛ: test_sandbox_session_isolation.py ===
+class TestSandboxSessionIsolation - """Сьют проверок на утечки и устойчивость контекста сессий.""":
+    def test_01_session_scope_clean_exit()  # """Проверяет штатную установку сессии и её автоматический сброс после блока with."""
+    def test_02_session_scope_exception_resilience()  # """Проверяет, что при любом исключении внутри блока сессия гарантированно сбрасывается."""
+    def test_03_session_scope_nested_restoration()  # """Проверяет корректное восстановление родительской сессии при вложенных вызовах."""
+    def test_04_controller_dispatch_does_not_pollute_ui_state()  # """Регрессионный тест: вызов _dispatch_ephemeral_doc_worker в UI-потоке"""
+    def test_05_worker_execution_lifecycle_cleanup()  # """Проверяет полный цикл выполнения фонового воркера:"""
+
+=== ФАЙЛ: test_shutdown_lifecycle.py ===
+  [Ошибка синтаксиса при разборе AST: invalid non-printable character U+FEFF (test_shutdown_lifecycle.py, line 1)]
+  def test_shutdown_all_terminates_forge_first_then_unloads_lms():
+  def test_shutdown_all_sweeps_residual_forge_processes():
+  def test_shutdown_worker_calls_shutdown_all():
+
+=== ФАЙЛ: test_subagent_engineer_loop.py ===
+class TestErrorFingerprint - """Тестирование универсального алгоритма извлечения отпечатков ошибок.""":
+    def test_fingerprint_empty_inputs()  # """Пустые или пробельные входные данные возвращают пустую строку."""
+    def test_fingerprint_standard_python_traceback()  # """Извлечение имени файла, строки и типа исключения из стандартного трейсбека Python."""
+    def test_fingerprint_nested_calls_picks_last_frame()  # """При глубоком стеке трейсбека отпечаток снимается с последней строки падения."""
+    def test_fingerprint_test_failure_unittest_format()  # """Распознавание сигнатуры упавшего теста формата unittest."""
+    def test_fingerprint_consistency()  # """Идентичные ошибки выдают строго идентичный отпечаток (базис для детектора зацикливания)."""
+    def test_fingerprint_detects_evolution()  # """Если ошибка изменилась (сменилась строка или тип), отпечатки различаются."""
+class TestSyntaxValidatorForTests - """Проверка снятия ограничений точки входа для тестовых файлов.""":
+    def test_regular_file_without_entry_point_fails()  # """Обычный скрипт с функциями без if __name__ == '__main__': бракуется валидатором."""
+    def test_test_file_without_entry_point_passes()  # """Тестовый файл с функциями assert освобождается от обязательной точки входа."""
+    def test_test_file_with_syntax_error_still_caught()  # """Реальные синтаксические ошибки в тестах не игнорируются."""
+class TestLoopDetectorLogic - """Симуляция работы конечного автомата детектора зацикливания.""":
+    def test_loop_trigger_on_three_identical_errors()  # """При трёх подряд одинаковых ошибках счетчик зацикливания достигает порога 3."""
+    def test_loop_resets_when_error_evolves()  # """Если ошибка меняется (агент продвинулся дальше), счетчик сбрасывается."""
+class TestNoOpGuardRetryAndParser - """Тестирование No-Op Guard ретрая, промпта, assistant draft и разрешения цикла через парсер.""":
+    def test_noop_guard_retry_structure_and_assistant_draft()
+    def test_maintenance_syntax_error_does_not_add_patch_file_ban()
+    def test_new_project_syntax_error_adds_patch_file_ban()
+    def test_module_format_completes_safely_without_run_script()
+    def test_unicodeescape_hint_in_syntax_correction()
+
+=== ФАЙЛ: test_tavern_parser.py ===
+class TestLoreEntry - """Проверка структуры и методов статей лорбука.""":
+    def test_from_dict_and_properties()
+    def test_dict_like_access()
+class TestCharacterCardSanitization - """Проверка очистки некорректных _ru переводов при инициализации карточки.""":
+    def test_sanitizes_identical_english_translation()
+    def test_sanitizes_translation_without_cyrillic()
+    def test_preserves_valid_russian_translation()
+class TestCharacterCardHeuristics - """Проверка определения пола, стиля повествования и пула приветствий.""":
+    def test_is_male_by_tags()
+    def test_is_male_by_text_pronouns()
+    def test_narrative_pov_first_person()
+    def test_narrative_pov_third_person()
+    def test_get_greetings_pool_indexing()
+class TestDnaRegexExtraction - """Проверка фильтрации тегов внешности и фона с отсечением стоп-слов.""":
+    def test_extract_physical_dna_clothing_stops()
+    def test_extract_scenery_dna_lighting_stops()
+class TestTavernParserDict - """Проверка парсинга словарей форматов Tavern V1, V2 и автоопределения архетипов.""":
+    def test_parse_v1_card()
+    def test_parse_v2_archetypes()
+    def test_parse_standalone_lorebook()
+    def test_parse_group_card()
+    def test_card_to_dict_serialization()
+class TestUniversalCascadeParser - """Тесты многоуровневого каскадного парсинга карточек SillyTavern / Chub.""":
+    def test_chub_nested_character_definition()
+    def test_venus_nested_definition()
+    def test_field_aliases_fallback()
+    def test_macro_preservation()
+    def test_lorebook_preservation()
+
+=== ФАЙЛ: test_three_anchors_context_eviction.py ===
+def test_roleplay_prompt_builder_macro_replacement()  # """Проверяет замену макросов {{user}} и {{char}} ДО расчета токенов в RoleplayPromptBuilder.build."""
+def test_three_anchors_short_history_no_eviction()  # """Если история <= 14 сообщений: вытеснение не требуется,"""
+def test_three_anchors_middle_eviction_on_token_overflow()  # """Проверяет архитектуру Трёх Якорей на длинной сессии (50+ ходов):"""
+def test_three_anchors_warning_on_extreme_overflow()  # """Проверяет защиту: если даже после полной очистки middle_messages токены"""
+
+=== ФАЙЛ: test_token_budget_manager.py ===
+class TestEstimateTextTokens - """Проверка оценки токенов для произвольного текста.""":
+    def test_empty_or_none()
+    def test_pure_ascii()
+    def test_pure_cyrillic()
+    def test_mixed_text()
+class TestEstimateMessageTokens - """Проверка оценки токенов для структуры сообщения чата.""":
+    def test_invalid_input()
+    def test_missing_or_invalid_content()
+    def test_standard_text_message()
+    def test_multimodal_message_with_image()
+class TestEstimateCardBudget - """Проверка оценки бюджета полей карточки и лорбуков.""":
+    def test_card_dict_without_lore()
+    def test_card_with_lore_texts()
+    def test_card_short_text()
+    def test_card_list_input()
+    def test_empty_card()
+class TestTrafficLight - """Проверка цветового светофора и пороговых значений.""":
+    def test_green_threshold()
+    def test_green_lorebook()
+    def test_yellow_light_threshold()
+    def test_yellow_dense_threshold()
+    def test_red_threshold()
+
+=== ФАЙЛ: test_token_budget_safety_margin.py ===
+class TestTokenBudgetSafetyMargin - """Проверка единой пессимистичной формулы и синхронизации с SessionManager.""":
+    def test_estimate_text_tokens_pessimistic_formula()
+    def test_estimate_message_tokens_framing()
+    def test_session_manager_delegation()
+    def test_middle_messages_eviction_with_generation_reserve()
+
+=== ФАЙЛ: test_tool_execution_result_safety.py ===
+def test_tool_execution_worker_signal_type()
+def test_on_tool_execution_finished_dict_handling()
+def test_on_tool_execution_finished_dict_error_handling()
+def test_on_tool_execution_finished_tool_result_handling()
+def test_on_tool_execution_finished_tool_result_error_handling()
+def test_on_tool_execution_finished_empty_data()
+def test_on_tool_execution_finished_exception_guarantees_finally_unfreeze()
+def test_engineer_controller_safe_unpacking_both_types()
+
+=== ФАЙЛ: test_ui_unfreeze.py ===
+def test_force_reset_busy_state_full_unfreeze()
+def test_on_task_failed_unfreezes_ui_with_lingering_tasks()
+def test_on_task_aborted_unfreezes_ui_with_lingering_tasks()
+def test_on_stop_clicked_unfreezes_ui()
+
+=== ФАЙЛ: test_verification_contract_and_root_cause_loop.py ===
+class TestModuleSyntaxExemption - """Проверка снятия ограничения MissingEntryPoint для библиотечных модулей.""":
+    def test_pure_library_module_without_entry_point_passes()  # """Чистый библиотечный модуль без if __name__ == '__main__': проходит валидацию."""
+    def test_module_syntax_error_still_caught()  # """Синтаксические ошибки в модулях всегда отлавливаются валидатором."""
+    def test_declared_entry_file_without_entry_point_fails()  # """Файл, объявленный Архитектором как точка входа, без entry point бракуется с MissingEntryPoint."""
+    def test_sandbox_runner_validate_module_syntax()  # """sandbox_runner.validate_module_syntax корректно валидирует синтаксис модулей."""
+class TestArchitectContractAndRootCauseLoop - """Тестирование контракта Архитектора и цикла разрешения зависимостей (Root-Cause Loop).""":
+    def test_architect_contract_parsing()  # """Архитектор корректно парсит target_artifact и verification_script."""
+    def test_root_cause_loop_reruns_verification_script_on_dependency_creation()  # """Если на ходе 1 скрипт верификации test_string_vault.py падает с ModuleNotFoundError (string_vault),"""
+    def test_strict_completion_fails_if_verification_script_fails()  # """Ложноположительное завершение блокируется: если скрипт верификации упал (assert failed),"""
+    def test_no_verification_script_requires_target_artifact_success()  # """Если verification_script отсутствует, задача считается завершенной только если"""
+
+=== ФАЙЛ: test_vram_arbiter_lifecycle.py ===
+class TestVRAMArbiterStateTransitions - """Проверка переходов состояний владения GPU.""":
+    def test_initial_state_is_none()
+    def test_switch_to_llm_from_none()
+    def test_switch_to_llm_via_ephemeral_doc_flag()
+    def test_llm_tasks_do_not_retrigger_forge_release_if_already_owner()
+    def test_switch_to_diffusion_unloads_llm()
+    def test_switch_to_diffusion_skips_unload_when_needs_llm_prompt_gen()
+    def test_release_llm_for_diffusion()
+    def test_cpu_and_passive_tasks_do_not_change_owner()
+class TestForgeVRAMReleaseResilience - """Проверка отказоустойчивости при сбоях Forge API.""":
+    def test_release_forge_when_client_is_none()
+    def test_release_forge_when_server_not_ready()
+    def test_release_forge_handles_network_timeout_gracefully()
+    def test_release_forge_catches_api_errors_during_unload()
+class TestArbiterSingletonAndClients - """Проверка методов регистрации клиентов и синглтона.""":
+    def test_singleton_get_instance()
+    def test_set_clients_updates_references()
+
+=== ФАЙЛ: test_vram_arbiter_sync.py ===
+def test_prepare_for_task_signature()
+def test_vram_arbiter_prepare_for_diffusion_tasks()
+def test_task_queue_calls_prepare_for_task()
+def test_scene_art_pipeline_no_duplicate_unload_model()
+def test_task_queue_abort_tasks_by_type_no_deadlock()
+def test_execute_lms_reload_task_type()

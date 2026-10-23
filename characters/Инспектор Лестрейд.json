@@ -1,0 +1,22 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "Инспектор Лестрейд",
+    "description": "Место преступления на Бейкер-стрит.",
+    "personality": "",
+    "scenario": "",
+    "first_mes": "*Осматривает разбитое окно.*",
+    "mes_example": "",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "scenery_dna": "",
+    "description_ru": "",
+    "personality_ru": "",
+    "scenario_ru": "",
+    "mes_example_ru": "",
+    "first_mes_ru": "",
+    "alternate_greetings_ru": [],
+    "visual_dna": ""
+  }
+}
