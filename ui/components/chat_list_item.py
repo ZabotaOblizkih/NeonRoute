@@ -1,13 +1,23 @@
 """
-Chat Session List Item Widget for NeonRoute Sidebar
+Chat Session List Item Widget for NeonRoute Sidebar.
 Renders circular avatars for both Assistant (NeonRoute avatar) and Roleplay (Character avatar).
+Uses QFluentWidgets InfoBadge for mode chips, TransparentToolButton for delete, and RoundMenu for context menu.
 """
 
 from pathlib import Path
 from typing import Optional
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCursor
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QMenu
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
+from qfluentwidgets import (
+    InfoBadge,
+    TransparentToolButton,
+    FluentIcon as FIF,
+    RoundMenu,
+    Action,
+    ToolTipFilter,
+    ToolTipPosition,
+)
 
 from ui.components.chat_bubble import render_circular_avatar
 
@@ -47,16 +57,17 @@ class ChatSessionItemWidget(QWidget):
         self.avatar_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self.avatar_lbl)
 
-        # 2. Text layout (Title + Badge)
+        # 2. Text layout (Title + Badge chip)
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(2)
+        text_layout.setSpacing(3)
 
         self.title_lbl = QLabel(title, self)
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text_layout.addWidget(self.title_lbl)
 
-        self.badge_lbl = QLabel(self)
+        # Mode Chip via QFluentWidgets InfoBadge
+        self.badge_lbl = InfoBadge(self)
         self.badge_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text_layout.addWidget(self.badge_lbl)
 
@@ -64,26 +75,23 @@ class ChatSessionItemWidget(QWidget):
 
         layout.addLayout(text_layout, stretch=1)
 
-        # 3. Delete button
-        self.btn_del = QPushButton("🗑️", self)
-        self.btn_del.setFixedSize(20, 20)
+        # 3. Compact Delete button with soft hover
+        self.btn_del = TransparentToolButton(FIF.DELETE, self)
+        self.btn_del.setFixedSize(26, 26)
         self.btn_del.setToolTip("Удалить диалог")
-        self.btn_del.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_del.installEventFilter(
+            ToolTipFilter(self.btn_del, showDelay=300, position=ToolTipPosition.TOP)
+        )
         self.btn_del.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                color: #64748B;
-                font-size: 11px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                color: #EF4444;
-                background-color: #2D151B;
+            TransparentToolButton {
                 border-radius: 4px;
+                padding: 2px;
+            }
+            TransparentToolButton:hover {
+                background-color: rgba(239, 68, 68, 0.2);
             }
         """)
-        self.btn_del.clicked.connect(lambda: self.delete_requested.emit(self.session_id))
+        self.btn_del.clicked.connect(lambda checked=False: self.delete_requested.emit(self.session_id))
         layout.addWidget(self.btn_del)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -101,7 +109,8 @@ class ChatSessionItemWidget(QWidget):
             self.avatar_lbl.setPixmap(pix)
             self.title_lbl.setStyleSheet("color: #F59E0B; font-weight: bold; font-size: 12px; background: transparent;")
             self.badge_lbl.setText("🛠️ Инженер")
-            self.badge_lbl.setStyleSheet("color: #FBBF24; font-size: 10px; background: transparent;")
+            self.badge_lbl.setCustomBackgroundColor("#F59E0B", "#F59E0B")
+            self.badge_lbl.setStyleSheet("color: #0A0D14; font-size: 10px; font-weight: bold; padding: 1px 6px;")
         elif is_rp:
             name_seed = self.char_name or "Roleplay"
             pix = render_circular_avatar(p, name_seed, size=30, is_user=False)
@@ -109,15 +118,16 @@ class ChatSessionItemWidget(QWidget):
             self.title_lbl.setStyleSheet("color: #E879F9; font-weight: bold; font-size: 12px; background: transparent;")
             badge_text = f"🎭 {self.char_name}" if self.char_name else "🎭 Ролевой чат"
             self.badge_lbl.setText(badge_text)
-            self.badge_lbl.setStyleSheet("color: #C084FC; font-size: 10px; background: transparent;")
+            self.badge_lbl.setCustomBackgroundColor("#C084FC", "#C084FC")
+            self.badge_lbl.setStyleSheet("color: #0A0D14; font-size: 10px; font-weight: bold; padding: 1px 6px;")
         else:
-            # Ассистент: если персональный аватар для сессии не задан,
-            # p равен None и отрисовывается аккуратный бейдж с инициалом «Э»
+            # Ассистент
             pix = render_circular_avatar(p, "Элария", size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
             self.title_lbl.setStyleSheet("color: #38BDF8; font-weight: bold; font-size: 12px; background: transparent;")
             self.badge_lbl.setText("⚡ Ассистент")
-            self.badge_lbl.setStyleSheet("color: #00F0FF; font-size: 10px; background: transparent;")
+            self.badge_lbl.setCustomBackgroundColor("#00F0FF", "#00F0FF")
+            self.badge_lbl.setStyleSheet("color: #0A0D14; font-size: 10px; font-weight: bold; padding: 1px 6px;")
 
     def update_avatar(self, avatar_path: Optional[str]):
         self.avatar_path = avatar_path
@@ -136,26 +146,11 @@ class ChatSessionItemWidget(QWidget):
         self._apply_theme_and_avatar()
 
     def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #121824;
-                color: #E2E8F0;
-                border: 1px solid #1E283D;
-                border-radius: 6px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 18px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: #1C263B;
-                color: #00F0FF;
-            }
-        """)
-        act_rename = menu.addAction("✏️ Переименовать")
+        menu = RoundMenu(parent=self)
+
+        act_rename = Action(FIF.EDIT, "✏️ Переименовать", self)
         act_rename.triggered.connect(lambda: self.rename_requested.emit(self.session_id))
+        menu.addAction(act_rename)
 
         if self.mode == "roleplay":
             try:
@@ -169,18 +164,25 @@ class ChatSessionItemWidget(QWidget):
                     active_p_id = rp.get("active_persona_id") or (next(iter(personas.keys())) if personas else None)
 
                 if personas:
-                    sub_menu = menu.addMenu("👤 Персонаж игрока")
+                    sub_menu = RoundMenu("👤 Персонаж игрока", self)
+                    sub_menu.setIcon(FIF.PEOPLE)
                     for pid, pdata in personas.items():
                         pname = pdata.get("name", "Игрок")
-                        act = sub_menu.addAction(pname)
+                        act = Action(pname, self)
                         act.setCheckable(True)
                         if pid == active_p_id:
                             act.setChecked(True)
-                        act.triggered.connect(lambda checked=False, target_id=pid: self.change_persona_requested.emit(self.session_id, target_id))
+                        act.triggered.connect(
+                            lambda checked=False, target_id=pid: self.change_persona_requested.emit(self.session_id, target_id)
+                        )
+                        sub_menu.addAction(act)
+                    menu.addMenu(sub_menu)
             except Exception:
                 pass
 
         menu.addSeparator()
-        act_del = menu.addAction("🗑️ Удалить диалог")
+        act_del = Action(FIF.DELETE, "🗑️ Удалить диалог", self)
         act_del.triggered.connect(lambda: self.delete_requested.emit(self.session_id))
+        menu.addAction(act_del)
+
         menu.exec(QCursor.pos())
