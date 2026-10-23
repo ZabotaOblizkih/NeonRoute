@@ -279,7 +279,37 @@ class MainWindow(
         if not self.windowIcon().isNull():
             title_bar.setIcon(self.windowIcon())
         self.setTitleBar(title_bar)
-        self.titleBar.resize(self.width(), self.titleBar.height())
+        title_bar.raise_()
+
+        # 0.1 Explicit window control buttons connection
+        if hasattr(self.titleBar, "minBtn"):
+            try:
+                self.titleBar.minBtn.clicked.disconnect()
+            except Exception:
+                pass
+            self.titleBar.minBtn.clicked.connect(self.showMinimized)
+
+        if hasattr(self.titleBar, "maxBtn"):
+            try:
+                self.titleBar.maxBtn.clicked.disconnect()
+            except Exception:
+                pass
+            self.titleBar.maxBtn.clicked.connect(
+                lambda: self.showNormal() if self.isMaximized() else self.showMaximized()
+            )
+
+        if hasattr(self.titleBar, "closeBtn"):
+            try:
+                self.titleBar.closeBtn.clicked.disconnect()
+            except Exception:
+                pass
+            self.titleBar.closeBtn.clicked.connect(self.close)
+
+        # Make title labels transparent for mouse events so dragging works across the whole titlebar
+        if hasattr(self.titleBar, "titleLabel"):
+            self.titleBar.titleLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        if hasattr(self.titleBar, "iconLabel"):
+            self.titleBar.iconLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         central_widget = QWidget(self)
         central_widget.setObjectName("CentralWidget")
@@ -291,7 +321,7 @@ class MainWindow(
         root_layout.setContentsMargins(0, self.titleBar.height(), 0, 0)
         root_layout.setSpacing(0)
 
-        # 0.1 Menu Bar strictly under TitleBar
+        # 0.2 Menu Bar strictly under TitleBar
         self._menu_bar = QMenuBar(central_widget)
         self._menu_bar.setFixedHeight(30)
         root_layout.addWidget(self._menu_bar, 0)
@@ -322,6 +352,9 @@ class MainWindow(
         splitter.setHandleWidth(1)
         root_layout.addWidget(splitter, 1)
 
+        # Принудительно поднимаем заголовок над всеми слоями интерфейса
+        self.titleBar.raise_()
+
         # 1. Left Sidebar Component
         self.sidebar = SidebarWidget(window=self)
         splitter.addWidget(self.sidebar)
@@ -347,6 +380,8 @@ class MainWindow(
 
         # 3. Status Bar
         self._setup_status_bar()
+
+        self.titleBar.resize(self.width(), self.titleBar.height())
 
     def _create_main_content(self) -> QWidget:
         container = QWidget(self)
@@ -1505,6 +1540,7 @@ class MainWindow(
         super().resizeEvent(event)
         if hasattr(self, "titleBar") and self.titleBar:
             self.titleBar.resize(self.width(), self.titleBar.height())
+            self.titleBar.raise_()
         WindowStateMixin.resizeEvent(self, event)
 
     def changeEvent(self, event):
@@ -1523,6 +1559,7 @@ class MainWindow(
                     self._menu_bar.setVisible(True)
                 if self.centralWidget() and self.centralWidget().layout():
                     self.centralWidget().layout().setContentsMargins(0, self.titleBar.height(), 0, 0)
+                self.titleBar.raise_()
 
     def keyPressEvent(self, event):
         WindowStateMixin.keyPressEvent(self, event)
@@ -1544,6 +1581,7 @@ class MainWindow(
                     self._menu_bar.setVisible(True)
                 if self.centralWidget() and self.centralWidget().layout():
                     self.centralWidget().layout().setContentsMargins(0, self.titleBar.height(), 0, 0)
+                self.titleBar.raise_()
 
     def nativeEvent(self, eventType, message):
         """Поддержка Windows 11 Snap Layouts на кнопке разворачивания."""
