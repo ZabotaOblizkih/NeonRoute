@@ -4,6 +4,7 @@ Integrates UI, Task Queue (8GB VRAM safety), Local Backends, and Tool Calling.
 """
 
 import os
+import sys
 import re
 import time
 import shutil
@@ -14,10 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QEvent, QThread, QPoint
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QEvent, QThread, QPoint, QPointF
 from PyQt6.QtGui import (
     QIcon, QPixmap, QAction, QPainter, QColor,
-    QPainterPath, QCursor, QKeySequence, QShortcut
+    QPainterPath, QCursor, QKeySequence, QShortcut, QMouseEvent
 )
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -25,8 +26,11 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSplitter, QListWidget, QListWidgetItem, QSizePolicy,
     QApplication, QInputDialog, QDialog, QProgressBar, QMenu,
     QSlider, QSpinBox, QDoubleSpinBox, QWidgetAction, QGridLayout,
-    QGraphicsDropShadowEffect
+    QGraphicsDropShadowEffect, QMenuBar
 )
+from qframelesswindow import FramelessMainWindow
+from qframelesswindow.windows import WindowsFramelessWindow
+from qfluentwidgets import FluentTitleBar, setTheme, Theme
 
 from config import (
     APP_NAME, APP_TAGLINE, APP_VERSION, DEFAULT_LM_STUDIO_URL,
@@ -120,7 +124,7 @@ except Exception:
 
 
 class MainWindow(
-    QMainWindow,
+    FramelessMainWindow,
     WindowStateMixin,
     DialogControllerMixin,
     TaskLifecycleMixin,
@@ -147,6 +151,16 @@ class MainWindow(
         self.resize(1200, 820)
         self.setMinimumSize(960, 640)
         self.setStyleSheet(NEON_THEME_QSS)
+
+        # Аппаратное размытие Mica / Acrylic под Windows 11
+        if sys.platform == "win32":
+            try:
+                self.windowEffect.setMicaEffect(self.winId(), isDarkMode=True)
+            except Exception:
+                try:
+                    self.windowEffect.setAcrylicEffect(self.winId())
+                except Exception:
+                    pass
 
         # Config & Preferences
         self.app_config = ConfigManager.load_config()
@@ -252,8 +266,36 @@ class MainWindow(
     def chat_scroll_content(self) -> Optional[QWidget]:
         return getattr(self, "chat_container", None)
 
+    def menuBar(self) -> QMenuBar:
+        if not hasattr(self, "_menu_bar") or self._menu_bar is None:
+            self._menu_bar = QMenuBar(self)
+        return self._menu_bar
+
     def _setup_ui(self):
-        # 0. Menu Bar
+        # 0. Custom Fluent TitleBar with Windows 11 Snap Layouts
+        title_bar = FluentTitleBar(self)
+        title_bar.setFixedHeight(48)
+        title_bar.setTitle(self.windowTitle())
+        if not self.windowIcon().isNull():
+            title_bar.setIcon(self.windowIcon())
+        self.setTitleBar(title_bar)
+        self.titleBar.resize(self.width(), self.titleBar.height())
+
+        central_widget = QWidget(self)
+        central_widget.setObjectName("CentralWidget")
+        central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        central_widget.setAutoFillBackground(False)
+        central_widget.setStyleSheet("background: transparent;")
+        self.setCentralWidget(central_widget)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(0, self.titleBar.height(), 0, 0)
+        root_layout.setSpacing(0)
+
+        # 0.1 Menu Bar strictly under TitleBar
+        self._menu_bar = QMenuBar(central_widget)
+        self._menu_bar.setFixedHeight(30)
+        root_layout.addWidget(self._menu_bar, 0)
+
         MenuBuilder.setup_menus(self)
         help_menu = None
         for action in self.menuBar().actions():
@@ -268,18 +310,17 @@ class MainWindow(
             act_check_deps.setStatusTip("Проверить наличие Git и библиотек для режима Инженер")
             act_check_deps.triggered.connect(self.open_dependency_dialog)
 
-        central_widget = QWidget(self)
-        central_widget.setObjectName("CentralWidget")
-        central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        central_widget.setAutoFillBackground(False)
-        central_widget.setStyleSheet("background: transparent;")
-        self.setCentralWidget(central_widget)
-        root_layout = QHBoxLayout(central_widget)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        # Register menu action shortcuts on MainWindow for global window interception (Ctrl+N, Ctrl+Q, etc.)
+        for action in self.menuBar().actions():
+            menu = action.menu()
+            if menu:
+                for sub_action in menu.actions():
+                    if sub_action.shortcut().toString():
+                        self.addAction(sub_action)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setHandleWidth(1)
+        root_layout.addWidget(splitter, 1)
 
         # 1. Left Sidebar Component
         self.sidebar = SidebarWidget(window=self)
@@ -1445,3 +1486,114 @@ class MainWindow(
         self._append_message(asst_name, reminder_bubble, is_user=False)
         self.chat_history.append({"role": "assistant", "content": reminder_bubble})
         self._save_current_session()
+
+    # -------------------------------------------------------------------------
+    # Оконный менеджер: совместимость с WindowStateMixin и Windows 11 Fluent
+    # -------------------------------------------------------------------------
+    def paintEvent(self, event):
+        # При наличии пользовательских обоев отрисовываем их через WindowStateMixin.
+        # При отсутствии обоев используем полупрозрачную темную подложку,
+        # чтобы аппаратный эффект размытия Mica/Acrylic под Windows 11 не перекрывался.
+        if getattr(self, '_bg_render_cache', None) and not self._bg_render_cache.isNull():
+            WindowStateMixin.paintEvent(self, event)
+        else:
+            painter = QPainter(self)
+            painter.fillRect(self.rect(), QColor(15, 19, 28, 160))
+            painter.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "titleBar") and self.titleBar:
+            self.titleBar.resize(self.width(), self.titleBar.height())
+        WindowStateMixin.resizeEvent(self, event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        WindowStateMixin.changeEvent(self, event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "titleBar"):
+            if self.isFullScreen():
+                self.titleBar.setVisible(False)
+                if hasattr(self, "_menu_bar") and self._menu_bar:
+                    self._menu_bar.setVisible(False)
+                if self.centralWidget() and self.centralWidget().layout():
+                    self.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
+            else:
+                self.titleBar.setVisible(True)
+                if hasattr(self, "_menu_bar") and self._menu_bar:
+                    self._menu_bar.setVisible(True)
+                if self.centralWidget() and self.centralWidget().layout():
+                    self.centralWidget().layout().setContentsMargins(0, self.titleBar.height(), 0, 0)
+
+    def keyPressEvent(self, event):
+        WindowStateMixin.keyPressEvent(self, event)
+        if not event.isAccepted():
+            super().keyPressEvent(event)
+
+    def _toggle_fullscreen(self):
+        WindowStateMixin._toggle_fullscreen(self)
+        if hasattr(self, "titleBar"):
+            if self.isFullScreen():
+                self.titleBar.setVisible(False)
+                if hasattr(self, "_menu_bar") and self._menu_bar:
+                    self._menu_bar.setVisible(False)
+                if self.centralWidget() and self.centralWidget().layout():
+                    self.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
+            else:
+                self.titleBar.setVisible(True)
+                if hasattr(self, "_menu_bar") and self._menu_bar:
+                    self._menu_bar.setVisible(True)
+                if self.centralWidget() and self.centralWidget().layout():
+                    self.centralWidget().layout().setContentsMargins(0, self.titleBar.height(), 0, 0)
+
+    def nativeEvent(self, eventType, message):
+        """Поддержка Windows 11 Snap Layouts на кнопке разворачивания."""
+        if sys.platform == "win32" and hasattr(self, "titleBar"):
+            try:
+                from ctypes.wintypes import MSG
+                import win32con
+                from qframelesswindow.titlebar.title_bar_buttons import TitleBarButtonState
+
+                msg = MSG.from_address(message.__int__())
+                if msg.hWnd:
+                    if msg.message == win32con.WM_NCHITTEST and getattr(self, "_isResizeEnabled", True):
+                        if self._is_hover_max_btn():
+                            if hasattr(self.titleBar, "maxBtn"):
+                                self.titleBar.maxBtn.setState(TitleBarButtonState.HOVER)
+                            return True, win32con.HTMAXBUTTON
+
+                    elif msg.message in [0x2A2, win32con.WM_MOUSELEAVE]:
+                        if hasattr(self.titleBar, "maxBtn"):
+                            self.titleBar.maxBtn.setState(TitleBarButtonState.NORMAL)
+
+                    elif msg.message in [win32con.WM_NCLBUTTONDOWN, win32con.WM_NCLBUTTONDBLCLK] and self._is_hover_max_btn():
+                        e = QMouseEvent(
+                            QEvent.Type.MouseButtonPress,
+                            QPointF(),
+                            Qt.MouseButton.LeftButton,
+                            Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.NoModifier
+                        )
+                        QApplication.sendEvent(self.titleBar.maxBtn, e)
+                        return True, 0
+
+                    elif msg.message in [win32con.WM_NCLBUTTONUP, win32con.WM_NCRBUTTONUP] and self._is_hover_max_btn():
+                        e = QMouseEvent(
+                            QEvent.Type.MouseButtonRelease,
+                            QPointF(),
+                            Qt.MouseButton.LeftButton,
+                            Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.NoModifier
+                        )
+                        QApplication.sendEvent(self.titleBar.maxBtn, e)
+                        return True, 0
+            except Exception:
+                pass
+
+        if sys.platform == "win32":
+            return WindowsFramelessWindow.nativeEvent(self, eventType, message)
+        return False, 0
+
+    def _is_hover_max_btn(self) -> bool:
+        if not hasattr(self, "titleBar") or not hasattr(self.titleBar, "maxBtn"):
+            return False
+        return self.titleBar.childAt(self.titleBar.mapFromGlobal(QCursor.pos())) is self.titleBar.maxBtn

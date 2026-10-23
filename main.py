@@ -109,6 +109,9 @@ def main():
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
+    from qfluentwidgets import setTheme, Theme
+    setTheme(Theme.DARK)
+
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
