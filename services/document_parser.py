@@ -1,75 +1,305 @@
 """
-Universal Document & Chat Parser for NeonRoute
-Safely extracts human-readable text from office documents, spreadsheets,
-presentations, PDFs, and exported AI chats (ChatGPT, Claude, HTML).
+Universal Document & Chat Parser for NeonRoute.
+Extracts structured text, code, logs, and document metadata on CPU (0 MB VRAM).
 """
 
 import re
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, Union, List, Dict, Any, Tuple
 
 logger = logging.getLogger("NeonRoute.DocumentParser")
 
 
+@dataclass
+class ParsedDocument:
+    """Результат парсинга документа или текстового файла."""
+    filename: str
+    extension: str
+    size_kb: float
+    line_count: int
+    page_count: Optional[int]
+    content: str
+    is_truncated: bool
+    summary_header: str
+
+
 class DocumentParser:
-    SUPPORTED_EXTENSIONS = {
-        # Текстовые файлы и скрипты
-        ".txt", ".py", ".md", ".json", ".log", ".ini", ".cfg", ".yaml", ".yml", ".csv",
-        # Офисные документы и таблицы
-        ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".pdf",
-        # Веб и сохраненные страницы
-        ".html", ".htm"
+    """Легковесный парсер документов, кода и логов на CPU без VRAM."""
+
+    TEXT_EXTENSIONS = {
+        ".txt", ".md", ".py", ".json", ".csv", ".log",
+        ".yaml", ".yml", ".ini", ".cfg", ".toml", ".sh",
+        ".bat", ".ps1", ".js", ".ts", ".html", ".htm", ".xml", ".css"
     }
 
-    @classmethod
-    def is_supported(cls, path: Path) -> bool:
-        return path.suffix.lower() in cls.SUPPORTED_EXTENSIONS
+    OFFICE_EXTENSIONS = {
+        ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".pdf"
+    }
+
+    SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | OFFICE_EXTENSIONS
 
     @classmethod
-    def extract_text(cls, path: Path, max_chars: int = 30000) -> str:
-        """Извлекает очищенный текст из поддерживаемого файла."""
-        if not path.exists():
-            return ""
+    def is_supported(cls, path: Union[str, Path]) -> bool:
+        """Проверяет, поддерживается ли расширение файла."""
+        if not path:
+            return False
+        p = Path(path)
+        return p.suffix.lower() in cls.SUPPORTED_EXTENSIONS
 
-        ext = path.suffix.lower()
-        extracted = ""
+    @classmethod
+    def parse_file(
+        cls,
+        file_path: Union[str, Path],
+        max_chars: int = 14000
+    ) -> Optional[ParsedDocument]:
+        """
+        Разбирает файл любого поддерживаемого формата (текст, код, логи, PDF, офис)
+        строго на CPU без использования VRAM.
+
+        :param file_path: Путь к файлу (str или Path)
+        :param max_chars: Максимальное количество символов (~3000-3500 токенов)
+        :return: ParsedDocument или None (если файл не существует или недоступен)
+        """
+        if file_path is None:
+            return None
 
         try:
-            if ext == ".docx":
-                extracted = cls._parse_docx(path)
-            elif ext == ".doc":
-                extracted = cls._parse_doc_binary(path)
-            elif ext in (".xlsx", ".xls"):
-                extracted = cls._parse_excel(path)
-            elif ext == ".csv":
-                extracted = cls._parse_csv(path)
-            elif ext == ".pptx":
-                extracted = cls._parse_pptx(path)
-            elif ext == ".pdf":
-                extracted = cls._parse_pdf(path)
-            elif ext in (".html", ".htm"):
-                extracted = cls._parse_html(path)
-            elif ext == ".json":
-                extracted = cls._parse_json_or_chat(path)
-            else:
-                extracted = cls._parse_plain_text(path)
-        except Exception as e:
-            logger.warning(f"Ошибка при парсинге {path.name}: {e}")
-            extracted = cls._parse_plain_text(path)
+            path = Path(file_path).resolve()
+            if not path.exists() or not path.is_file():
+                return None
 
-        if not extracted or not extracted.strip():
+            try:
+                stat = path.stat()
+                size_kb = round(stat.st_size / 1024.0, 2)
+            except Exception:
+                size_kb = 0.0
+
+            filename = path.name
+            ext = path.suffix.lower()
+
+            raw_content = ""
+            page_count: Optional[int] = None
+
+            if ext == ".pdf":
+                raw_content, page_count = cls._extract_pdf(path)
+            elif ext == ".docx":
+                raw_content = cls._parse_docx(path)
+            elif ext == ".doc":
+                raw_content = cls._parse_doc_binary(path)
+            elif ext in (".xlsx", ".xls"):
+                raw_content = cls._parse_excel(path)
+            elif ext == ".pptx":
+                raw_content = cls._parse_pptx(path)
+            elif ext in (".html", ".htm"):
+                raw_content = cls._parse_html(path)
+            elif ext == ".json":
+                text = cls._read_text_safely(path)
+                raw_content = cls._parse_json_or_chat(text)
+            else:
+                # Текстовые файлы и код (.txt, .md, .py, .csv, .log, .yaml, .yml, .ini, .cfg и др.)
+                raw_content = cls._read_text_safely(path)
+
+            raw_content = raw_content.strip() if raw_content else ""
+            line_count = len(raw_content.splitlines()) if raw_content else 0
+
+            total = len(raw_content)
+            if total > max_chars:
+                is_truncated = True
+                content = raw_content[:max_chars] + (
+                    f"\n\n[... Документ сокращен: показаны первые {max_chars} символов из {total}. "
+                    f"Задай уточняющий вопрос по конкретной части документа ...]"
+                )
+            else:
+                is_truncated = False
+                content = raw_content
+
+            summary_header = cls._format_summary_header(filename, page_count, line_count, size_kb)
+
+            return ParsedDocument(
+                filename=filename,
+                extension=ext,
+                size_kb=size_kb,
+                line_count=line_count,
+                page_count=page_count,
+                content=content,
+                is_truncated=is_truncated,
+                summary_header=summary_header
+            )
+        except Exception as e:
+            logger.warning(f"Ошибка при обработке файла {file_path}: {e}")
+            return None
+
+    @classmethod
+    def extract_text(cls, path: Union[str, Path], max_chars: int = 30000) -> str:
+        """Извлекает очищенный текст из поддерживаемого файла (обратная совместимость)."""
+        parsed = cls.parse_file(path, max_chars=max_chars)
+        if not parsed:
+            return ""
+        return parsed.content
+
+    @classmethod
+    def _format_summary_header(
+        cls,
+        filename: str,
+        page_count: Optional[int],
+        line_count: int,
+        size_kb: float
+    ) -> str:
+        """Формирует однострочную HUD-сводку документа."""
+        if size_kb >= 10:
+            size_str = f"{size_kb:.0f}" if abs(size_kb - round(size_kb)) < 0.05 else f"{size_kb:.1f}"
+        else:
+            size_str = f"{size_kb:.1f}" if size_kb > 0 else "0"
+
+        if page_count is not None:
+            return f"📄 {filename} | {page_count} стр. | {size_str} КБ"
+        else:
+            return f"📄 {filename} | {line_count} строк | {size_str} КБ"
+
+    @classmethod
+    def _read_text_safely(cls, path: Path) -> str:
+        """
+        Безопасное чтение текстового файла с автоопределением кодировки.
+        Последовательно пробует: utf-8, cp1251, utf-16, latin-1 с fallback на errors='replace'.
+        """
+        try:
+            raw_bytes = path.read_bytes()
+        except Exception as e:
+            logger.debug(f"Не удалось прочитать байты файла {path}: {e}")
             return ""
 
-        cleaned = extracted.strip()
-        if len(cleaned) > max_chars:
-            cleaned = cleaned[:max_chars] + f"\n... [Документ усечен до {max_chars} символов для безопасности контекста] ..."
+        # Проверка маркеров BOM для UTF-16
+        if raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+            try:
+                return raw_bytes.decode("utf-16").replace("\r\n", "\n").replace("\r", "\n")
+            except UnicodeError:
+                pass
 
-        return cleaned
+        # Последовательный перебор кодировок: utf-8, cp1251, utf-16, latin-1
+        for enc in ("utf-8-sig", "utf-8", "cp1251", "utf-16", "latin-1"):
+            try:
+                text = raw_bytes.decode(enc)
+                # Защита: ложное срабатывание cp1251 на utf-16 без BOM дает чередование \x00
+                if enc == "cp1251" and text.count("\x00") > 3:
+                    continue
+                return text.replace("\r\n", "\n").replace("\r", "\n")
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+            except Exception:
+                continue
+
+        return raw_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+    @classmethod
+    def _parse_plain_text(cls, path: Path) -> str:
+        """Совместимый метод чтения plain-text."""
+        return cls._read_text_safely(path)
+
+    @classmethod
+    def _extract_pdf(cls, path: Path) -> Tuple[str, Optional[int]]:
+        """
+        Постраничное извлечение текста из PDF без нейросетей на CPU.
+        Поддерживает pypdf, pymupdf (fitz), pdfplumber.
+        Возвращает (content, page_count).
+        """
+        last_error = ""
+
+        # 1. Попытка через pypdf
+        try:
+            import pypdf
+            with open(path, "rb") as f_pdf:
+                reader = pypdf.PdfReader(f_pdf)
+                page_count = len(reader.pages)
+                pages = []
+                for idx, p in enumerate(reader.pages, 1):
+                    try:
+                        txt = p.extract_text() or ""
+                        txt = txt.strip()
+                        if txt:
+                            pages.append(f"--- Страница {idx} ---\n{txt}")
+                    except Exception as pe:
+                        logger.debug(f"Ошибка извлечения страницы {idx} PDF через pypdf: {pe}")
+
+                content = "\n\n".join(pages)
+                if not content.strip():
+                    content = "[PDF документ не содержит распознаваемого текстового слоя (возможно, сканированное изображение)]"
+                return content, page_count
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Ошибка при парсинге PDF через pypdf ({path.name}): {e}")
+            last_error = str(e)
+
+        # 2. Попытка через pymupdf (fitz)
+        try:
+            import fitz
+            doc = fitz.open(str(path))
+            page_count = len(doc)
+            pages = []
+            for idx, page in enumerate(doc, 1):
+                try:
+                    txt = page.get_text() or ""
+                    txt = txt.strip()
+                    if txt:
+                        pages.append(f"--- Страница {idx} ---\n{txt}")
+                except Exception as pe:
+                    logger.debug(f"Ошибка fitz на странице {idx}: {pe}")
+            doc.close()
+
+            content = "\n\n".join(pages)
+            if not content.strip():
+                content = "[PDF документ не содержит распознаваемого текстового слоя (возможно, сканированное изображение)]"
+            return content, page_count
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Ошибка при парсинге PDF через fitz ({path.name}): {e}")
+            last_error = str(e)
+
+        # 3. Попытка через pdfplumber
+        try:
+            import pdfplumber
+            with pdfplumber.open(str(path)) as pdf:
+                page_count = len(pdf.pages)
+                pages = []
+                for idx, page in enumerate(pdf.pages, 1):
+                    try:
+                        txt = page.extract_text() or ""
+                        txt = txt.strip()
+                        if txt:
+                            pages.append(f"--- Страница {idx} ---\n{txt}")
+                    except Exception as pe:
+                        logger.debug(f"Ошибка pdfplumber на странице {idx}: {pe}")
+                content = "\n\n".join(pages)
+                if not content.strip():
+                    content = "[PDF документ не содержит распознаваемого текстового слоя (возможно, сканированное изображение)]"
+                return content, page_count
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Ошибка при парсинге PDF через pdfplumber ({path.name}): {e}")
+            last_error = str(e)
+
+        if last_error:
+            return f"[Ошибка чтения PDF: {last_error}]", None
+
+        return (
+            "[Ошибка: Библиотека для чтения PDF не установлена в окружении (требуется pypdf, pymupdf или pdfplumber)]",
+            None
+        )
+
+    @classmethod
+    def _parse_pdf(cls, path: Path) -> str:
+        """Совместимый метод парсинга PDF."""
+        content, _ = cls._extract_pdf(path)
+        return content
 
     @classmethod
     def _parse_docx(cls, path: Path) -> str:
+        """Извлечение текста и таблиц из .docx файлов."""
         try:
             import docx
             doc = docx.Document(path)
@@ -85,14 +315,13 @@ class DocumentParser:
             return "\n".join(lines)
         except Exception as e:
             logger.debug(f"python-docx parsing failed: {e}")
-            return cls._parse_plain_text(path)
+            return cls._read_text_safely(path)
 
     @classmethod
     def _parse_doc_binary(cls, path: Path) -> str:
         """Извлекает кириллицу и латиницу из старого OLE2 Word .doc файла."""
         try:
             raw_bytes = path.read_bytes()
-            # Пробуем декодировать читаемые строки через utf-16le (стандарт Word OLE) и cp1251
             decoded_lines = []
             for enc in ("utf-16le", "cp1251", "utf-8"):
                 try:
@@ -140,7 +369,8 @@ class DocumentParser:
 
     @classmethod
     def _parse_csv(cls, path: Path) -> str:
-        lines = cls._parse_plain_text(path).splitlines()
+        """Чтение CSV файла."""
+        lines = cls._read_text_safely(path).splitlines()
         return "\n".join(lines[:120])
 
     @classmethod
@@ -153,7 +383,7 @@ class DocumentParser:
             with zipfile.ZipFile(path, "r") as z:
                 slide_files = [f for f in z.namelist() if f.startswith("ppt/slides/slide") and f.endswith(".xml")]
                 slide_files.sort(key=lambda x: int(re.search(r"\d+", x).group()) if re.search(r"\d+", x) else 0)
-                
+
                 for idx, s_file in enumerate(slide_files, 1):
                     xml_content = z.read(s_file)
                     tree = ET.fromstring(xml_content)
@@ -166,34 +396,22 @@ class DocumentParser:
             return ""
 
     @classmethod
-    def _parse_pdf(cls, path: Path) -> str:
-        try:
-            import pypdf
-            with open(path, "rb") as f_pdf:
-                reader = pypdf.PdfReader(f_pdf)
-                pages = []
-                for idx, p in enumerate(reader.pages[:20], 1):
-                    txt = p.extract_text()
-                    if txt and txt.strip():
-                        pages.append(f"--- Страница {idx} ---\n{txt.strip()}")
-                return "\n\n".join(pages)
-        except Exception as e:
-            logger.debug(f"pdf parsing failed: {e}")
-            return ""
-
-    @classmethod
     def _parse_html(cls, path: Path) -> str:
-        """Очищает HTML-код от тегов и скриптов, оставляя чистый текст переписки."""
-        raw = cls._parse_plain_text(path)
+        """Очищает HTML-код от тегов и скриптов, оставляя чистый текст."""
+        raw = cls._read_text_safely(path)
         no_scripts = re.sub(r"<(script|style).*?</\1>", "", raw, flags=re.DOTALL | re.IGNORECASE)
         no_tags = re.sub(r"<[^>]+>", "\n", no_scripts)
         lines = [line.strip() for line in no_tags.splitlines() if line.strip()]
         return "\n".join(lines)
 
     @classmethod
-    def _parse_json_or_chat(cls, path: Path) -> str:
+    def _parse_json_or_chat(cls, target: Union[str, Path]) -> str:
         """Распознает дампы экспортов ChatGPT, Claude или Tavern/Chub и вычищает служебные поля."""
-        raw = cls._parse_plain_text(path)
+        if isinstance(target, Path):
+            raw = cls._read_text_safely(target)
+        else:
+            raw = target
+
         try:
             data = json.loads(raw)
             # 1. Дамп ChatGPT (структура с mapping)
@@ -229,15 +447,6 @@ class DocumentParser:
                 first_mes = inner.get("first_mes", "")
                 return f"Карточка персонажа: {name}\nОписание: {desc}\nПриветствие: {first_mes}"
 
-            return json.dumps(data, ensure_ascii=False, indent=2)
+            return raw
         except Exception:
             return raw
-
-    @classmethod
-    def _parse_plain_text(cls, path: Path) -> str:
-        for enc in ("utf-8", "cp1251", "latin-1"):
-            try:
-                return path.read_text(encoding=enc)
-            except Exception:
-                continue
-        return ""
