@@ -17,8 +17,8 @@ import re
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QKeyEvent, QImage, QCursor, QColor, QPalette, QIcon, QPixmap, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent
+from PyQt6.QtGui import QKeyEvent, QImage, QCursor, QColor, QPalette, QIcon, QPixmap, QPainter, QFont
 from PyQt6.QtWidgets import QTextEdit, QApplication
 from qfluentwidgets import (
     TransparentToolButton,
@@ -70,29 +70,39 @@ class ChatInputBox(QTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # Ensure right margin keeps text well away from the 36px action button
-        self.setViewportMargins(8, 0, 48, 0)
+        # Ensure margins keep text clean from edges and away from 36px action button.
+        # Top/bottom margins are strictly 0 to avoid viewport clipping/caret offset artifacts.
+        self.setViewportMargins(12, 0, 46, 0)
         self.document().setDocumentMargin(6)
-
         self.setCursorWidth(2)
+
+        # Synchronize programmatic font and document font with UI font metrics
+        ui_font = QFont("Segoe UI", 10)
+        self.setFont(ui_font)
+        self.document().setDefaultFont(ui_font)
+
+        # Install event filter on viewport to intercept mouse leave/enter cleanly
+        self.viewport().installEventFilter(self)
+
         pal = self.palette()
         pal.setColor(QPalette.ColorRole.Text, QColor("#F1F5F9"))
         pal.setColor(QPalette.ColorRole.Highlight, QColor(0, 240, 255, 110))
         pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
         self.setPalette(pal)
 
-        # Seamless Sunken Well: deep dark base, no border, no outline
+        # Seamless Sunken Well: deep dark base, no border, no outline, no QSS padding.
+        # :hover is scoped to :!focus so focused blinking caret background is 100% stable.
         self.setStyleSheet("""
             QTextEdit#ChatInputField, ChatInputBox#ChatInputField {
                 background-color: rgba(10, 15, 26, 0.75);
                 color: #F8FAFC;
                 border: none;
                 border-radius: 11px;
-                padding: 6px 10px;
+                font-family: 'Segoe UI', sans-serif;
                 font-size: 14px;
                 outline: none;
             }
-            QTextEdit#ChatInputField:hover, ChatInputBox#ChatInputField:hover {
+            QTextEdit#ChatInputField:hover:!focus, ChatInputBox#ChatInputField:hover:!focus {
                 background-color: rgba(13, 20, 34, 0.82);
                 border: none;
                 outline: none;
@@ -280,6 +290,15 @@ class ChatInputBox(QTextEdit):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_button_position()
+
+    def eventFilter(self, obj, event: QEvent):
+        if obj is self.viewport() and event.type() in (QEvent.Type.Leave, QEvent.Type.Enter):
+            self.viewport().update()
+        return super().eventFilter(obj, event)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.viewport().update()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
