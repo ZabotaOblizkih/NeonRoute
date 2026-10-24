@@ -101,6 +101,8 @@ class SessionManager:
     get_dynamic_art_models_protocol = staticmethod(ContextWindowBuilder.get_dynamic_art_models_protocol)
     build_system_prompt = staticmethod(ContextWindowBuilder.build_system_prompt)
     get_lm_studio_messages = staticmethod(ContextWindowBuilder.get_lm_studio_messages)
+    prepare_history_for_llm = staticmethod(ContextWindowBuilder.prepare_history_for_llm)
+    build_context_messages = staticmethod(ContextWindowBuilder.build_context_messages)
 
     def __init__(self, lm_client: Optional[Any] = None, cast_manager: Optional[Any] = None):
         self.lm_client = lm_client

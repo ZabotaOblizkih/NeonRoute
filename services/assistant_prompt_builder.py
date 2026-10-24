@@ -51,6 +51,14 @@ DEFAULT_ELARIA_SYSTEM_PROMPT = (
     "5. Не дублируй весь текст документа целиком."
 )
 
+REASONING_PROTOCOL = (
+    "[reasoning_protocol]\n"
+    "Перед формированием ответа выполни внутренний анализ фактов внутри тега <think>...</think>:\n"
+    "1. Сопоставь условия вопроса с фрагментами в <KnowledgeBase>.\n"
+    "2. Если источников несколько, свяжи их по артикулам, номерам или терминам.\n"
+    "3. Закрой тег </think> и сформируй четкий, доброжелательный ответ без служебных маркеров."
+)
+
 GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
     "\n\n[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]\n"
     "The user has requested an image. Act as an expert prompt engineer for Stable Diffusion.\n"
@@ -77,6 +85,8 @@ GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
 
 class AssistantPromptBuilder:
     """Централизованный строитель системного промпта для режима «💬 Ассистент» (Элария)."""
+
+    REASONING_PROTOCOL = REASONING_PROTOCOL
 
     @staticmethod
     def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
@@ -160,7 +170,9 @@ class AssistantPromptBuilder:
         is_word: bool = False,
         custom_prompt: Optional[str] = None,
         knowledge_block: Optional[str] = None,
-        matched_knowledge_docs: Optional[List[Dict[str, Any]]] = None
+        matched_knowledge_docs: Optional[List[Dict[str, Any]]] = None,
+        enable_reasoning: bool = False,
+        **kwargs
     ) -> str:
         active_persona = active_persona or {}
         u_name = user_name or "Пользователь"
@@ -193,7 +205,8 @@ class AssistantPromptBuilder:
         if not kb_text and matched_knowledge_docs:
             kb_text = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
 
-        if kb_text and kb_text.strip():
+        has_knowledge = bool(kb_text and kb_text.strip())
+        if has_knowledge:
             knowledge_section = f"{kb_text.strip()}\n\n"
 
         # 4. Динамическая дата и время
@@ -213,14 +226,19 @@ class AssistantPromptBuilder:
         if knowledge_section:
             assistant_instruction += "при наличии блока <KnowledgeBase> используй содержащиеся в нем документы и факты для точного ответа на вопросы собеседника.\n"
 
-        # 6. Спецификаторы генерации документов
+        # 6. Протокол рассуждений (селективно: при наличии базы знаний или флаге enable_reasoning)
+        reasoning_section = ""
+        if enable_reasoning or has_knowledge:
+            reasoning_section = f"\n{REASONING_PROTOCOL}\n"
+
+        # 7. Спецификаторы генерации документов
         sys_prompt = ""
         if is_excel:
             sys_prompt += "\nUser requested an Excel spreadsheet. Present data as a clean Markdown table."
         elif is_word:
             sys_prompt += "\nUser requested a Word document. Format response with clean headers and bullet lists."
 
-        return user_info_block + relevant_memory_block + knowledge_section + assistant_instruction + sys_prompt
+        return user_info_block + relevant_memory_block + knowledge_section + assistant_instruction + reasoning_section + sys_prompt
 
     @staticmethod
     def build_gallery_art_prompt(

@@ -305,7 +305,8 @@ class AssistantFlowControllerMixin:
         is_excel: bool = False,
         is_word: bool = False,
         vision_content: Optional[List[Dict[str, Any]]] = None,
-        art_guidance: Optional[str] = None
+        art_guidance: Optional[str] = None,
+        enable_reasoning: Optional[bool] = None
     ):
         """Формирует контекст Ассистента (14K) и передает задачу в TaskQueue."""
         self._requested_word_export = is_word
@@ -394,6 +395,15 @@ class AssistantFlowControllerMixin:
             except Exception as e_km:
                 logger.warning(f"[AssistantFlow] Ошибка поиска по базе знаний: {e_km}")
 
+        if enable_reasoning is None:
+            enable_reasoning = bool(matched_knowledge_docs)
+            if hasattr(self, "reasoning_switch") and hasattr(self.reasoning_switch, "isChecked"):
+                enable_reasoning = enable_reasoning or self.reasoning_switch.isChecked()
+            elif hasattr(self, "enable_reasoning_switch") and hasattr(self.enable_reasoning_switch, "isChecked"):
+                enable_reasoning = enable_reasoning or self.enable_reasoning_switch.isChecked()
+            elif getattr(self, "_enable_reasoning", False):
+                enable_reasoning = True
+
         messages = SessionManager.get_lm_studio_messages(
             history=history_slice,
             is_roleplay=False,
@@ -414,7 +424,8 @@ class AssistantFlowControllerMixin:
             meta_context_block="",
             is_dm_mode=False,
             knowledge_block=knowledge_block,
-            matched_knowledge_docs=matched_knowledge_docs
+            matched_knowledge_docs=matched_knowledge_docs,
+            enable_reasoning=enable_reasoning
         )
 
         # Дополнительная страховка наличия KnowledgeBase в первом системном сообщении

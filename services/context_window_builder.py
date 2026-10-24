@@ -132,6 +132,7 @@ class ContextWindowBuilder:
         meta_context_block: Optional[str] = None,
         session_id: Optional[str] = None,
         is_dm_mode: bool = False,
+        enable_reasoning: bool = False,
         **kwargs
     ) -> str:
         # Single Type normalization
@@ -203,8 +204,83 @@ class ContextWindowBuilder:
             is_excel=is_excel,
             is_word=is_word,
             knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
-            matched_knowledge_docs=kwargs.get("matched_knowledge_docs")
+            matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
+            enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
         )
+
+    @staticmethod
+    def prepare_history_for_llm(
+        history: List[Dict[str, Any]],
+        vision_content: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Нормализует историю диалога для инференса LLM:
+        - Преобразует сообщения в OpenAI-совместимый список [{"role": ..., "content": ...}]
+        - Санитизирует реплики ассистента (role: assistant), вырезая блоки рассуждений <think>...</think>
+        - Исключает словарь 'thought' и метаданные размышлений, не подмешивая их в текст модели
+        - Обеспечивает экономию контекстного окна на последующих ходах
+        """
+        if not history:
+            return []
+
+        normalized_history: List[Dict[str, Any]] = []
+        for idx, raw_m in enumerate(history):
+            m = dict(raw_m)
+            role = m.get("role") or ("user" if m.get("is_user") else "assistant")
+            content = m.get("content") if m.get("content") is not None else m.get("text", "")
+            text = content
+
+            if isinstance(text, list):
+                if idx != len(history) - 1 or vision_content is None:
+                    txt_parts = [str(p.get("text", "")) for p in text if isinstance(p, dict) and p.get("type") == "text"]
+                    content_val = " ".join(tp for tp in txt_parts if tp).strip()
+                else:
+                    content_val = text
+            else:
+                content_val = str(text or "").strip()
+
+            if role == "assistant":
+                if isinstance(content_val, str):
+                    # Вырезаем теги рассуждений из прошлых ходов ассистента
+                    content_val = re.sub(r'<think>.*?</think>', '', content_val, flags=re.DOTALL).strip()
+                    if "🔔" in content_val:
+                        content_val = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', content_val).strip()
+                elif isinstance(content_val, list):
+                    clean_parts = []
+                    for part in content_val:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            p_txt = str(part.get("text", ""))
+                            p_clean = re.sub(r'<think>.*?</think>', '', p_txt, flags=re.DOTALL).strip()
+                            if p_clean:
+                                part_copy = dict(part)
+                                part_copy["text"] = p_clean
+                                clean_parts.append(part_copy)
+                        else:
+                            clean_parts.append(part)
+                    content_val = clean_parts
+
+            if isinstance(content_val, str) and not content_val and role == "assistant":
+                continue
+
+            normalized_history.append({"role": role, "content": content_val})
+
+        return normalized_history
+
+    @staticmethod
+    def build_context_messages(
+        history: List[Dict[str, Any]],
+        *args,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Функция сборки сообщений для инференса с санитизацией мыслей.
+        Если вызвана только с историей (без аргументов сборки контекста),
+        возвращает результат prepare_history_for_llm.
+        В остальных случаях собирает полное контекстное окно через get_lm_studio_messages.
+        """
+        if not args and not kwargs:
+            return ContextWindowBuilder.prepare_history_for_llm(history)
+        return ContextWindowBuilder.get_lm_studio_messages(history, *args, **kwargs)
 
     @staticmethod
     def get_lm_studio_messages(
@@ -227,32 +303,10 @@ class ContextWindowBuilder:
         session_id: Optional[str] = None,
         is_dm_mode: bool = False,
         max_context_tokens: Optional[int] = None,
+        enable_reasoning: bool = False,
         **kwargs
     ) -> List[Dict[str, Any]]:
-        normalized_history: List[Dict[str, Any]] = []
-        for idx, raw_m in enumerate(history):
-            m = dict(raw_m)
-            role = m.get("role") or ("user" if m.get("is_user") else "assistant")
-            content = m.get("content") if m.get("content") is not None else m.get("text", "")
-            text = content
-
-            if isinstance(text, list):
-                if idx != len(history) - 1 or vision_content is None:
-                    txt_parts = [str(p.get("text", "")) for p in text if isinstance(p, dict) and p.get("type") == "text"]
-                    content_val = " ".join(tp for tp in txt_parts if tp).strip()
-                else:
-                    content_val = text
-            else:
-                content_val = str(text or "").strip()
-                if role == "assistant" and "🔔" in content_val:
-                    content_val = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', content_val).strip()
-
-            if isinstance(content_val, str) and not content_val and role == "assistant":
-                continue
-
-            normalized_history.append({"role": role, "content": content_val})
-
-        history = normalized_history
+        history = ContextWindowBuilder.prepare_history_for_llm(history, vision_content=vision_content)
 
         relevant_facts = []
         last_query = ""
@@ -410,7 +464,8 @@ class ContextWindowBuilder:
                 is_dm_mode=is_dm_mode,
                 task_text=last_query,
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
-                matched_knowledge_docs=kwargs.get("matched_knowledge_docs")
+                matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
+                enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
             )
             safe_user_name = str(effective_user_name).strip() if effective_user_name else "пользователь"
             system_content = system_prompt.replace("{user_name}", safe_user_name)
@@ -608,7 +663,8 @@ class ContextWindowBuilder:
                 is_dm_mode=is_dm_mode,
                 task_text=last_query,
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
-                matched_knowledge_docs=kwargs.get("matched_knowledge_docs")
+                matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
+                enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
             )
             safe_user_name = str(user_name).strip() if user_name else "пользователь"
             system_content = system_prompt.replace("{user_name}", safe_user_name)
