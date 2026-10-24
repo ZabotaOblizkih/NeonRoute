@@ -336,3 +336,124 @@ class TestGalleryTwoPassProtocol:
         assert "https://example.com/image.jpg" not in bubble.text
         assert "Вот такой волшебный закат!" in bubble.text
         assert host._is_running_gallery_art_pass is True
+
+
+class TestAssistantDocumentReaderIntegration:
+    """Тесты интеграции DocumentReader в режим Ассистента (Элария)."""
+
+    @pytest.fixture
+    def host(self):
+        return DummyAssistantHost()
+
+    def test_default_system_prompt_contains_document_analysis_protocol(self):
+        from services.assistant_prompt_builder import DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "[document_analysis_protocol]" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "Если к сообщению прикреплен блок <AttachedDocument>:" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "Ты видишь реальное содержимое файла" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "дай компактную выжимку" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "Не дублируй весь текст документа целиком." in DEFAULT_ELARIA_SYSTEM_PROMPT
+
+    def test_build_document_context_xml_structure(self):
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        from services.document_parser import ParsedDocument
+
+        parsed_doc = ParsedDocument(
+            filename="report.pdf",
+            extension=".pdf",
+            size_kb=120.0,
+            line_count=45,
+            page_count=14,
+            content="Содержимое отчета за 2026 год",
+            is_truncated=False,
+            summary_header="📄 report.pdf | 14 стр. | 120 КБ"
+        )
+
+        xml_block = AssistantPromptBuilder.build_document_context(parsed_doc)
+        expected = (
+            '<AttachedDocument filename="report.pdf" '
+            'summary="📄 report.pdf | 14 стр. | 120 КБ" '
+            'truncated="False">\n'
+            'Содержимое отчета за 2026 год\n'
+            '</AttachedDocument>'
+        )
+        assert xml_block == expected
+
+    def test_process_assistant_attachments_separation_and_injection(self, host, tmp_path):
+        txt_file = tmp_path / "app.log"
+        txt_file.write_text("[2026-10-24 21:00:00] [ERROR] NullPointerException in Service", encoding="utf-8")
+
+        img_file = tmp_path / "screenshot.png"
+        img_file.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR...")
+
+        mock_input_panel = MagicMock()
+        host.input_panel = mock_input_panel
+
+        user_text = "Что произошло в системе?"
+        image_files, doc_files, full_query, docs_meta = host.process_assistant_attachments(
+            [txt_file, img_file], user_text=user_text
+        )
+
+        # 1. Разделение вложений
+        assert len(image_files) == 1
+        assert image_files[0].name == "screenshot.png"
+        assert len(doc_files) == 1
+        assert doc_files[0].name == "app.log"
+
+        # 2. Очистка вложений в UI
+        mock_input_panel.clear_attachments.assert_called_once()
+
+        # 3. Инжекция контекста документа
+        assert user_text in full_query
+        assert '<AttachedDocument filename="app.log"' in full_query
+        assert "NullPointerException in Service" in full_query
+
+        # 4. Метаданные
+        assert len(docs_meta) == 1
+        assert docs_meta[0]["filename"] == "app.log"
+        assert "app.log" in docs_meta[0]["summary"]
+
+    def test_handle_assistant_user_submit_document_flow(self, host, tmp_path):
+        doc_file = tmp_path / "instructions.txt"
+        doc_file.write_text("Шаг 1: Запустить мотор.\nШаг 2: Нажать газ.", encoding="utf-8")
+
+        host.input_box = MagicMock()
+        host.input_box.toPlainText.return_value = "Что в этом файле?"
+        host._enqueue_assistant_llm_task = MagicMock()
+
+        success = host.handle_assistant_user_submit(
+            text="Что в этом файле?",
+            attached_files=[doc_file]
+        )
+
+        assert success is True
+        host.input_box.clear.assert_called_once()
+        host._enqueue_assistant_llm_task.assert_called_once_with(vision_content=None)
+
+        # Проверка метаданных в сессии
+        messages = host.current_session.get("messages", [])
+        assert len(messages) > 0
+        last_msg = messages[-1]
+        assert "attached_documents" in last_msg
+        assert last_msg["attached_documents"][0]["filename"] == "instructions.txt"
+        assert "instructions.txt" in last_msg["attached_documents"][0]["summary"]
+
+    def test_handle_assistant_user_submit_vision_branch(self, host, tmp_path):
+        img_file = tmp_path / "photo.jpg"
+        img_file.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF")
+
+        host.input_box = MagicMock()
+        host.input_box.toPlainText.return_value = "Опиши эту картинку"
+        host._enqueue_assistant_llm_task = MagicMock()
+
+        with patch("services.vision_utils.VisionUtils.prepare_image_payload") as mock_prep:
+            mock_prep.return_value = {"type": "image_url", "image_url": {"url": "base64://dummy"}}
+            success = host.handle_assistant_user_submit(
+                text="Опиши эту картинку",
+                attached_files=[img_file]
+            )
+
+        assert success is True
+        host._enqueue_assistant_llm_task.assert_called_once()
+        call_kwargs = host._enqueue_assistant_llm_task.call_args.kwargs
+        assert call_kwargs["vision_content"] is not None
+        assert len(call_kwargs["vision_content"]) == 2

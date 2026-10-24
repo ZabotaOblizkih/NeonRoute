@@ -8,7 +8,7 @@ import re
 import random
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 from services.session_manager import SessionManager, get_mode_profile
 from services.regex_filter import TextRegexFilter
@@ -16,6 +16,7 @@ from services.task_queue import InferenceTask
 from services.model_router import ModelRouter, normalize_model_choice
 from services.art_director import VisualIntent, TargetSubject
 from services.assistant_prompt_builder import AssistantPromptBuilder
+from services.document_parser import DocumentParser, ParsedDocument
 from ui.components.chat_bubble import ChatMessageWidget
 
 logger = logging.getLogger("NeonRoute.AssistantFlow")
@@ -29,6 +30,171 @@ RE_GALLERY_TRIGGER = re.compile(
 
 class AssistantFlowControllerMixin:
     """Изолированный контроллер диалогового цикла и логики режима «💬 Ассистент» (Элария)."""
+
+    def process_assistant_attachments(
+        self,
+        attached_files: List[Union[str, Path]],
+        user_text: str = ""
+    ) -> Tuple[List[Path], List[Path], str, List[Dict[str, Any]]]:
+        """
+        Разделяет вложения на image_files и document_files.
+        Парсит документы через DocumentParser на CPU, формирует контекст
+        через AssistantPromptBuilder.build_document_context и готовит метаданные.
+
+        :return: (image_files, document_files, full_user_query, docs_meta)
+        """
+        image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+        image_files: List[Path] = []
+        document_files: List[Path] = []
+
+        for f in attached_files:
+            p = Path(f) if not isinstance(f, Path) else f
+            if not p.exists():
+                continue
+            ext = p.suffix.lower()
+            if ext in image_exts:
+                image_files.append(p)
+            elif DocumentParser.is_supported(p):
+                document_files.append(p)
+
+        doc_blocks: List[str] = []
+        docs_meta: List[Dict[str, Any]] = []
+
+        for p in document_files:
+            parsed = DocumentParser.parse_file(p)
+            if parsed:
+                doc_blocks.append(AssistantPromptBuilder.build_document_context(parsed))
+                docs_meta.append({
+                    "filename": parsed.filename,
+                    "extension": parsed.extension,
+                    "summary": parsed.summary_header,
+                    "is_truncated": parsed.is_truncated,
+                    "size_kb": parsed.size_kb,
+                    "page_count": parsed.page_count
+                })
+                logger.info(f"[AssistantFlow] Документ '{parsed.filename}' ({parsed.summary_header}) успешно извлечен и инжектирован.")
+
+        # Очистка вложений в UI (input_panel.clear_attachments())
+        if hasattr(self, "input_panel") and hasattr(self.input_panel, "clear_attachments"):
+            self.input_panel.clear_attachments()
+        elif hasattr(self, "attached_files"):
+            self.attached_files.clear()
+            if hasattr(self, "_update_attachments_ui"):
+                self._update_attachments_ui()
+
+        # Формирование итогового текста запроса пользователя
+        clean_text = user_text.strip() if user_text else ""
+        if doc_blocks:
+            doc_context_str = "\n\n".join(doc_blocks)
+            if clean_text:
+                full_query = f"{clean_text}\n\n{doc_context_str}"
+            else:
+                full_query = f"Изучи прикрепленный документ и предоставь краткую выжимку его сути и содержания.\n\n{doc_context_str}"
+        else:
+            full_query = clean_text
+
+        return image_files, document_files, full_query, docs_meta
+
+    def handle_assistant_user_submit(
+        self,
+        text: Optional[str] = None,
+        attached_files: Optional[List[Union[str, Path]]] = None
+    ) -> bool:
+        """
+        Обработчик отправки сообщения пользователя в режиме «Ассистент».
+        Считывает attached_files из ChatInputPanel, разделяет на изображения и документы,
+        парсит документы через DocumentParser, инжектирует <AttachedDocument> в запрос LLM,
+        очищает input_panel и сохраняет метаданные в сессии.
+        """
+        if text is not None and hasattr(self, "input_box") and self.input_box:
+            self.input_box.setPlainText(text)
+
+        raw_text = text if text is not None else (
+            self.input_box.toPlainText().strip() if hasattr(self, "input_box") and self.input_box else ""
+        )
+
+        files_to_process: List[Union[str, Path]] = []
+        if attached_files is not None:
+            files_to_process = list(attached_files)
+        elif hasattr(self, "input_panel") and hasattr(self.input_panel, "attached_files"):
+            files_to_process = list(self.input_panel.attached_files)
+        elif hasattr(self, "attached_files"):
+            files_to_process = list(self.attached_files)
+
+        if not raw_text and not files_to_process:
+            return False
+
+        if hasattr(self, "input_box") and self.input_box:
+            self.input_box.clear()
+
+        image_files, document_files, full_query, docs_meta = self.process_assistant_attachments(
+            files_to_process, raw_text
+        )
+
+        self._current_user_request = raw_text or (full_query if not image_files else "Опиши изображение")
+
+        # Обработка Vision-ветки с картинками
+        vision_content: Optional[List[Dict[str, Any]]] = None
+        primary_image = image_files[0] if image_files else None
+        if primary_image:
+            from services.vision_utils import VisionUtils
+            image_payload = VisionUtils.prepare_image_payload(str(primary_image), max_dim=768)
+            vision_content = [
+                {"type": "text", "text": full_query or "Опиши изображение"},
+                image_payload
+            ]
+
+        # Отображение сообщения пользователя в UI
+        display_text = raw_text
+        if not display_text:
+            if image_files:
+                display_text = "🖼️ [Прикреплено изображение]"
+            elif document_files and docs_meta:
+                display_text = f"📄 [{docs_meta[0]['summary']}]"
+            else:
+                display_text = "📄 [Прикреплен файл]"
+
+        if hasattr(self, "_append_message"):
+            self._append_message(
+                "Вы",
+                display_text,
+                is_user=True,
+                image_path=primary_image,
+                file_paths=document_files or image_files
+            )
+
+        # Сохранение в chat_history
+        user_history_entry = {
+            "role": "user",
+            "content": vision_content if vision_content else full_query
+        }
+        if hasattr(self, "chat_history") and isinstance(self.chat_history, list):
+            self.chat_history.append(user_history_entry)
+
+        # Сохранение метаданных прикрепленного документа в сессию
+        if hasattr(self, "current_session") and isinstance(self.current_session, dict):
+            if "messages" not in self.current_session:
+                self.current_session["messages"] = []
+            msg_meta: Dict[str, Any] = {
+                "role": "user",
+                "content": raw_text or full_query,
+                "is_user": True,
+            }
+            if docs_meta:
+                msg_meta["attached_documents"] = docs_meta
+            if primary_image:
+                msg_meta["image_path"] = str(primary_image)
+            self.current_session["messages"].append(msg_meta)
+
+            if hasattr(self, "_save_current_session"):
+                self._save_current_session()
+
+        # Запуск задачи LLM
+        if hasattr(self, "_enqueue_assistant_llm_task"):
+            self._enqueue_assistant_llm_task(
+                vision_content=vision_content
+            )
+        return True
 
     @staticmethod
     def _should_trigger_assistant_art(user_query: str) -> bool:
@@ -588,7 +754,7 @@ class AssistantFlowControllerMixin:
             if not has_gallery:
                 text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
             else:
-                text = ""
+                text = "Секунду, перевожу образ в кадр..."
 
         sender_name = "Элария"
         avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None

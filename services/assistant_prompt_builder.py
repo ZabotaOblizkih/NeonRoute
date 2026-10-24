@@ -8,6 +8,8 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+from services.document_parser import ParsedDocument
+
 logger = logging.getLogger("NeonRoute.AssistantPromptBuilder")
 
 # Единый каноничный промпт Эларии (SSOT)
@@ -37,9 +39,16 @@ DEFAULT_ELARIA_SYSTEM_PROMPT = (
     "протокол визуализации (навык «галерея»):\n"
     "ты обладаешь встроенным навыком «галерея» для визуализации сцен, локаций и создания артов.\n"
     "когда собеседник просит тебя что-то показать, нарисовать, визуализировать, сделать фото/селфи или когда диалог естественно располагает к иллюстрации кадра:\n"
-    "1. сразу вызови встроенный навык командой: [GALERY]. допускается как одиночный маркер [GALERY] без слов, так и краткая естественная фраза перед ним.\n"
+    "1. добавь команду вызова навыка: [GALERY]. допускается как одиночный маркер [GALERY] без слов, так и краткая естественная фраза перед ним.\n"
     "2. после команды [GALERY] категорически ничего не пиши — твоя реплика на этом завершается.\n"
-    "3. не пытайся генерировать markdown-ссылки вида ![...](...) или описывать уже «готовый» рисунок."
+    "3. не пытайся генерировать markdown-ссылки вида ![...](...) или описывать уже «готовый» рисунок.\n\n"
+    "[document_analysis_protocol]\n"
+    "Если к сообщению прикреплен блок <AttachedDocument>:\n"
+    "1. Ты видишь реальное содержимое файла, предварительно извлеченное парсером.\n"
+    "2. Если пользователь прислал документ без конкретного вопроса: дай компактную выжимку (что это за документ, 3-5 ключевых тезисов, важные условия/риски).\n"
+    "3. Если задан конкретный вопрос: отвечай строго по содержанию файла, цитируя ключевые строчки или пункты при необходимости.\n"
+    "4. Форматируй важные данные, перечни и параметры в аккуратные Markdown-списки или таблицы.\n"
+    "5. Не дублируй весь текст документа целиком."
 )
 
 GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
@@ -140,4 +149,23 @@ class AssistantPromptBuilder:
             target_model_id=target_model_id
         )
         return f"{user_query.strip()}{directive}"
+
+    @staticmethod
+    def build_document_context(parsed_doc: ParsedDocument) -> str:
+        """
+        Формирует стандартизированный XML-подобный блок:
+        <AttachedDocument filename="{parsed_doc.filename}" summary="{parsed_doc.summary_header}" truncated="{parsed_doc.is_truncated}">
+        {parsed_doc.content}
+        </AttachedDocument>
+        """
+        if not parsed_doc:
+            return ""
+        return (
+            f'<AttachedDocument filename="{parsed_doc.filename}" '
+            f'summary="{parsed_doc.summary_header}" '
+            f'truncated="{parsed_doc.is_truncated}">\n'
+            f'{parsed_doc.content}\n'
+            f'</AttachedDocument>'
+        )
+
 

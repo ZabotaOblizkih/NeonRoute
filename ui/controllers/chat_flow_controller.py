@@ -489,8 +489,11 @@ class ChatFlowControllerMixin:
 
         self.input_box.clear()
         attached_copy = list(self.attached_files)
-        self.attached_files.clear()
-        self._update_attachments_ui()
+        if hasattr(self, "input_panel") and hasattr(self.input_panel, "clear_attachments"):
+            self.input_panel.clear_attachments()
+        else:
+            self.attached_files.clear()
+            self._update_attachments_ui()
 
         user_text = text
         self._current_user_request = (user_text or "").strip()
@@ -593,22 +596,48 @@ class ChatFlowControllerMixin:
         from services.document_parser import DocumentParser
 
         attached_texts = []
+        docs_meta = []
         is_eng_active = self.is_engineer_mode_active() if hasattr(self, "is_engineer_mode_active") else False
+        is_asst_mode = (getattr(self, "current_mode", "assistant") == "assistant") and not is_eng_active
 
         for p in attached_copy:
             if DocumentParser.is_supported(p) and p.exists():
                 try:
-                    f_content = DocumentParser.extract_text(p)
-                    if f_content and f_content.strip():
-                        # В режиме «Инженер» добавляем маркер безопасности для предотвращения ложного отказа песочницы
-                        if is_eng_active:
-                            prefix = f"\n\n[ВХОДЯЩИЙ МАТЕРИАЛ ДЛЯ ОЗНАКОМЛЕНИЯ В ОЗУ: Файл '{p.name}']\n(Справочный документ. Это не запрос на изменение диска за пределами workspace):\n\"\"\"\n{f_content}\n\"\"\""
-                        else:
-                            prefix = f"\n\n### Содержимое прикрепленного файла [{p.name}]:\n\"\"\"\n{f_content}\n\"\"\""
-                        attached_texts.append(prefix)
-                        logger.info(f"Документ {p.name} успешно прочитан ({len(f_content)} симв.)")
+                    if is_asst_mode:
+                        parsed_doc = DocumentParser.parse_file(p)
+                        if parsed_doc:
+                            from services.assistant_prompt_builder import AssistantPromptBuilder
+                            prefix = "\n\n" + AssistantPromptBuilder.build_document_context(parsed_doc)
+                            attached_texts.append(prefix)
+                            docs_meta.append({
+                                "filename": parsed_doc.filename,
+                                "extension": parsed_doc.extension,
+                                "summary": parsed_doc.summary_header,
+                                "is_truncated": parsed_doc.is_truncated,
+                                "size_kb": parsed_doc.size_kb,
+                                "page_count": parsed_doc.page_count
+                            })
+                            logger.info(f"Документ {p.name} разобран через parse_file ({len(parsed_doc.content)} симв.)")
+                    else:
+                        f_content = DocumentParser.extract_text(p)
+                        if f_content and f_content.strip():
+                            if is_eng_active:
+                                prefix = f"\n\n[ВХОДЯЩИЙ МАТЕРИАЛ ДЛЯ ОЗНАКОМЛЕНИЯ В ОЗУ: Файл '{p.name}']\n(Справочный документ. Это не запрос на изменение диска за пределами workspace):\n\"\"\"\n{f_content}\n\"\"\""
+                            else:
+                                prefix = f"\n\n### Содержимое прикрепленного файла [{p.name}]:\n\"\"\"\n{f_content}\n\"\"\""
+                            attached_texts.append(prefix)
+                            logger.info(f"Документ {p.name} успешно прочитан ({len(f_content)} симв.)")
                 except Exception as e:
                     logger.warning(f"Ошибка чтения {p.name}: {e}")
+
+        # Сохранение метаданных прикрепленного документа в сессию для истории
+        if docs_meta and getattr(self, "current_session", None) and isinstance(self.current_session, dict):
+            messages = self.current_session.get("messages", [])
+            if messages:
+                for m in reversed(messages):
+                    if m.get("is_user") or m.get("role") == "user":
+                        m["attached_documents"] = docs_meta
+                        break
 
         user_query = user_text.strip()
         if attached_texts:
