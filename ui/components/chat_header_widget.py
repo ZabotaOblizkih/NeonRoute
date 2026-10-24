@@ -7,9 +7,9 @@ Modernized with QFluentWidgets components under Agentrules.md.
 
 from typing import TYPE_CHECKING
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QCursor
+from PyQt6.QtGui import QCursor, QColor
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QGraphicsDropShadowEffect
 )
 from qfluentwidgets import (
     ComboBox,
@@ -24,6 +24,76 @@ from qfluentwidgets import (
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
+
+
+class HeaderAvatarWidget(QLabel):
+    """
+    Интерактивный аватар собеседника для ChatHeaderBar.
+    Исключает жесткие QSS-рамки, сдвигающие геометрию и обрезающие круглый pixmap.
+    Обеспечивает мягкую рассеянную глубину в покое и деликатное бирюзовое свечение при наведении.
+    Предотвращает залипание hover-эффекта при открытии контекстных меню.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(48, 48)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setStyleSheet("""
+            QLabel {
+                border: none;
+                outline: none;
+                background: transparent;
+                padding: 0px;
+                margin: 0px;
+            }
+        """)
+
+        self._is_hovered = False
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setOffset(0, 1)
+        self._shadow.setBlurRadius(8)
+        self._shadow.setColor(QColor(0, 0, 0, 75))
+        self.setGraphicsEffect(self._shadow)
+        self._click_handler = None
+
+    def set_click_handler(self, handler):
+        self._click_handler = handler
+
+    def set_hovered(self, hovered: bool):
+        self._is_hovered = hovered
+        if hovered:
+            self._shadow.setOffset(0, 0)
+            self._shadow.setBlurRadius(16)
+            self._shadow.setColor(QColor(0, 240, 255, 120))
+        else:
+            self._shadow.setOffset(0, 1)
+            self._shadow.setBlurRadius(8)
+            self._shadow.setColor(QColor(0, 0, 0, 75))
+        self.update()
+
+    def reset_hover(self):
+        self.set_hovered(False)
+
+    def enterEvent(self, event):
+        self.set_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.reset_hover()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self.reset_hover()
+        if self._click_handler:
+            self._click_handler(event)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        if not self.rect().contains(pos):
+            self.reset_hover()
+        super().mouseReleaseEvent(event)
 
 
 class ChatHeaderWidget(QFrame):
@@ -45,24 +115,15 @@ class ChatHeaderWidget(QFrame):
         header_layout.setSpacing(12)
 
         # 1. Avatar (interactive: LMB lightbox, RMB context menu)
-        self.avatar_lbl = QLabel(self)
-        self.avatar_lbl.setFixedSize(48, 48)
-        self.avatar_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.avatar_lbl.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.avatar_lbl.setStyleSheet("""
-            QLabel {
-                border: 2px solid rgba(0, 240, 255, 0.45);
-                border-radius: 24px;
-                background-color: rgba(18, 24, 36, 0.65);
-                color: #00F0FF;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QLabel:hover {
-                border-color: #00F0FF;
-            }
-        """)
-        self.avatar_lbl.mousePressEvent = self.window._on_header_avatar_mouse_press
+        self.avatar_lbl = HeaderAvatarWidget(self)
+
+        def _on_avatar_mouse_press(event):
+            self.avatar_lbl.reset_hover()
+            if hasattr(self.window, "_on_header_avatar_mouse_press"):
+                self.window._on_header_avatar_mouse_press(event)
+
+        self.avatar_lbl.set_click_handler(_on_avatar_mouse_press)
+        self.avatar_lbl.mousePressEvent = _on_avatar_mouse_press
         header_layout.addWidget(self.avatar_lbl)
 
         # 2. Name & Status Info (Glassmorphism styling)
