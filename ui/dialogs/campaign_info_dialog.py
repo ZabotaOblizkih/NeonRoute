@@ -7,6 +7,8 @@ Directly bound to native RPCastManager (history/cast_<session_id>.json).
 3. 📖 Сценарий и завязка (Scenario and card prompt)
 4. 👥 Второстепенные персонажи (NPCs, vital_status, presence, visual_dna, facts)
 5. 📍 Локация и атмосфера (current_location, last_visual_prompt)
+
+Modernized with QFluentWidgets, SegmentedWidget and Glassmorphism styling under Agentrules.md.
 """
 
 import os
@@ -15,13 +17,30 @@ import json
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTabWidget, QTextBrowser, QTextEdit, QWidget, QListWidget,
-    QListWidgetItem, QLineEdit, QMessageBox, QComboBox, QInputDialog,
-    QFileDialog, QCheckBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QStackedWidget, QTextBrowser, QWidget, QListWidget,
+    QListWidgetItem, QInputDialog, QMessageBox, QFrame,
+    QGraphicsDropShadowEffect
 )
+
+from qfluentwidgets import (
+    SegmentedWidget,
+    PushButton,
+    PrimaryPushButton,
+    TransparentToolButton,
+    LineEdit,
+    TextEdit,
+    CheckBox,
+    ComboBox,
+    ToolTipFilter,
+    ToolTipPosition,
+    FluentIcon as FIF,
+)
+
 from config import CHARACTERS_DIR
 from services.rp_cast_manager import RPCastManager
 from services.session_manager import SessionManager
@@ -31,8 +50,6 @@ try:
 except ImportError:
     LOREBOOKS_DIR = CHARACTERS_DIR.parent / "lorebooks"
 LOREBOOKS_DIR.mkdir(parents=True, exist_ok=True)
-
-
 
 # Facade Re-export (Zero-Breaking-Changes)
 from ui.dialogs.campaign_subdialogs import (
@@ -59,110 +76,131 @@ class CampaignInfoDialog(QDialog):
         card_name = getattr(self.card, "name", "Модуль") or "Модуль"
 
         self.setWindowTitle(f"Сводка кампании — {card_name}")
-        self.resize(800, 600)
-        self.setMinimumSize(700, 520)
+        self.resize(840, 630)
+        self.setMinimumSize(740, 520)
+
+        # Drop shadow effect
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        self.setGraphicsEffect(shadow)
+
         self.setStyleSheet("""
             QDialog {
-                background-color: #0C101A;
+                background-color: rgba(14, 19, 31, 0.96);
                 color: #CBD5E1;
-                border: 1px solid #1E283D;
-                border-radius: 10px;
+                border: 1px solid rgba(0, 240, 255, 0.25);
+                border-radius: 14px;
             }
-            QTabWidget::pane {
-                border: 1px solid #1E293B;
-                background-color: #101624;
+            QLabel {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }
+            QListWidget {
+                background-color: rgba(10, 15, 26, 0.75);
+                color: #F8FAFC;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QListWidget::item {
+                padding: 6px 10px;
+                border-radius: 6px;
+                margin-bottom: 2px;
+                border: 1px solid transparent;
+            }
+            QListWidget::item:hover {
+                background-color: rgba(0, 240, 255, 0.08);
+                color: #38BDF8;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(0, 240, 255, 0.18);
+                color: #00F0FF;
+                font-weight: bold;
+                border: 1px solid rgba(0, 240, 255, 0.35);
+            }
+            QTextBrowser {
+                background-color: rgba(10, 15, 26, 0.85);
+                color: #E2E8F0;
+                border: 1px solid rgba(255, 255, 255, 0.10);
                 border-radius: 8px;
                 padding: 10px;
-            }
-            QTabBar::tab {
-                background-color: #141B2D;
-                color: #94A3B8;
-                padding: 8px 16px;
-                margin-right: 4px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-weight: 600;
-                font-size: 11px;
-            }
-            QTabBar::tab:selected {
-                background-color: #101624;
-                color: #00F0FF;
-                border: 1px solid #1E293B;
-                border-bottom: none;
-            }
-            QTabBar::tab:hover { color: #38BDF8; }
-            QListWidget {
-                background-color: #080D16;
-                color: #E2E8F0;
-                border: 1px solid #1A2338;
-                border-radius: 6px;
-                padding: 4px;
-            }
-            QListWidget::item { padding: 5px 8px; border-bottom: 1px solid #121824; }
-            QListWidget::item:selected { background-color: #1C263B; color: #00F0FF; }
-            QTextBrowser, QTextEdit {
-                background-color: #0C101A;
-                color: #E2E8F0;
-                border: 1px solid #1A2338;
-                border-radius: 6px;
-                padding: 8px;
                 font-family: 'Consolas', 'Segoe UI', monospace;
                 font-size: 12px;
-            }
-            QPushButton {
-                background-color: #162032;
-                color: #E2E8F0;
-                border: 1px solid #283954;
-                border-radius: 6px;
-                padding: 6px 14px;
-                font-size: 11px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #1F2D44;
-                border-color: #00F0FF;
-                color: #00F0FF;
+                line-height: 1.4;
             }
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
 
+        # Header bar
         header = QHBoxLayout()
-        header.setSpacing(8)
+        header.setSpacing(10)
         is_env = getattr(self.card, "is_environment", False) if self.card else False
         self.icon_lbl = QLabel("🌐" if is_env else "📜", self)
         self.icon_lbl.setStyleSheet("font-size: 20px;")
         header.addWidget(self.icon_lbl)
+
         title_prefix = "Сводка окружения и мира" if is_env else "Сводка кампании"
         self.title_lbl = QLabel(f"{title_prefix}: {card_name}", self)
         self.title_lbl.setStyleSheet("color: #00F0FF; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;")
         header.addWidget(self.title_lbl, 1)
 
-        self.btn_choose_lore = QPushButton("📜 Выбрать лор", self)
+        self.btn_choose_lore = PushButton("Выбрать лор", self, icon=FIF.BOOK_SHELF)
         self.btn_choose_lore.setToolTip("Подключить модуль правил или лорбук к этой сессии")
+        self.btn_choose_lore.installEventFilter(ToolTipFilter(self.btn_choose_lore, showDelay=300, position=ToolTipPosition.BOTTOM))
         self.btn_choose_lore.clicked.connect(self._open_select_lore_dialog)
         header.addWidget(self.btn_choose_lore)
 
-        btn_refresh = QPushButton("🔄 Обновить", self)
-        btn_refresh.setToolTip("Перечитать данные с диска")
-        btn_refresh.clicked.connect(self.load_data)
-        header.addWidget(btn_refresh)
+        self.btn_refresh = PushButton("Обновить", self, icon=FIF.SYNC)
+        self.btn_refresh.setToolTip("Перечитать данные с диска")
+        self.btn_refresh.installEventFilter(ToolTipFilter(self.btn_refresh, showDelay=300, position=ToolTipPosition.BOTTOM))
+        self.btn_refresh.clicked.connect(self.load_data)
+        header.addWidget(self.btn_refresh)
 
         layout.addLayout(header)
 
-        self.tabs = QTabWidget(self)
-        self.tabs.addTab(self._create_state_tab(), "🧠 Память, сюжет и статус")
-        self.tabs.addTab(self._create_inventory_tab(), "🎒 Инвентарь и снаряжение")
-        self.tabs.addTab(self._create_lore_tab(), "📖 Сценарий и завязка")
-        self.tabs.addTab(self._create_cast_tab(), "👥 Второстепенные персонажи")
-        self.tabs.addTab(self._create_location_tab(), "📍 Локация и атмосфера")
-        layout.addWidget(self.tabs, 1)
+        # Segmented Control & Stacked Widget
+        self.segmented_bar = SegmentedWidget(self)
+        self.stacked_widget = QStackedWidget(self)
 
+        tab_state = self._create_state_tab()
+        tab_inv = self._create_inventory_tab()
+        tab_lore = self._create_lore_tab()
+        tab_cast = self._create_cast_tab()
+        tab_loc = self._create_location_tab()
+
+        self._tabs_map = [
+            ("tab_state", "🧠 Память и статус", tab_state),
+            ("tab_inv", "🎒 Инвентарь", tab_inv),
+            ("tab_lore", "📖 Сценарий", tab_lore),
+            ("tab_cast", "👥 Каст и NPC", tab_cast),
+            ("tab_loc", "📍 Локация", tab_loc),
+        ]
+
+        for route_key, label_text, widget in self._tabs_map:
+            self.stacked_widget.addWidget(widget)
+            self.segmented_bar.addItem(
+                routeKey=route_key,
+                text=label_text,
+                onClick=lambda checked=False, w=widget: self.stacked_widget.setCurrentWidget(w)
+            )
+
+        self.segmented_bar.setCurrentItem("tab_state")
+        self.tabs = self.stacked_widget  # Backwards compatibility
+
+        layout.addWidget(self.segmented_bar)
+        layout.addWidget(self.stacked_widget, 1)
+
+        # Bottom Bar
         bottom_bar = QHBoxLayout()
         bottom_bar.addStretch()
-        btn_close = QPushButton("Закрыть", self)
+        btn_close = PushButton("Закрыть", self)
         btn_close.clicked.connect(self.accept)
         bottom_bar.addWidget(btn_close)
         layout.addLayout(bottom_bar)
@@ -188,7 +226,7 @@ class CampaignInfoDialog(QDialog):
                 SessionManager.save_session(self.session)
             except Exception as e:
                 QMessageBox.warning(self, "Ошибка сохранения", f"Не удалось сохранить сессию: {e}")
-            self.load_data()  # Мгновенное обновление UI
+            self.load_data()
 
     def load_data(self):
         """Reloads all 5 tabs directly from cast_<session_id>.json and updates active lorebook."""
@@ -200,9 +238,9 @@ class CampaignInfoDialog(QDialog):
         if active_lore:
             lore_stem = Path(active_lore).stem
             self.btn_choose_lore.setText(f"📚 {lore_stem}")
-            self.btn_choose_lore.setStyleSheet("background-color: #0E3547; border: 1px solid #00F0FF; color: #00F0FF; font-weight: bold;")
+            self.btn_choose_lore.setStyleSheet("PushButton { background-color: rgba(14, 53, 71, 0.8); border: 1px solid #00F0FF; color: #00F0FF; font-weight: bold; }")
         else:
-            self.btn_choose_lore.setText("📜 Выбрать лор")
+            self.btn_choose_lore.setText("Выбрать лор")
             self.btn_choose_lore.setStyleSheet("")
 
         # Tab 1: State & Milestones
@@ -216,7 +254,7 @@ class CampaignInfoDialog(QDialog):
         if hasattr(self, "icon_lbl"):
             self.icon_lbl.setText("🌐" if is_env else "📜")
 
-        # Фокусный спутник отряда
+        # Focus companion of the party
         party = RPCastManager.get_party_companions(cast_data)
         focus_comp_name = cast_data.get("focus_companion") or c_name or "Спутница"
         self._current_focus_name = focus_comp_name
@@ -231,7 +269,7 @@ class CampaignInfoDialog(QDialog):
                 selected_idx = 0
                 for idx, (eid, ent) in enumerate(party.items()):
                     p_name = ent.get("canonical_name", eid)
-                    self.combo_focus_comp.addItem(f"🛡️ {p_name}", p_name)
+                    self.combo_focus_comp.addItem(f"🛡️ {p_name}", userData=p_name)
                     if p_name.lower().strip() == cur_focus.lower().strip():
                         selected_idx = idx
                 self.combo_focus_comp.setCurrentIndex(selected_idx)
@@ -293,7 +331,7 @@ class CampaignInfoDialog(QDialog):
         if first_mes.strip():
             sections.append(f"### ЗАВЯЗКА (ПЕРВОЕ СООБЩЕНИЕ):\n{first_mes.strip()}")
 
-        # Встроенные статьи лорбука карточки
+        # Embedded Lore Entries
         card_lore = getattr(self.card, "lore_entries", None) or []
         if card_lore:
             lines = [f"\n### ВСТРОЕННЫЙ ЛОР КАРТОЧКИ ({len(card_lore)} статей):"]
@@ -305,7 +343,7 @@ class CampaignInfoDialog(QDialog):
                 lines.append(f"\n#### 📖 {comment}{keys_str}\n{content_txt.strip()}")
             sections.append("\n".join(lines))
 
-        # Внешний активный лорбук
+        # External Lorebook
         if active_lore:
             lore_path = LOREBOOKS_DIR / active_lore
             if lore_path.exists():
@@ -347,67 +385,109 @@ class CampaignInfoDialog(QDialog):
     def _create_state_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(8, 8, 8, 8)
+        v.setContentsMargins(4, 8, 4, 8)
         v.setSpacing(8)
 
         comp_name = getattr(self.card, "name", "Спутница") or "Спутница"
 
-        # Квест
-        row_q = QHBoxLayout()
-        row_q.addWidget(QLabel("🎯 ТЕКУЩАЯ ЦЕЛЬ:", w))
-        self.lbl_q_status = QLabel(" [СВОБОДНО]", w)
-        self.lbl_q_status.setStyleSheet("color: #A7F3D0; font-weight: bold;")
-        row_q.addWidget(self.lbl_q_status, 1)
-        btn_q_done = QPushButton("✅ Завершить", w)
-        btn_q_done.clicked.connect(self._complete_quest)
-        row_q.addWidget(btn_q_done)
-        btn_q_edit = QPushButton("✏️ Изменить", w)
-        btn_q_edit.clicked.connect(self._edit_quest)
-        row_q.addWidget(btn_q_edit)
-        v.addLayout(row_q)
-
-        # Состояние Героя
-        row_p = QHBoxLayout()
-        row_p.addWidget(QLabel("🛡️ СОСТОЯНИЕ ГЕРОЯ:", w))
-        self.lbl_p_status = QLabel("", w)
-        row_p.addWidget(self.lbl_p_status, 1)
-        btn_p_edit = QPushButton("✏️ Изменить", w)
-        btn_p_edit.clicked.connect(lambda: self._edit_entity("player", "Герой"))
-        row_p.addWidget(btn_p_edit)
-        v.addLayout(row_p)
-
-        # Выбор активного фокусного спутника отряда
-        self.combo_focus_comp = QComboBox(self)
-        self.combo_focus_comp.setStyleSheet("""
-            QComboBox {
-                background-color: #0A0D14; color: #38BDF8; font-weight: bold;
-                border: 1px solid #0284C7; border-radius: 6px; padding: 4px 8px;
+        # Soft Card: Active Quest
+        card_q = QFrame(w)
+        card_q.setObjectName("QuestCard")
+        card_q.setStyleSheet("""
+            QFrame#QuestCard {
+                background-color: rgba(20, 28, 45, 0.65);
+                border: 1px solid rgba(0, 240, 255, 0.20);
+                border-radius: 10px;
             }
         """)
-        self.combo_focus_comp.currentIndexChanged.connect(self._on_focus_companion_changed)
+        row_q = QHBoxLayout(card_q)
+        row_q.setContentsMargins(12, 6, 12, 6)
+        row_q.setSpacing(10)
+        row_q.addWidget(QLabel("🎯 ТЕКУЩАЯ ЦЕЛЬ:", card_q))
+        self.lbl_q_status = QLabel(" [СВОБОДНО]", card_q)
+        self.lbl_q_status.setStyleSheet("color: #38BDF8; font-weight: 700;")
+        row_q.addWidget(self.lbl_q_status, 1)
 
-        row_focus = QHBoxLayout()
-        self.lbl_focus_comp = QLabel("👥 АКТИВНЫЙ СПУТНИК В ФОКУСЕ:", w)
-        self.lbl_focus_comp.setStyleSheet("color: #38BDF8; font-weight: bold;")
+        btn_q_done = PushButton("Завершить", card_q, icon=FIF.ACCEPT)
+        btn_q_done.clicked.connect(self._complete_quest)
+        row_q.addWidget(btn_q_done)
+
+        btn_q_edit = PushButton("Изменить", card_q, icon=FIF.EDIT)
+        btn_q_edit.clicked.connect(self._edit_quest)
+        row_q.addWidget(btn_q_edit)
+        v.addWidget(card_q)
+
+        # Soft Card: Hero State
+        card_p = QFrame(w)
+        card_p.setObjectName("PlayerCard")
+        card_p.setStyleSheet("""
+            QFrame#PlayerCard {
+                background-color: rgba(20, 28, 45, 0.65);
+                border: 1px solid rgba(0, 240, 255, 0.20);
+                border-radius: 10px;
+            }
+        """)
+        row_p = QHBoxLayout(card_p)
+        row_p.setContentsMargins(12, 6, 12, 6)
+        row_p.setSpacing(10)
+        row_p.addWidget(QLabel("🛡️ СОСТОЯНИЕ ГЕРОЯ:", card_p))
+        self.lbl_p_status = QLabel("", card_p)
+        self.lbl_p_status.setStyleSheet("color: #E2E8F0; font-size: 11px;")
+        row_p.addWidget(self.lbl_p_status, 1)
+
+        btn_p_edit = PushButton("Изменить", card_p, icon=FIF.EDIT)
+        btn_p_edit.clicked.connect(lambda: self._edit_entity("player", "Герой"))
+        row_p.addWidget(btn_p_edit)
+        v.addWidget(card_p)
+
+        # Party Focus Companion Switcher
+        self.row_focus_widget = QFrame(w)
+        self.row_focus_widget.setObjectName("FocusRow")
+        self.row_focus_widget.setStyleSheet("""
+            QFrame#FocusRow {
+                background-color: rgba(16, 23, 38, 0.50);
+                border: 1px solid rgba(56, 189, 248, 0.20);
+                border-radius: 8px;
+            }
+        """)
+        row_focus = QHBoxLayout(self.row_focus_widget)
+        row_focus.setContentsMargins(12, 6, 12, 6)
+        row_focus.setSpacing(10)
+
+        self.lbl_focus_comp = QLabel("👥 АКТИВНЫЙ СПУТНИК В ФОКУСЕ:", self.row_focus_widget)
+        self.lbl_focus_comp.setStyleSheet("color: #38BDF8; font-weight: 700;")
         row_focus.addWidget(self.lbl_focus_comp)
+
+        self.combo_focus_comp = ComboBox(self.row_focus_widget)
+        self.combo_focus_comp.currentIndexChanged.connect(self._on_focus_companion_changed)
         row_focus.addWidget(self.combo_focus_comp, 1)
 
-        self.row_focus_widget = QWidget(w)
-        self.row_focus_widget.setLayout(row_focus)
         self.row_focus_widget.setVisible(False)
         self.combo_focus_comp.setVisible(False)
         v.addWidget(self.row_focus_widget)
 
-        # Состояние Спутницы (скрывается для бестелесных сред / систем)
+        # Soft Card: Companion State
         is_env = getattr(self.card, "is_environment", False) if self.card else False
-        self.row_c_widget = QWidget(w)
+        self.row_c_widget = QFrame(w)
+        self.row_c_widget.setObjectName("CompanionCard")
+        self.row_c_widget.setStyleSheet("""
+            QFrame#CompanionCard {
+                background-color: rgba(20, 28, 45, 0.65);
+                border: 1px solid rgba(0, 240, 255, 0.20);
+                border-radius: 10px;
+            }
+        """)
         row_c = QHBoxLayout(self.row_c_widget)
-        row_c.setContentsMargins(0, 0, 0, 0)
+        row_c.setContentsMargins(12, 6, 12, 6)
+        row_c.setSpacing(10)
+
         self.lbl_c_title = QLabel(f"🩺 СОСТОЯНИЕ ({comp_name}):", self.row_c_widget)
         row_c.addWidget(self.lbl_c_title)
         self.lbl_c_status = QLabel("", self.row_c_widget)
+        self.lbl_c_status.setStyleSheet("color: #E2E8F0; font-size: 11px;")
         row_c.addWidget(self.lbl_c_status, 1)
-        btn_c_edit = QPushButton("✏️ Изменить", self.row_c_widget)
+
+        btn_c_edit = PushButton("Изменить", self.row_c_widget, icon=FIF.EDIT)
         btn_c_edit.clicked.connect(lambda: self._edit_entity("companion", getattr(self, "_current_focus_name", comp_name)))
         row_c.addWidget(btn_c_edit)
         v.addWidget(self.row_c_widget)
@@ -415,49 +495,49 @@ class CampaignInfoDialog(QDialog):
         if is_env:
             self.row_c_widget.setVisible(False)
 
-        # Вехи близости (Intimacy Milestones)
-        v.addWidget(QLabel("💖 Вехи близости и отношений (<IntimacyMilestones>):", w))
+        # Milestones
+        v.addWidget(QLabel("💖 ВЕХИ БЛИЗОСТИ И ОТНОШЕНИЙ (<IntimacyMilestones>):", w))
         self.list_milestones = QListWidget(w)
-        self.list_milestones.setFixedHeight(75)
+        self.list_milestones.setFixedHeight(70)
         v.addWidget(self.list_milestones)
 
         row_ms_btn = QHBoxLayout()
-        btn_add_ms = QPushButton("➕ Добавить веху", w)
+        btn_add_ms = PushButton("Добавить веху", w, icon=FIF.ADD)
         btn_add_ms.clicked.connect(self._add_intimacy_milestone)
         row_ms_btn.addWidget(btn_add_ms)
-        btn_del_ms = QPushButton("🗑️ Удалить веху", w)
+        btn_del_ms = PushButton("Удалить веху", w, icon=FIF.DELETE)
         btn_del_ms.clicked.connect(self._delete_intimacy_milestone)
         row_ms_btn.addWidget(btn_del_ms)
         row_ms_btn.addStretch()
         v.addLayout(row_ms_btn)
 
-        # Опасности и правила мира (World State)
-        v.addWidget(QLabel("🌍 Правила и опасности мира (<WorldState>):", w))
+        # World State
+        v.addWidget(QLabel("🌍 ПРАВИЛА И ОПАСНОСТИ МИРА (<WorldState>):", w))
         self.list_world_state = QListWidget(w)
-        self.list_world_state.setFixedHeight(75)
+        self.list_world_state.setFixedHeight(70)
         v.addWidget(self.list_world_state)
 
         row_ws_btn = QHBoxLayout()
-        btn_add_ws = QPushButton("➕ Добавить правило", w)
+        btn_add_ws = PushButton("Добавить правило", w, icon=FIF.ADD)
         btn_add_ws.clicked.connect(self._add_world_state)
         row_ws_btn.addWidget(btn_add_ws)
-        btn_del_ws = QPushButton("🗑️ Удалить правило", w)
+        btn_del_ws = PushButton("Удалить правило", w, icon=FIF.DELETE)
         btn_del_ws.clicked.connect(self._delete_world_state)
         row_ws_btn.addWidget(btn_del_ws)
         row_ws_btn.addStretch()
         v.addLayout(row_ws_btn)
 
-        # Шкалы параметров и отношений (Stats Tracker)
-        v.addWidget(QLabel("📊 Шкалы состояния и параметров (<Stats>):", w))
+        # Stats
+        v.addWidget(QLabel("📊 ШКАЛЫ СОСТОЯНИЯ И ПАРАМЕТРОВ (<Stats>):", w))
         self.list_stats = QListWidget(w)
-        self.list_stats.setFixedHeight(70)
+        self.list_stats.setFixedHeight(65)
         v.addWidget(self.list_stats)
 
         row_stat_btn = QHBoxLayout()
-        btn_add_stat = QPushButton("➕ Изменить / Добавить шкалу", w)
+        btn_add_stat = PushButton("Изменить / Добавить шкалу", w, icon=FIF.ADD)
         btn_add_stat.clicked.connect(self._edit_stat)
         row_stat_btn.addWidget(btn_add_stat)
-        btn_del_stat = QPushButton("🗑️ Удалить шкалу", w)
+        btn_del_stat = PushButton("Удалить шкалу", w, icon=FIF.DELETE)
         btn_del_stat.clicked.connect(self._delete_stat)
         row_stat_btn.addWidget(btn_del_stat)
         row_stat_btn.addStretch()
@@ -625,23 +705,24 @@ class CampaignInfoDialog(QDialog):
     def _create_inventory_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 8, 4, 8)
         layout.setSpacing(10)
 
         self.inventory_items = []
 
-        layout.addWidget(QLabel("🎒 Предметы инвентаря отряда (<Inventory>):", w))
+        layout.addWidget(QLabel("🎒 ПРЕДМЕТЫ ИНВЕНТАРЯ ОТРЯДА (<Inventory>):", w))
         self.list_inventory = QListWidget(w)
         layout.addWidget(self.list_inventory, 1)
 
         row_btn = QHBoxLayout()
-        btn_add = QPushButton("➕ Добавить предмет", w)
+        row_btn.setSpacing(8)
+        btn_add = PushButton("Добавить предмет", w, icon=FIF.ADD)
         btn_add.clicked.connect(self._add_inventory_item)
         row_btn.addWidget(btn_add)
-        btn_edit = QPushButton("✏️ Изменить", w)
+        btn_edit = PushButton("Изменить", w, icon=FIF.EDIT)
         btn_edit.clicked.connect(self._edit_inventory_item)
         row_btn.addWidget(btn_edit)
-        btn_del = QPushButton("🗑️ Удалить", w)
+        btn_del = PushButton("Удалить", w, icon=FIF.DELETE)
         btn_del.clicked.connect(self._delete_inventory_item)
         row_btn.addWidget(btn_del)
         row_btn.addStretch()
@@ -698,7 +779,7 @@ class CampaignInfoDialog(QDialog):
     def _create_lore_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(8, 8, 8, 8)
+        v.setContentsMargins(4, 8, 4, 8)
         self.tb_lore = QTextBrowser(w)
         v.addWidget(self.tb_lore)
         return w
@@ -707,7 +788,8 @@ class CampaignInfoDialog(QDialog):
     def _create_cast_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 8, 4, 8)
+        layout.setSpacing(8)
 
         self.cast_entities: Dict[str, Dict[str, Any]] = {}
 
@@ -716,20 +798,24 @@ class CampaignInfoDialog(QDialog):
         layout.addWidget(self.list_cast, 1)
 
         self.tb_npc_details = QTextBrowser(w)
-        self.tb_npc_details.setFixedHeight(85)
+        self.tb_npc_details.setFixedHeight(90)
         layout.addWidget(self.tb_npc_details)
 
         btn_row = QHBoxLayout()
-        btn_add = QPushButton("➕ Добавить NPC", w)
+        btn_row.setSpacing(8)
+        btn_add = PushButton("Добавить NPC", w, icon=FIF.ADD)
         btn_add.clicked.connect(self._add_npc)
         btn_row.addWidget(btn_add)
-        btn_edit = QPushButton("✏️ Изменить", w)
+
+        btn_edit = PushButton("Изменить", w, icon=FIF.EDIT)
         btn_edit.clicked.connect(self._edit_npc)
         btn_row.addWidget(btn_edit)
-        self.btn_scene = QPushButton("🔄 В сцене / В памяти", w)
+
+        self.btn_scene = PushButton("В сцене / В памяти", w, icon=FIF.SYNC)
         self.btn_scene.clicked.connect(self._toggle_npc_presence)
         btn_row.addWidget(self.btn_scene)
-        self.btn_del = QPushButton("🗑️ Удалить", w)
+
+        self.btn_del = PushButton("Удалить", w, icon=FIF.DELETE)
         self.btn_del.clicked.connect(self._delete_npc)
         btn_row.addWidget(self.btn_del)
         layout.addLayout(btn_row)
@@ -864,41 +950,41 @@ class CampaignInfoDialog(QDialog):
     def _create_location_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(4, 8, 4, 8)
         layout.setSpacing(10)
 
         layout.addWidget(QLabel("📍 НАЗВАНИЕ ТЕКУЩЕЙ ЛОКАЦИИ:"))
-        self.loc_name_input = QLineEdit(w)
+        self.loc_name_input = LineEdit(w)
         self.loc_name_input.setPlaceholderText("Например: Заброшенный склеп, Таверна 'Пьяный Дракон'...")
         layout.addWidget(self.loc_name_input)
 
-        self.cb_is_enclosed = QCheckBox("🔒 Замкнутое укрытие / подземелье (изоляция от открытого неба)", w)
+        self.cb_is_enclosed = CheckBox("🔒 Замкнутое укрытие / подземелье (изоляция от открытого неба)", w)
         self.cb_is_enclosed.setToolTip("Если включено, в сценах и артах подавляется естественный дневной свет и открытое небо.")
         layout.addWidget(self.cb_is_enclosed)
 
         layout.addWidget(QLabel("🕯️ СВЕТ И АТМОСФЕРА СЦЕНЫ (Сенсорный срез момента):"))
-        self.loc_ambience_input = QLineEdit(w)
+        self.loc_ambience_input = LineEdit(w)
         self.loc_ambience_input.setPlaceholderText("Например: Затхлый полумрак, дрожащий свет факела, сырой камень...")
         layout.addWidget(self.loc_ambience_input)
 
         layout.addWidget(QLabel("🪐 БАЗОВЫЙ КУПОЛ МИРА (Глобальный сеттинг):"))
-        self.world_baseline_input = QLineEdit(w)
+        self.world_baseline_input = LineEdit(w)
         self.world_baseline_input.setPlaceholderText("По умолчанию: Земной мир, естественное освещение")
         layout.addWidget(self.world_baseline_input)
 
         layout.addWidget(QLabel("🎨 ПОСЛЕДНИЙ ВИЗУАЛЬНЫЙ КАДР / АРТ-ПРОМПТ (SD FORGE TAGS):"))
-        self.loc_visual_input = QTextEdit(w)
-        self.loc_visual_input.setFixedHeight(70)
+        self.loc_visual_input = TextEdit(w)
+        self.loc_visual_input.setFixedHeight(75)
         self.loc_visual_input.setPlaceholderText("Например: ancient crypt, stone sarcophagus, torchlight, volumetric dust...")
         layout.addWidget(self.loc_visual_input)
 
         btn_row = QHBoxLayout()
-        btn_sync = QPushButton("🔍 Извлечь из чата", w)
+        btn_sync = PushButton("Извлечь из чата", w, icon=FIF.SEARCH)
         btn_sync.clicked.connect(self._sync_location_from_chat)
         btn_row.addWidget(btn_sync)
         btn_row.addStretch()
-        btn_save = QPushButton("💾 Сохранить параметры локации", w)
-        btn_save.setStyleSheet("background-color: #004D54; border-color: #00F0FF; color: #FFFFFF; font-weight: bold;")
+
+        btn_save = PrimaryPushButton("Сохранить параметры локации", w, icon=FIF.SAVE)
         btn_save.clicked.connect(self._save_location)
         btn_row.addWidget(btn_save)
         layout.addLayout(btn_row)

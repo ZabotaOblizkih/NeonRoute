@@ -1,6 +1,7 @@
 """
 Auxiliary dialogs for Campaign Info:
 EntityConditionDialog, CastEditDialog, SelectLorebookDialog.
+Modernized with QFluentWidgets and Glassmorphism styling under Agentrules.md.
 """
 
 import os
@@ -12,9 +13,19 @@ from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QWidget, QListWidget, QListWidgetItem, QLineEdit,
-    QMessageBox, QComboBox, QFileDialog, QCheckBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QWidget, QListWidget, QListWidgetItem, QMessageBox,
+    QFileDialog
+)
+from qfluentwidgets import (
+    ComboBox,
+    LineEdit,
+    TextEdit,
+    PushButton,
+    PrimaryPushButton,
+    ToolTipFilter,
+    ToolTipPosition,
+    FluentIcon as FIF,
 )
 
 from config import CHARACTERS_DIR
@@ -30,64 +41,67 @@ __all__ = [
     "SelectLorebookDialog",
 ]
 
+
 class EntityConditionDialog(QDialog):
     """Editor for Player or Companion condition, mutations, visual DNA and vital status."""
     def __init__(self, name: str, state: Dict[str, Any], parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Состояние: {name}")
-        self.setFixedSize(450, 360)
+        self.setFixedSize(470, 390)
         self.setStyleSheet("""
-            QDialog { background-color: #0E131F; color: #E2E8F0; }
-            QLabel { color: #94A3B8; font-size: 11px; font-weight: bold; }
-            QLineEdit, QComboBox {
-                background-color: #0A0D14; color: #F8FAFC;
-                border: 1px solid #1E2B42; border-radius: 6px; padding: 6px;
+            QDialog {
+                background-color: rgba(14, 19, 31, 0.96);
+                color: #CBD5E1;
+                border: 1px solid rgba(0, 240, 255, 0.25);
+                border-radius: 14px;
             }
-            QPushButton {
-                background-color: #162032; color: #E2E8F0;
-                border: 1px solid #283954; border-radius: 6px; padding: 6px 14px;
+            QLabel {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
             }
-            QPushButton:hover { background-color: #1F2D44; border-color: #00F0FF; color: #00F0FF; }
         """)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
         layout.addWidget(QLabel("ЖИЗНЕННЫЙ СТАТУС:"))
-        self.combo_vital = QComboBox(self)
-        self.combo_vital.addItem("🟢 Жив(а)", "alive")
-        self.combo_vital.addItem("🟡 Тяжело ранен / При смерти", "critical")
-        self.combo_vital.addItem("🔴 Погиб(ла) (Мёртв)", "dead")
+        self.combo_vital = ComboBox(self)
+        self.combo_vital.addItem("🟢 Жив(а)", userData="alive")
+        self.combo_vital.addItem("🟡 Тяжело ранен / При смерти", userData="critical")
+        self.combo_vital.addItem("🔴 Погиб(ла) (Мёртв)", userData="dead")
         cur_v = state.get("vital_status", "alive")
         idx = 0 if cur_v == "alive" else (1 if cur_v == "critical" else 2)
         self.combo_vital.setCurrentIndex(idx)
         layout.addWidget(self.combo_vital)
 
         layout.addWidget(QLabel("ФИЗИЧЕСКИЕ МУТАЦИИ / ШРАМЫ / СЛЕДЫ (ЧЕРЕЗ ЗАПЯТУЮ):"))
-        self.muts_input = QLineEdit(self)
+        self.muts_input = LineEdit(self)
         muts = state.get("mutations", [])
         self.muts_input.setText(", ".join(muts) if isinstance(muts, list) else str(muts or ""))
         self.muts_input.setPlaceholderText("шрам через левый глаз, ожог на плече, порез")
         layout.addWidget(self.muts_input)
 
         layout.addWidget(QLabel("ВИЗУАЛЬНАЯ ДНК ДЛЯ АРТА / SD FORGE (АНГЛ.):"))
-        self.dna_input = QLineEdit(self)
+        self.dna_input = LineEdit(self)
         self.dna_input.setText(state.get("visual_dna", ""))
         self.dna_input.setPlaceholderText("silver hair, violet eyes, athletic build, scar on cheek")
         layout.addWidget(self.dna_input)
 
         layout.addWidget(QLabel("ТЕКУЩИЙ НАРЯД / ОДЕЖДА (АНГЛ. SD-ТЕГИ):"))
-        self.outfit_input = QLineEdit(self)
+        self.outfit_input = LineEdit(self)
         self.outfit_input.setText(state.get("current_outfit", ""))
         self.outfit_input.setPlaceholderText("heavy plate armor, dark blue tunic, fur cloak")
         layout.addWidget(self.outfit_input)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_cancel = QPushButton("Отмена", self)
+        btn_cancel = PushButton("Отмена", self)
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
-        btn_save = QPushButton("💾 Сохранить", self)
+        btn_save = PrimaryPushButton("Сохранить", self, icon=FIF.SAVE)
         btn_save.clicked.connect(self.accept)
         btn_row.addWidget(btn_save)
         layout.addLayout(btn_row)
@@ -103,38 +117,43 @@ class EntityConditionDialog(QDialog):
 
 
 class CastEditDialog(QDialog):
+    """Editor for NPC details, vital status, presence and facts."""
     def __init__(self, npc_id: str = "", npc: Optional[Dict[str, Any]] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Редактирование NPC" if npc else "Новый персонаж (NPC)")
-        self.setFixedSize(460, 440)
+        self.setFixedSize(500, 480)
         self.setStyleSheet("""
-            QDialog { background-color: #0E131F; color: #E2E8F0; }
-            QLabel { color: #94A3B8; font-size: 11px; font-weight: bold; }
-            QLineEdit, QComboBox, QTextEdit {
-                background-color: #0A0D14; color: #F8FAFC;
-                border: 1px solid #1E2B42; border-radius: 6px; padding: 6px;
+            QDialog {
+                background-color: rgba(14, 19, 31, 0.96);
+                color: #CBD5E1;
+                border: 1px solid rgba(0, 240, 255, 0.25);
+                border-radius: 14px;
             }
-            QPushButton {
-                background-color: #162032; color: #E2E8F0;
-                border: 1px solid #283954; border-radius: 6px; padding: 6px 14px;
+            QLabel {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
             }
-            QPushButton:hover { background-color: #1F2D44; border-color: #00F0FF; color: #00F0FF; }
         """)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(8)
 
         layout.addWidget(QLabel("ИМЯ ПЕРСОНАЖА (КАНОНИЧЕСКОЕ):"))
-        self.name_input = QLineEdit(self)
+        self.name_input = LineEdit(self)
         self.name_input.setText(npc.get("canonical_name", npc_id) if npc else "")
+        self.name_input.setPlaceholderText("Имя персонажа...")
         layout.addWidget(self.name_input)
 
         row_status = QHBoxLayout()
+        row_status.setSpacing(12)
         v_pres = QVBoxLayout()
         v_pres.addWidget(QLabel("ПРИСУТСТВИЕ:"))
-        self.combo_presence = QComboBox(self)
-        self.combo_presence.addItem("⚔️ В сцене (физически рядом)", "physical")
-        self.combo_presence.addItem("💭 В воспоминаниях / упоминание", "memory")
+        self.combo_presence = ComboBox(self)
+        self.combo_presence.addItem("⚔️ В сцене (физически рядом)", userData="physical")
+        self.combo_presence.addItem("💭 В воспоминаниях / упоминание", userData="memory")
         cur_pres = npc.get("presence", "physical") if npc else "physical"
         self.combo_presence.setCurrentIndex(0 if cur_pres == "physical" else 1)
         v_pres.addWidget(self.combo_presence)
@@ -142,10 +161,10 @@ class CastEditDialog(QDialog):
 
         v_vital = QVBoxLayout()
         v_vital.addWidget(QLabel("ЖИЗНЕННЫЙ СТАТУС:"))
-        self.combo_vital = QComboBox(self)
-        self.combo_vital.addItem("🟢 Жив", "alive")
-        self.combo_vital.addItem("🟡 Тяжело ранен", "critical")
-        self.combo_vital.addItem("💀 Погиб", "dead")
+        self.combo_vital = ComboBox(self)
+        self.combo_vital.addItem("🟢 Жив", userData="alive")
+        self.combo_vital.addItem("🟡 Тяжело ранен", userData="critical")
+        self.combo_vital.addItem("💀 Погиб", userData="dead")
         cur_vital = npc.get("vital_status", "alive") if npc else "alive"
         self.combo_vital.setCurrentIndex(0 if cur_vital == "alive" else (1 if cur_vital == "critical" else 2))
         v_vital.addWidget(self.combo_vital)
@@ -153,30 +172,32 @@ class CastEditDialog(QDialog):
         layout.addLayout(row_status)
 
         layout.addWidget(QLabel("ТЕГИ ВНЕШНОСТИ ДЛЯ АРТА / SD FORGE (VISUAL DNA):"))
-        self.dna_input = QLineEdit(self)
+        self.dna_input = LineEdit(self)
         self.dna_input.setText(npc.get("visual_dna", "") if npc else "")
         self.dna_input.setPlaceholderText("old merchant, gray beard, scar on forehead, leather apron")
         layout.addWidget(self.dna_input)
 
         layout.addWidget(QLabel("ФАКТЫ И ИСТОРИЯ (ПО ОДНОМУ НА СТРОКУ ИЛИ ЧЕРЕЗ ';'):"))
-        self.facts_input = QTextEdit(self)
-        self.facts_input.setFixedHeight(75)
+        self.facts_input = TextEdit(self)
+        self.facts_input.setFixedHeight(85)
+        self.facts_input.setPlaceholderText("Ключевые факты, биография, отношение к игроку...")
         cur_facts = npc.get("facts", []) if npc else []
         self.facts_input.setPlainText("\n".join(cur_facts) if isinstance(cur_facts, list) else str(cur_facts or ""))
         layout.addWidget(self.facts_input)
 
         layout.addWidget(QLabel("ПСЕВДОНИМЫ / АЛИАСЫ (ЧЕРЕЗ ЗАПЯТУЮ):"))
-        self.aliases_input = QLineEdit(self)
+        self.aliases_input = LineEdit(self)
         aliases = npc.get("aliases", []) if npc else []
         self.aliases_input.setText(", ".join(aliases) if isinstance(aliases, list) else str(aliases or ""))
+        self.aliases_input.setPlaceholderText("алиасы, прозвища...")
         layout.addWidget(self.aliases_input)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_cancel = QPushButton("Отмена", self)
+        btn_cancel = PushButton("Отмена", self)
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
-        btn_save = QPushButton("💾 Сохранить", self)
+        btn_save = PrimaryPushButton("Сохранить", self, icon=FIF.SAVE)
         btn_save.clicked.connect(self._on_save)
         btn_row.addWidget(btn_save)
         layout.addLayout(btn_row)
@@ -210,26 +231,49 @@ class SelectLorebookDialog(QDialog):
     def __init__(self, current_lorebook: Optional[str] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Выбор модуля правил / Лорбука")
-        self.setFixedSize(500, 440)
+        self.setFixedSize(540, 480)
         self.selected_lorebook: Optional[str] = current_lorebook
         self.setStyleSheet("""
-            QDialog { background-color: #0E131F; color: #E2E8F0; }
-            QLabel { color: #94A3B8; font-size: 11px; font-weight: bold; }
+            QDialog {
+                background-color: rgba(14, 19, 31, 0.96);
+                color: #CBD5E1;
+                border: 1px solid rgba(0, 240, 255, 0.25);
+                border-radius: 14px;
+            }
+            QLabel {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }
             QListWidget {
-                background-color: #0A0D14; color: #F8FAFC;
-                border: 1px solid #1E2B42; border-radius: 6px; padding: 4px;
+                background-color: rgba(10, 15, 26, 0.75);
+                color: #F8FAFC;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                padding: 6px;
             }
-            QListWidget::item { padding: 8px 10px; border-bottom: 1px solid #141C2B; }
-            QListWidget::item:selected { background-color: #16253D; color: #00F0FF; font-weight: bold; }
-            QPushButton {
-                background-color: #162032; color: #E2E8F0;
-                border: 1px solid #283954; border-radius: 6px; padding: 6px 14px; font-size: 12px;
+            QListWidget::item {
+                padding: 8px 12px;
+                border-radius: 6px;
+                margin-bottom: 2px;
+                border: 1px solid transparent;
             }
-            QPushButton:hover { background-color: #1F2D44; border-color: #00F0FF; color: #00F0FF; }
+            QListWidget::item:hover {
+                background-color: rgba(0, 240, 255, 0.08);
+                color: #38BDF8;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(0, 240, 255, 0.18);
+                color: #00F0FF;
+                font-weight: bold;
+                border: 1px solid rgba(0, 240, 255, 0.35);
+            }
         """)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
         layout.addWidget(QLabel("ДОСТУПНЫЕ МОДУЛИ ПРАВИЛ И ЛОРБУКИ (lorebooks/):"))
 
         self.list_widget = QListWidget(self)
@@ -237,16 +281,23 @@ class SelectLorebookDialog(QDialog):
         layout.addWidget(self.list_widget, 1)
 
         bar_actions = QHBoxLayout()
-        btn_import = QPushButton("📥 Импорт .json", self)
+        bar_actions.setSpacing(8)
+        btn_import = PushButton("Импорт .json", self, icon=FIF.DOWNLOAD)
+        btn_import.setToolTip("Импортировать файл лорбука в каталог")
+        btn_import.installEventFilter(ToolTipFilter(btn_import, showDelay=300, position=ToolTipPosition.TOP))
         btn_import.clicked.connect(self._import_lorebook)
         bar_actions.addWidget(btn_import)
 
-        btn_folder = QPushButton("📂 Папка", self)
+        btn_folder = PushButton("Папка", self, icon=FIF.FOLDER)
+        btn_folder.setToolTip("Открыть системную папку лорбуков")
+        btn_folder.installEventFilter(ToolTipFilter(btn_folder, showDelay=300, position=ToolTipPosition.TOP))
         btn_folder.clicked.connect(lambda: os.startfile(str(LOREBOOKS_DIR)) if hasattr(os, "startfile") else None)
         bar_actions.addWidget(btn_folder)
 
-        btn_delete = QPushButton("🗑️ Удалить", self)
-        btn_delete.setStyleSheet("QPushButton:hover { border-color: #EF4444; color: #EF4444; }")
+        btn_delete = PushButton("Удалить", self, icon=FIF.DELETE)
+        btn_delete.setToolTip("Удалить выбранный файл лорбука с диска")
+        btn_delete.installEventFilter(ToolTipFilter(btn_delete, showDelay=300, position=ToolTipPosition.TOP))
+        btn_delete.setStyleSheet("PushButton:hover { border-color: #EF4444; color: #EF4444; }")
         btn_delete.clicked.connect(self._delete_lorebook)
         bar_actions.addWidget(btn_delete)
 
@@ -255,11 +306,10 @@ class SelectLorebookDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_cancel = QPushButton("Отмена", self)
+        btn_cancel = PushButton("Отмена", self)
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
-        btn_apply = QPushButton("💾 Выбрать", self)
-        btn_apply.setStyleSheet("background-color: #004D54; border-color: #00F0FF; color: #FFFFFF; font-weight: bold;")
+        btn_apply = PrimaryPushButton("Выбрать", self, icon=FIF.ACCEPT)
         btn_apply.clicked.connect(self._apply_selection)
         btn_row.addWidget(btn_apply)
         layout.addLayout(btn_row)
@@ -345,5 +395,3 @@ class SelectLorebookDialog(QDialog):
         if item:
             self.selected_lorebook = item.data(Qt.ItemDataRole.UserRole)
         self.accept()
-
-
