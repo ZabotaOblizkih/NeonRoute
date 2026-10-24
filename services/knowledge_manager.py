@@ -119,6 +119,48 @@ class KnowledgeManager:
         k_dir = cls.get_knowledge_dir(custom_dir)
         return k_dir / "registry.json"
 
+    _search_engine_cache: Dict[str, Any] = {}
+
+    @classmethod
+    def get_search_index_path(cls, custom_path: Optional[Path] = None, custom_dir: Optional[Path] = None) -> Path:
+        """Возвращает путь к поисковому индексу search_index.json."""
+        if custom_path:
+            return Path(custom_path)
+        k_dir = cls.get_knowledge_dir(custom_dir)
+        return k_dir / "search_index.json"
+
+    @classmethod
+    def get_search_engine(
+        cls,
+        custom_dir: Optional[Path] = None,
+        custom_index_path: Optional[Path] = None,
+        reload: bool = False
+    ) -> Any:
+        """
+        Возвращает инициализированный HybridSearchEngine.
+        Загружает закэшированный индекс search_index.json с диска для мгновенного старта приложения.
+        """
+        from services.hybrid_search import HybridSearchEngine
+        idx_path = cls.get_search_index_path(custom_index_path, custom_dir)
+        cache_key = str(idx_path.resolve())
+
+        if not reload and cache_key in cls._search_engine_cache:
+            return cls._search_engine_cache[cache_key]
+
+        engine = HybridSearchEngine()
+        if idx_path.exists():
+            try:
+                with open(idx_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                engine.from_dict(data)
+                cls._search_engine_cache[cache_key] = engine
+                return engine
+            except Exception as e:
+                logger.warning(f"[KnowledgeManager] Ошибка чтения search_index.json: {e}")
+
+        cls._search_engine_cache[cache_key] = engine
+        return engine
+
     @classmethod
     def _get_stem(cls, word_lower: str) -> str:
         """Легковесный эвристический стемминг на CPU без внешних библиотек."""
@@ -295,11 +337,12 @@ class KnowledgeManager:
         # Поиск всех поддерживаемых файлов в папке знаний
         found_files: Dict[str, Path] = {}
         for item in k_dir.iterdir():
-            if item.is_file() and item.name != "registry.json":
+            if item.is_file() and item.name not in ("registry.json", "search_index.json"):
                 if item.suffix.lower() in cls.SUPPORTED_EXTENSIONS:
                     found_files[item.name] = item
 
         # 1. Проверяем новые или изменившиеся файлы
+        newly_indexed_files: Set[str] = set()
         for filename, file_path in found_files.items():
             try:
                 stat = file_path.stat()
@@ -344,6 +387,7 @@ class KnowledgeManager:
                             "triggers": triggers,
                             "status": "parsed"
                         }
+                        newly_indexed_files.add(filename)
                     else:
                         current_docs[filename] = {
                             "filename": filename,
@@ -375,6 +419,45 @@ class KnowledgeManager:
         # Атомарная запись на диск
         atomic_write_json(reg_path, registry_data)
         logger.info(f"[KnowledgeManager] Синхронизация завершена: {len(current_docs)} документов в реестре.")
+
+        # 3. Синхронизация чанков и поискового индекса search_index.json
+        try:
+            from services.hybrid_search import HybridSearchEngine
+            search_idx_path = cls.get_search_index_path(None, custom_dir)
+            existing_chunks_by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+            if search_idx_path.exists():
+                try:
+                    with open(search_idx_path, "r", encoding="utf-8") as f:
+                        old_idx = json.load(f)
+                    for ch in old_idx.get("chunks", []):
+                        fn = ch.get("filename")
+                        if fn and fn in current_docs:
+                            existing_chunks_by_file[fn].append(ch)
+                except Exception as ex:
+                    logger.debug(f"[KnowledgeManager] Старый search_index.json не прочитан: {ex}")
+
+            all_chunks: List[Dict[str, Any]] = []
+            for fname, doc_meta in current_docs.items():
+                if doc_meta.get("status") != "parsed":
+                    continue
+                if fname in existing_chunks_by_file and fname not in newly_indexed_files:
+                    all_chunks.extend(existing_chunks_by_file[fname])
+                else:
+                    fpath = k_dir / fname
+                    if fpath.exists():
+                        parsed_doc = DocumentParser.parse_file(fpath)
+                        if parsed_doc and parsed_doc.content:
+                            doc_chunks = HybridSearchEngine.chunk_text(parsed_doc.content, filename=fname)
+                            all_chunks.extend(doc_chunks)
+
+            engine = HybridSearchEngine()
+            engine.index_chunks(all_chunks)
+            atomic_write_json(search_idx_path, engine.to_dict())
+            cls._search_engine_cache[str(search_idx_path.resolve())] = engine
+            logger.info(f"[KnowledgeManager] Поисковый индекс search_index.json обновлен: {len(all_chunks)} чанков.")
+        except Exception as se:
+            logger.error(f"[KnowledgeManager] Ошибка обновления поискового индекса: {se}", exc_info=True)
 
         return registry_data
 
@@ -452,6 +535,24 @@ class KnowledgeManager:
                 registry_data["last_synced_at"] = datetime.now().isoformat()
                 atomic_write_json(reg_path, registry_data)
                 logger.info(f"[KnowledgeManager] Документ {name_key} удален из папки и реестра.")
+
+                # Очистка чанков удаленного файла из поискового индекса
+                try:
+                    search_idx_path = cls.get_search_index_path(None, custom_dir)
+                    if search_idx_path.exists():
+                        with open(search_idx_path, "r", encoding="utf-8") as f:
+                            s_data = json.load(f)
+                        all_ch = s_data.get("chunks", [])
+                        filtered_ch = [c for c in all_ch if c.get("filename") != name_key]
+                        if len(filtered_ch) != len(all_ch):
+                            from services.hybrid_search import HybridSearchEngine
+                            eng = HybridSearchEngine()
+                            eng.index_chunks(filtered_ch)
+                            atomic_write_json(search_idx_path, eng.to_dict())
+                            cls._search_engine_cache[str(search_idx_path.resolve())] = eng
+                except Exception as se:
+                    logger.debug(f"[KnowledgeManager] Ошибка очистки search_index при удалении: {se}")
+
                 return True
             else:
                 # Если файла не было в реестре, но он удален с диска
@@ -478,55 +579,56 @@ class KnowledgeManager:
         query: str,
         threshold: float = 0.3,
         custom_dir: Optional[Path] = None,
-        custom_registry: Optional[Path] = None
+        custom_registry: Optional[Path] = None,
+        custom_index_path: Optional[Path] = None
     ) -> List[Dict[str, Any]]:
         """
-        Ищет релевантные документы по ключевым триггерам, заголовкам и именам файлов на CPU (0 МБ VRAM).
-        - Токенизирует и нормализует запрос пользователя.
-        - Сопоставляет запрос с триггерами и именем каждого документа в registry.json.
-        - Возвращает список подходящих документов (метаданные + путь), отсортированных по релевантности.
-
-        :param query: Текст пользовательского запроса
-        :param threshold: Порог схожести (по умолчанию 0.3)
-        :return: Список подходящих документов с добавленными полями relevance_score и matched_triggers
+        Ищет релевантные документы с использованием гибридного поиска (BM25 + Dense + RRF)
+        и частотно-семантического анализа триггеров на CPU (0 МБ VRAM).
+        - Выполняет трехконтурный поиск по семантическим чанкам.
+        - Сопоставляет триггеры и заголовки документов из registry.json.
+        - Возвращает список подходящих документов с добавленными полями relevance_score,
+          chunk_id, content_snippet и matched_triggers.
         """
         if not query or not query.strip():
             return []
 
-        # 1. Токенизация и нормализация запроса пользователя
+        # 1. Гибридный поиск по чанкам (BM25 + Dense + RRF)
+        chunks_by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        try:
+            engine = cls.get_search_engine(custom_dir, custom_index_path)
+            chunk_hits = engine.search(query, top_k=10, threshold=0.05)
+            for ch in chunk_hits:
+                fn = ch.get("filename")
+                if fn:
+                    chunks_by_file[fn].append(ch)
+        except Exception as se:
+            logger.debug(f"[KnowledgeManager] Ошибка поиска по чанкам: {se}")
+
+        # 2. Токенизация и нормализация запроса пользователя для триггерного сопоставления
         clean_q = re.sub(r"```[\s\S]*?```", " ", query)
         clean_q = re.sub(r"https?://\S+", " ", clean_q)
         raw_tokens = re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9_-]{2,}", clean_q)
 
         query_words: Set[str] = set()
-        query_stems: Dict[str, str] = {}
-
         for tok in raw_tokens:
             w = tok.lower()
-            if w in ALL_STOPWORDS:
-                continue
-            if w.isdigit():
-                continue
-            if len(w) < 2:
+            if w in ALL_STOPWORDS or w.isdigit() or len(w) < 2:
                 continue
             query_words.add(w)
-            query_stems[cls._get_stem(w)] = w
 
-        if not query_words:
-            return []
-
-        # 2. Загрузка документов из реестра
+        # 3. Загрузка документов из реестра
         registry_data = cls.load_registry(custom_registry, custom_dir)
         documents: Dict[str, Any] = registry_data.get("documents", {})
         if not documents:
             return []
 
         matched_results: List[Dict[str, Any]] = []
+        processed_files: Set[str] = set()
 
-        # 3. Сопоставление с триггерами и метаданными
         for filename, doc in documents.items():
             triggers = [t.lower() for t in doc.get("triggers", [])]
-            if not triggers and doc.get("status") != "parsed":
+            if not triggers and doc.get("status") != "parsed" and filename not in chunks_by_file:
                 continue
 
             trigger_stems: Dict[str, str] = {cls._get_stem(t): t for t in triggers}
@@ -539,15 +641,12 @@ class KnowledgeManager:
             for q_word in query_words:
                 q_stem = cls._get_stem(q_word)
 
-                # Точное совпадение с триггером
                 if q_word in triggers:
                     score_points += 1.0
                     matched_trigs.append(q_word)
-                # Совпадение по основе слова (стеммингу)
                 elif q_stem in trigger_stems:
                     score_points += 0.85
                     matched_trigs.append(trigger_stems[q_stem])
-                # Вхождение подстроки в триггер
                 elif any(q_stem in t or t in q_stem for t in trigger_stems if len(q_stem) >= 3 and len(t) >= 3):
                     score_points += 0.6
                     for t_s, orig_t in trigger_stems.items():
@@ -555,26 +654,47 @@ class KnowledgeManager:
                             matched_trigs.append(orig_t)
                             break
 
-                # Бонус за совпадение с именем файла
                 if q_word == filename_base or (len(q_word) >= 3 and q_word in filename_base):
                     score_points += 1.2
                 elif q_stem == filename_stem or (len(q_stem) >= 3 and q_stem in filename_base):
                     score_points += 0.9
 
-            if score_points <= 0.0:
-                continue
+            norm_score = round(score_points / max(1.0, float(len(query_words))), 3) if query_words else 0.0
 
-            # Нормализованный балл релевантности (относительно объема значимых слов в запросе)
-            norm_score = round(score_points / max(1.0, float(len(query_words))), 3)
+            file_chunks = chunks_by_file.get(filename, [])
+            best_chunk = file_chunks[0] if file_chunks else None
+            chunk_score = best_chunk.get("score", 0.0) if best_chunk else 0.0
 
-            # Проверка порога релевантности
-            if norm_score >= threshold or (score_points >= 1.0 and norm_score >= 0.2):
+            # Синтез скоров гибридного поиска и триггерного фильтра
+            combined_score = max(norm_score, chunk_score)
+
+            if combined_score >= threshold or (score_points >= 1.0 and norm_score >= 0.2) or chunk_score >= threshold:
                 doc_entry = dict(doc)
-                doc_entry["relevance_score"] = min(1.0, norm_score)
+                doc_entry["relevance_score"] = min(1.0, round(combined_score, 3))
                 doc_entry["matched_triggers"] = list(dict.fromkeys(matched_trigs))
+                if best_chunk:
+                    doc_entry["chunk_id"] = best_chunk.get("chunk_id")
+                    doc_entry["content_snippet"] = best_chunk.get("text")
+                    doc_entry["matched_chunks"] = file_chunks
                 matched_results.append(doc_entry)
+                processed_files.add(filename)
 
-        # 4. Сортировка по убыванию релевантности
+        # 4. Проверяем документы, найденные через чанки, но отсутствовавшие в цикле по триггерам
+        for fn, f_chunks in chunks_by_file.items():
+            if fn not in processed_files and fn in documents:
+                best_ch = f_chunks[0]
+                ch_sc = best_ch.get("score", 0.0)
+                if ch_sc >= threshold:
+                    doc_entry = dict(documents[fn])
+                    doc_entry["relevance_score"] = min(1.0, round(ch_sc, 3))
+                    doc_entry["matched_triggers"] = []
+                    doc_entry["chunk_id"] = best_ch.get("chunk_id")
+                    doc_entry["content_snippet"] = best_ch.get("text")
+                    doc_entry["matched_chunks"] = f_chunks
+                    matched_results.append(doc_entry)
+                    processed_files.add(fn)
+
+        # 5. Сортировка по убыванию релевантности
         matched_results.sort(
             key=lambda d: (d.get("relevance_score", 0.0), len(d.get("matched_triggers", []))),
             reverse=True
@@ -587,14 +707,14 @@ class KnowledgeManager:
         cls,
         filename: str,
         max_chars: int = 6000,
-        custom_dir: Optional[Path] = None
+        query: Optional[str] = None,
+        custom_dir: Optional[Path] = None,
+        custom_index_path: Optional[Path] = None
     ) -> Optional[str]:
         """
-        Извлекает текст документа через DocumentParser с ограничением по объёму,
-        чтобы не перегружать контекст модели (строго на CPU, 0 МБ VRAM).
-        :param filename: Имя файла в knowledge_base/
-        :param max_chars: Максимальное количество символов (по умолчанию 6000)
-        :return: Текстовый сниппет или None
+        Извлекает текст документа (строго на CPU, 0 МБ VRAM).
+        - Если передан query, извлекает наиболее релевантные чанки документа через гибридный поиск.
+        - Если query не передан, извлекает текст через DocumentParser с ограничением max_chars.
         """
         if not filename:
             return None
@@ -606,6 +726,29 @@ class KnowledgeManager:
                 logger.warning(f"[KnowledgeManager] Файл для сниппета не найден: {target}")
                 return None
 
+            # Если передан запрос, извлекаем релевантные чанки данного документа
+            if query and query.strip():
+                try:
+                    engine = cls.get_search_engine(custom_dir, custom_index_path)
+                    hits = engine.search(query, top_k=10, threshold=0.05)
+                    file_chunks = [h for h in hits if h.get("filename") == Path(filename).name]
+                    if file_chunks:
+                        combined_texts = []
+                        total_len = 0
+                        for ch in file_chunks:
+                            txt = ch.get("text", "").strip()
+                            if total_len + len(txt) > max_chars:
+                                remaining = max_chars - total_len
+                                if remaining > 50:
+                                    combined_texts.append(txt[:remaining])
+                                break
+                            combined_texts.append(txt)
+                            total_len += len(txt) + 4
+                        if combined_texts:
+                            return "\n\n---\n\n".join(combined_texts)
+                except Exception as se:
+                    logger.debug(f"[KnowledgeManager] Ошибка поиска чанков для сниппета {filename}: {se}")
+
             parsed = DocumentParser.parse_file(target, max_chars=max_chars)
             if not parsed or not parsed.content:
                 return None
@@ -613,6 +756,24 @@ class KnowledgeManager:
         except Exception as e:
             logger.error(f"[KnowledgeManager] Ошибка получения сниппета {filename}: {e}", exc_info=True)
             return None
+
+    @classmethod
+    def search_chunks(
+        cls,
+        query: str,
+        top_k: int = 3,
+        threshold: float = 0.1,
+        custom_dir: Optional[Path] = None,
+        custom_index_path: Optional[Path] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Прямой гибридный поиск по чанкам базы знаний (CPU, 0 МБ VRAM).
+        Возвращает топ-2..3 наиболее точных чанков с указанием filename, chunk_id, score, text.
+        """
+        if not query or not query.strip():
+            return []
+        engine = cls.get_search_engine(custom_dir, custom_index_path)
+        return engine.search(query, top_k=top_k, threshold=threshold)
 
 
 

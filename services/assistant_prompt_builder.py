@@ -82,10 +82,18 @@ class AssistantPromptBuilder:
     def build_knowledge_context(matched_docs: List[Dict[str, Any]]) -> str:
         """
         Формирует XML-блок базы знаний для инъекции в системный контекст Эларии:
+        Если переданы чанки (есть chunk_id):
         <KnowledgeBase>
-        <Document name="{filename}" triggers="{triggers}">
-        {content_snippet}
-        </Document>
+          <Document chunk_id="{id}" name="{filename}">
+          {chunk_text}
+          </Document>
+        </KnowledgeBase>
+
+        Если переданы целые документы без chunk_id (обратная совместимость):
+        <KnowledgeBase>
+          <Document name="{filename}" triggers="{triggers}">
+          {content_snippet}
+          </Document>
         </KnowledgeBase>
         """
         if not matched_docs:
@@ -94,13 +102,14 @@ class AssistantPromptBuilder:
         doc_blocks = []
         for doc in matched_docs:
             filename = doc.get("filename", "")
+            chunk_id = doc.get("chunk_id")
             triggers_val = doc.get("triggers", [])
             if isinstance(triggers_val, list):
                 triggers_str = ", ".join(str(t) for t in triggers_val)
             else:
                 triggers_str = str(triggers_val)
 
-            content_snippet = doc.get("content_snippet") or doc.get("content")
+            content_snippet = doc.get("content_snippet") or doc.get("content") or doc.get("text")
             if not content_snippet and filename:
                 try:
                     from services.knowledge_manager import KnowledgeManager
@@ -109,11 +118,21 @@ class AssistantPromptBuilder:
                     logger.debug(f"Не удалось получить сниппет документа {filename}: {e}")
 
             content_snippet = (content_snippet or "").strip()
-            doc_block = (
-                f'<Document name="{filename}" triggers="{triggers_str}">\n'
-                f'{content_snippet}\n'
-                f'</Document>'
-            )
+            if not content_snippet:
+                continue
+
+            if chunk_id and ("triggers" not in doc or not doc.get("triggers")):
+                doc_block = (
+                    f'<Document chunk_id="{chunk_id}" name="{filename}">\n'
+                    f'{content_snippet}\n'
+                    f'</Document>'
+                )
+            else:
+                doc_block = (
+                    f'<Document name="{filename}" triggers="{triggers_str}">\n'
+                    f'{content_snippet}\n'
+                    f'</Document>'
+                )
             doc_blocks.append(doc_block)
 
         if not doc_blocks:
