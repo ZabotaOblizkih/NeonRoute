@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, Union
 
 from services.session_manager import SessionManager, get_mode_profile
+from services.token_budget_manager import TokenBudgetManager
 from services.regex_filter import TextRegexFilter
 from services.task_queue import InferenceTask
 from services.model_router import ModelRouter, normalize_model_choice
@@ -329,30 +330,32 @@ class AssistantFlowControllerMixin:
         mode_profile = get_mode_profile("assistant")
         base_history_limit = mode_profile.get("history_limit", 60)
 
-        # ── ДИНАМИЧЕСКИЙ РАСЧЕТ БЮДЖЕТА ПАМЯТИ И ТОКЕНОВ ──
+        # ── ДИНАМИЧЕСКИЙ РАСЧЕТ БЮДЖЕТА ПАМЯТИ И ТОКЕНОВ (ДВУХКОНТУРНАЯ МОДЕЛЬ) ──
         if _should_art:
             effective_history_limit = 6
             effective_max_tokens = 512
-            history_slice = self.chat_history[-effective_history_limit:] if len(self.chat_history) > effective_history_limit else self.chat_history
+            history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
         else:
-            free_vram = 4500
+            free_vram = None
             if hasattr(self, "system_monitor") and self.system_monitor:
                 try:
                     free_vram = self.system_monitor.get_free_vram_mb()
                 except Exception:
-                    free_vram = 4500
+                    free_vram = None
 
-            if free_vram < 4200:
-                effective_history_limit = max(12, int(base_history_limit * 0.4))
-                effective_max_tokens = 512
-            elif free_vram < 5500:
-                effective_history_limit = max(20, int(base_history_limit * 0.7))
-                effective_max_tokens = 768
-            else:
-                effective_history_limit = base_history_limit
-                effective_max_tokens = mode_profile.get("sampling", {}).get("max_tokens", 1024)
+            prompt_tokens = TokenBudgetManager.estimate_messages_tokens(self.chat_history)
+            if _req and (not self.chat_history or self.chat_history[-1].get("content") != _req):
+                prompt_tokens += TokenBudgetManager.estimate_text_tokens(_req) + 5
 
-            history_slice = self.chat_history[-effective_history_limit:] if len(self.chat_history) > effective_history_limit else self.chat_history
+            decision = TokenBudgetManager.calculate_context_budget(
+                current_prompt_tokens=prompt_tokens,
+                mode="assistant",
+                free_vram_mb=free_vram
+            )
+            effective_history_limit = decision.history_limit
+            effective_max_tokens = decision.max_tokens
+
+            history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
 
         curr_sess_id = self.current_session.get("id") if self.current_session else None
         sess_persona_id = self.current_session.get("user_persona_id") if self.current_session else None
@@ -472,7 +475,14 @@ class AssistantFlowControllerMixin:
             user_max_tokens = default_max_tok
             source_tag = "Глобальный дефолт config.json (или профиль режима)"
 
-        target_max_tokens = int(user_max_tokens) if (user_max_tokens and not _should_art) else effective_max_tokens
+        if _should_art:
+            target_max_tokens = 512
+        elif not is_custom or "max_tokens" not in sampling:
+            # Штатная динамическая подстановка ступени двухконтурной модели (1024, 768, 512)
+            target_max_tokens = effective_max_tokens
+        else:
+            # Кастомный чат: ограничиваем сверху эффективным потолком ступени
+            target_max_tokens = min(int(user_max_tokens), effective_max_tokens)
         target_ctx_len = mode_profile.get("context_length", 14336)
 
         logger.info(

@@ -16,6 +16,15 @@ class RoleplayPromptBuilder:
     """Централизованный строитель системных промптов для ролевого режима."""
 
     @staticmethod
+    def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
+        """Нарезка глубины истории сообщений с учетом лимита сообщений."""
+        if not history:
+            return []
+        if max_history_messages is None or max_history_messages <= 0:
+            return list(history)
+        return list(history[-max_history_messages:]) if len(history) > max_history_messages else list(history)
+
+    @staticmethod
     def process_macros(text: str, user_name: str = "Игрок", char_name: str = "Спутница") -> str:
         """Заменяет макросы {{user}} и {{char}} на реальные имена персонажей ДО расчета токенов."""
         return MacroEngine.process(text, user_name=user_name, char_name=char_name)

@@ -457,3 +457,47 @@ class TestAssistantDocumentReaderIntegration:
         call_kwargs = host._enqueue_assistant_llm_task.call_args.kwargs
         assert call_kwargs["vision_content"] is not None
         assert len(call_kwargs["vision_content"]) == 2
+
+
+class TestTwoCircuitAssistantFlowControllerIntegration:
+    """Проверка интеграции двухконтурной модели в реальный поток _enqueue_assistant_llm_task."""
+
+    @pytest.fixture
+    def host(self):
+        h = DummyAssistantHost()
+        h.system_monitor = MagicMock()
+        return h
+
+    def test_normal_vram_1400_and_ratio_035_sets_tier_1(self, host):
+        """При свободной VRAM = 1400 МБ и ratio = 0.35 задача ставится с max_tokens=1024 и историей до 60."""
+        host.system_monitor.get_free_vram_mb.return_value = 1400
+        # 14336 * 0.35 ~ 5017 токенов: создаем умеренную историю сообщений
+        host.chat_history = [
+            {"role": "user" if i % 2 == 1 else "assistant", "content": f"Реплика #{i}: " + "тест диалога " * 20}
+            for i in range(1, 31)
+        ]
+        host._current_user_request = "Текущий штатный вопрос"
+
+        host._enqueue_assistant_llm_task()
+
+        assert host.task_queue.enqueue.called
+        task = host.task_queue.enqueue.call_args[0][0]
+        # В Ступени 1 должно быть 1024 токена ответа
+        assert task.kwargs["max_tokens"] == 1024
+
+    def test_emergency_guard_at_vram_450_sets_tier_3(self, host):
+        """При просадке свободной VRAM = 450 МБ аварийный предохранитель принудительно выставляет max_tokens=512."""
+        host.system_monitor.get_free_vram_mb.return_value = 450
+        # Короткая история (ratio близко к 0)
+        host.chat_history = [
+            {"role": "user", "content": "Привет"},
+            {"role": "assistant", "content": "Привет! Чем помочь?"}
+        ]
+        host._current_user_request = "Короткий вопрос"
+
+        host._enqueue_assistant_llm_task()
+
+        assert host.task_queue.enqueue.called
+        task = host.task_queue.enqueue.call_args[0][0]
+        # Аварийный режим: независимо от ratio выставляется Ступень 3 (512 токенов)
+        assert task.kwargs["max_tokens"] == 512

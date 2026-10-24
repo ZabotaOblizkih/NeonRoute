@@ -267,7 +267,8 @@ class HardwareEngineMixin:
         temp = stats.get("gpu_temp_c")
         temp_str = f" • {temp}°C" if temp else ""
 
-        color = "#00FF66" if v_used < 5500 else ("#FFE600" if v_used < 7200 else "#FF007F")
+        v_free = max(0, v_total - v_used)
+        color = "#00FF66" if v_free >= 1200 else ("#FFE600" if v_free >= 600 else "#FF007F")
         self.lbl_vram.setText(f"VRAM: {v_used} / {v_total} MB ({v_pct}%){temp_str}")
         self.lbl_vram.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 15px;")
 

@@ -762,10 +762,13 @@ class ChatFlowControllerMixin:
 
         active_mode = "engineer" if is_eng else ("roleplay" if is_roleplay else "assistant")
         from services.session_manager import get_mode_profile
+        from services.token_budget_manager import TokenBudgetManager
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        from services.roleplay_prompt_builder import RoleplayPromptBuilder
         mode_profile = get_mode_profile(active_mode)
         base_history_limit = mode_profile.get("history_limit", 35)
 
-        # ── ДИНАМИЧЕСКИЙ РАСЧЕТ БЮДЖЕТА ПАМЯТИ И ТОКЕНОВ ──
+        # ── ДИНАМИЧЕСКИЙ РАСЧЕТ БЮДЖЕТА ПАМЯТИ И ТОКЕНОВ (ДВУХКОНТУРНАЯ МОДЕЛЬ) ──
         if is_eng:
             # РЕЖИМ «ИНЖЕНЕР»: Никаких урезаний! Максимум возможностей модели для кода и инструментов
             effective_history_limit = base_history_limit
@@ -775,29 +778,32 @@ class ChatFlowControllerMixin:
             # ЗАПРОС НА АРТ: Ультра-компактный бюджет (мгновенный Prefill за 1-2 сек)
             effective_history_limit = 6
             effective_max_tokens = 512
-            history_slice = self.chat_history[-effective_history_limit:] if len(self.chat_history) > effective_history_limit else self.chat_history
+            history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
         else:
-            # ОБЫЧНЫЙ ДИАЛОГ: Адаптация под свободную VRAM (Headroom Metric)
-            free_vram = 4500
+            # ОБЫЧНЫЙ ДИАЛОГ: Двухконтурная модель управления контекстом (Token Budget + Emergency VRAM Guard)
+            free_vram = None
             if hasattr(self, "system_monitor") and self.system_monitor:
                 try:
                     free_vram = self.system_monitor.get_free_vram_mb()
                 except Exception:
-                    free_vram = 4500
+                    free_vram = None
 
-            if free_vram < 4200:
-                # Мало памяти -> компактный режим
-                effective_history_limit = max(12, int(base_history_limit * 0.4))
-                effective_max_tokens = 512
-            elif free_vram < 5500:
-                effective_history_limit = max(20, int(base_history_limit * 0.7))
-                effective_max_tokens = 768
+            prompt_tokens = TokenBudgetManager.estimate_messages_tokens(self.chat_history)
+            if _req and (not self.chat_history or self.chat_history[-1].get("content") != _req):
+                prompt_tokens += TokenBudgetManager.estimate_text_tokens(_req) + 5
+
+            decision = TokenBudgetManager.calculate_context_budget(
+                current_prompt_tokens=prompt_tokens,
+                mode=active_mode,
+                free_vram_mb=free_vram
+            )
+            effective_history_limit = decision.history_limit
+            effective_max_tokens = decision.max_tokens
+
+            if is_roleplay:
+                history_slice = RoleplayPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
             else:
-                # Достаточно памяти -> полный стандартный диалог из профиля
-                effective_history_limit = base_history_limit
-                effective_max_tokens = mode_profile.get("sampling", {}).get("max_tokens", 1024)
-
-            history_slice = self.chat_history[-effective_history_limit:] if len(self.chat_history) > effective_history_limit else self.chat_history
+                history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
 
         active_cast_block = ""
         recalled_lore_block = ""
@@ -861,8 +867,19 @@ class ChatFlowControllerMixin:
         top_p_val = effective_sampling.get("top_p", default_top_p)
         top_p = float(top_p_val) if top_p_val is not None else 0.95
 
-        user_max_tokens = effective_sampling.get("max_tokens", default_max_tok)
-        target_max_tokens = int(user_max_tokens) if (user_max_tokens and not _should_art) else effective_max_tokens
+        has_custom_max_tok = ("max_tokens" in effective_sampling)
+        user_max_tokens = effective_sampling.get("max_tokens")
+        if _should_art:
+            target_max_tokens = 512
+        elif decision.is_emergency:
+            # Аварийный аппаратный предохранитель: принудительно Ступень 3 (512 токенов)
+            target_max_tokens = 512
+        elif has_custom_max_tok and user_max_tokens:
+            # Пользовательские настройки (глобальные или сессионные)
+            target_max_tokens = int(user_max_tokens)
+        else:
+            # Штатная динамическая подстановка ступени двухконтурной модели (1024, 768, 512)
+            target_max_tokens = effective_max_tokens
 
         effective_temp = 0.15 if is_eng else temp
         stop_tokens = None if is_roleplay else ["\n\nПользователь:", "\n\nUser:"]

@@ -137,3 +137,182 @@ class TestTrafficLight:
         res_over = TokenBudgetManager.get_traffic_light(12000, is_lorebook=True, entry_count=40)
         assert res_over["color"] == "#FF007F"
         assert "(40 статей, 7000+)" in res_over["status"]
+
+
+class TestTwoCircuitContextBudget:
+    """Тестирование двухконтурной модели управления контекстом (Token Budget + Emergency VRAM Guard)."""
+
+    def test_stage_1_normal_operation_vram_1400_ratio_035(self):
+        """
+        Проверка штатной работы:
+        При VRAM = 1400 МБ и ratio = 0.35 должны отдаваться 60 сообщений и 1024 токена.
+        """
+        target_ctx = 14336
+        tokens = int(target_ctx * 0.35)
+        decision = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=tokens,
+            mode="assistant",
+            free_vram_mb=1400,
+            target_context_window=target_ctx
+        )
+        assert decision.tier == 1
+        assert decision.history_limit == 60
+        assert decision.max_tokens == 1024
+        assert pytest.approx(decision.ratio, 0.01) == 0.35
+        assert decision.is_emergency is False
+        assert decision.target_context_window == 14336
+
+        # Проверка безопасной распаковки в кортеж
+        hist_limit, max_tok = decision
+        assert hist_limit == 60
+        assert max_tok == 1024
+
+    def test_emergency_guard_triggers_at_vram_450(self):
+        """
+        Проверка аварийного режима:
+        При VRAM = 450 МБ (< 600 МБ) аварийный рубильник принудительно включает
+        Ступень 3 (24 сообщения, max_tokens = 512) даже при низком ratio (0.10 или 0.35).
+        """
+        target_ctx = 14336
+        tokens = int(target_ctx * 0.35)
+        decision = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=tokens,
+            mode="assistant",
+            free_vram_mb=450,
+            target_context_window=target_ctx
+        )
+        assert decision.tier == 3
+        assert decision.history_limit == 24
+        assert decision.max_tokens == 512
+        assert decision.is_emergency is True
+
+    def test_emergency_guard_triggers_regardless_of_ratio(self):
+        """При свободной VRAM = 599 МБ аварийный предохранитель активен даже при пустом промпте."""
+        decision = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=0,
+            mode="assistant",
+            free_vram_mb=599
+        )
+        assert decision.tier == 3
+        assert decision.history_limit == 24
+        assert decision.max_tokens == 512
+        assert decision.is_emergency is True
+
+    def test_stage_boundaries_by_ratio(self):
+        """
+        Проверка переключения ступеней по коэффициенту заполнения:
+        - ratio < 0.60: Ступень 1 (60 сообщ / 1024 токена)
+        - 0.60 <= ratio < 0.80: Ступень 2 (42 сообщ / 768 токенов)
+        - ratio >= 0.80: Ступень 3 (24 сообщ / 512 токенов)
+        """
+        target_ctx = 10000
+
+        # Граница 1: ratio = 0.59 -> Ступень 1
+        d1 = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=5900,
+            free_vram_mb=1500,
+            target_context_window=target_ctx
+        )
+        assert d1.tier == 1
+        assert d1.history_limit == 60
+        assert d1.max_tokens == 1024
+
+        # Граница 2: ratio = 0.60 -> Ступень 2
+        d2 = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=6000,
+            free_vram_mb=1500,
+            target_context_window=target_ctx
+        )
+        assert d2.tier == 2
+        assert d2.history_limit == 42
+        assert d2.max_tokens == 768
+
+        # Внутри Ступени 2: ratio = 0.79 -> Ступень 2
+        d2_upper = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=7900,
+            free_vram_mb=1500,
+            target_context_window=target_ctx
+        )
+        assert d2_upper.tier == 2
+        assert d2_upper.history_limit == 42
+        assert d2_upper.max_tokens == 768
+
+        # Граница 3: ratio = 0.80 -> Ступень 3
+        d3 = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=8000,
+            free_vram_mb=1500,
+            target_context_window=target_ctx
+        )
+        assert d3.tier == 3
+        assert d3.history_limit == 24
+        assert d3.max_tokens == 512
+
+        # Превышение: ratio = 1.20 -> Ступень 3
+        d3_over = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=12000,
+            free_vram_mb=1500,
+            target_context_window=target_ctx
+        )
+        assert d3_over.tier == 3
+        assert d3_over.history_limit == 24
+        assert d3_over.max_tokens == 512
+
+    def test_target_context_window_resolution_by_mode(self):
+        """Проверка разрешения целевого контекста из MODE_PROFILES."""
+        assert TokenBudgetManager.get_target_context_window("assistant") == 14336
+        assert TokenBudgetManager.get_target_context_window("roleplay") == 24576
+        assert TokenBudgetManager.get_target_context_window("rp") == 24576
+        assert TokenBudgetManager.get_target_context_window("engineer") == 28672
+        assert TokenBudgetManager.get_target_context_window("engineering") == 28672
+
+    def test_input_as_messages_list(self):
+        """Проверка автоматической оценки токенов списка сообщений."""
+        messages = [
+            {"role": "user", "content": "Привет! " * 50},
+            {"role": "assistant", "content": "Здравствуйте! Чем помочь? " * 50}
+        ]
+        decision = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=messages,
+            mode="assistant",
+            free_vram_mb=1400
+        )
+        assert decision.current_prompt_tokens > 0
+        assert decision.tier in (1, 2, 3)
+
+    def test_dictionary_interface_compatibility(self):
+        """Проверка доступа по ключам, атрибутам и методу to_dict."""
+        d = TokenBudgetManager.calculate_context_budget(1000, mode="assistant", free_vram_mb=1400)
+        assert d["tier"] == 1
+        assert d["history_limit"] == 60
+        assert d["max_tokens"] == 1024
+        assert d.get("tier") == 1
+        assert d.to_dict()["history_limit"] == 60
+
+
+class TestPromptBuildersHistorySlicing:
+    """Проверка нарезки истории в AssistantPromptBuilder и RoleplayPromptBuilder."""
+
+    def test_assistant_prompt_builder_slice_history(self):
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        history = [{"role": "user", "content": f"msg {i}"} for i in range(80)]
+
+        # Ступень 1: 60 сообщений
+        assert len(AssistantPromptBuilder.slice_history(history, max_history_messages=60)) == 60
+        # Ступень 2: 42 сообщения
+        assert len(AssistantPromptBuilder.slice_history(history, max_history_messages=42)) == 42
+        # Ступень 3: 24 сообщения
+        assert len(AssistantPromptBuilder.slice_history(history, max_history_messages=24)) == 24
+
+        # Сохранение последних сообщений
+        sliced = AssistantPromptBuilder.slice_history(history, max_history_messages=24)
+        assert sliced[-1]["content"] == "msg 79"
+
+    def test_roleplay_prompt_builder_slice_history(self):
+        from services.roleplay_prompt_builder import RoleplayPromptBuilder
+        history = [{"role": "user", "content": f"rp {i}"} for i in range(80)]
+
+        assert len(RoleplayPromptBuilder.slice_history(history, max_history_messages=60)) == 60
+        assert len(RoleplayPromptBuilder.slice_history(history, max_history_messages=42)) == 42
+        assert len(RoleplayPromptBuilder.slice_history(history, max_history_messages=24)) == 24
+        sliced = RoleplayPromptBuilder.slice_history(history, max_history_messages=24)
+        assert sliced[-1]["content"] == "rp 79"

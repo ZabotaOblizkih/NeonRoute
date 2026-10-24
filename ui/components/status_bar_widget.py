@@ -99,9 +99,9 @@ class VramLabel(QLabel):
 
     def update_vram(self, v_used: int, v_total: int, v_pct: float, temp: Optional[int] = None):
         free_mb = max(0, v_total - v_used)
-        if free_mb >= 5500:
+        if free_mb >= 1200:
             color = "#10B981"
-        elif 4200 <= free_mb < 5500:
+        elif 600 <= free_mb < 1200:
             color = "#F59E0B"
         else:
             color = "#EF4444"

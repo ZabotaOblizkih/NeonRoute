@@ -79,6 +79,15 @@ class AssistantPromptBuilder:
     """Централизованный строитель системного промпта для режима «💬 Ассистент» (Элария)."""
 
     @staticmethod
+    def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
+        """Нарезка глубины истории сообщений с учетом лимита сообщений."""
+        if not history:
+            return []
+        if max_history_messages is None or max_history_messages <= 0:
+            return list(history)
+        return list(history[-max_history_messages:]) if len(history) > max_history_messages else list(history)
+
+    @staticmethod
     def build_knowledge_context(matched_docs: List[Dict[str, Any]]) -> str:
         """
         Формирует XML-блок базы знаний для инъекции в системный контекст Эларии:

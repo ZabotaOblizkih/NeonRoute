@@ -83,6 +83,22 @@ VRAM_TOTAL_BUDGET_MB = 8192  # 8 GB VRAM
 VRAM_SAFE_LIMIT_MB = 7000    # Alert threshold for high VRAM pressure
 VRAM_MONITOR_INTERVAL_MS = 2000  # 2.0 seconds polling
 
+# Двухконтурная модель управления контекстом (Token Budget + Emergency VRAM Guard)
+EMERGENCY_VRAM_THRESHOLD_MB = 600  # Пожарный рубильник: критический порог свободной VRAM (< 600 МБ)
+EMERGENCY_VRAM_MB = 600            # Алиас для обратной совместимости
+
+# Пороги относительного коэффициента заполнения контекста (Контур 1)
+CONTEXT_RATIO_TIER_1 = 0.60        # ratio < 0.60 -> Ступень 1 (60 сообщ / 1024 токена)
+CONTEXT_RATIO_TIER_2 = 0.80        # 0.60 <= ratio < 0.80 -> Ступень 2 (42 сообщ / 768 токенов)
+                                   # ratio >= 0.80 -> Ступень 3 (24 сообщ / 512 токенов)
+
+# Параметры ступеней (Ступень 1 / 2 / 3)
+CONTEXT_TIERS = {
+    1: {"history_limit": 60, "max_tokens": 1024, "ratio_max": 0.60},
+    2: {"history_limit": 42, "max_tokens": 768, "ratio_max": 0.80},
+    3: {"history_limit": 24, "max_tokens": 512, "ratio_max": 1.00},
+}
+
 # Service Health Check Intervals
 BACKEND_HEALTH_CHECK_INTERVAL_MS = 5000  # 5 seconds polling for backend statuses
 
@@ -152,4 +168,3 @@ MODE_PROFILES = {
         }
     }
 }
-
