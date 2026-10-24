@@ -11,15 +11,19 @@ import shutil
 import uuid
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
-from PyQt6.QtGui import QIcon, QPixmap, QColor
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QRect, QRectF
+from PyQt6.QtGui import (
+    QIcon, QPixmap, QColor, QPainter, QPainterPath,
+    QBrush, QPen, QLinearGradient, QRadialGradient, QFont, QImage
+)
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QTextBrowser, QPushButton, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QWidget, QScrollArea, QSplitter,
-    QFrame, QApplication, QCheckBox, QGraphicsDropShadowEffect
+    QFrame, QApplication, QCheckBox, QGraphicsDropShadowEffect,
+    QStyledItemDelegate
 )
 
 from qfluentwidgets import (
@@ -63,44 +67,143 @@ _mask_tags = CardTranslator.mask_tags
 _unmask_tags = CardTranslator.unmask_tags
 
 
+class CardItemDelegate(QStyledItemDelegate):
+    """
+    Делегат списка карточек персонажей.
+    Подавляет стандартную отрисовку нативного текста и иконки Qt под кастомным виджетом карточки,
+    полностью исключая наложение и дублирование графики.
+    """
+    def paint(self, painter, option, index):
+        # CharacterCardWidget берет визуальную отрисовку полностью на себя;
+        # делегат ничего не рисует, исключая артефакты дублирования текста и иконки.
+        pass
+
+
+def render_seamless_avatar(
+    avatar_path: Optional[Union[Path, str]] = None,
+    name: str = "Assistant",
+    size: int = 44
+) -> QPixmap:
+    """
+    Рендерит круглый аватар без жестких рамок (border: none)
+    с мягким растворением внешнего контура в фон (edge feathering via radial gradient alpha mask).
+    """
+    scale_factor = 3
+    render_size = size * scale_factor
+    center = float(render_size) / 2.0
+    radius = float(render_size) / 2.0
+
+    image = QImage(render_size, render_size, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+
+    p_path = Path(avatar_path) if avatar_path else None
+    loaded = False
+
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+    if p_path and p_path.exists():
+        try:
+            orig = QPixmap(str(p_path))
+            if not orig.isNull():
+                orig_w = orig.width()
+                orig_h = orig.height()
+                min_edge = min(orig_w, orig_h)
+                if min_edge > 0:
+                    crop_rect = QRect((orig_w - min_edge) // 2, (orig_h - min_edge) // 2, min_edge, min_edge)
+                    sq = orig.copy(crop_rect)
+                    scaled = sq.scaled(
+                        render_size,
+                        render_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    path = QPainterPath()
+                    path.addEllipse(0.0, 0.0, float(render_size), float(render_size))
+                    painter.setClipPath(path)
+                    painter.drawPixmap(0, 0, scaled)
+                    painter.setClipping(False)
+                    loaded = True
+        except Exception as e:
+            logger.debug(f"Failed to load seamless avatar image {avatar_path}: {e}")
+            loaded = False
+
+    if not loaded:
+        grad = QLinearGradient(0, 0, render_size, render_size)
+        grad.setColorAt(0.0, QColor(14, 165, 233))
+        grad.setColorAt(1.0, QColor(79, 70, 229))
+
+        path = QPainterPath()
+        path.addEllipse(0.0, 0.0, float(render_size), float(render_size))
+        painter.fillPath(path, QBrush(grad))
+
+        clean_name = re.sub(r'^[^\w\d]+', '', name.strip()) if name else ""
+        letter = clean_name[0].upper() if clean_name else "N"
+        font_size = max(10 * scale_factor, int(render_size * 0.42))
+        font = QFont("Inter", font_size, QFont.Weight.Bold)
+        font.setFamilies(["Inter", "Segoe UI", "sans-serif"])
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(QRectF(0, 0, float(render_size), float(render_size)), Qt.AlignmentFlag.AlignCenter, letter)
+
+    # Мягкое сглаживание и растворение краев портрета в цвет подложки (бесшовный эффект глубины)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    radial_mask = QRadialGradient(center, center, radius)
+    radial_mask.setColorAt(0.0, QColor(0, 0, 0, 255))
+    radial_mask.setColorAt(0.82, QColor(0, 0, 0, 255))
+    radial_mask.setColorAt(0.93, QColor(0, 0, 0, 170))
+    radial_mask.setColorAt(1.0, QColor(0, 0, 0, 0))
+    painter.setBrush(QBrush(radial_mask))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRect(0, 0, render_size, render_size)
+
+    painter.end()
+
+    result_pixmap = QPixmap.fromImage(image)
+    result_pixmap.setDevicePixelRatio(scale_factor)
+    return result_pixmap
+
+
 def get_cached_circular_avatar(avatar_path: Optional[Path], name: str, size: int = 44) -> QPixmap:
     """
-    Возвращает круглый аватар из дискового кэша.
-    Если кэш устарел или отсутствует — рендерит через render_circular_avatar и кэширует.
+    Возвращает бесшовный круглый аватар из дискового кэша.
+    Если кэш устарел или отсутствует — рендерит через render_seamless_avatar и кэширует.
     """
     if not avatar_path or not Path(avatar_path).exists():
-        return render_circular_avatar(None, name=name, size=size, is_user=False)
+        return render_seamless_avatar(None, name=name, size=size)
 
     p = Path(avatar_path).resolve()
     try:
         mtime = int(p.stat().st_mtime)
         path_hash = hashlib.md5(str(p).encode("utf-8")).hexdigest()[:10]
-        cache_file = GALLERY_THUMBS_DIR / f"{p.stem}_{path_hash}_{mtime}_{size}.png"
+        cache_file = GALLERY_THUMBS_DIR / f"{p.stem}_{path_hash}_{mtime}_{size}_feathered.png"
 
         if cache_file.exists():
             pix = QPixmap(str(cache_file))
             if not pix.isNull():
+                pix.setDevicePixelRatio(3.0)
                 return pix
 
         # Удаляем устаревшие файлы превью с прежним mtime перед генерацией нового
-        for old_cache in GALLERY_THUMBS_DIR.glob(f"{p.stem}_{path_hash}_*_{size}.png"):
+        for old_cache in GALLERY_THUMBS_DIR.glob(f"{p.stem}_{path_hash}_*_{size}*.png"):
             if old_cache != cache_file:
                 old_cache.unlink(missing_ok=True)
 
         # Рендерим и сохраняем компактный кэш
-        pix = render_circular_avatar(p, name=name, size=size, is_user=False)
+        pix = render_seamless_avatar(p, name=name, size=size)
         if not pix.isNull():
             pix.save(str(cache_file), "PNG")
         return pix
     except Exception as e:
         logger.debug(f"Thumbnail cache fallback for {p.name}: {e}")
-        return render_circular_avatar(p, name=name, size=size, is_user=False)
+        return render_seamless_avatar(p, name=name, size=size)
 
 
 class CharacterCardWidget(QFrame):
     """
     Soft Card виджет элемента списка персонажей:
-    - Скругленная аватарка 44x44 с HiDPI сглаживанием
+    - Бесшовная аватарка 44x44 без рамок, растворяющаяся в фоне карточки
     - Имя персонажа и плашки (тип карточки, статус бюджета токенов)
     - Мягкая подсветка при наведении (hover)
     - Четкая визуальная фиксация выбранного героя
@@ -134,18 +237,14 @@ class CharacterCardWidget(QFrame):
         layout.setContentsMargins(8, 6, 10, 6)
         layout.setSpacing(10)
 
-        # Avatar
+        # Avatar — бесшовный без рамок
         self.avatar_lbl = QLabel(self)
+        self.avatar_lbl.setObjectName("CharacterCardAvatar")
         self.avatar_lbl.setFixedSize(44, 44)
         self.avatar_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.avatar_lbl.setStyleSheet("border: none; background: transparent;")
         if not self._pixmap.isNull():
-            self.avatar_lbl.setPixmap(
-                self._pixmap.scaled(
-                    44, 44,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-            )
+            self.avatar_lbl.setPixmap(self._pixmap)
         layout.addWidget(self.avatar_lbl)
 
         # Info Box
@@ -211,13 +310,7 @@ class CharacterCardWidget(QFrame):
         self.name_lbl.setText(name)
         if avatar_pixmap and not avatar_pixmap.isNull():
             self._pixmap = avatar_pixmap
-            self.avatar_lbl.setPixmap(
-                avatar_pixmap.scaled(
-                    44, 44,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-            )
+            self.avatar_lbl.setPixmap(self._pixmap)
         if badge_text is not None:
             self._badge_text = badge_text.strip()
             self.traffic_lbl.setText(self._badge_text)
@@ -235,6 +328,10 @@ class CharacterCardWidget(QFrame):
                     border: 1px solid rgba(0, 240, 255, 0.70);
                     border-left: 3px solid #00F0FF;
                     border-radius: 10px;
+                }
+                QLabel#CharacterCardAvatar {
+                    border: none;
+                    background: transparent;
                 }
                 QLabel#CharacterCardName {
                     color: #00F0FF;
@@ -274,6 +371,10 @@ class CharacterCardWidget(QFrame):
                     background-color: rgba(26, 36, 56, 0.85);
                     border: 1px solid rgba(0, 240, 255, 0.35);
                     border-left: 3px solid rgba(0, 240, 255, 0.45);
+                }
+                QLabel#CharacterCardAvatar {
+                    border: none;
+                    background: transparent;
                 }
                 QLabel#CharacterCardName {
                     color: #F1F5F9;
@@ -450,12 +551,15 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             }
             QListWidget::item {
                 background-color: transparent;
+                color: transparent;
                 border: none;
                 padding: 0px;
                 margin-bottom: 4px;
             }
             QListWidget::item:selected {
                 background-color: transparent;
+                color: transparent;
+                border: none;
             }
             QLineEdit, TextEdit, QTextEdit {
                 background-color: rgba(10, 13, 20, 0.75);
@@ -541,6 +645,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         left_layout.addWidget(self.search_bar)
 
         self.list_widget = QListWidget()
+        self.list_widget.setItemDelegate(CardItemDelegate(self.list_widget))
         self.list_widget.setIconSize(QSize(44, 44))
         self.list_widget.currentItemChanged.connect(self._on_character_selected)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -569,12 +674,13 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         top_row.setSpacing(12)
 
         self.avatar_preview_lbl = QLabel()
+        self.avatar_preview_lbl.setObjectName("AvatarPreviewLbl")
         self.avatar_preview_lbl.setFixedSize(64, 64)
+        self.avatar_preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.avatar_preview_lbl.setStyleSheet("""
             QLabel {
-                border: 2px solid rgba(0, 240, 255, 0.40);
-                border-radius: 32px;
-                background-color: rgba(10, 13, 20, 0.80);
+                border: none;
+                background-color: transparent;
             }
         """)
         top_row.addWidget(self.avatar_preview_lbl)
@@ -1010,6 +1116,14 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
     def _load_characters(self, select_path: Optional[Path] = None):
         """Loads all character .json files from CHARACTERS_DIR."""
         self.list_widget.blockSignals(True)
+        # Очищаем все привязанные custom-виджеты перед повторным заполнением
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            if it:
+                w = self.list_widget.itemWidget(it)
+                if w:
+                    self.list_widget.removeItemWidget(it)
+                    w.deleteLater()
         self.list_widget.clear()
         self.characters.clear()
 
@@ -1055,7 +1169,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                     type_badge = "👥 [Групповая] "
                 else:
                     type_badge = ""
-                item = QListWidgetItem(QIcon(pix), f"{card.name}  {type_badge}{badge}")
+                # Не передаем QIcon в QListWidgetItem, чтобы нативный рендер Qt не рисовал иконку под карточкой
+                item = QListWidgetItem()
+                item.setText(f"{card.name}  {type_badge}{badge}")
                 item.setData(Qt.ItemDataRole.UserRole, str(json_path))
                 item.setSizeHint(QSize(250, 62))
 
@@ -1086,6 +1202,8 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         else:
             self.active_entry = None
             self._clear_editor()
+
+    load_characters = _load_characters
 
     def _on_character_selected(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem] = None):
         """Populates editor with selected character details."""
@@ -1159,7 +1277,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                 self.lbl_author_info.setText("✍️ Автор не указан")
                 self.lbl_author_info.setToolTip("")
 
-        pix = render_circular_avatar(card.avatar_path, name=card.name, size=64, is_user=False)
+        pix = render_seamless_avatar(card.avatar_path, name=card.name, size=64)
         self.avatar_preview_lbl.setPixmap(pix)
         self._update_context_budget()
 
@@ -1315,7 +1433,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.lbl_greeting_page.setText("1 / 1")
         self.btn_prev_greeting.setEnabled(False)
         self.btn_next_greeting.setEnabled(False)
-        pix = render_circular_avatar(None, name="?", size=64, is_user=False)
+        pix = render_seamless_avatar(None, name="?", size=64)
         self.avatar_preview_lbl.setPixmap(pix)
         self.active_companion_idx = -1
         self._update_party_selector_ui()
@@ -1665,14 +1783,13 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             card.avatar_path = dest
 
             # Update avatar preview
-            pix = render_circular_avatar(card.avatar_path, name=card.name, size=64, is_user=False)
+            pix = render_seamless_avatar(card.avatar_path, name=card.name, size=64)
             self.avatar_preview_lbl.setPixmap(pix)
 
-            # Update list widget icon
+            # Update list widget card
             curr = self.list_widget.currentItem()
             if curr:
                 list_pix = get_cached_circular_avatar(card.avatar_path, name=card.name, size=44)
-                curr.setIcon(QIcon(list_pix))
                 w = self.list_widget.itemWidget(curr)
                 if isinstance(w, CharacterCardWidget):
                     w.update_info(card.name, avatar_pixmap=list_pix)
@@ -1800,7 +1917,6 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             if curr:
                 curr.setText(name)
                 pix = get_cached_circular_avatar(card.avatar_path, name=name, size=44)
-                curr.setIcon(QIcon(pix))
                 w = self.list_widget.itemWidget(curr)
                 if isinstance(w, CharacterCardWidget):
                     w.update_info(name, avatar_pixmap=pix)
