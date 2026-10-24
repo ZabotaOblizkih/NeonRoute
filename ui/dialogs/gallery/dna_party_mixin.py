@@ -538,10 +538,9 @@ class GalleryDnaPartyMixin:
                     character=card,
                     mode="roleplay"
                 )
-                try:
-                    parent_win.lm_client.unload_model()
-                except Exception:
-                    pass
+                from services.vram_arbiter import VRAMArbiter
+                VRAMArbiter.get_instance().release_llm_for_diffusion()
+
                 kwargs = plan.to_forge_kwargs()
                 img = parent_win.forge_client.text_to_image(**kwargs)
                 try:
@@ -549,7 +548,7 @@ class GalleryDnaPartyMixin:
                 except Exception:
                     pass
                 if hasattr(parent_win, "_reload_active_lms_model_async"):
-                    parent_win._reload_active_lms_model_async(delay=3.0)
+                    parent_win._reload_active_lms_model_async(delay=1.2)
                 return {"image_path": img, "plan": plan}
 
             task = InferenceTask(
@@ -558,7 +557,7 @@ class GalleryDnaPartyMixin:
                 func=_gallery_art_worker,
                 kwargs={"v_payload": v_intent, "ckpt": getattr(parent_win, "selected_forge_checkpoint", None)},
                 abort_fn=parent_win.forge_client.interrupt,
-                metadata={"prompt": prompt_text, "silent": True}
+                metadata={"prompt": prompt_text, "silent": True, "needs_llm_prompt_gen": False}
             )
             if hasattr(parent_win, "_active_tasks") and isinstance(parent_win._active_tasks, dict):
                 parent_win._active_tasks[task.id] = task

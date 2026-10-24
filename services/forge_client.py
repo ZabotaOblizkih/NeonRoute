@@ -322,15 +322,16 @@ class ForgeClient(QObject):
 
         if monitor and hasattr(monitor, "get_free_vram_mb"):
             start_t = time.time()
-            # Динамическое ожидание (до 2.0 секунд с шагом 150 мс), пока system_monitor.get_free_vram_mb() >= 5200
-            while time.time() - start_t < 2.0:
+            # Динамическое ожидание (до 4.0 секунд с шагом 150 мс), пока system_monitor.get_free_vram_mb() >= 3800
+            free_mb = 0
+            while time.time() - start_t < 4.0:
                 free_mb = monitor.get_free_vram_mb()
                 if free_mb >= 3800:
                     logger.info(f"ForgeClient: VRAM свободна ({free_mb} MB >= 3800 MB), продолжение.")
                     self._last_vram_wait_ts = time.time()
                     return
                 time.sleep(0.15)
-            logger.info("ForgeClient: завершено динамическое ожидание VRAM (достигнут лимит 2.0 сек).")
+            logger.info(f"ForgeClient: завершено динамическое ожидание VRAM (достигнут лимит 4.0 сек, доступно {free_mb} MB).")
         else:
             time.sleep(1.2)
 

@@ -128,13 +128,15 @@ class RoleplayControllerMixin:
             plan.height = 512
             plan.enable_adetailer = False
 
-            try:
-                self.lm_client.unload_model()
-            except Exception as e:
-                logger.debug(f"LM unload error: {e}")
+            from services.vram_arbiter import VRAMArbiter
+            VRAMArbiter.get_instance().release_llm_for_diffusion()
 
             kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
             img_path = self.forge_client.text_to_image(**kwargs)
+
+            # Быстрый тихий возврат активной модели режима в VRAM
+            if hasattr(self, "_reload_active_lms_model_async"):
+                self._reload_active_lms_model_async(delay=1.2)
 
             if img_path and Path(img_path).resolve().exists():
                 if self.current_session:
@@ -143,13 +145,14 @@ class RoleplayControllerMixin:
                 QTimer.singleShot(0, self, self._apply_chat_background)
             return {"image_path": img_path, "plan": plan, "checkpoint": plan.target_checkpoint, "is_scene_background": True}
 
+        needs_llm_gen = bool(not loc_dna and re.search(r"[а-яА-ЯёЁ]", prompt_seed))
         task = InferenceTask(
             name="🖼️ Фон сцены",
             task_type="scene_background",
             func=_bg_pipeline,
             kwargs={"raw_prompt": prompt_seed, "ckpt": checkpoint},
             abort_fn=self.forge_client.interrupt,
-            metadata={"is_scene_background": True}
+            metadata={"is_scene_background": True, "needs_llm_prompt_gen": needs_llm_gen}
         )
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)

@@ -472,9 +472,8 @@ class HardwareEngineMixin:
         if not active_char_name and captured_mode == "roleplay" and captured_char:
             active_char_name = getattr(captured_char, "name", None)
 
-        needs_llm_gen = (captured_mode in ("roleplay", "rp")) and not v_intent
-
         raw_scene_text = (text or "").strip()
+        needs_llm_gen = bool((captured_mode in ("roleplay", "rp") and not v_intent) or (not v_intent and re.search(r"[а-яА-ЯёЁ]", raw_scene_text)))
 
         def _scene_art_pipeline(v_payload: Optional[Dict[str, Any]] = None, scene_text: Optional[str] = None, ckpt: Optional[str] = None) -> Dict[str, Any]:
             self._cancel_lms_reload()
@@ -517,6 +516,8 @@ class HardwareEngineMixin:
                 )
                 if plan.is_ambiguous:
                     return {"image_path": None, "plan": plan, "checkpoint": None, "is_ambiguous": True}
+                from services.vram_arbiter import VRAMArbiter
+                VRAMArbiter.get_instance().release_llm_for_diffusion()
 
             logger.info(f"Scene Art selected checkpoint: '{plan.target_checkpoint}'")
 
@@ -596,15 +597,13 @@ class HardwareEngineMixin:
             if plan.is_ambiguous:
                 return {"image_path": None, "plan": plan, "checkpoint": None, "is_ambiguous": True}
 
+            from services.vram_arbiter import VRAMArbiter
+            VRAMArbiter.get_instance().release_llm_for_diffusion()
+
             logger.info(
                 f"Art Director Plan: style={plan.style}, target='{plan.model_title}', "
                 f"size={plan.width}x{plan.height}, prompt='{plan.positive_prompt[:60]}...'"
             )
-
-            try:
-                self.lm_client.unload_model()
-            except Exception as e:
-                logger.debug(f"LM unload error: {e}")
 
             kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
             img_path = self.forge_client.text_to_image(**kwargs)
@@ -624,13 +623,14 @@ class HardwareEngineMixin:
                 "checkpoint": plan.target_checkpoint
             }
 
+        has_cyrillic = bool(re.search(r"[а-яА-ЯёЁ]", prompt))
         task = InferenceTask(
             name=f"🎨 Арт: {prompt[:25]}...",
             task_type="image",
             func=_image_worker,
             kwargs={"raw_prompt": prompt, "ckpt": checkpoint},
             abort_fn=self.forge_client.interrupt,
-            metadata={"prompt": prompt}
+            metadata={"prompt": prompt, "needs_llm_prompt_gen": has_cyrillic}
         )
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)
@@ -662,15 +662,13 @@ class HardwareEngineMixin:
             if plan.is_ambiguous:
                 return {"image_path": None, "plan": plan, "checkpoint": None, "is_ambiguous": True}
 
+            from services.vram_arbiter import VRAMArbiter
+            VRAMArbiter.get_instance().release_llm_for_diffusion()
+
             logger.info(
                 f"Direct Art Plan: style={plan.style}, target='{plan.model_title}', "
                 f"size={plan.width}x{plan.height}, prompt='{plan.positive_prompt[:60]}...'"
             )
-
-            try:
-                self.lm_client.unload_model()
-            except Exception as e:
-                logger.debug(f"LM unload error in direct art: {e}")
 
             kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
             img_path = self.forge_client.text_to_image(**kwargs)
@@ -690,13 +688,14 @@ class HardwareEngineMixin:
                 "checkpoint": plan.target_checkpoint
             }
 
+        has_cyrillic = bool(re.search(r"[а-яА-ЯёЁ]", prompt))
         task = InferenceTask(
             name=f"⚡ Директ-арт: {prompt[:25]}...",
             task_type="image",
             func=_direct_image_worker,
             kwargs={"raw_prompt": prompt, "ckpt": checkpoint},
             abort_fn=self.forge_client.interrupt,
-            metadata={"prompt": prompt, "is_direct": True}
+            metadata={"prompt": prompt, "is_direct": True, "needs_llm_prompt_gen": has_cyrillic}
         )
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)
