@@ -1113,8 +1113,7 @@ class ChatFlowControllerMixin:
                     try:
                         # 1. Текст реплики сохраняется: заглушка ставится ТОЛЬКО если бабл изначально был пуст
                         existing_text = getattr(widget_to_update, "raw_text", "") or ""
-                        if not existing_text.strip():
-                            widget_to_update.set_text("🎨 Иллюстрация сцены готова:")
+                        # Без текстовых заглушек при пустом бабле
 
                         # 2. Изображение монтируется в контейнер бабла без перезаписи текста
                         if hasattr(widget_to_update, "set_image"):

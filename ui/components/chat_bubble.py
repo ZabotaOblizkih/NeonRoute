@@ -9,6 +9,7 @@ import html
 import re
 import os
 import sys
+import math
 import threading
 import logging
 import subprocess
@@ -22,7 +23,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QUrl, QTimer, QSize
 from PyQt6.QtGui import (
     QTextOption,
     QPixmap, QCursor, QIcon, QPainter, QPainterPath,
-    QColor, QFont, QLinearGradient, QBrush, QPen, QDesktopServices,
+    QColor, QFont, QLinearGradient, QRadialGradient, QBrush, QPen, QDesktopServices,
     QFocusEvent, QImageReader
 )
 from PyQt6.QtWidgets import (
@@ -90,6 +91,161 @@ from ui.components.bubbles.workspace_cards import (
     ConsoleOutputSpoilerWidget,
     GenerationInfoAccordionWidget,
 )
+
+
+class CyberpunkArtPlaceholderWidget(QWidget):
+    """
+    Киберпанк-лоадер / плейсхолдер ожидания кадра для NeonRoute.
+    Glassmorphism, обсидиановый фон #0A0D14, акценты Cyan #00F0FF / Sky Blue #38BDF8.
+    Мягкая пульсация неонового свечения и технологичных угловых меток.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("CyberpunkArtPlaceholder")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setMinimumSize(360, 200)
+        self.setMaximumWidth(480)
+        self.setFixedHeight(210)
+
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start(35)  # ~28 FPS
+
+    def _on_tick(self):
+        self._phase += 0.07
+        if self._phase > 2 * math.pi:
+            self._phase -= 2 * math.pi
+        self.update()
+
+    def stop(self):
+        if self._timer.isActive():
+            self._timer.stop()
+
+    def hideEvent(self, event):
+        self.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        if not self._timer.isActive():
+            self._timer.start(35)
+        super().showEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        w = float(self.width())
+        h = float(self.height())
+        rect = QRectF(1.5, 1.5, w - 3.0, h - 3.0)
+        radius = 14.0
+
+        pulse = (math.sin(self._phase) + 1.0) / 2.0  # 0.0 .. 1.0
+
+        # 1. Обсидиановый фон с деликатным вертикальным градиентом
+        bg_gradient = QLinearGradient(0, 0, 0, h)
+        bg_gradient.setColorAt(0.0, QColor(14, 18, 28, 240))
+        bg_gradient.setColorAt(0.5, QColor(10, 13, 20, 245))
+        bg_gradient.setColorAt(1.0, QColor(7, 9, 14, 250))
+        painter.setBrush(QBrush(bg_gradient))
+
+        # 2. Неоновая пульсирующая рамка (Cyan #00F0FF -> Sky Blue #38BDF8)
+        border_r = int(0 * (1.0 - pulse) + 56 * pulse)
+        border_g = int(240 * (1.0 - pulse) + 189 * pulse)
+        border_b = int(255 * (1.0 - pulse) + 248 * pulse)
+        border_a = int(60 + 110 * pulse)
+        border_pen = QPen(QColor(border_r, border_g, border_b, border_a), 1.2)
+        painter.setPen(border_pen)
+        painter.drawRoundedRect(rect, radius, radius)
+
+        # 3. Внутреннее мягкое радиальное свечение (Ambient holographic glow)
+        glow_gradient = QRadialGradient(w / 2.0, h / 2.0, w * 0.45)
+        glow_gradient.setColorAt(0.0, QColor(0, 240, 255, int(12 + 18 * pulse)))
+        glow_gradient.setColorAt(0.7, QColor(56, 189, 248, int(4 + 8 * pulse)))
+        glow_gradient.setColorAt(1.0, QColor(10, 13, 20, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(glow_gradient))
+        painter.drawRoundedRect(rect, radius, radius)
+
+        # 4. Киберпанк-угловые метки видоискателя (HUD Corner brackets)
+        corner_pen = QPen(QColor(0, 240, 255, int(140 + 115 * pulse)), 1.8)
+        painter.setPen(corner_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        clen = 14.0
+        pad = 8.0
+
+        # Верх-лево
+        painter.drawLine(int(rect.left() + pad), int(rect.top() + pad), int(rect.left() + pad + clen), int(rect.top() + pad))
+        painter.drawLine(int(rect.left() + pad), int(rect.top() + pad), int(rect.left() + pad), int(rect.top() + pad + clen))
+        # Верх-право
+        painter.drawLine(int(rect.right() - pad), int(rect.top() + pad), int(rect.right() - pad - clen), int(rect.top() + pad))
+        painter.drawLine(int(rect.right() - pad), int(rect.top() + pad), int(rect.right() - pad), int(rect.top() + pad + clen))
+        # Низ-лево
+        painter.drawLine(int(rect.left() + pad), int(rect.bottom() - pad), int(rect.left() + pad + clen), int(rect.bottom() - pad))
+        painter.drawLine(int(rect.left() + pad), int(rect.bottom() - pad), int(rect.left() + pad), int(rect.bottom() - pad - clen))
+        # Низ-право
+        painter.drawLine(int(rect.right() - pad), int(rect.bottom() - pad), int(rect.right() - pad - clen), int(rect.bottom() - pad))
+        painter.drawLine(int(rect.right() - pad), int(rect.bottom() - pad), int(rect.right() - pad), int(rect.bottom() - pad - clen))
+
+        # 5. Центральный голографический видоискатель (Viewfinder icon)
+        cx = w / 2.0
+        cy = h / 2.0 - 20.0
+        vf_size = 38.0
+        vf_rect = QRectF(cx - vf_size / 2.0, cy - vf_size / 2.0, vf_size, vf_size)
+
+        vf_pen = QPen(QColor(56, 189, 248, int(80 + 90 * pulse)), 1.2)
+        painter.setPen(vf_pen)
+        painter.drawRoundedRect(vf_rect, 6.0, 6.0)
+
+        core_alpha = int(170 + 85 * pulse)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 240, 255, core_alpha)))
+        dot_r = 3.0 + 1.2 * pulse
+        painter.drawEllipse(QRectF(cx - dot_r, cy - dot_r, dot_r * 2.0, dot_r * 2.0))
+
+        ch_pen = QPen(QColor(0, 240, 255, int(120 + 80 * pulse)), 1.0)
+        painter.setPen(ch_pen)
+        ch_len = 5.0
+        painter.drawLine(int(cx - ch_len), int(cy), int(cx - 2), int(cy))
+        painter.drawLine(int(cx + 2), int(cy), int(cx + ch_len), int(cy))
+        painter.drawLine(int(cx), int(cy - ch_len), int(cx), int(cy - 2))
+        painter.drawLine(int(cx), int(cy + 2), int(cx), int(cy + ch_len))
+
+        # 6. Типографика NeonRoute
+        title_font = QFont("Inter")
+        title_font.setStyleHint(QFont.StyleHint.SansSerif)
+        title_font.setPixelSize(11)
+        title_font.setBold(True)
+        title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.4)
+        painter.setFont(title_font)
+
+        title_alpha = int(210 + 45 * pulse)
+        painter.setPen(QColor(0, 240, 255, title_alpha))
+        title_rect = QRectF(10, cy + 28, w - 20, 18)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter, "СИНТЕЗ КАДРА // GENERATING")
+
+        sub_font = QFont("Inter")
+        sub_font.setStyleHint(QFont.StyleHint.SansSerif)
+        sub_font.setPixelSize(10)
+        painter.setFont(sub_font)
+        painter.setPen(QColor(148, 163, 184, 180))
+        sub_rect = QRectF(10, cy + 48, w - 20, 16)
+        painter.drawText(sub_rect, Qt.AlignmentFlag.AlignCenter, "SD WebUI Forge • Рендеринг сцены...")
+
+        # 7. Нижняя неоновая световая нить
+        line_w = 90.0 + 50.0 * pulse
+        line_x = (w - line_w) / 2.0
+        line_y = h - 18.0
+
+        trace_grad = QLinearGradient(line_x, line_y, line_x + line_w, line_y)
+        trace_grad.setColorAt(0.0, QColor(0, 240, 255, 0))
+        trace_grad.setColorAt(0.5, QColor(0, 240, 255, int(160 * pulse)))
+        trace_grad.setColorAt(1.0, QColor(56, 189, 248, 0))
+
+        trace_pen = QPen(QBrush(trace_grad), 1.6)
+        painter.setPen(trace_pen)
+        painter.drawLine(int(line_x), int(line_y), int(line_x + line_w), int(line_y))
 
 
 class ChatMessageWidget(QWidget):
@@ -171,6 +327,7 @@ class ChatMessageWidget(QWidget):
         self.avatar_lbl: Optional[QLabel] = None
         self.text_browser: Optional[SelectableTextBrowser] = None
         self.art_proposal_chip: Optional[QPushButton] = None
+        self.art_placeholder: Optional[CyberpunkArtPlaceholderWidget] = None
         self.footer_container: Optional[QWidget] = None
         self.footer_layout: Optional[QHBoxLayout] = None
         self.visual_intent: Optional[Union[dict, Any]] = visual_intent
@@ -854,19 +1011,61 @@ class ChatMessageWidget(QWidget):
         except RuntimeError:
             pass
 
+    def show_art_loading_placeholder(self):
+        """Отображает киберпанк-лоадер синтеза кадра в теле бабла."""
+        if getattr(self, "art_placeholder", None) is not None:
+            return
+
+        if getattr(self, "art_proposal_chip", None) is not None:
+            self.art_proposal_chip.setVisible(False)
+
+        if not hasattr(self, "bubble_container") or not self.bubble_container:
+            return
+
+        placeholder = CyberpunkArtPlaceholderWidget(self.bubble_container)
+        self.art_placeholder = placeholder
+
+        layout = self.bubble_container.layout()
+        if layout:
+            layout.addWidget(placeholder)
+
+        if not self.raw_text or not self.raw_text.strip():
+            if hasattr(self, "text_browser") and self.text_browser:
+                self.text_browser.setFixedHeight(0)
+                self.text_browser.setVisible(False)
+
+        self._update_bubble_geometry()
+        self._adjust_text_height()
+
+    def hide_art_loading_placeholder(self):
+        """Плавно завершает и удаляет плейсхолдер синтеза кадра."""
+        placeholder = getattr(self, "art_placeholder", None)
+        if placeholder is not None:
+            try:
+                placeholder.stop()
+                placeholder.deleteLater()
+            except Exception:
+                pass
+            self.art_placeholder = None
+            self._update_bubble_geometry()
+            self._adjust_text_height()
+
     def set_scene_art_busy(self, busy: bool, text: Optional[str] = None):
         """Детерминированное управление состоянием кнопки генерации кадра."""
-        if not getattr(self, "btn_scene_art", None):
-            return
-        try:
-            self.btn_scene_art.setEnabled(not busy)
-            if busy:
-                self.btn_scene_art.setText(text or "⏳ Генерация...")
-            else:
-                self.btn_scene_art.setText("🎨 Арт сцены")
-            self._refresh_layout()
-        except RuntimeError:
-            pass
+        if getattr(self, "btn_scene_art", None):
+            try:
+                self.btn_scene_art.setEnabled(not busy)
+                if busy:
+                    self.btn_scene_art.setText(text or "⏳ Генерация...")
+                else:
+                    self.btn_scene_art.setText("🎨 Арт сцены")
+                self._refresh_layout()
+            except RuntimeError:
+                pass
+        if busy:
+            self.show_art_loading_placeholder()
+        else:
+            self.hide_art_loading_placeholder()
 
     def _on_scene_art_click(self, btn: Optional[QPushButton] = None):
         """Запуск генерации кадра сцены с приоритетом готового visual_intent."""
@@ -1004,11 +1203,15 @@ class ChatMessageWidget(QWidget):
                     child.deleteLater()
                 except Exception:
                     pass
+        if getattr(self, "art_placeholder", None) is not None:
+            self.hide_art_loading_placeholder()
         self.attach_file(p)
 
     def attach_file(self, file_path: Path, generation_params: Optional[dict] = None):
         if not self.bubble_container:
             return
+        if getattr(self, "art_placeholder", None) is not None:
+            self.hide_art_loading_placeholder()
         if getattr(self, "art_proposal_chip", None):
             self.art_proposal_chip.deleteLater()
             self.art_proposal_chip = None

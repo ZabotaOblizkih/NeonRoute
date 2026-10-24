@@ -13,7 +13,7 @@ from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QWidget, QPushButton
 from qfluentwidgets import ToolTipFilter, ToolTipPosition
 
-from ui.components.chat_bubble import ChatMessageWidget
+from ui.components.chat_bubble import ChatMessageWidget, CyberpunkArtPlaceholderWidget
 
 logger = logging.getLogger("NeonRoute.AssistantChatBubble")
 
@@ -167,4 +167,8 @@ class AssistantChatMessageWidget(ChatMessageWidget):
                     chip.setText("🎨 Сгенерировать иллюстрацию")
             except RuntimeError:
                 pass
+        if busy:
+            self.show_art_loading_placeholder()
+        else:
+            self.hide_art_loading_placeholder()
         self._update_bubble_geometry()

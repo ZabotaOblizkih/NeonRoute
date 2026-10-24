@@ -21,7 +21,10 @@ from ui.components.chat_bubble import ChatMessageWidget
 logger = logging.getLogger("NeonRoute.AssistantFlow")
 
 RE_IMAGE_TAG = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', re.IGNORECASE)
-RE_GALLERY_TRIGGER = re.compile(r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ)\]', re.IGNORECASE)
+RE_GALLERY_TRIGGER = re.compile(
+    r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ|ГАЛЕРИЯ|ГАЛЛЕРЕЯ|ГАЛЛЕРИЯ)\]',
+    re.IGNORECASE
+)
 
 
 class AssistantFlowControllerMixin:
@@ -261,6 +264,14 @@ class AssistantFlowControllerMixin:
         if not extracted_image_prompt:
             return
 
+        if target_widget is None and hasattr(self, "chat_layout"):
+            for i in reversed(range(self.chat_layout.count())):
+                item = self.chat_layout.itemAt(i)
+                w = item.widget() if item else None
+                if w and getattr(w, "is_user", None) is False:
+                    target_widget = w
+                    break
+
         raw_prompt = extracted_image_prompt.strip()
         router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
         active_models = {
@@ -345,15 +356,20 @@ class AssistantFlowControllerMixin:
 
         target_char = "Элария" if is_self_portrait else None
 
-        auto_art = self.app_config.get("auto_generate_art", False) if hasattr(self, "app_config") and isinstance(self.app_config, dict) else False
-        if auto_art and hasattr(self, "pill_forge") and self.pill_forge.is_online:
-            self._on_scene_art_requested(visual_intent=v_intent, widget=target_widget, preferred_style=effective_style, character_name=target_char)
-        else:
-            if target_widget is not None and hasattr(target_widget, "add_art_proposal_chip"):
-                target_widget.add_art_proposal_chip(
-                    raw_prompt,
-                    lambda v=v_intent, w=target_widget, s=effective_style, c=target_char: self._on_scene_art_requested(visual_intent=v, widget=w, preferred_style=s, character_name=c)
+        if hasattr(self, "pill_forge") and self.pill_forge.is_online:
+            self._on_scene_art_requested(
+                visual_intent=v_intent,
+                widget=target_widget,
+                preferred_style=effective_style,
+                character_name=target_char
+            )
+        elif target_widget is not None and hasattr(target_widget, "add_art_proposal_chip"):
+            target_widget.add_art_proposal_chip(
+                raw_prompt,
+                lambda v=v_intent, w=target_widget, s=effective_style, c=target_char: self._on_scene_art_requested(
+                    visual_intent=v, widget=w, preferred_style=s, character_name=c
                 )
+            )
 
     def _enqueue_gallery_art_pass(self, user_query: str):
         best_model_id = "realistic"
@@ -423,11 +439,23 @@ class AssistantFlowControllerMixin:
             if img_match:
                 extracted = re.sub(r'^[\s\*_\-\#]+', '', img_match.group(1)).strip()
                 self._dispatch_art_to_forge(extracted, target_widget, user_query)
+            else:
+                if target_widget and hasattr(target_widget, "hide_art_loading_placeholder"):
+                    target_widget.hide_art_loading_placeholder()
             return
 
-        has_gallery = bool(RE_GALLERY_TRIGGER.search(text))
+        gallery_match = RE_GALLERY_TRIGGER.search(text)
+        has_gallery = gallery_match is not None
         if has_gallery:
-            text = RE_GALLERY_TRIGGER.sub('', text).strip()
+            # Вырезаем сам маркер из любой позиции (в начале, в середине или в конце)
+            text = RE_GALLERY_TRIGGER.sub('', text)
+            # Вырезаем любые фейковые markdown-картинки вида ![alt](url)
+            text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+            # Схлопываем избыточные переносы строк
+            text = re.sub(r'\n{3,}', '\n\n', text).strip()
+            # Если текста после очистки не осталось — оставляем пустую строку (без заглушек)
+            if not text:
+                text = ""
 
         # Очистка от сгенерированных моделью фейковых Markdown-картинок вида ![alt](url)
         text = re.sub(r'!\[.*?\]\(.*?\)', '', text).strip()
@@ -439,13 +467,6 @@ class AssistantFlowControllerMixin:
             clean_text = RE_IMAGE_TAG.sub('', text)
             clean_text = re.sub(r'(?:\n\s*)(?:Элария|Assistant|Пользователь|User)\s*:\s*$', '', clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
-            if not clean_text:
-                clean_text = random.choice([
-                    "Поймала образ. Сейчас соберу сцену... 🎨",
-                    "Отличная задумка. Уже настраиваю рендер.",
-                    "Секунду, перевожу мысль в кадр...",
-                    "Взяла в работу. Сейчас покажу, как это выглядит."
-                ])
             text = clean_text
 
         text = TextRegexFilter.process_output(text)
@@ -455,12 +476,7 @@ class AssistantFlowControllerMixin:
 
         if not text:
             if has_gallery:
-                text = random.choice([
-                    "Поймала образ. Сейчас соберу сцену... 🎨",
-                    "Отличная задумка. Уже настраиваю рендер.",
-                    "Секунду, перевожу мысль в кадр...",
-                    "Взяла в работу. Сейчас покажу, как это выглядит."
-                ])
+                text = ""
             else:
                 text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
 
@@ -468,9 +484,21 @@ class AssistantFlowControllerMixin:
         avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
 
         msg_widget = getattr(self, "_turn_bubble", None)
+        if msg_widget is None:
+            msg_widget = getattr(self, "_current_streaming_widget", None)
+
+        if msg_widget is None and hasattr(self, "chat_layout"):
+            for i in reversed(range(self.chat_layout.count())):
+                item = self.chat_layout.itemAt(i)
+                w = item.widget() if item else None
+                if w and getattr(w, "is_user", None) is False:
+                    msg_widget = w
+                    break
+
         if msg_widget is not None:
             try:
                 msg_widget.set_text(text)
+                self._turn_bubble = msg_widget
             except (RuntimeError, AttributeError):
                 msg_widget = None
 
@@ -481,6 +509,12 @@ class AssistantFlowControllerMixin:
             except (RuntimeError, AttributeError):
                 logger.warning("[AssistantFlow] Не удалось отрисовать сообщение: UI чата пересоздается.")
                 return
+
+        self._pending_gallery_art_widget = msg_widget
+
+        # Активация киберпанк-лоадера ожидания кадра в бабле
+        if has_gallery and hasattr(msg_widget, "show_art_loading_placeholder"):
+            msg_widget.show_art_loading_placeholder()
 
         self._sync_turn(role="assistant", content=text, replace_last=True)
         if hasattr(self, "_check_mode_lock"):
