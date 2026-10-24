@@ -89,18 +89,25 @@ ChatMessageWidget {
     padding: 6px 10px;
 }
 
-/* Chat Input Field (Sunken Glass Effect) */
+/* Chat Input Field (Glassmorphic Sunken Glass Effect) */
 #ChatInputField, ChatInputBox {
-    background-color: rgba(10, 13, 20, 0.85);
+    background-color: rgba(15, 23, 42, 0.65);
     color: #F8FAFC;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 11px;
     padding: 8px 10px 8px 12px;
     font-size: 14px;
+    outline: none;
+}
+#ChatInputField:hover, ChatInputBox:hover {
+    background-color: rgba(15, 23, 42, 0.75);
+    border: 1px solid rgba(0, 240, 255, 0.35);
+    outline: none;
 }
 #ChatInputField:focus, ChatInputBox:focus {
-    border: 1px solid rgba(0, 240, 255, 0.50);
-    background-color: rgba(10, 13, 20, 0.95);
+    background-color: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(0, 240, 255, 0.65);
+    outline: none;
 }
 
 /* Standard Buttons */

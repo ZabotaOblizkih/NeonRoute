@@ -37,15 +37,15 @@ class ChatInputPanel(QFrame):
     def _setup_style(self):
         self.setStyleSheet("""
             QFrame#InputAreaContainer {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(16, 22, 36, 0.62), stop:1 rgba(10, 14, 22, 0.72));
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(16, 22, 36, 0.72), stop:1 rgba(10, 14, 22, 0.82));
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 14px;
                 margin: 0px 14px 12px 14px;
             }
             TransparentToolButton#AttachButton,
             TransparentToolButton#MicButton,
             TransparentToolButton#EmojiButton {
-                border-radius: 8px;
+                border-radius: 9px;
                 border: 1px solid transparent;
             }
             TransparentToolButton#AttachButton:hover,
@@ -91,7 +91,7 @@ class ChatInputPanel(QFrame):
         self.btn_attach = TransparentToolButton(attach_icon, self)
         self.btn_attach.setObjectName("AttachButton")
         self.btn_attach.setToolTip("Прикрепить файл или изображение")
-        self.btn_attach.setFixedSize(32, 32)
+        self.btn_attach.setFixedSize(34, 34)
         self.btn_attach.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_attach.installEventFilter(
             ToolTipFilter(self.btn_attach, showDelay=300, position=ToolTipPosition.TOP)
@@ -103,7 +103,7 @@ class ChatInputPanel(QFrame):
         self.btn_mic = TransparentToolButton(FIF.MICROPHONE, self)
         self.btn_mic.setObjectName("MicButton")
         self.btn_mic.setToolTip("Голосовой ввод (Faster-Whisper)")
-        self.btn_mic.setFixedSize(32, 32)
+        self.btn_mic.setFixedSize(34, 34)
         self.btn_mic.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_mic.installEventFilter(
             ToolTipFilter(self.btn_mic, showDelay=300, position=ToolTipPosition.TOP)
@@ -119,7 +119,7 @@ class ChatInputPanel(QFrame):
                     TransparentToolButton#MicButton {
                         background-color: rgba(255, 0, 127, 0.28);
                         border: 1px solid #FF007F;
-                        border-radius: 8px;
+                        border-radius: 9px;
                     }
                 """)
             else:
@@ -135,7 +135,7 @@ class ChatInputPanel(QFrame):
         self.btn_emoji = TransparentToolButton(emoji_icon, self)
         self.btn_emoji.setObjectName("EmojiButton")
         self.btn_emoji.setToolTip("Вставить эмодзи")
-        self.btn_emoji.setFixedSize(32, 32)
+        self.btn_emoji.setFixedSize(34, 34)
         self.btn_emoji.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_emoji.installEventFilter(
             ToolTipFilter(self.btn_emoji, showDelay=300, position=ToolTipPosition.TOP)
