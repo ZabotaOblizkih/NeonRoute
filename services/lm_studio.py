@@ -94,8 +94,13 @@ class LMStudioClient(QObject):
         self._current_loaded_ctx: int = 8192
         self._current_loaded_gpu: str = "1.0"
         self._last_loaded_model_id: Optional[str] = None
+        self.process_manager: Optional[Any] = None
         self._reload_lock = threading.Lock()
         self._initialized = True
+
+    def set_process_manager(self, pm: Any) -> None:
+        """Injects ProcessManager dependency for headless server coordination."""
+        self.process_manager = pm
 
     def _init_session(self):
         self._persistent_session = requests.Session()
@@ -113,9 +118,39 @@ class LMStudioClient(QObject):
         if not target or not last_id:
             return False
 
-        t_clean = target.lower().strip()
-        l_clean = last_id.lower().strip()
-        return t_clean == l_clean
+        t_clean = str(target).lower().strip()
+        l_clean = str(last_id).lower().strip()
+        if t_clean == l_clean:
+            return True
+
+        # Сравнение по Path(..).stem.lower()
+        if Path(t_clean).stem.lower() == Path(l_clean).stem.lower():
+            return True
+
+        # Сравнение по нормализованному имени без .gguf / -gguf
+        def _clean_stem(s: str) -> str:
+            name = s.replace("\\", "/").rsplit("/", 1)[-1]
+            if name.endswith(".gguf"):
+                name = name[:-5]
+            if name.endswith("-gguf"):
+                name = name[:-5]
+            return name
+
+        if _clean_stem(t_clean) == _clean_stem(l_clean):
+            return True
+
+        # Если доступен ServerConfigResolver в связке с ProcessManager, сверяем резолв
+        if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
+            try:
+                from services.server_config import ServerConfigResolver
+                p1 = ServerConfigResolver.resolve_model_path(t_clean)
+                p2 = ServerConfigResolver.resolve_model_path(l_clean)
+                if p1 and p2 and p1 == p2:
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     def check_health(self) -> Tuple[bool, str]:
         """Быстрая неблокирующая проверка доступности сервера (Keep-Alive, таймаут 1.2 сек)."""
@@ -185,47 +220,55 @@ class LMStudioClient(QObject):
 
     def unload_models_cli(self) -> bool:
         """Полная выгрузка моделей из VRAM с обновлением флага состояния."""
-        logger.info("Unloading LM Studio models to free VRAM...")
-        try:
-            clean_root = self.base_url.strip().rstrip("/")
-            if clean_root.endswith("/v1"):
-                clean_root = clean_root[:-3].rstrip("/")
-            for ep in (f"{clean_root}/api/v0/model/unload", f"{clean_root}/api/v0/models/unload"):
-                try:
-                    r = requests.post(ep, json={}, timeout=0.8)
-                    if r.status_code in (200, 204):
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        try:
-            import subprocess
-            import sys
-            startupinfo = None
-            creationflags = 0
-            if sys.platform == "win32":
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0
-                creationflags = subprocess.CREATE_NO_WINDOW
+        logger.info("Unloading LM Studio / LLM models to free VRAM...")
 
-            res_unl = subprocess.run(
-                ["lms", "unload", "--all"],
-                capture_output=True,
-                text=True,
-                timeout=15.0,
-                startupinfo=startupinfo,
-                creationflags=creationflags
-            )
-            logger.info(f"CLI unload completed (code {res_unl.returncode}): {res_unl.stdout.strip() or res_unl.stderr.strip()} {_get_vram_telemetry_str()}")
-        except Exception as e:
-            logger.warning(f"Failed to unload LMS models via CLI: {e}")
+        if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
+            try:
+                self.process_manager.evict_llm_for_forge_sync()
+            except Exception as e:
+                logger.warning(f"Failed to evict LLM via process_manager: {e}")
+        else:
+            try:
+                clean_root = self.base_url.strip().rstrip("/")
+                if clean_root.endswith("/v1"):
+                    clean_root = clean_root[:-3].rstrip("/")
+                for ep in (f"{clean_root}/api/v0/model/unload", f"{clean_root}/api/v0/models/unload"):
+                    try:
+                        r = requests.post(ep, json={}, timeout=0.8)
+                        if r.status_code in (200, 204):
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                import subprocess
+                import sys
+                startupinfo = None
+                creationflags = 0
+                if sys.platform == "win32":
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0
+                    creationflags = subprocess.CREATE_NO_WINDOW
+
+                res_unl = subprocess.run(
+                    ["lms", "unload", "--all"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15.0,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags
+                )
+                logger.info(f"CLI unload completed (code {res_unl.returncode}): {res_unl.stdout.strip() or res_unl.stderr.strip()} {_get_vram_telemetry_str()}")
+            except Exception as e:
+                logger.warning(f"Failed to unload LMS models via CLI: {e}")
 
         self._is_model_unloaded = True
         self._current_ctx = 0
         self._current_loaded_ctx = 0
         self._current_loaded_gpu = ""
+        # СТРОГО СОХРАНЯЕМ self._last_loaded_model_id для автоматического возврата LLM после генерации в Forge
         return True
 
     def safe_unload_models(self) -> bool:
@@ -246,9 +289,17 @@ class LMStudioClient(QObject):
         """
         with self._reload_lock:
             target_model = preferred_model or getattr(self, "_last_loaded_model_id", None)
-            if not target_model or target_model.startswith("default"):
-                catalog = self.get_models()
-                target_model = catalog[0] if catalog else None
+            if not target_model or str(target_model).startswith("default"):
+                if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
+                    try:
+                        from utils.config_manager import ConfigManager
+                        app_cfg = ConfigManager.load_config()
+                        target_model = app_cfg.get("active_model")
+                    except Exception:
+                        pass
+                if not target_model or str(target_model).startswith("default"):
+                    catalog = self.get_models()
+                    target_model = catalog[0] if catalog else None
 
             if not target_model:
                 logger.warning("[LMStudio] Нет доступных моделей для загрузки.")
@@ -274,17 +325,45 @@ class LMStudioClient(QObject):
             current_gpu = getattr(self, "_current_loaded_gpu", "1.0")
 
             # Защита от частых перезагрузок (Reload Loop):
-            # Перезагрузка не требуется, если модель активна, а текущей ёмкости контекста достаточно
+            # Перезагрузка не требуется, если модель активна, текущей ёмкости контекста достаточно и сервер доступен
             if (
                 not getattr(self, "_is_model_unloaded", False)
                 and self.is_model_loaded(model_name)
                 and current_ctx >= target_ctx
                 and current_gpu == target_gpu
+                and self.check_health()[0]
             ):
                 self._last_loaded_model_id = model_name
                 return True
 
-            # Монопольная зачистка: выгружает старую модель перед стартом новой
+            # Headless server путь через ProcessManager
+            if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
+                logger.info(f"[LMStudio] Шлюз: запуск/перезапуск headless сервера для '{model_name}' (CTX={target_ctx}, GPU={target_gpu})...")
+                ngl = 0 if target_gpu in ("0", "0.0", "cpu", "CPU Only") else None
+                if ngl is None:
+                    try:
+                        from services.server_config import ServerConfigResolver
+                        ngl = ServerConfigResolver.load_ini().get("gpu_layers", 99)
+                    except Exception:
+                        ngl = 99
+
+                ok = self.process_manager.start_llama_server_sync(
+                    model_identifier=model_name,
+                    context_length=target_ctx,
+                    gpu_layers=ngl
+                )
+                if not ok:
+                    logger.warning(f"[LMStudio] Headless сервер не смог запустить модель '{model_name}'.")
+                    raise ModelNotFoundError(str(model_name))
+
+                self._is_model_unloaded = False
+                self._last_loaded_model_id = model_name
+                self._current_loaded_ctx = target_ctx
+                self._current_loaded_gpu = target_gpu
+                logger.info(f"[LMStudio] Headless модель '{model_name}' готова к работе ({target_ctx // 1024}K, GPU layers: {ngl}).")
+                return True
+
+            # Legacy путь через subprocess lms load
             logger.info(f"[LMStudio] Подготовка VRAM перед загрузкой '{model_name}' (сброс старых слотов)...")
             self.unload_models_cli()
 
@@ -344,7 +423,6 @@ class LMStudioClient(QObject):
                 out = res.stdout or ""
                 err = res.stderr or ""
 
-                # После вызова CLI lms load:
                 if "Model not found" in out or "No model found" in out or "not found" in err.lower() or "not found" in out.lower():
                     logger.warning(f"[LMStudio] Модель '{model_name}' не найдена на диске.")
                     raise ModelNotFoundError(model_name)

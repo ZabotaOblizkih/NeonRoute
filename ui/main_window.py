@@ -85,7 +85,7 @@ from ui.components.chat_input_panel import ChatInputPanel
 from ui.dialogs.shutdown_dialog import ShutdownProgressDialog
 from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 from ui.controllers.reminder_controller import ReminderController
-from ui.builders.menu_builder import MenuBuilder
+from ui.builders.menu_builder import MenuBuilder, ClickOnlyMenuBar
 from ui.controllers.window_state_controller import WindowStateMixin
 from ui.controllers.dialog_controller import DialogControllerMixin
 from ui.controllers.task_lifecycle_controller import TaskLifecycleMixin
@@ -146,7 +146,7 @@ class MainWindow(
     def __init__(self):
         super().__init__()
         setup_global_log_handler()
-        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} — {APP_TAGLINE}")
+        self.setWindowTitle(APP_NAME)
         self._is_initializing = True  # Флаг подавления фоновых триггеров при старте
         self.resize(1200, 820)
         self.setMinimumSize(960, 640)
@@ -193,6 +193,7 @@ class MainWindow(
         self.health_worker = HealthCheckWorker(interval_ms=3500)
         self.process_manager = ProcessManager(self)
         self.process_manager.lm_client = self.lm_client
+        self.lm_client.set_process_manager(self.process_manager)
         self.chat_controller = self
 
         # State Variables
@@ -266,16 +267,23 @@ class MainWindow(
     def chat_scroll_content(self) -> Optional[QWidget]:
         return getattr(self, "chat_container", None)
 
-    def menuBar(self) -> QMenuBar:
+    def menuBar(self) -> ClickOnlyMenuBar:
         if not hasattr(self, "_menu_bar") or self._menu_bar is None:
-            self._menu_bar = QMenuBar(self)
+            self._menu_bar = ClickOnlyMenuBar(self)
         return self._menu_bar
 
     def _setup_ui(self):
         # 0. Custom Fluent TitleBar with Windows 11 Snap Layouts
         title_bar = FluentTitleBar(self)
         title_bar.setFixedHeight(48)
-        title_bar.setTitle(self.windowTitle())
+        title_bar.setTitle("")
+        if hasattr(title_bar, "titleLabel") and title_bar.titleLabel:
+            title_bar.titleLabel.setVisible(False)
+            title_bar.titleLabel.clear()
+            try:
+                self.windowTitleChanged.disconnect(title_bar.setTitle)
+            except Exception:
+                pass
         if not self.windowIcon().isNull():
             title_bar.setIcon(self.windowIcon())
         self.setTitleBar(title_bar)
@@ -305,10 +313,12 @@ class MainWindow(
                 pass
             self.titleBar.closeBtn.clicked.connect(self.close)
 
-        # Make title labels transparent for mouse events so dragging works across the whole titlebar
-        if hasattr(self.titleBar, "titleLabel"):
+        # Hide title label completely for clean titlebar, keep labels transparent for mouse dragging
+        if hasattr(self.titleBar, "titleLabel") and self.titleBar.titleLabel:
+            self.titleBar.titleLabel.setVisible(False)
+            self.titleBar.titleLabel.clear()
             self.titleBar.titleLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        if hasattr(self.titleBar, "iconLabel"):
+        if hasattr(self.titleBar, "iconLabel") and self.titleBar.iconLabel:
             self.titleBar.iconLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         central_widget = QWidget(self)
@@ -321,8 +331,8 @@ class MainWindow(
         root_layout.setContentsMargins(0, self.titleBar.height(), 0, 0)
         root_layout.setSpacing(0)
 
-        # 0.2 Menu Bar strictly under TitleBar
-        self._menu_bar = QMenuBar(central_widget)
+        # 0.2 Menu Bar strictly under TitleBar (Click-only opening)
+        self._menu_bar = ClickOnlyMenuBar(central_widget)
         self._menu_bar.setFixedHeight(30)
         root_layout.addWidget(self._menu_bar, 0)
 
