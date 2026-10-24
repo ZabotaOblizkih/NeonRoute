@@ -81,25 +81,25 @@ class ChatInputBox(QTextEdit):
         pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
         self.setPalette(pal)
 
-        # Deep Glassmorphism: semi-transparent base (rgba(15, 23, 42, 0.65)), thin border, no outline
+        # Seamless Sunken Well: deep dark base, no border, no outline
         self.setStyleSheet("""
             QTextEdit#ChatInputField, ChatInputBox#ChatInputField {
-                background-color: rgba(15, 23, 42, 0.65);
+                background-color: rgba(10, 15, 26, 0.75);
                 color: #F8FAFC;
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                border: none;
                 border-radius: 11px;
                 padding: 6px 10px;
                 font-size: 14px;
                 outline: none;
             }
             QTextEdit#ChatInputField:hover, ChatInputBox#ChatInputField:hover {
-                background-color: rgba(15, 23, 42, 0.75);
-                border: 1px solid rgba(0, 240, 255, 0.35);
+                background-color: rgba(13, 20, 34, 0.82);
+                border: none;
                 outline: none;
             }
             QTextEdit#ChatInputField:focus, ChatInputBox#ChatInputField:focus {
-                background-color: rgba(15, 23, 42, 0.88);
-                border: 1px solid rgba(0, 240, 255, 0.65);
+                background-color: rgba(15, 23, 42, 0.92);
+                border: none;
                 outline: none;
             }
         """)
@@ -181,16 +181,17 @@ class ChatInputBox(QTextEdit):
             self.action_btn.setToolTip("Остановить генерацию (Stop)")
             self.action_btn.setStyleSheet("""
                 TransparentToolButton#ChatInputTransformerBtn {
-                    background-color: rgba(255, 0, 127, 0.25);
-                    border: 1px solid #FF007F;
+                    background-color: rgba(255, 0, 127, 0.30);
+                    border: none;
                     border-radius: 18px;
                 }
                 TransparentToolButton#ChatInputTransformerBtn:hover {
                     background-color: rgba(255, 0, 127, 0.50);
-                    border-color: #FF2E93;
+                    border: none;
                 }
                 TransparentToolButton#ChatInputTransformerBtn:pressed {
-                    background-color: rgba(255, 0, 127, 0.75);
+                    background-color: rgba(255, 0, 127, 0.70);
+                    border: none;
                 }
             """)
         else:
@@ -204,16 +205,17 @@ class ChatInputBox(QTextEdit):
                     self.action_btn.setToolTip("Создать арт в Forge (Enter)")
                     self.action_btn.setStyleSheet("""
                         TransparentToolButton#ChatInputTransformerBtn {
-                            background-color: rgba(192, 132, 252, 0.22);
-                            border: 1px solid #C084FC;
+                            background-color: rgba(192, 132, 252, 0.25);
+                            border: none;
                             border-radius: 18px;
                         }
                         TransparentToolButton#ChatInputTransformerBtn:hover {
                             background-color: rgba(192, 132, 252, 0.45);
-                            border-color: #E9D5FF;
+                            border: none;
                         }
                         TransparentToolButton#ChatInputTransformerBtn:pressed {
                             background-color: rgba(192, 132, 252, 0.65);
+                            border: none;
                         }
                     """)
                 else:
@@ -221,16 +223,17 @@ class ChatInputBox(QTextEdit):
                     self.action_btn.setToolTip("Отправить сообщение (Enter)")
                     self.action_btn.setStyleSheet("""
                         TransparentToolButton#ChatInputTransformerBtn {
-                            background-color: rgba(0, 240, 255, 0.18);
-                            border: 1px solid #00F0FF;
+                            background-color: rgba(0, 240, 255, 0.22);
+                            border: none;
                             border-radius: 18px;
                         }
                         TransparentToolButton#ChatInputTransformerBtn:hover {
                             background-color: rgba(0, 240, 255, 0.40);
-                            border-color: #00F0FF;
+                            border: none;
                         }
                         TransparentToolButton#ChatInputTransformerBtn:pressed {
                             background-color: rgba(0, 240, 255, 0.60);
+                            border: none;
                         }
                     """)
             else:
@@ -239,15 +242,16 @@ class ChatInputBox(QTextEdit):
                 self.action_btn.setStyleSheet("""
                     TransparentToolButton#ChatInputTransformerBtn {
                         background-color: rgba(255, 255, 255, 0.04);
-                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        border: none;
                         border-radius: 18px;
                     }
                     TransparentToolButton#ChatInputTransformerBtn:hover {
                         background-color: rgba(255, 255, 255, 0.12);
-                        border: 1px solid rgba(255, 255, 255, 0.20);
+                        border: none;
                     }
                     TransparentToolButton#ChatInputTransformerBtn:pressed {
                         background-color: rgba(255, 255, 255, 0.08);
+                        border: none;
                     }
                 """)
 
