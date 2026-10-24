@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, List, Union, Any
 
 from config import WORKSPACE_DIR
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QUrl, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QUrl, QTimer, QSize
 from PyQt6.QtGui import (
     QTextOption,
     QPixmap, QCursor, QIcon, QPainter, QPainterPath,
@@ -29,6 +29,12 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser,
     QPushButton, QDialog, QApplication, QFrame, QMenu, QLayout,
     QSizePolicy, QGraphicsDropShadowEffect
+)
+from qfluentwidgets import (
+    TransparentToolButton,
+    FluentIcon as FIF,
+    ToolTipFilter,
+    ToolTipPosition,
 )
 
 logger = logging.getLogger("NeonRoute.ChatBubble")
@@ -155,8 +161,12 @@ class ChatMessageWidget(QWidget):
             self.timestamp = raw_ts
         self.negative_badge: Optional[QWidget] = None
         self.audio_widget: Optional[AudioPlayerWidget] = None
-        self.btn_translate: Optional[QPushButton] = None
-        self.btn_scene_art: Optional[QPushButton] = None
+        self.btn_translate: Optional[TransparentToolButton] = None
+        self.btn_scene_art: Optional[TransparentToolButton] = None
+        self.copy_btn: Optional[TransparentToolButton] = None
+        self.tts_btn: Optional[TransparentToolButton] = None
+        self.btn_regen: Optional[TransparentToolButton] = None
+        self.btn_del: Optional[TransparentToolButton] = None
         self.bubble_container: Optional[QFrame] = None
         self.avatar_lbl: Optional[QLabel] = None
         self.text_browser: Optional[SelectableTextBrowser] = None
@@ -205,36 +215,27 @@ class ChatMessageWidget(QWidget):
         if self.is_error:
             self.bubble_container.setStyleSheet("""
                 #BubbleContainer, #bubble_frame {
-                    background-color: rgba(45, 17, 23, 0.88);
-                    border: 1px solid rgba(239, 68, 68, 0.45);
-                    border-top: 1px solid rgba(255, 255, 255, 0.15);
-                    border-left: 1px solid rgba(255, 255, 255, 0.05);
-                    border-bottom: 1px solid rgba(0, 0, 0, 0.5);
-                    border-radius: 10px;
+                    background-color: rgba(45, 17, 23, 0.85);
+                    border: 1px solid rgba(239, 68, 68, 0.40);
+                    border-radius: 13px;
                     padding: 8px 12px;
                 }
             """)
         elif self.is_user:
             self.bubble_container.setStyleSheet("""
                 #BubbleContainer, #bubble_frame {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(0, 110, 130, 0.90), stop:1 rgba(0, 70, 90, 0.90));
-                    border-top: 1px solid rgba(0, 240, 255, 0.4);
-                    border-left: 1px solid rgba(0, 240, 255, 0.15);
-                    border-right: 1px solid rgba(0, 240, 255, 0.15);
-                    border-bottom: 1px solid rgba(0, 0, 0, 0.5);
-                    border-radius: 10px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(0, 140, 160, 0.45), stop:1 rgba(0, 80, 110, 0.55));
+                    border: 1px solid rgba(0, 240, 255, 0.28);
+                    border-radius: 13px;
                     padding: 8px 12px;
                 }
             """)
         else:
             self.bubble_container.setStyleSheet("""
                 #BubbleContainer, #bubble_frame {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(28, 36, 54, 0.92), stop:1 rgba(18, 23, 35, 0.92));
-                    border-top: 1px solid rgba(255, 255, 255, 0.15);
-                    border-left: 1px solid rgba(255, 255, 255, 0.05);
-                    border-right: 1px solid rgba(255, 255, 255, 0.05);
-                    border-bottom: 1px solid rgba(0, 0, 0, 0.5);
-                    border-radius: 10px;
+                    background-color: rgba(17, 22, 34, 0.75);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 13px;
                     padding: 8px 12px;
                 }
             """)
@@ -259,21 +260,6 @@ class ChatMessageWidget(QWidget):
         name_lbl.setStyleSheet(f"color: {name_color}; font-family: 'Inter', 'Segoe UI', sans-serif; font-weight: bold; font-size: 12px; background: transparent;")
         header_layout.addWidget(name_lbl)
         header_layout.addStretch()
-
-        copy_btn = QPushButton("📋", self.bubble_container)
-        copy_btn.setToolTip("Копировать текст")
-        copy_btn.setFixedSize(22, 22)
-        copy_btn.setStyleSheet("background: transparent; border: none; font-size: 11px; color: #94A3B8;")
-        copy_btn.clicked.connect(self._copy_text)
-        header_layout.addWidget(copy_btn)
-
-        if not self.is_user and not self.is_error:
-            tts_btn = QPushButton("🔊", self.bubble_container)
-            tts_btn.setToolTip("Озвучить сообщение через F5-TTS")
-            tts_btn.setFixedSize(22, 22)
-            tts_btn.setStyleSheet("background: transparent; border: none; font-size: 11px; color: #94A3B8;")
-            tts_btn.clicked.connect(lambda: self.tts_requested.emit(self.raw_text))
-            header_layout.addWidget(tts_btn)
 
         bubble_layout.addLayout(header_layout)
 
@@ -421,45 +407,46 @@ class ChatMessageWidget(QWidget):
         self.footer_container = QWidget(self)
         footer_layout = QHBoxLayout(self.footer_container)
         footer_layout.setContentsMargins(4, 2, 4, 0)
-        footer_layout.setSpacing(6)
+        footer_layout.setSpacing(4)
         self.footer_layout = footer_layout
 
-        if not self.is_error:
-            trans_label = "🌐 Оригинал" if (self.is_showing_translation and self.translated_text) else "🌐 Перевести"
-            self.btn_translate = QPushButton(trans_label, self.footer_container)
+        self.copy_btn = TransparentToolButton(FIF.COPY, self.footer_container)
+        self.copy_btn.setFixedSize(24, 24)
+        self.copy_btn.setIconSize(QSize(13, 13))
+        self.copy_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.copy_btn.setToolTip("Копировать текст")
+        self.copy_btn.installEventFilter(ToolTipFilter(self.copy_btn, 300, ToolTipPosition.BOTTOM))
+        self.copy_btn.clicked.connect(self._copy_text)
+        footer_layout.addWidget(self.copy_btn)
+
+        if not self.is_user and not self.is_error:
+            self.tts_btn = TransparentToolButton(FIF.VOLUME, self.footer_container)
+            self.tts_btn.setFixedSize(24, 24)
+            self.tts_btn.setIconSize(QSize(13, 13))
+            self.tts_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            self.tts_btn.setToolTip("Озвучить сообщение (F5-TTS)")
+            self.tts_btn.installEventFilter(ToolTipFilter(self.tts_btn, 300, ToolTipPosition.BOTTOM))
+            self.tts_btn.clicked.connect(lambda: self.tts_requested.emit(self.raw_text))
+            footer_layout.addWidget(self.tts_btn)
+
+            trans_tip = "Показать оригинал" if (self.is_showing_translation and self.translated_text) else "Перевести на русский"
+            self.btn_translate = TransparentToolButton(FIF.LANGUAGE, self.footer_container)
+            self.btn_translate.setFixedSize(24, 24)
+            self.btn_translate.setIconSize(QSize(13, 13))
             self.btn_translate.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            self.btn_translate.setStyleSheet("""
-                QPushButton {
-                    background: transparent;
-                    border: none;
-                    color: #38BDF8;
-                    font-size: 11px;
-                    text-decoration: underline;
-                    padding: 0px 2px;
-                }
-                QPushButton:hover {
-                    color: #00F0FF;
-                }
-            """)
+            self.btn_translate.setToolTip(trans_tip)
+            self.btn_translate.installEventFilter(ToolTipFilter(self.btn_translate, 300, ToolTipPosition.BOTTOM))
             self.btn_translate.clicked.connect(self._toggle_translation)
             footer_layout.addWidget(self.btn_translate)
 
-            if not self.is_user and getattr(self, "is_roleplay", False):
-                self.btn_scene_art = QPushButton("🎨 Арт сцены", self.footer_container)
-                self.btn_scene_art.setToolTip("Создать иллюстрацию сцены через SD WebUI Forge")
+            if getattr(self, "is_roleplay", False):
+                self.btn_scene_art = TransparentToolButton(FIF.PALETTE, self.footer_container)
+                self.btn_scene_art.setFixedSize(24, 24)
+                self.btn_scene_art.setIconSize(QSize(13, 13))
                 self.btn_scene_art.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                self.btn_scene_art.setStyleSheet("""
-                    QPushButton {
-                        background: transparent;
-                        border: none;
-                        color: #C084FC;
-                        font-size: 11px;
-                        padding: 0px 2px;
-                    }
-                    QPushButton:hover {
-                        color: #E879F9;
-                    }
-                """)
+                self.btn_scene_art.setStyleSheet("TransparentToolButton:hover { background-color: rgba(192, 132, 252, 0.20); }")
+                self.btn_scene_art.setToolTip("Создать иллюстрацию сцены (SD WebUI Forge)")
+                self.btn_scene_art.installEventFilter(ToolTipFilter(self.btn_scene_art, 300, ToolTipPosition.BOTTOM))
                 self.btn_scene_art.clicked.connect(lambda: self._on_scene_art_click(self.btn_scene_art))
                 footer_layout.addWidget(self.btn_scene_art)
 
@@ -470,47 +457,31 @@ class ChatMessageWidget(QWidget):
                     cue_t = self.visual_intent.get("prompt", "") if isinstance(self.visual_intent, dict) else getattr(self.visual_intent, "prompt", "")
                     self.set_scene_art_state(is_ready=True, cue_text=cue_t)
 
-                btn_regen = QPushButton("🔄 Повтор", self.footer_container)
-                btn_regen.setToolTip("Регенерировать этот ответ")
-                btn_regen.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                btn_regen.setStyleSheet("""
-                    QPushButton {
-                        background: transparent;
-                        border: none;
-                        color: #94A3B8;
-                        font-size: 11px;
-                        padding: 0px 2px;
-                    }
-                    QPushButton:hover {
-                        color: #FBBF24;
-                    }
-                """)
-                btn_regen.clicked.connect(lambda: self.regenerate_requested.emit(self))
-                footer_layout.addWidget(btn_regen)
+            self.btn_regen = TransparentToolButton(FIF.SYNC, self.footer_container)
+            self.btn_regen.setFixedSize(24, 24)
+            self.btn_regen.setIconSize(QSize(13, 13))
+            self.btn_regen.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            self.btn_regen.setStyleSheet("TransparentToolButton:hover { background-color: rgba(251, 191, 36, 0.20); }")
+            self.btn_regen.setToolTip("Повторить этот ответ")
+            self.btn_regen.installEventFilter(ToolTipFilter(self.btn_regen, 300, ToolTipPosition.BOTTOM))
+            self.btn_regen.clicked.connect(lambda: self.regenerate_requested.emit(self))
+            footer_layout.addWidget(self.btn_regen)
 
-        btn_del = QPushButton("🗑️", self.footer_container)
-        btn_del.setToolTip("Удалить это сообщение")
-        btn_del.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        btn_del.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                color: #64748B;
-                font-size: 11px;
-                padding: 0px 2px;
-            }
-            QPushButton:hover {
-                color: #EF4444;
-            }
-        """)
-        btn_del.clicked.connect(lambda: self.delete_requested.emit(self))
-        footer_layout.addWidget(btn_del)
+        self.btn_del = TransparentToolButton(FIF.DELETE, self.footer_container)
+        self.btn_del.setFixedSize(24, 24)
+        self.btn_del.setIconSize(QSize(13, 13))
+        self.btn_del.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_del.setStyleSheet("TransparentToolButton:hover { background-color: rgba(239, 68, 68, 0.20); }")
+        self.btn_del.setToolTip("Удалить это сообщение")
+        self.btn_del.installEventFilter(ToolTipFilter(self.btn_del, 300, ToolTipPosition.BOTTOM))
+        self.btn_del.clicked.connect(lambda: self.delete_requested.emit(self))
+        footer_layout.addWidget(self.btn_del)
 
         footer_layout.addStretch()
 
         self.time_lbl = QLabel(self.timestamp, self.footer_container)
-        self.time_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-family: 'Inter', 'Segoe UI', sans-serif; font-size: 10px; background: transparent;")
-        self.time_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self.time_lbl.setStyleSheet("color: rgba(148, 163, 184, 0.60); font-family: 'Inter', 'Segoe UI', sans-serif; font-size: 10px; background: transparent;")
+        self.time_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         footer_layout.addWidget(self.time_lbl)
 
         self.bubble_container.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -813,6 +784,7 @@ class ChatMessageWidget(QWidget):
         if not self.translated_text:
             if self.btn_translate:
                 self.btn_translate.setText("⏳ Перевод...")
+                self.btn_translate.setToolTip("Выполняется перевод сообщения...")
                 self._refresh_layout()
             self.translate_requested.emit(self.original_text, self)
             return
@@ -821,6 +793,7 @@ class ChatMessageWidget(QWidget):
         self._update_rendered_text()
         if self.btn_translate:
             self.btn_translate.setText("🌐 Оригинал" if self.is_showing_translation else "🌐 Перевести")
+            self.btn_translate.setToolTip("Показать оригинал" if self.is_showing_translation else "Перевести на русский")
         self._refresh_layout()
 
     def set_scene_art_state(self, is_ready: bool, cue_text: str = ""):

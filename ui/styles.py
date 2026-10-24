@@ -51,22 +51,16 @@ ChatMessageWidget {
 
 /* Message Cards (ChatMessageWidget / Bubbles) */
 #BubbleContainer, #bubble_frame {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(28, 36, 54, 0.92), stop:1 rgba(18, 23, 35, 0.92));
-    border-top: 1px solid rgba(255, 255, 255, 0.15);
-    border-left: 1px solid rgba(255, 255, 255, 0.05);
-    border-right: 1px solid rgba(255, 255, 255, 0.05);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.5);
-    border-radius: 10px;
+    background-color: rgba(17, 22, 34, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 13px;
     padding: 8px 12px;
 }
 
 #BubbleContainer[is_user="true"], #bubble_frame[is_user="true"] {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(0, 110, 130, 0.90), stop:1 rgba(0, 70, 90, 0.90));
-    border-top: 1px solid rgba(0, 240, 255, 0.4);
-    border-left: 1px solid rgba(0, 240, 255, 0.15);
-    border-right: 1px solid rgba(0, 240, 255, 0.15);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.5);
-    border-radius: 10px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(0, 140, 160, 0.45), stop:1 rgba(0, 80, 110, 0.55));
+    border: 1px solid rgba(0, 240, 255, 0.28);
+    border-radius: 13px;
     padding: 8px 12px;
 }
 

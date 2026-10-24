@@ -1,16 +1,18 @@
 """
 Chat Stream Widget Component for NeonRoute.
-Encapsulates QScrollArea, ChatBackgroundViewport, dynamic message bubble layout,
+Encapsulates SmoothScrollArea, ChatBackgroundViewport, dynamic message bubble layout,
 automatic bottom-stickiness, and Ctrl+Wheel font scaling.
+Modernized with QFluentWidgets components under Agentrules.md.
 """
 
 from typing import Optional, TYPE_CHECKING
 from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QScrollArea, QFrame,
+    QWidget, QVBoxLayout, QFrame,
     QPushButton, QApplication
 )
+from qfluentwidgets import SmoothScrollArea
 from ui.components.chat_background import ChatBackgroundViewport
 from ui.components.chat_bubble import ChatMessageWidget
 from utils.config_manager import ConfigManager
@@ -34,10 +36,35 @@ class ChatStreamWidget(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # 1. Scroll Area
-        self.scroll_area = QScrollArea(self)
+        # 1. Smooth Scroll Area (Windows 11 Fluid Scrolling)
+        self.scroll_area = SmoothScrollArea(self)
         self.scroll_area.setObjectName("ChatScrollArea")
-        self.scroll_area.setStyleSheet("background: transparent; border: none;")
+        self.scroll_area.setStyleSheet("""
+            QScrollArea#ChatScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 6px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 0.14);
+                min-height: 24px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(0, 240, 255, 0.45);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -48,6 +75,10 @@ class ChatStreamWidget(QWidget):
         self.chat_viewport.change_dimming_requested.connect(self.window._open_background_settings_dialog)
         self.chat_viewport.reset_background_requested.connect(self.window._on_background_reset)
         self.scroll_area.setViewport(self.chat_viewport)
+
+        # Reinstall smooth scroll delegate on custom viewport
+        if hasattr(self.scroll_area, "delegate") and self.scroll_area.delegate:
+            self.chat_viewport.installEventFilter(self.scroll_area.delegate)
 
         # 3. Inner Container & Vertical Bubble Layout
         self.chat_container = QWidget()
@@ -129,7 +160,7 @@ class ChatStreamWidget(QWidget):
                 color: #38BDF8;
                 border: 1px solid rgba(56, 189, 248, 0.35);
                 border-radius: 8px;
-                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', sans-serif;
                 font-size: 11px;
                 font-weight: 600;
                 margin: 4px 18px 8px 18px;
