@@ -7,7 +7,7 @@ Uses QFluentWidgets InfoBadge for mode chips, TransparentToolButton for delete, 
 from pathlib import Path
 from typing import Optional
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor
+from PyQt6.QtGui import QCursor, QColor
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from qfluentwidgets import (
     InfoBadge,
@@ -47,6 +47,9 @@ class ChatSessionItemWidget(QWidget):
         self._setup_ui(title)
 
     def _setup_ui(self, title: str):
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet("background: transparent;")
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(8)
@@ -66,7 +69,7 @@ class ChatSessionItemWidget(QWidget):
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text_layout.addWidget(self.title_lbl)
 
-        # Mode Chip via QFluentWidgets InfoBadge
+        # Mode Chip via QFluentWidgets InfoBadge (Soft/Pill style)
         self.badge_lbl = InfoBadge(self)
         self.badge_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text_layout.addWidget(self.badge_lbl)
@@ -107,27 +110,36 @@ class ChatSessionItemWidget(QWidget):
         if is_engineer:
             pix = render_circular_avatar(p, "Инженер", size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
-            self.title_lbl.setStyleSheet("color: #F59E0B; font-weight: bold; font-size: 12px; background: transparent;")
+            self.title_lbl.setStyleSheet("color: #F59E0B; font-weight: 600; font-size: 12px; background: transparent;")
             self.badge_lbl.setText("🛠️ Инженер")
-            self.badge_lbl.setCustomBackgroundColor("#F59E0B", "#F59E0B")
-            self.badge_lbl.setStyleSheet("color: #0A0D14; font-size: 10px; font-weight: bold; padding: 1px 6px;")
+            self.badge_lbl.setCustomBackgroundColor(QColor(245, 158, 11, 38), QColor(245, 158, 11, 38))
+            self.badge_lbl.setStyleSheet(
+                "color: #FBBF24; font-size: 10px; font-weight: 600; padding: 1px 7px; "
+                "border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; background: transparent;"
+            )
         elif is_rp:
             name_seed = self.char_name or "Roleplay"
             pix = render_circular_avatar(p, name_seed, size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
-            self.title_lbl.setStyleSheet("color: #E879F9; font-weight: bold; font-size: 12px; background: transparent;")
+            self.title_lbl.setStyleSheet("color: #E879F9; font-weight: 600; font-size: 12px; background: transparent;")
             badge_text = f"🎭 {self.char_name}" if self.char_name else "🎭 Ролевой чат"
             self.badge_lbl.setText(badge_text)
-            self.badge_lbl.setCustomBackgroundColor("#C084FC", "#C084FC")
-            self.badge_lbl.setStyleSheet("color: #0A0D14; font-size: 10px; font-weight: bold; padding: 1px 6px;")
+            self.badge_lbl.setCustomBackgroundColor(QColor(192, 132, 252, 40), QColor(192, 132, 252, 40))
+            self.badge_lbl.setStyleSheet(
+                "color: #D8B4FE; font-size: 10px; font-weight: 600; padding: 1px 7px; "
+                "border: 1px solid rgba(192, 132, 252, 0.35); border-radius: 8px; background: transparent;"
+            )
         else:
             # Ассистент
             pix = render_circular_avatar(p, "Элария", size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
-            self.title_lbl.setStyleSheet("color: #38BDF8; font-weight: bold; font-size: 12px; background: transparent;")
+            self.title_lbl.setStyleSheet("color: #38BDF8; font-weight: 600; font-size: 12px; background: transparent;")
             self.badge_lbl.setText("⚡ Ассистент")
-            self.badge_lbl.setCustomBackgroundColor("#00F0FF", "#00F0FF")
-            self.badge_lbl.setStyleSheet("color: #0A0D14; font-size: 10px; font-weight: bold; padding: 1px 6px;")
+            self.badge_lbl.setCustomBackgroundColor(QColor(0, 240, 255, 34), QColor(0, 240, 255, 34))
+            self.badge_lbl.setStyleSheet(
+                "color: #00F0FF; font-size: 10px; font-weight: 600; padding: 1px 7px; "
+                "border: 1px solid rgba(0, 240, 255, 0.35); border-radius: 8px; background: transparent;"
+            )
 
     def update_avatar(self, avatar_path: Optional[str]):
         self.avatar_path = avatar_path

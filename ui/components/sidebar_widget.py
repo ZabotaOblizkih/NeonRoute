@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
 )
 from qfluentwidgets import (
     ComboBox,
-    PrimaryPushButton,
     PushButton,
     TransparentToolButton,
     FluentIcon as FIF,
@@ -119,27 +118,66 @@ class SidebarWidget(QFrame):
         chats_header.addWidget(c_title)
         chats_header.addStretch(1)
 
-        self.btn_new_chat = PrimaryPushButton(FIF.ADD, "Новый чат", self)
+        self.btn_new_chat = PushButton("Новый чат", self)
         self.btn_new_chat.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_new_chat.setMinimumWidth(160)
+        self.btn_new_chat.setStyleSheet("""
+            PushButton {
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 6px;
+                color: #E2E8F0;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 4px 18px;
+                text-align: center;
+            }
+            PushButton:hover {
+                background-color: rgba(0, 240, 255, 0.12);
+                border-color: rgba(0, 240, 255, 0.35);
+                color: #00F0FF;
+            }
+            PushButton:pressed {
+                background-color: rgba(0, 240, 255, 0.08);
+            }
+        """)
         self.btn_new_chat.clicked.connect(self._handle_new_chat_clicked)
         chats_header.addWidget(self.btn_new_chat)
         layout.addLayout(chats_header)
 
         self.chat_list_widget = QListWidget(self)
+        self.chat_list_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.chat_list_widget.setStyleSheet("""
             QListWidget {
-                background-color: #121824;
-                border: 1px solid #1E273A;
-                border-radius: 6px;
+                background-color: rgba(18, 24, 36, 0.65);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 8px;
                 color: #CBD5E1;
+                outline: none;
+            }
+            QListWidget:focus {
+                outline: none;
             }
             QListWidget::item {
+                background: transparent;
                 padding: 2px;
-                border-bottom: 1px solid #182030;
+                margin: 2px 4px;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                outline: none;
+            }
+            QListWidget::item:hover {
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.08);
             }
             QListWidget::item:selected {
-                background-color: #1C263B;
+                background-color: rgba(0, 240, 255, 0.10);
+                border: 1px solid rgba(0, 240, 255, 0.30);
                 color: #00F0FF;
+            }
+            QListWidget::item:selected:hover {
+                background-color: rgba(0, 240, 255, 0.15);
+                border: 1px solid rgba(0, 240, 255, 0.45);
             }
         """)
         self.chat_list_widget.itemClicked.connect(self.window._on_chat_list_item_clicked)
