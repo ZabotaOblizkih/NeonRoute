@@ -371,6 +371,116 @@ class AssistantFlowControllerMixin:
                 )
             )
 
+    def _handle_assistant_art_completed(self, task: Any, result: Dict[str, Any]) -> bool:
+        """
+        Изолированная обработка завершения генерации арта для режима «💬 Ассистент» (Элария).
+        Выполняет INLINE-монтаж изображения в исходный бабл ответа, скрывает лоадер и синхронизирует сессию.
+        """
+        if not isinstance(result, dict) or "image_path" not in result:
+            return False
+
+        raw_path = result.get("image_path")
+        img_path = Path(raw_path) if raw_path else None
+        if not img_path or not img_path.exists():
+            logger.warning("[AssistantFlow] Сгенерированное изображение отсутствует на диске: %s", raw_path)
+            t_widget = task.metadata.get("target_widget") if (task and getattr(task, "metadata", None)) else None
+            if t_widget:
+                if hasattr(t_widget, "hide_art_loading_placeholder"):
+                    t_widget.hide_art_loading_placeholder()
+                if hasattr(t_widget, "set_scene_art_busy"):
+                    t_widget.set_scene_art_busy(False)
+            return True
+
+        gen_params = self._extract_generation_params(result) if hasattr(self, "_extract_generation_params") else None
+        plan = result.get("plan")
+        sender_name = "Элария"
+
+        # Сохранение параметров последней генерации (Seed Lock и метаданные)
+        if gen_params:
+            last_seed = gen_params.get("seed", -1)
+            last_prompt = getattr(self, "_last_art_prompt", "") or (task.metadata.get("prompt") if (task and getattr(task, "metadata", None)) else "")
+            last_meta = {
+                "seed": last_seed,
+                "prompt": last_prompt,
+                "positive_prompt": gen_params.get("positive_prompt", ""),
+                "checkpoint": gen_params.get("checkpoint", "")
+            }
+            self._last_art_meta = last_meta
+            if getattr(self, "current_session", None) and isinstance(self.current_session, dict):
+                self.current_session["last_generation"] = last_meta
+
+        # Поиск целевого бабла (target_widget с фолбэком на chat_layout)
+        target_widget = task.metadata.get("target_widget") if (task and getattr(task, "metadata", None)) else None
+        widget_to_update = None
+        if target_widget:
+            try:
+                _ = target_widget.objectName()
+                widget_to_update = target_widget
+            except (RuntimeError, AttributeError):
+                widget_to_update = None
+
+        if widget_to_update is None and hasattr(self, "chat_layout") and self.chat_layout:
+            for i in reversed(range(self.chat_layout.count())):
+                item = self.chat_layout.itemAt(i)
+                w = item.widget() if item else None
+                if w and isinstance(w, ChatMessageWidget) and not getattr(w, "is_user", True):
+                    widget_to_update = w
+                    break
+
+        if widget_to_update is not None:
+            try:
+                # 1. Снятие состояния ожидания и скрытие лоадера
+                if hasattr(widget_to_update, "hide_art_loading_placeholder"):
+                    widget_to_update.hide_art_loading_placeholder()
+                if hasattr(widget_to_update, "set_scene_art_busy"):
+                    widget_to_update.set_scene_art_busy(False)
+
+                # 2. Монтаж картинки в контейнер бабла
+                if hasattr(widget_to_update, "set_image"):
+                    widget_to_update.set_image(str(img_path))
+                elif hasattr(widget_to_update, "attach_file"):
+                    widget_to_update.attach_file(img_path, generation_params=gen_params)
+
+                # 3. Передача negative_prompt и generation_params
+                neg_prompt = (getattr(plan, "negative_prompt", None) if plan else None) or (gen_params.get("negative_prompt") if gen_params else None)
+                if neg_prompt and hasattr(widget_to_update, "set_negative_prompt"):
+                    widget_to_update.set_negative_prompt(neg_prompt)
+                if gen_params and hasattr(widget_to_update, "set_generation_params"):
+                    widget_to_update.set_generation_params(gen_params)
+
+                # 4. Обновление вложений в БД/истории
+                if hasattr(self, "_update_message_attachment"):
+                    self._update_message_attachment(widget_to_update, img_path, generation_params=gen_params)
+            except RuntimeError:
+                widget_to_update = None
+
+        # 5. Аварийный вывод, если бабл не найден
+        if widget_to_update is None:
+            avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
+            neg = (getattr(plan, "negative_prompt", None) if plan else None) or (gen_params.get("negative_prompt") if gen_params else None)
+            self._append_message(
+                sender_name,
+                "",
+                is_user=False,
+                avatar_path=avatar,
+                image_path=img_path,
+                negative_prompt=neg,
+                generation_params=gen_params
+            )
+
+        # 6. Синхронизация сессии
+        if getattr(self, "current_session", None) and isinstance(self.current_session, dict):
+            messages = self.current_session.get("messages", [])
+            if isinstance(messages, list) and messages:
+                for m in reversed(messages):
+                    if not m.get("is_user") and m.get("role") in ("assistant", None):
+                        m["image_path"] = str(img_path)
+                        break
+            if hasattr(self, "_save_current_session"):
+                self._save_current_session()
+
+        return True
+
     def _enqueue_gallery_art_pass(self, user_query: str):
         best_model_id = "realistic"
         best_desc = ""

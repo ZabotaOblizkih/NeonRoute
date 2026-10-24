@@ -1071,6 +1071,11 @@ class ChatFlowControllerMixin:
 
         # 5. Генерация изображений (Scene Art vs Standalone Art)
         if isinstance(result, dict) and "image_path" in result:
+            captured_mode = self.get_effective_mode() if hasattr(self, "get_effective_mode") else getattr(self, "current_mode", "assistant")
+            if captured_mode == "assistant" and hasattr(self, "_handle_assistant_art_completed"):
+                if self._handle_assistant_art_completed(task, result):
+                    return
+
             img_path = Path(result["image_path"]) if result.get("image_path") else None
             plan: Optional[GenerationPlan] = result.get("plan")
             gen_params = self._extract_generation_params(result)
