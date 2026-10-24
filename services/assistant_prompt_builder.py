@@ -79,6 +79,50 @@ class AssistantPromptBuilder:
     """Централизованный строитель системного промпта для режима «💬 Ассистент» (Элария)."""
 
     @staticmethod
+    def build_knowledge_context(matched_docs: List[Dict[str, Any]]) -> str:
+        """
+        Формирует XML-блок базы знаний для инъекции в системный контекст Эларии:
+        <KnowledgeBase>
+        <Document name="{filename}" triggers="{triggers}">
+        {content_snippet}
+        </Document>
+        </KnowledgeBase>
+        """
+        if not matched_docs:
+            return ""
+
+        doc_blocks = []
+        for doc in matched_docs:
+            filename = doc.get("filename", "")
+            triggers_val = doc.get("triggers", [])
+            if isinstance(triggers_val, list):
+                triggers_str = ", ".join(str(t) for t in triggers_val)
+            else:
+                triggers_str = str(triggers_val)
+
+            content_snippet = doc.get("content_snippet") or doc.get("content")
+            if not content_snippet and filename:
+                try:
+                    from services.knowledge_manager import KnowledgeManager
+                    content_snippet = KnowledgeManager.get_document_knowledge_snippet(filename)
+                except Exception as e:
+                    logger.debug(f"Не удалось получить сниппет документа {filename}: {e}")
+
+            content_snippet = (content_snippet or "").strip()
+            doc_block = (
+                f'<Document name="{filename}" triggers="{triggers_str}">\n'
+                f'{content_snippet}\n'
+                f'</Document>'
+            )
+            doc_blocks.append(doc_block)
+
+        if not doc_blocks:
+            return ""
+
+        inner = "\n".join(doc_blocks)
+        return f"<KnowledgeBase>\n{inner}\n</KnowledgeBase>"
+
+    @staticmethod
     def build(
         user_name: str = "Пользователь",
         active_persona: Optional[Dict[str, Any]] = None,
@@ -86,7 +130,9 @@ class AssistantPromptBuilder:
         relevant_facts: Optional[List[str]] = None,
         is_excel: bool = False,
         is_word: bool = False,
-        custom_prompt: Optional[str] = None
+        custom_prompt: Optional[str] = None,
+        knowledge_block: Optional[str] = None,
+        matched_knowledge_docs: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         active_persona = active_persona or {}
         u_name = user_name or "Пользователь"
@@ -113,13 +159,22 @@ class AssistantPromptBuilder:
                 f"</PassiveMemory>\n\n"
             )
 
-        # 3. Динамическая дата и время
+        # 3. Блок динамической базы знаний Эларии
+        knowledge_section = ""
+        kb_text = knowledge_block
+        if not kb_text and matched_knowledge_docs:
+            kb_text = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+
+        if kb_text and kb_text.strip():
+            knowledge_section = f"{kb_text.strip()}\n\n"
+
+        # 4. Динамическая дата и время
         now = datetime.now()
         days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
         day_of_week = days_ru[now.weekday()]
         current_dt_str = f"{now.strftime('%d.%m.%Y')} ({day_of_week}), {now.strftime('%H:%M')}"
 
-        # 4. Идентичность Эларии (монолитный системный блок)
+        # 5. Идентичность Эларии (монолитный системный блок)
         base_prompt = custom_prompt or DEFAULT_ELARIA_SYSTEM_PROMPT
         assistant_instruction = (
             f"[identity & persona]\n"
@@ -127,15 +182,17 @@ class AssistantPromptBuilder:
             f"текущая дата и время: {current_dt_str}.\n"
             f"опирайся на блок <UserInfo> для информации о пользователе.\n"
         )
+        if knowledge_section:
+            assistant_instruction += "при наличии блока <KnowledgeBase> используй содержащиеся в нем документы и факты для точного ответа на вопросы собеседника.\n"
 
-        # 5. Спецификаторы генерации документов
+        # 6. Спецификаторы генерации документов
         sys_prompt = ""
         if is_excel:
             sys_prompt += "\nUser requested an Excel spreadsheet. Present data as a clean Markdown table."
         elif is_word:
             sys_prompt += "\nUser requested a Word document. Format response with clean headers and bullet lists."
 
-        return user_info_block + relevant_memory_block + assistant_instruction + sys_prompt
+        return user_info_block + relevant_memory_block + knowledge_section + assistant_instruction + sys_prompt
 
     @staticmethod
     def build_gallery_art_prompt(

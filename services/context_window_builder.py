@@ -201,7 +201,9 @@ class ContextWindowBuilder:
             include_memory=include_memory,
             relevant_facts=relevant_facts,
             is_excel=is_excel,
-            is_word=is_word
+            is_word=is_word,
+            knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
+            matched_knowledge_docs=kwargs.get("matched_knowledge_docs")
         )
 
     @staticmethod
@@ -406,7 +408,9 @@ class ContextWindowBuilder:
                 meta_context_block=meta_context_block,
                 session_id=session_id,
                 is_dm_mode=is_dm_mode,
-                task_text=last_query
+                task_text=last_query,
+                knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
+                matched_knowledge_docs=kwargs.get("matched_knowledge_docs")
             )
             safe_user_name = str(effective_user_name).strip() if effective_user_name else "пользователь"
             system_content = system_prompt.replace("{user_name}", safe_user_name)
@@ -602,7 +606,9 @@ class ContextWindowBuilder:
                 meta_context_block=meta_context_block,
                 session_id=session_id,
                 is_dm_mode=is_dm_mode,
-                task_text=last_query
+                task_text=last_query,
+                knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
+                matched_knowledge_docs=kwargs.get("matched_knowledge_docs")
             )
             safe_user_name = str(user_name).strip() if user_name else "пользователь"
             system_content = system_prompt.replace("{user_name}", safe_user_name)

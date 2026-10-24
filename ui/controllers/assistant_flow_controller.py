@@ -313,6 +313,26 @@ class AssistantFlowControllerMixin:
         active_p = SessionManager.get_active_user_persona(is_roleplay=False, session_persona_id=sess_persona_id)
         effective_user_name = active_p.get("name") or "Пользователь"
 
+        # ── ПОИСК И ИНЪЕКЦИЯ ЗНАНИЙ ЭЛАРИИ (CPU, 0 МБ VRAM) ──
+        matched_knowledge_docs: List[Dict[str, Any]] = []
+        knowledge_block = ""
+        if _req and not _should_art:
+            try:
+                from services.knowledge_manager import KnowledgeManager
+                matched_knowledge_docs = KnowledgeManager.find_relevant_documents(_req, threshold=0.3)
+                if matched_knowledge_docs:
+                    for doc in matched_knowledge_docs:
+                        fname = doc.get("filename", "")
+                        if fname:
+                            snippet = KnowledgeManager.get_document_knowledge_snippet(fname, max_chars=6000)
+                            if snippet:
+                                doc["content_snippet"] = snippet
+                    knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+                    matched_names = [d.get("filename") for d in matched_knowledge_docs]
+                    logger.info(f"[AssistantFlow] База знаний: найдено {len(matched_knowledge_docs)} релевантных документов для запроса: {matched_names}")
+            except Exception as e_km:
+                logger.warning(f"[AssistantFlow] Ошибка поиска по базе знаний: {e_km}")
+
         messages = SessionManager.get_lm_studio_messages(
             history=history_slice,
             is_roleplay=False,
@@ -331,8 +351,16 @@ class AssistantFlowControllerMixin:
             active_cast_block="",
             recalled_lore_block="",
             meta_context_block="",
-            is_dm_mode=False
+            is_dm_mode=False,
+            knowledge_block=knowledge_block,
+            matched_knowledge_docs=matched_knowledge_docs
         )
+
+        # Дополнительная страховка наличия KnowledgeBase в первом системном сообщении
+        if knowledge_block and messages and messages[0].get("role") == "system":
+            sys_content = messages[0].get("content", "")
+            if "<KnowledgeBase>" not in sys_content:
+                messages[0]["content"] = f"{knowledge_block}\n\n{sys_content}"
 
         if _should_art:
             best_model_id = "realistic"

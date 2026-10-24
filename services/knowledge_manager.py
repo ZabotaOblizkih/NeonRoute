@@ -472,6 +472,149 @@ class KnowledgeManager:
         docs = reg.get("documents", {})
         return list(docs.values())
 
+    @classmethod
+    def find_relevant_documents(
+        cls,
+        query: str,
+        threshold: float = 0.3,
+        custom_dir: Optional[Path] = None,
+        custom_registry: Optional[Path] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Ищет релевантные документы по ключевым триггерам, заголовкам и именам файлов на CPU (0 МБ VRAM).
+        - Токенизирует и нормализует запрос пользователя.
+        - Сопоставляет запрос с триггерами и именем каждого документа в registry.json.
+        - Возвращает список подходящих документов (метаданные + путь), отсортированных по релевантности.
+
+        :param query: Текст пользовательского запроса
+        :param threshold: Порог схожести (по умолчанию 0.3)
+        :return: Список подходящих документов с добавленными полями relevance_score и matched_triggers
+        """
+        if not query or not query.strip():
+            return []
+
+        # 1. Токенизация и нормализация запроса пользователя
+        clean_q = re.sub(r"```[\s\S]*?```", " ", query)
+        clean_q = re.sub(r"https?://\S+", " ", clean_q)
+        raw_tokens = re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9_-]{2,}", clean_q)
+
+        query_words: Set[str] = set()
+        query_stems: Dict[str, str] = {}
+
+        for tok in raw_tokens:
+            w = tok.lower()
+            if w in ALL_STOPWORDS:
+                continue
+            if w.isdigit():
+                continue
+            if len(w) < 2:
+                continue
+            query_words.add(w)
+            query_stems[cls._get_stem(w)] = w
+
+        if not query_words:
+            return []
+
+        # 2. Загрузка документов из реестра
+        registry_data = cls.load_registry(custom_registry, custom_dir)
+        documents: Dict[str, Any] = registry_data.get("documents", {})
+        if not documents:
+            return []
+
+        matched_results: List[Dict[str, Any]] = []
+
+        # 3. Сопоставление с триггерами и метаданными
+        for filename, doc in documents.items():
+            triggers = [t.lower() for t in doc.get("triggers", [])]
+            if not triggers and doc.get("status") != "parsed":
+                continue
+
+            trigger_stems: Dict[str, str] = {cls._get_stem(t): t for t in triggers}
+            filename_base = Path(filename).stem.lower()
+            filename_stem = cls._get_stem(filename_base)
+
+            matched_trigs: List[str] = []
+            score_points = 0.0
+
+            for q_word in query_words:
+                q_stem = cls._get_stem(q_word)
+
+                # Точное совпадение с триггером
+                if q_word in triggers:
+                    score_points += 1.0
+                    matched_trigs.append(q_word)
+                # Совпадение по основе слова (стеммингу)
+                elif q_stem in trigger_stems:
+                    score_points += 0.85
+                    matched_trigs.append(trigger_stems[q_stem])
+                # Вхождение подстроки в триггер
+                elif any(q_stem in t or t in q_stem for t in trigger_stems if len(q_stem) >= 3 and len(t) >= 3):
+                    score_points += 0.6
+                    for t_s, orig_t in trigger_stems.items():
+                        if (q_stem in t_s or t_s in q_stem) and orig_t not in matched_trigs:
+                            matched_trigs.append(orig_t)
+                            break
+
+                # Бонус за совпадение с именем файла
+                if q_word == filename_base or (len(q_word) >= 3 and q_word in filename_base):
+                    score_points += 1.2
+                elif q_stem == filename_stem or (len(q_stem) >= 3 and q_stem in filename_base):
+                    score_points += 0.9
+
+            if score_points <= 0.0:
+                continue
+
+            # Нормализованный балл релевантности (относительно объема значимых слов в запросе)
+            norm_score = round(score_points / max(1.0, float(len(query_words))), 3)
+
+            # Проверка порога релевантности
+            if norm_score >= threshold or (score_points >= 1.0 and norm_score >= 0.2):
+                doc_entry = dict(doc)
+                doc_entry["relevance_score"] = min(1.0, norm_score)
+                doc_entry["matched_triggers"] = list(dict.fromkeys(matched_trigs))
+                matched_results.append(doc_entry)
+
+        # 4. Сортировка по убыванию релевантности
+        matched_results.sort(
+            key=lambda d: (d.get("relevance_score", 0.0), len(d.get("matched_triggers", []))),
+            reverse=True
+        )
+
+        return matched_results
+
+    @classmethod
+    def get_document_knowledge_snippet(
+        cls,
+        filename: str,
+        max_chars: int = 6000,
+        custom_dir: Optional[Path] = None
+    ) -> Optional[str]:
+        """
+        Извлекает текст документа через DocumentParser с ограничением по объёму,
+        чтобы не перегружать контекст модели (строго на CPU, 0 МБ VRAM).
+        :param filename: Имя файла в knowledge_base/
+        :param max_chars: Максимальное количество символов (по умолчанию 6000)
+        :return: Текстовый сниппет или None
+        """
+        if not filename:
+            return None
+
+        try:
+            k_dir = cls.get_knowledge_dir(custom_dir)
+            target = k_dir / Path(filename).name
+            if not target.exists() or not target.is_file():
+                logger.warning(f"[KnowledgeManager] Файл для сниппета не найден: {target}")
+                return None
+
+            parsed = DocumentParser.parse_file(target, max_chars=max_chars)
+            if not parsed or not parsed.content:
+                return None
+            return parsed.content
+        except Exception as e:
+            logger.error(f"[KnowledgeManager] Ошибка получения сниппета {filename}: {e}", exc_info=True)
+            return None
+
+
 
 class KnowledgeSyncWorker(QThread):
     """
