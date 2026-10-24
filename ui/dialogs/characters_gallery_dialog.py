@@ -14,12 +14,24 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QTextBrowser, QPushButton, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QWidget, QScrollArea, QSplitter,
-    QFrame, QApplication, QCheckBox
+    QFrame, QApplication, QCheckBox, QGraphicsDropShadowEffect
+)
+
+from qfluentwidgets import (
+    SearchLineEdit,
+    PushButton,
+    PrimaryPushButton,
+    TransparentPushButton,
+    SmoothScrollArea,
+    TextEdit,
+    LineEdit,
+    CheckBox,
+    FluentIcon as FIF,
 )
 
 from config import CHARACTERS_DIR, DATA_DIR
@@ -85,6 +97,212 @@ def get_cached_circular_avatar(avatar_path: Optional[Path], name: str, size: int
         return render_circular_avatar(p, name=name, size=size, is_user=False)
 
 
+class CharacterCardWidget(QFrame):
+    """
+    Soft Card виджет элемента списка персонажей:
+    - Скругленная аватарка 44x44 с HiDPI сглаживанием
+    - Имя персонажа и плашки (тип карточки, статус бюджета токенов)
+    - Мягкая подсветка при наведении (hover)
+    - Четкая визуальная фиксация выбранного героя
+    """
+    clicked = pyqtSignal()
+    double_clicked = pyqtSignal()
+
+    def __init__(
+        self,
+        card_name: str,
+        avatar_pixmap: QPixmap,
+        badge_text: str = "",
+        type_badge: str = "",
+        parent: Optional[QWidget] = None
+    ):
+        super().__init__(parent)
+        self.setObjectName("CharacterCardWidget")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._is_selected = False
+        self._name = card_name
+        self._badge_text = badge_text.strip()
+        self._type_badge = type_badge.strip()
+        self._pixmap = avatar_pixmap
+
+        self._setup_ui()
+        self._apply_style()
+
+    def _setup_ui(self):
+        self.setFixedHeight(62)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 10, 6)
+        layout.setSpacing(10)
+
+        # Avatar
+        self.avatar_lbl = QLabel(self)
+        self.avatar_lbl.setFixedSize(44, 44)
+        self.avatar_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if not self._pixmap.isNull():
+            self.avatar_lbl.setPixmap(
+                self._pixmap.scaled(
+                    44, 44,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            )
+        layout.addWidget(self.avatar_lbl)
+
+        # Info Box
+        info_box = QVBoxLayout()
+        info_box.setContentsMargins(0, 2, 0, 2)
+        info_box.setSpacing(4)
+
+        self.name_lbl = QLabel(self._name, self)
+        self.name_lbl.setObjectName("CharacterCardName")
+        info_box.addWidget(self.name_lbl)
+
+        self.badges_layout = QHBoxLayout()
+        self.badges_layout.setContentsMargins(0, 0, 0, 0)
+        self.badges_layout.setSpacing(6)
+
+        self.type_lbl = QLabel(self._type_badge, self)
+        self.type_lbl.setObjectName("CharacterCardTypeBadge")
+        self.type_lbl.setVisible(bool(self._type_badge))
+        self.badges_layout.addWidget(self.type_lbl)
+
+        self.traffic_lbl = QLabel(self._badge_text, self)
+        self.traffic_lbl.setObjectName("CharacterCardTrafficBadge")
+        self.traffic_lbl.setVisible(bool(self._badge_text))
+        self.badges_layout.addWidget(self.traffic_lbl)
+
+        self.badges_layout.addStretch()
+        info_box.addLayout(self.badges_layout)
+
+        layout.addLayout(info_box, stretch=1)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event):
+        p = self.parentWidget()
+        while p and not isinstance(p, QListWidget):
+            p = p.parentWidget()
+        if p:
+            p.customContextMenuRequested.emit(p.mapFromGlobal(event.globalPos()))
+        else:
+            super().contextMenuEvent(event)
+
+    def set_selected(self, selected: bool):
+        if self._is_selected != selected:
+            self._is_selected = selected
+            self._apply_style()
+
+    def update_info(
+        self,
+        name: str,
+        avatar_pixmap: Optional[QPixmap] = None,
+        badge_text: Optional[str] = None,
+        type_badge: Optional[str] = None
+    ):
+        self._name = name
+        self.name_lbl.setText(name)
+        if avatar_pixmap and not avatar_pixmap.isNull():
+            self._pixmap = avatar_pixmap
+            self.avatar_lbl.setPixmap(
+                avatar_pixmap.scaled(
+                    44, 44,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            )
+        if badge_text is not None:
+            self._badge_text = badge_text.strip()
+            self.traffic_lbl.setText(self._badge_text)
+            self.traffic_lbl.setVisible(bool(self._badge_text))
+        if type_badge is not None:
+            self._type_badge = type_badge.strip()
+            self.type_lbl.setText(self._type_badge)
+            self.type_lbl.setVisible(bool(self._type_badge))
+
+    def _apply_style(self):
+        if self._is_selected:
+            self.setStyleSheet("""
+                QFrame#CharacterCardWidget {
+                    background-color: rgba(0, 240, 255, 0.12);
+                    border: 1px solid rgba(0, 240, 255, 0.70);
+                    border-left: 3px solid #00F0FF;
+                    border-radius: 10px;
+                }
+                QLabel#CharacterCardName {
+                    color: #00F0FF;
+                    font-size: 13px;
+                    font-weight: 700;
+                    font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
+                    background: transparent;
+                }
+                QLabel#CharacterCardTypeBadge {
+                    background-color: rgba(0, 240, 255, 0.18);
+                    color: #38BDF8;
+                    border: 1px solid rgba(0, 240, 255, 0.35);
+                    border-radius: 4px;
+                    padding: 1px 6px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }
+                QLabel#CharacterCardTrafficBadge {
+                    background-color: rgba(255, 255, 255, 0.08);
+                    color: #E2E8F0;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 4px;
+                    padding: 1px 6px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame#CharacterCardWidget {
+                    background-color: rgba(18, 24, 38, 0.70);
+                    border: 1px solid rgba(255, 255, 255, 0.06);
+                    border-left: 3px solid transparent;
+                    border-radius: 10px;
+                }
+                QFrame#CharacterCardWidget:hover {
+                    background-color: rgba(26, 36, 56, 0.85);
+                    border: 1px solid rgba(0, 240, 255, 0.35);
+                    border-left: 3px solid rgba(0, 240, 255, 0.45);
+                }
+                QLabel#CharacterCardName {
+                    color: #F1F5F9;
+                    font-size: 13px;
+                    font-weight: 600;
+                    font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
+                    background: transparent;
+                }
+                QLabel#CharacterCardTypeBadge {
+                    background-color: rgba(0, 240, 255, 0.10);
+                    color: #38BDF8;
+                    border: 1px solid rgba(0, 240, 255, 0.20);
+                    border-radius: 4px;
+                    padding: 1px 6px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }
+                QLabel#CharacterCardTrafficBadge {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: #94A3B8;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 4px;
+                    padding: 1px 6px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }
+            """)
+
+
 class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationMixin):
     """
     Two-pane characters gallery dialog with NeonRoute cyberpunk styling.
@@ -93,6 +311,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
     """
 
     start_session_requested = pyqtSignal(object)  # передает CharacterCard
+    character_selected = pyqtSignal(object)       # передает CharacterCard (связка с сессией)
     card_saved = pyqtSignal(object)              # передает CharacterCard
 
     _mask_tags = CardTranslator.mask_tags
@@ -132,7 +351,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         target_h = min(850, max(620, int(screen.height() * 0.85)))
         self.resize(target_w, target_h)
         self.setMinimumSize(980, 580)
-        self.splitter.setSizes([300, target_w - 300])
+        self.splitter.setSizes([320, target_w - 320])
 
         self._load_characters()
 
@@ -205,134 +424,90 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
     def _apply_styles(self):
         self.setStyleSheet("""
             QDialog {
-                background-color: #0E131F;
+                background-color: rgba(14, 19, 31, 0.96);
                 color: #CBD5E1;
-                border: 1px solid #1E273A;
-                border-radius: 12px;
+                border: 1px solid rgba(0, 240, 255, 0.22);
+                border-radius: 14px;
             }
             QLabel {
                 color: #94A3B8;
                 font-size: 11px;
-                font-weight: bold;
+                font-weight: 700;
+                letter-spacing: 0.4px;
             }
             QLabel#HeaderTitle {
                 color: #00F0FF;
                 font-size: 16px;
                 font-weight: bold;
+                letter-spacing: 0.5px;
             }
             QListWidget {
-                background-color: #0A0D15;
-                border: 1px solid #1E283D;
-                border-radius: 8px;
+                background-color: rgba(10, 13, 22, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
                 padding: 6px;
                 outline: none;
             }
             QListWidget::item {
-                background-color: #121826;
-                color: #E2E8F0;
-                border: 1px solid #1E293B;
-                border-radius: 8px;
-                padding: 8px 10px;
-                margin-bottom: 6px;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            QListWidget::item:hover {
-                background-color: #182236;
-                border-color: #00F0FF;
+                background-color: transparent;
+                border: none;
+                padding: 0px;
+                margin-bottom: 4px;
             }
             QListWidget::item:selected {
-                background-color: #16253D;
-                border: 1px solid #00F0FF;
-                color: #00F0FF;
-                font-weight: bold;
+                background-color: transparent;
             }
-            QLineEdit, QTextEdit {
-                background-color: #0A0D14;
+            QLineEdit, TextEdit, QTextEdit {
+                background-color: rgba(10, 13, 20, 0.75);
                 color: #F8FAFC;
-                border: 1px solid #1E2B42;
-                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
                 padding: 6px 8px;
                 font-size: 12px;
                 selection-background-color: #00F0FF;
                 selection-color: #0A0D14;
             }
-            QLineEdit:focus, QTextEdit:focus {
-                border: 1px solid #00F0FF;
+            QLineEdit:focus, TextEdit:focus, QTextEdit:focus {
+                border: 1px solid rgba(0, 240, 255, 0.55);
+                background-color: rgba(12, 17, 28, 0.90);
             }
-            QScrollArea {
+            SmoothScrollArea, QScrollArea {
                 border: none;
                 background-color: transparent;
             }
             QFrame#EditorFrame {
-                background-color: #121826;
-                border: 1px solid #1E283D;
-                border-radius: 8px;
+                background-color: rgba(18, 24, 38, 0.60);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
             }
-            QPushButton {
-                background-color: #172133;
-                color: #E2E8F0;
-                border: 1px solid #283954;
-                border-radius: 6px;
-                padding: 8px 14px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #202D45;
-                border-color: #00F0FF;
-                color: #00F0FF;
-            }
-            QPushButton:pressed {
-                background-color: #111827;
-            }
-            QPushButton#btn_start_dialog {
-                background-color: #004D54;
-                border: 1px solid #00F0FF;
-                color: #00F0FF;
-                font-weight: bold;
-            }
-            QPushButton#btn_start_dialog:hover {
-                background-color: #00737D;
-                color: #FFFFFF;
-            }
-            QPushButton#btn_save {
-                background-color: #1C2D42;
-                border: 1px solid #38BDF8;
-                color: #38BDF8;
-            }
-            QPushButton#btn_save:hover {
-                background-color: #273E5B;
-                color: #FFFFFF;
-            }
-            QPushButton#btn_tr_field {
-                background-color: #121E31;
-                border: 1px solid #1E3A5F;
+            QPushButton#btn_tr_field, PushButton#btn_tr_field {
+                background-color: rgba(18, 30, 49, 0.80);
+                border: 1px solid rgba(30, 58, 95, 0.80);
                 color: #38BDF8;
                 font-size: 11px;
                 padding: 3px 8px;
-                border-radius: 4px;
+                border-radius: 6px;
             }
-            QPushButton#btn_tr_field:hover {
-                background-color: #1A2E4C;
+            QPushButton#btn_tr_field:hover, PushButton#btn_tr_field:hover {
+                background-color: rgba(26, 46, 76, 0.90);
                 border-color: #00F0FF;
                 color: #00F0FF;
             }
-            QPushButton#btn_page_nav {
-                background-color: #141C2B;
-                border: 1px solid #1E2E48;
+            QPushButton#btn_page_nav, PushButton#btn_page_nav {
+                background-color: rgba(20, 28, 43, 0.80);
+                border: 1px solid rgba(30, 46, 72, 0.80);
                 color: #00F0FF;
                 font-weight: bold;
                 padding: 2px 6px;
                 border-radius: 4px;
             }
-            QPushButton#btn_page_nav:hover {
-                background-color: #1E2D48;
+            QPushButton#btn_page_nav:hover, PushButton#btn_page_nav:hover {
+                background-color: rgba(30, 45, 72, 0.95);
                 border-color: #00F0FF;
             }
-            QPushButton#btn_page_nav:disabled {
+            QPushButton#btn_page_nav:disabled, PushButton#btn_page_nav:disabled {
                 color: #475569;
-                border-color: #1E293B;
+                border-color: rgba(30, 41, 59, 0.50);
             }
         """)
 
@@ -357,6 +532,13 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
         left_lbl = QLabel("ДОСТУПНЫЕ КАРТОЧКИ:")
         left_layout.addWidget(left_lbl)
+
+        # Строка поиска компаньона (SearchLineEdit)
+        self.search_bar = SearchLineEdit(left_widget)
+        self.search_bar.setPlaceholderText("🔍 Поиск персонажа...")
+        self.search_bar.setClearButtonEnabled(True)
+        self.search_bar.textChanged.connect(self._on_search_text_changed)
+        left_layout.addWidget(self.search_bar)
 
         self.list_widget = QListWidget()
         self.list_widget.setIconSize(QSize(44, 44))
@@ -388,6 +570,13 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
         self.avatar_preview_lbl = QLabel()
         self.avatar_preview_lbl.setFixedSize(64, 64)
+        self.avatar_preview_lbl.setStyleSheet("""
+            QLabel {
+                border: 2px solid rgba(0, 240, 255, 0.40);
+                border-radius: 32px;
+                background-color: rgba(10, 13, 20, 0.80);
+            }
+        """)
         top_row.addWidget(self.avatar_preview_lbl)
 
         name_box = QVBoxLayout()
@@ -397,22 +586,28 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.lbl_group_status = QLabel("")
         self.lbl_group_status.setStyleSheet("color: #00F0FF; font-weight: bold; font-size: 11px;")
         name_hdr.addWidget(self.lbl_group_status)
+
+        self.lbl_author_info = QLabel("")
+        self.lbl_author_info.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: normal; margin-left: 6px;")
+        name_hdr.addWidget(self.lbl_author_info)
+
         name_hdr.addStretch()
         name_box.addLayout(name_hdr)
-        self.input_name = QLineEdit()
+
+        self.input_name = LineEdit()
         self.input_name.setPlaceholderText("Имя персонажа...")
         name_box.addWidget(self.input_name)
         top_row.addLayout(name_box, stretch=1)
 
-        self.btn_change_avatar = QPushButton("🖼️ Аватар...")
+        self.btn_change_avatar = PushButton(FIF.PHOTO, "🖼️ Аватар...")
         self.btn_change_avatar.clicked.connect(self._change_avatar)
         top_row.addWidget(self.btn_change_avatar)
 
-        self.btn_translate_all = QPushButton("🌐 Перевести всю карточку (RU)")
+        self.btn_translate_all = PushButton(FIF.LANGUAGE, "🌐 Перевести всё (RU)")
         self.btn_translate_all.clicked.connect(self._on_translate_all_clicked)
         top_row.addWidget(self.btn_translate_all)
 
-        self.btn_toggle_lang = QPushButton("🌐 RU / EN")
+        self.btn_toggle_lang = PushButton("🌐 RU / EN")
         self.btn_toggle_lang.setObjectName("btn_tr_field")
         self.btn_toggle_lang.setToolTip("Переключить отображение между оригиналом и русским переводом (RU/EN)")
         self.btn_toggle_lang.clicked.connect(self._toggle_card_language)
@@ -480,19 +675,19 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         dna_header_layout.addStretch()
 
         # Кнопка прямой генерации арта из галереи
-        self.btn_gallery_generate_art = QPushButton("🎨 Сгенерировать арт")
+        self.btn_gallery_generate_art = PushButton(FIF.PALETTE, "🎨 Сгенерировать арт")
         self.btn_gallery_generate_art.setObjectName("btn_tr_field")
         self.btn_gallery_generate_art.setToolTip("Запустить фоновую генерацию арта в SD Forge по текущему позитивному промпту")
         self.btn_gallery_generate_art.clicked.connect(self._on_gallery_generate_art_clicked)
         dna_header_layout.addWidget(self.btn_gallery_generate_art)
 
-        self.btn_find_lora = QPushButton("🔍 Найти LoRA на Civitai")
+        self.btn_find_lora = PushButton(FIF.SEARCH, "🔍 Найти LoRA на Civitai")
         self.btn_find_lora.setObjectName("btn_tr_field")
         self.btn_find_lora.setToolTip("Найти и скачать персонажную LoRA для текущего персонажа с Civitai")
         self.btn_find_lora.clicked.connect(self._on_find_lora_clicked)
         dna_header_layout.addWidget(self.btn_find_lora)
 
-        self.btn_local_lora = QPushButton("📁 Локальная LoRA")
+        self.btn_local_lora = PushButton(FIF.FOLDER, "📁 Локальная LoRA")
         self.btn_local_lora.setObjectName("btn_tr_field")
         self.btn_local_lora.setToolTip("Выбрать и привязать имеющийся на диске файл LoRA из папки Forge")
         self.btn_local_lora.clicked.connect(self._on_choose_local_lora_clicked)
@@ -524,7 +719,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         desc_hdr = QHBoxLayout()
         desc_hdr.addWidget(QLabel("ОПИСАНИЕ (DESCRIPTION):"))
         desc_hdr.addStretch()
-        self.btn_tr_desc = QPushButton("🌐 Перевести")
+        self.btn_tr_desc = PushButton(FIF.LANGUAGE, "🌐 Перевести")
         self.btn_tr_desc.setObjectName("btn_tr_field")
         self.btn_tr_desc.clicked.connect(lambda: self._translate_field(self.input_desc, "description", self.btn_tr_desc))
         desc_hdr.addWidget(self.btn_tr_desc)
@@ -543,7 +738,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         pers_hdr = QHBoxLayout()
         pers_hdr.addWidget(QLabel("ХАРАКТЕР / ЧЕРТЫ (PERSONALITY):"))
         pers_hdr.addStretch()
-        self.btn_tr_pers = QPushButton("🌐 Перевести")
+        self.btn_tr_pers = PushButton(FIF.LANGUAGE, "🌐 Перевести")
         self.btn_tr_pers.setObjectName("btn_tr_field")
         self.btn_tr_pers.clicked.connect(lambda: self._translate_field(self.input_personality, "personality", self.btn_tr_pers))
         pers_hdr.addWidget(self.btn_tr_pers)
@@ -562,7 +757,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         scen_hdr = QHBoxLayout()
         scen_hdr.addWidget(QLabel("СЦЕНАРИЙ (SCENARIO / SETTING):"))
         scen_hdr.addStretch()
-        self.btn_tr_scen = QPushButton("🌐 Перевести")
+        self.btn_tr_scen = PushButton(FIF.LANGUAGE, "🌐 Перевести")
         self.btn_tr_scen.setObjectName("btn_tr_field")
         self.btn_tr_scen.clicked.connect(lambda: self._translate_field(self.input_scenario, "scenario", self.btn_tr_scen))
         scen_hdr.addWidget(self.btn_tr_scen)
@@ -597,7 +792,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         ex_hdr = QHBoxLayout()
         ex_hdr.addWidget(QLabel("ПРИМЕРЫ ДИАЛОГА (MES_EXAMPLE):"))
         ex_hdr.addStretch()
-        self.btn_tr_ex = QPushButton("🌐 Перевести")
+        self.btn_tr_ex = PushButton(FIF.LANGUAGE, "🌐 Перевести")
         self.btn_tr_ex.setObjectName("btn_tr_field")
         self.btn_tr_ex.clicked.connect(self._translate_mes_example)
         ex_hdr.addWidget(self.btn_tr_ex)
@@ -617,7 +812,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         first_mes_hdr.addWidget(QLabel("ПЕРВОЕ СООБЩЕНИЕ:"))
         first_mes_hdr.addStretch()
 
-        self.btn_prev_greeting = QPushButton("◀")
+        self.btn_prev_greeting = PushButton("◀")
         self.btn_prev_greeting.setObjectName("btn_page_nav")
         self.btn_prev_greeting.setFixedWidth(28)
         self.btn_prev_greeting.setFixedHeight(24)
@@ -628,19 +823,19 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.lbl_greeting_page.setStyleSheet("color: #38BDF8; font-weight: bold; padding: 0 4px;")
         first_mes_hdr.addWidget(self.lbl_greeting_page)
 
-        self.btn_next_greeting = QPushButton("▶")
+        self.btn_next_greeting = PushButton("▶")
         self.btn_next_greeting.setObjectName("btn_page_nav")
         self.btn_next_greeting.setFixedWidth(28)
         self.btn_next_greeting.setFixedHeight(24)
         self.btn_next_greeting.clicked.connect(self._show_next_greeting)
         first_mes_hdr.addWidget(self.btn_next_greeting)
 
-        self.btn_tr_first_mes = QPushButton("🌐 Перевести")
+        self.btn_tr_first_mes = PushButton(FIF.LANGUAGE, "🌐 Перевести")
         self.btn_tr_first_mes.setObjectName("btn_tr_field")
         self.btn_tr_first_mes.clicked.connect(self._translate_first_mes)
         first_mes_hdr.addWidget(self.btn_tr_first_mes)
 
-        self.chk_use_as_start = QCheckBox("📌 Выбрать для старта")
+        self.chk_use_as_start = CheckBox("📌 Выбрать для старта")
         self.chk_use_as_start.setToolTip(
             "Если флажок снят — при создании нового чата запустится случайная завязка (рандом).\n"
             "Если флажок установлен — чат начнётся строго с отображаемой сейчас реплики."
@@ -691,27 +886,27 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         lbl_add_title.setStyleSheet("color: #64748B; font-size: 11px; font-weight: bold;")
         add_bar_layout.addWidget(lbl_add_title)
 
-        self.btn_add_dna = QPushButton("+ Внешность SD")
+        self.btn_add_dna = PushButton(FIF.ADD, "+ Внешность SD")
         self.btn_add_dna.setObjectName("btn_tr_field")
         self.btn_add_dna.clicked.connect(lambda: self._reveal_section(self.sec_dna, self.input_visual_dna))
         add_bar_layout.addWidget(self.btn_add_dna)
 
-        self.btn_add_pers = QPushButton("+ Характер")
+        self.btn_add_pers = PushButton(FIF.ADD, "+ Характер")
         self.btn_add_pers.setObjectName("btn_tr_field")
         self.btn_add_pers.clicked.connect(lambda: self._reveal_section(self.sec_pers, self.input_personality))
         add_bar_layout.addWidget(self.btn_add_pers)
 
-        self.btn_add_scen = QPushButton("+ Сценарий")
+        self.btn_add_scen = PushButton(FIF.ADD, "+ Сценарий")
         self.btn_add_scen.setObjectName("btn_tr_field")
         self.btn_add_scen.clicked.connect(lambda: self._reveal_section(self.sec_scen, self.input_scenario))
         add_bar_layout.addWidget(self.btn_add_scen)
 
-        self.btn_add_sys = QPushButton("+ Авторские правила")
+        self.btn_add_sys = PushButton(FIF.ADD, "+ Авторские правила")
         self.btn_add_sys.setObjectName("btn_tr_field")
         self.btn_add_sys.clicked.connect(lambda: self._reveal_section(self.sec_system_prompt, self.input_system_prompt))
         add_bar_layout.addWidget(self.btn_add_sys)
 
-        self.btn_add_ex = QPushButton("+ Примеры диалога")
+        self.btn_add_ex = PushButton(FIF.ADD, "+ Примеры диалога")
         self.btn_add_ex.setObjectName("btn_tr_field")
         self.btn_add_ex.clicked.connect(lambda: self._reveal_section(self.sec_mes_example, self.input_mes_example))
         add_bar_layout.addWidget(self.btn_add_ex)
@@ -742,39 +937,75 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         btn_bar = QHBoxLayout()
         btn_bar.setSpacing(10)
 
-        self.btn_create = QPushButton("+ Создать")
+        self.btn_create = PushButton(FIF.ADD, "+ Создать", self)
         self.btn_create.clicked.connect(self._create_new_character)
         btn_bar.addWidget(self.btn_create)
 
-        self.btn_chub = QPushButton("🌐 Добавить с Chub.ai")
+        self.btn_chub = PushButton(FIF.GLOBE, "🌐 Добавить с Chub.ai", self)
         self.btn_chub.clicked.connect(self._open_chub_catalog)
         btn_bar.addWidget(self.btn_chub)
 
-        self.btn_import = QPushButton("📥 Импорт .json")
+        self.btn_import = PushButton(FIF.DOWNLOAD, "📥 Импортировать карту", self)
         self.btn_import.clicked.connect(self._import_character)
         btn_bar.addWidget(self.btn_import)
 
-        self.btn_delete = QPushButton("🗑️ Удалить")
+        self.btn_delete = PushButton(FIF.DELETE, "🗑️ Удалить", self)
         self.btn_delete.clicked.connect(self._delete_character)
         btn_bar.addWidget(self.btn_delete)
 
         btn_bar.addStretch()
 
-        self.btn_save = QPushButton("💾 Сохранить изменения")
+        self.btn_save = PushButton(FIF.SAVE, "💾 Сохранить изменения", self)
         self.btn_save.setObjectName("btn_save")
         self.btn_save.clicked.connect(self._save_changes)
         btn_bar.addWidget(self.btn_save)
 
-        self.btn_start_dialog = QPushButton("💬 Начать диалог")
+        self.btn_start_dialog = PrimaryPushButton("🎴 Выбрать компаньона", self)
         self.btn_start_dialog.setObjectName("btn_start_dialog")
         self.btn_start_dialog.clicked.connect(self._start_dialog)
         btn_bar.addWidget(self.btn_start_dialog)
 
-        self.btn_close = QPushButton("Закрыть")
+        self.btn_close = TransparentPushButton("✕ Отмена", self)
         self.btn_close.clicked.connect(self.reject)
         btn_bar.addWidget(self.btn_close)
 
         root_layout.addLayout(btn_bar)
+
+    def _on_search_text_changed(self, text: str):
+        """Фильтрует список персонажей в галерее по имени, тегам и описанию."""
+        query = text.strip().lower()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if not item:
+                continue
+            if not query:
+                item.setHidden(False)
+                continue
+
+            json_path_str = item.data(Qt.ItemDataRole.UserRole)
+            entry = next((e for e in self.characters if str(e.get("path")) == json_path_str), None)
+            card = entry.get("card") if entry else None
+
+            name_match = query in (item.text() or "").lower()
+            card_name = (getattr(card, "name", "") or "").lower() if card else ""
+            desc_match = (getattr(card, "description", "") or "").lower() if card else ""
+            desc_ru_match = (getattr(card, "description_ru", "") or "").lower() if card else ""
+            tags = getattr(card, "tags", []) or []
+            tags_match = any(query in str(t).lower() for t in tags)
+
+            matched = name_match or (query in card_name) or (query in desc_match) or (query in desc_ru_match) or tags_match
+            item.setHidden(not matched)
+
+    def _get_card_author(self, card: CharacterCard) -> str:
+        """Извлекает имя автора карточки из метаданных (creator / creator_notes)."""
+        raw = card.raw_data if isinstance(card.raw_data, dict) else {}
+        target = raw.get("data", raw) if isinstance(raw, dict) else {}
+        author = target.get("creator") or raw.get("creator") or ""
+        if not author and getattr(card, "creator_notes", ""):
+            m = re.search(r'(?:by|автор|creator)[:\s]+([^\n\r]+)', card.creator_notes, re.IGNORECASE)
+            if m:
+                author = m.group(1).strip()
+        return author or ""
 
     def _load_characters(self, select_path: Optional[Path] = None):
         """Loads all character .json files from CHARACTERS_DIR."""
@@ -826,7 +1057,19 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                     type_badge = ""
                 item = QListWidgetItem(QIcon(pix), f"{card.name}  {type_badge}{badge}")
                 item.setData(Qt.ItemDataRole.UserRole, str(json_path))
+                item.setSizeHint(QSize(250, 62))
+
+                card_widget = CharacterCardWidget(
+                    card.name,
+                    pix,
+                    badge_text=badge,
+                    type_badge=type_badge
+                )
+                card_widget.clicked.connect(lambda it=item: self.list_widget.setCurrentItem(it))
+                card_widget.double_clicked.connect(self._start_dialog)
+
                 self.list_widget.addItem(item)
+                self.list_widget.setItemWidget(item, card_widget)
 
                 if select_path and json_path.resolve() == select_path.resolve():
                     target_row = self.list_widget.count() - 1
@@ -834,6 +1077,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                 logger.warning(f"Error parsing character file {json_path}: {e}")
 
         self.list_widget.blockSignals(False)
+
+        if hasattr(self, "search_bar") and self.search_bar.text().strip():
+            self._on_search_text_changed(self.search_bar.text())
 
         if self.characters:
             self.list_widget.setCurrentRow(target_row)
@@ -843,6 +1089,13 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
     def _on_character_selected(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem] = None):
         """Populates editor with selected character details."""
+        # Update selection visuals for all CharacterCardWidget items
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            w = self.list_widget.itemWidget(it)
+            if isinstance(w, CharacterCardWidget):
+                w.set_selected(it == current)
+
         if not current:
             self.active_entry = None
             self._clear_editor()
@@ -896,6 +1149,15 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             self.lbl_group_status.setStyleSheet("color: #00F0FF; font-weight: bold; font-size: 11px;")
         else:
             self.lbl_group_status.setText("")
+
+        author = self._get_card_author(card)
+        if hasattr(self, "lbl_author_info"):
+            if author:
+                self.lbl_author_info.setText(f"✍️ {author}")
+                self.lbl_author_info.setToolTip(f"Автор карточки: {author}")
+            else:
+                self.lbl_author_info.setText("✍️ Автор не указан")
+                self.lbl_author_info.setToolTip("")
 
         pix = render_circular_avatar(card.avatar_path, name=card.name, size=64, is_user=False)
         self.avatar_preview_lbl.setPixmap(pix)
@@ -1030,11 +1292,16 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             raw_title = self.input_name.text().strip() or "Персонаж"
             type_badge = "📚 [Лорбук] " if is_lore else ("👥 [Групповая] " if (card and getattr(card, "is_group", False)) else "")
             curr.setText(f"{raw_title}  {type_badge}{traffic['badge']}")
+            w = self.list_widget.itemWidget(curr)
+            if isinstance(w, CharacterCardWidget):
+                w.update_info(raw_title, badge_text=traffic["badge"], type_badge=type_badge)
 
     def _clear_editor(self):
         self.input_name.clear()
         if hasattr(self, "lbl_group_status"):
             self.lbl_group_status.clear()
+        if hasattr(self, "lbl_author_info"):
+            self.lbl_author_info.clear()
         self._update_card_analysis_ui()
         self.input_visual_dna.clear()
         self.input_desc.clear()
@@ -1055,12 +1322,12 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self._update_context_budget()
 
     def _update_card_analysis_ui(self):
-        """Обновляет состояние кнопки старта в зависимости от активности фоновых задач анализа."""
+        """Обновляет состояние кнопки выбора компаньона в зависимости от типа карточки и фоновых задач."""
         if not self.active_entry:
             if hasattr(self, "processing_banner"):
                 self.processing_banner.setVisible(False)
             self.btn_start_dialog.setEnabled(False)
-            self.btn_start_dialog.setText("💬 Начать диалог")
+            self.btn_start_dialog.setText("🎴 Выбрать компаньона")
             self.btn_start_dialog.setToolTip("")
             return
 
@@ -1069,7 +1336,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             if hasattr(self, "processing_banner"):
                 self.processing_banner.setVisible(False)
             self.btn_start_dialog.setEnabled(False)
-            self.btn_start_dialog.setText("💬 Начать диалог")
+            self.btn_start_dialog.setText("🎴 Выбрать компаньона")
             self.btn_start_dialog.setToolTip(
                 "Это модуль правил мира (Лорбук).\n"
                 "Подключите его к активной игре через окно «📜 Правила мира и Лор»."
@@ -1087,7 +1354,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         else:
             self.processing_banner.setVisible(False)
             self.btn_start_dialog.setEnabled(True)
-            self.btn_start_dialog.setText("💬 Начать диалог")
+            self.btn_start_dialog.setText("🎴 Выбрать компаньона")
             self.btn_start_dialog.setToolTip("")
 
     def _open_chub_catalog(self):
@@ -1406,6 +1673,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             if curr:
                 list_pix = get_cached_circular_avatar(card.avatar_path, name=card.name, size=44)
                 curr.setIcon(QIcon(list_pix))
+                w = self.list_widget.itemWidget(curr)
+                if isinstance(w, CharacterCardWidget):
+                    w.update_info(card.name, avatar_pixmap=list_pix)
 
             # Automatically persist avatar link in card JSON
             self._save_changes(silent=True)
@@ -1531,6 +1801,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                 curr.setText(name)
                 pix = get_cached_circular_avatar(card.avatar_path, name=name, size=44)
                 curr.setIcon(QIcon(pix))
+                w = self.list_widget.itemWidget(curr)
+                if isinstance(w, CharacterCardWidget):
+                    w.update_info(name, avatar_pixmap=pix)
 
             self.card_saved.emit(card)
 
@@ -1588,5 +1861,6 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         else:
             card.selected_greeting_idx = None
 
+        self.character_selected.emit(card)
         self.start_session_requested.emit(card)
         self.accept()
