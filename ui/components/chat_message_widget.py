@@ -23,6 +23,7 @@ from qfluentwidgets import (
 # Re-exports for clean API and tests
 from ui.components.chat_bubble import ChatMessageWidget
 from ui.components.assistant_chat_bubble import AssistantChatMessageWidget
+from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
 
 
 class KnowledgeSourceChip(QFrame):

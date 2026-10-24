@@ -182,6 +182,8 @@ class ChatMessageWidget(QWidget):
         self.knowledge_sources: List[Dict[str, Any]] = kwargs.get("knowledge_sources", [])
         self.knowledge_hud = None
         self.knowledge_hud_container = None
+        self.thought_spoiler = None
+        self.thought_data = kwargs.get("thought", kwargs.get("thought_data", None))
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._setup_ui()
@@ -274,6 +276,18 @@ class ChatMessageWidget(QWidget):
         bubble_layout.addWidget(self.knowledge_hud)
         if self.knowledge_sources:
             self.knowledge_hud.set_sources(self.knowledge_sources)
+
+        from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
+        self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+        bubble_layout.addWidget(self.thought_spoiler)
+        self.thought_spoiler.setVisible(False)
+        self.thought_spoiler.hide()
+        if self.thought_data and isinstance(self.thought_data, dict):
+            self.set_thought_data(
+                text=self.thought_data.get("content", ""),
+                duration=float(self.thought_data.get("duration", 0.0)),
+                token_count=int(self.thought_data.get("token_count", 0))
+            )
 
         is_art_caption = bool(
             self.image_path and self.raw_text and (
@@ -736,6 +750,55 @@ class ChatMessageWidget(QWidget):
         if getattr(self, "knowledge_hud", None) is not None:
             self.knowledge_hud.set_sources(self.knowledge_sources)
             self._update_bubble_geometry()
+
+    def get_or_create_thought_spoiler(self):
+        """Возвращает существующий или создает ThoughtSpoilerWidget над текстовым блоком."""
+        if getattr(self, "thought_spoiler", None) is None:
+            from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
+            self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+            if hasattr(self, "bubble_layout"):
+                if getattr(self, "knowledge_hud", None):
+                    idx = self.bubble_layout.indexOf(self.knowledge_hud)
+                    self.bubble_layout.insertWidget(idx + 1, self.thought_spoiler)
+                else:
+                    self.bubble_layout.insertWidget(1, self.thought_spoiler)
+            self.thought_spoiler.setVisible(False)
+            self.thought_spoiler.hide()
+        return self.thought_spoiler
+
+    def append_thought_chunk(self, chunk: str):
+        """Дописывает чанк токенов в спойлер мыслей и показывает его."""
+        spoiler = self.get_or_create_thought_spoiler()
+        if not spoiler.isVisible():
+            spoiler.setVisible(True)
+            spoiler.show()
+        spoiler.append_thought_chunk(chunk)
+        self._update_bubble_geometry()
+
+    def finalize_thought(self, duration_sec: float = 0.0, token_count: int = 0):
+        """Фиксирует метрики мыслей и сворачивает спойлер."""
+        if getattr(self, "thought_spoiler", None) is not None:
+            self.thought_spoiler.finalize_thought(duration_sec, token_count)
+            self._update_bubble_geometry()
+
+    def set_thought_data(self, text: str, duration: float = 0.0, token_count: int = 0):
+        """Устанавливает готовый блок мыслей (из истории или после завершения генерации)."""
+        clean = str(text or "").strip()
+        if not clean:
+            if getattr(self, "thought_spoiler", None) is not None:
+                self.thought_spoiler.setVisible(False)
+                self.thought_spoiler.hide()
+                self._update_bubble_geometry()
+            return
+
+        spoiler = self.get_or_create_thought_spoiler()
+        self.thought_data = {
+            "content": clean,
+            "duration": float(duration),
+            "token_count": int(token_count)
+        }
+        spoiler.set_thought_data(clean, duration, token_count)
+        self._update_bubble_geometry()
 
     def set_text(self, text: str):
         self.original_text = text

@@ -186,6 +186,13 @@ class ChatBubbleBuilderMixin:
                 widget.set_scene_art_state(is_ready=True, cue_text=cue_t)
         if msg.get("knowledge_sources") and hasattr(widget, "set_knowledge_sources"):
             widget.set_knowledge_sources(msg.get("knowledge_sources"))
+        if msg.get("thought") and hasattr(widget, "set_thought_data"):
+            t = msg["thought"]
+            widget.set_thought_data(
+                text=t.get("content", ""),
+                duration=float(t.get("duration", 0.0)),
+                token_count=int(t.get("token_count", 0))
+            )
         widget.tts_requested.connect(lambda txt, w=widget: self._enqueue_tts_task(txt, w))
         widget.translate_requested.connect(self._on_message_translate_requested)
         widget.regenerate_requested.connect(self._on_message_regenerate_requested)

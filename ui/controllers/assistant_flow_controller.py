@@ -17,6 +17,7 @@ from services.model_router import ModelRouter, normalize_model_choice
 from services.art_director import VisualIntent, TargetSubject
 from services.assistant_prompt_builder import AssistantPromptBuilder
 from services.document_parser import DocumentParser, ParsedDocument
+from services.thought_stream_parser import ThoughtStreamParser, ThinkParserState
 from ui.components.chat_bubble import ChatMessageWidget
 
 logger = logging.getLogger("NeonRoute.AssistantFlow")
@@ -43,6 +44,7 @@ def sanitize_messages_for_memory(messages: List[Dict[str, Any]]) -> List[Dict[st
         re.compile(r"<KnowledgeBase>[\s\S]*?</KnowledgeBase>", re.IGNORECASE),
         re.compile(r"<Document[\s\S]*?</Document>", re.IGNORECASE),
         re.compile(r"<AttachedDocument[\s\S]*?</AttachedDocument>", re.IGNORECASE),
+        re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE),
         re.compile(r"\[Источник:\s*[^\]]+\]", re.IGNORECASE),
         re.compile(r"\[Документ:\s*[^\]]+\]", re.IGNORECASE),
         re.compile(r"\[Chunk\s*#?[0-9a-zA-Z_-]+\]", re.IGNORECASE),
@@ -509,6 +511,8 @@ class AssistantFlowControllerMixin:
         )
 
         self._active_tasks[task.id] = task
+        # Инициализация потокового парсера мыслей <think>...</think>
+        self._thought_stream_parser = ThoughtStreamParser()
         self.task_queue.enqueue(task)
 
     def _dispatch_art_to_forge(self, extracted_image_prompt: str, target_widget: Any, raw_user_query: str):
@@ -788,7 +792,38 @@ class AssistantFlowControllerMixin:
             self.task_queue.enqueue(task)
 
     def _handle_assistant_llm_response(self, text: str):
-        """Обрабатывает ответ Эларии, парсит арт-протокол, Ambiguity Gate и инициирует память."""
+        """Обрабатывает ответ Эларии, парсит арт-протокол, Ambiguity Gate, мысли <think> и инициирует память."""
+        # 1. Финализация потокового парсера мыслей <think>...</think>
+        thought_data = None
+        if getattr(self, "_thought_stream_parser", None) is not None:
+            rem_events = self._thought_stream_parser.finalize()
+            if hasattr(self, "_turn_bubble") and self._turn_bubble:
+                for ev_type, ev_data in rem_events:
+                    if ev_type == "thought_chunk" and hasattr(self._turn_bubble, "append_thought_chunk"):
+                        self._turn_bubble.append_thought_chunk(ev_data)
+                    elif ev_type == "end_think" and hasattr(self._turn_bubble, "finalize_thought"):
+                        self._turn_bubble.finalize_thought(
+                            self._thought_stream_parser.duration,
+                            self._thought_stream_parser.token_count
+                        )
+            thought_data = self._thought_stream_parser.get_thought_data()
+            self._thought_stream_parser = None
+
+        # Фоллбэк: если в ответе присутствуют теги <think>...</think>
+        if not thought_data and "<think>" in text.lower():
+            m_th = re.search(r"<think>([\s\S]*?)(?:</think>|$)", text, flags=re.IGNORECASE)
+            if m_th:
+                th_body = m_th.group(1).strip()
+                if th_body:
+                    thought_data = {
+                        "content": th_body,
+                        "duration": 0.0,
+                        "token_count": max(1, len(th_body) // 4)
+                    }
+
+        # Очищаем теги <think>...</think> из итогового текста ответа
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+
         if getattr(self, "_is_running_gallery_art_pass", False):
             self._is_running_gallery_art_pass = False
             target_widget = getattr(self, "_pending_gallery_art_widget", None)
@@ -859,6 +894,12 @@ class AssistantFlowControllerMixin:
         if msg_widget is not None:
             try:
                 msg_widget.set_text(text)
+                if thought_data and hasattr(msg_widget, "set_thought_data"):
+                    msg_widget.set_thought_data(
+                        thought_data.get("content", ""),
+                        thought_data.get("duration", 0.0),
+                        thought_data.get("token_count", 0)
+                    )
                 self._turn_bubble = msg_widget
             except (RuntimeError, AttributeError):
                 msg_widget = None
@@ -866,6 +907,12 @@ class AssistantFlowControllerMixin:
         if msg_widget is None:
             try:
                 msg_widget = self._append_message(sender_name, text, is_user=False, avatar_path=avatar)
+                if thought_data and hasattr(msg_widget, "set_thought_data"):
+                    msg_widget.set_thought_data(
+                        thought_data.get("content", ""),
+                        thought_data.get("duration", 0.0),
+                        thought_data.get("token_count", 0)
+                    )
                 self._turn_bubble = msg_widget
             except (RuntimeError, AttributeError):
                 logger.warning("[AssistantFlow] Не удалось отрисовать сообщение: UI чата пересоздается.")
@@ -885,7 +932,7 @@ class AssistantFlowControllerMixin:
         if has_gallery and hasattr(msg_widget, "show_art_loading_placeholder"):
             msg_widget.show_art_loading_placeholder()
 
-        self._sync_turn(role="assistant", content=text, replace_last=True)
+        self._sync_turn(role="assistant", content=text, replace_last=True, thought=thought_data)
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()
 

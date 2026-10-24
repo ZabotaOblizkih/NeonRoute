@@ -255,19 +255,21 @@ class ChatFlowControllerMixin:
         trigger_memory: bool = False,
         image_path: Optional[Union[str, Path]] = None,
         file_paths: Optional[List[Union[str, Path]]] = None,
-        knowledge_sources: Optional[List[Dict[str, Any]]] = None
+        knowledge_sources: Optional[List[Dict[str, Any]]] = None,
+        thought: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Единый адаптер синхронизации состояния диалога (Single Source of Truth).
         Синхронизирует chat_history (формат LLM) и current_session['messages'] (UI/JSON),
         предотвращая рассинхрон состояния диалога и потерю сообщений.
-        Сохраняет knowledge_sources для персистентности HUD-индикатора источников.
+        Сохраняет knowledge_sources и thought для персистентности в session.json.
         """
         is_user = (role.lower() in ("user", "вы", "пользователь"))
         clean_content = str(content or "").strip()
         str_img = str(image_path) if image_path else None
         str_files = [str(p) for p in file_paths] if file_paths else []
         sources = knowledge_sources if knowledge_sources is not None else getattr(self, "_pending_knowledge_sources", None)
+        t_data = thought if thought is not None else getattr(self, "_pending_thought_data", None)
 
         # 1. Синхронизация chat_history (OpenAI формат для модели)
         if hasattr(self, "chat_history") and isinstance(self.chat_history, list):
@@ -297,6 +299,8 @@ class ChatFlowControllerMixin:
                             m.pop("visual_intent", None)
                             if sources:
                                 m["knowledge_sources"] = list(sources)
+                            if t_data:
+                                m["thought"] = dict(t_data)
                         updated = True
                         break
 
@@ -317,8 +321,11 @@ class ChatFlowControllerMixin:
                     msg_entry["image_path"] = str_img
                 if str_files:
                     msg_entry["file_paths"] = str_files
-                if not is_user and sources:
-                    msg_entry["knowledge_sources"] = list(sources)
+                if not is_user:
+                    if sources:
+                        msg_entry["knowledge_sources"] = list(sources)
+                    if t_data:
+                        msg_entry["thought"] = dict(t_data)
                 messages.append(msg_entry)
 
             # 3. Детерминированное сохранение на диск
@@ -975,10 +982,31 @@ class ChatFlowControllerMixin:
                 self._turn_bubble = None
                 self._current_streaming_widget = None
 
-        # Накопление токенов в буфер
-        if not hasattr(self, "_stream_token_buffer"):
-            self._stream_token_buffer = ""
-        self._stream_token_buffer += chunk
+        # Маршрутизация токенов через ThoughtStreamParser (если активен)
+        if getattr(self, "_thought_stream_parser", None) is not None:
+            events = self._thought_stream_parser.feed(chunk)
+            for ev_type, ev_data in events:
+                if ev_type == "start_think":
+                    if self._turn_bubble and hasattr(self._turn_bubble, "get_or_create_thought_spoiler"):
+                        self._turn_bubble.get_or_create_thought_spoiler()
+                elif ev_type == "thought_chunk":
+                    if self._turn_bubble and hasattr(self._turn_bubble, "append_thought_chunk"):
+                        self._turn_bubble.append_thought_chunk(ev_data)
+                elif ev_type == "end_think":
+                    if self._turn_bubble and hasattr(self._turn_bubble, "finalize_thought"):
+                        dur = getattr(self._thought_stream_parser, "duration", 0.0)
+                        tc = getattr(self._thought_stream_parser, "token_count", 0)
+                        self._turn_bubble.finalize_thought(dur, tc)
+                elif ev_type == "normal_chunk":
+                    if ev_data:
+                        if not hasattr(self, "_stream_token_buffer"):
+                            self._stream_token_buffer = ""
+                        self._stream_token_buffer += ev_data
+        else:
+            # Накопление токенов в буфер
+            if not hasattr(self, "_stream_token_buffer"):
+                self._stream_token_buffer = ""
+            self._stream_token_buffer += chunk
 
         # Высокоточный таймер сброса (интервал 35 мс ≈ 28 FPS)
         if not hasattr(self, "_stream_flush_timer") or self._stream_flush_timer is None:
