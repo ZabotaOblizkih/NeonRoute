@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional, List, Union, Any
 
 from config import WORKSPACE_DIR
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QUrl, QTimer, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QUrl, QTimer, QSize, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
 from PyQt6.QtGui import (
     QTextOption,
     QPixmap, QCursor, QIcon, QPainter, QPainterPath,
@@ -29,7 +29,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser,
     QPushButton, QDialog, QApplication, QFrame, QMenu, QLayout,
-    QSizePolicy, QGraphicsDropShadowEffect
+    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect
 )
 from qfluentwidgets import (
     TransparentToolButton,
@@ -99,13 +99,16 @@ class CyberpunkArtPlaceholderWidget(QWidget):
     Glassmorphism, обсидиановый фон #0A0D14, акценты Cyan #00F0FF / Sky Blue #38BDF8.
     Мягкая пульсация неонового свечения и технологичных угловых меток.
     """
+    TARGET_HEIGHT = 220
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("CyberpunkArtPlaceholder")
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.setMinimumSize(360, 200)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(360)
         self.setMaximumWidth(480)
-        self.setFixedHeight(210)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(self.TARGET_HEIGHT)
 
         self._phase = 0.0
         self._timer = QTimer(self)
@@ -132,14 +135,17 @@ class CyberpunkArtPlaceholderWidget(QWidget):
         super().showEvent(event)
 
     def paintEvent(self, event):
+        h = float(self.height())
+        if h <= 4:
+            return
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
         w = float(self.width())
-        h = float(self.height())
         rect = QRectF(1.5, 1.5, w - 3.0, h - 3.0)
-        radius = 14.0
+        radius = min(14.0, h / 2.0)
 
         pulse = (math.sin(self._phase) + 1.0) / 2.0  # 0.0 .. 1.0
 
@@ -1012,7 +1018,7 @@ class ChatMessageWidget(QWidget):
             pass
 
     def show_art_loading_placeholder(self):
-        """Отображает киберпанк-лоадер синтеза кадра в теле бабла."""
+        """Отображает киберпанк-лоадер синтеза кадра в теле бабла с плавной анимацией разворачивания."""
         if getattr(self, "art_placeholder", None) is not None:
             return
 
@@ -1022,23 +1028,75 @@ class ChatMessageWidget(QWidget):
         if not hasattr(self, "bubble_container") or not self.bubble_container:
             return
 
+        # 1. Мгновенное скрытие пустого текста без остаточных отступов
+        if not self.raw_text or not self.raw_text.strip():
+            if hasattr(self, "text_browser") and self.text_browser:
+                self.text_browser.setFixedHeight(0)
+                self.text_browser.setVisible(False)
+                self.text_browser.hide()
+
+        # 2. Создание плейсхолдера с анимацией разворачивания по высоте и прозрачности
+        target_h = CyberpunkArtPlaceholderWidget.TARGET_HEIGHT
         placeholder = CyberpunkArtPlaceholderWidget(self.bubble_container)
         self.art_placeholder = placeholder
+        placeholder.setMinimumHeight(0)
+        placeholder.setMaximumHeight(0)
+
+        opacity_effect = QGraphicsOpacityEffect(placeholder)
+        opacity_effect.setOpacity(0.0)
+        placeholder.setGraphicsEffect(opacity_effect)
 
         layout = self.bubble_container.layout()
         if layout:
             layout.addWidget(placeholder)
 
-        if not self.raw_text or not self.raw_text.strip():
-            if hasattr(self, "text_browser") and self.text_browser:
-                self.text_browser.setFixedHeight(0)
-                self.text_browser.setVisible(False)
+        if self.bubble_container:
+            self.bubble_container.setMinimumWidth(max(self.bubble_container.minimumWidth(), 380))
 
-        self._update_bubble_geometry()
-        self._adjust_text_height()
+        anim_group = QParallelAnimationGroup(self)
+
+        height_anim = QPropertyAnimation(placeholder, b"maximumHeight", anim_group)
+        height_anim.setDuration(300)
+        height_anim.setStartValue(0)
+        height_anim.setEndValue(target_h)
+        height_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        opacity_anim = QPropertyAnimation(opacity_effect, b"opacity", anim_group)
+        opacity_anim.setDuration(300)
+        opacity_anim.setStartValue(0.0)
+        opacity_anim.setEndValue(1.0)
+        opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        anim_group.addAnimation(height_anim)
+        anim_group.addAnimation(opacity_anim)
+
+        def _on_anim_step():
+            self._update_bubble_geometry()
+            p = self.parentWidget()
+            if p and hasattr(p, "layout") and p.layout():
+                p.layout().activate()
+
+        height_anim.valueChanged.connect(lambda _: _on_anim_step())
+
+        def _on_anim_finished():
+            placeholder.setFixedHeight(target_h)
+            placeholder.setGraphicsEffect(None)
+            self._update_bubble_geometry()
+            self._adjust_text_height()
+
+        anim_group.finished.connect(_on_anim_finished)
+        self._placeholder_anim_group = anim_group
+        anim_group.start()
 
     def hide_art_loading_placeholder(self):
         """Плавно завершает и удаляет плейсхолдер синтеза кадра."""
+        if hasattr(self, "_placeholder_anim_group") and self._placeholder_anim_group:
+            try:
+                self._placeholder_anim_group.stop()
+            except Exception:
+                pass
+            self._placeholder_anim_group = None
+
         placeholder = getattr(self, "art_placeholder", None)
         if placeholder is not None:
             try:

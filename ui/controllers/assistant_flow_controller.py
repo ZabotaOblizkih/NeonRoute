@@ -475,10 +475,10 @@ class AssistantFlowControllerMixin:
         text = re.sub(r'(?:\*\*|__)?(?:Positive\s+Prompt|Позитивный\s+промпт)[:\s*]*', '', text, flags=re.IGNORECASE).strip()
 
         if not text:
-            if has_gallery:
-                text = ""
-            else:
+            if not has_gallery:
                 text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
+            else:
+                text = ""
 
         sender_name = "Элария"
         avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
