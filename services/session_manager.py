@@ -295,8 +295,12 @@ class SessionManager:
         file_path = HISTORY_DIR / f"chat_{session_id}.json"
         temp_path = HISTORY_DIR / f"chat_{session_id}_{uuid.uuid4().hex[:6]}.tmp"
 
+        session_dir = SessionManager.get_session_dir(session_id)
+        session_json_path = session_dir / "session.json"
+        temp_session_path = session_dir / f"session_{uuid.uuid4().hex[:6]}.tmp"
+
         try:
-            # 1. Запись во временный файл с принудительным аппаратным сбросом буфера
+            # 1. Запись во временный файл истории с принудительным аппаратным сбросом буфера
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(session, f, ensure_ascii=False, indent=2)
                 f.flush()
@@ -319,6 +323,22 @@ class SessionManager:
             if not replaced:
                 os.replace(temp_path, file_path)
 
+            # 4. Дублирование состояния в outputs/sessions/<id>/session.json для персистентности HUD-источников
+            try:
+                with open(temp_session_path, "w", encoding="utf-8") as sf:
+                    json.dump(session, sf, ensure_ascii=False, indent=2)
+                    sf.flush()
+                    os.fsync(sf.fileno())
+                if temp_session_path.exists() and temp_session_path.stat().st_size > 0:
+                    for _ in range(3):
+                        try:
+                            os.replace(temp_session_path, session_json_path)
+                            break
+                        except PermissionError:
+                            time.sleep(0.05)
+            except Exception as se:
+                logger.debug(f"[SessionManager] Ошибка дублирования session.json: {se}")
+
             return file_path
         except Exception as e:
             logger.error(f"[SessionManager] Ошибка атомарного сохранения сессии {session_id}: {e}", exc_info=True)
@@ -329,12 +349,21 @@ class SessionManager:
                     temp_path.unlink()
                 except Exception:
                     pass
+            if temp_session_path.exists():
+                try:
+                    temp_session_path.unlink()
+                except Exception:
+                    pass
 
     @staticmethod
     def load_session(session_id: str) -> Optional[Dict[str, Any]]:
         file_path = HISTORY_DIR / f"chat_{session_id}.json"
         if not file_path.exists():
-            return None
+            session_json_path = SessionManager.get_session_dir(session_id) / "session.json"
+            if session_json_path.exists():
+                file_path = session_json_path
+            else:
+                return None
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:

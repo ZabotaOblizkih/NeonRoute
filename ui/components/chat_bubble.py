@@ -16,7 +16,7 @@ import subprocess
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Union, Any
+from typing import Optional, List, Union, Any, Dict
 
 from config import WORKSPACE_DIR
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QUrl, QTimer, QSize, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
@@ -179,6 +179,9 @@ class ChatMessageWidget(QWidget):
         self.rpg_status_widget = None
         self.rpg_thought_widget = None
         self.rpg_choices_widget = None
+        self.knowledge_sources: List[Dict[str, Any]] = kwargs.get("knowledge_sources", [])
+        self.knowledge_hud = None
+        self.knowledge_hud_container = None
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._setup_ui()
@@ -264,6 +267,13 @@ class ChatMessageWidget(QWidget):
         header_layout.addStretch()
 
         bubble_layout.addLayout(header_layout)
+
+        from ui.components.chat_message_widget import KnowledgeHUDWidget
+        self.knowledge_hud = KnowledgeHUDWidget(self.bubble_container)
+        self.knowledge_hud_container = self.knowledge_hud
+        bubble_layout.addWidget(self.knowledge_hud)
+        if self.knowledge_sources:
+            self.knowledge_hud.set_sources(self.knowledge_sources)
 
         is_art_caption = bool(
             self.image_path and self.raw_text and (
@@ -715,6 +725,17 @@ class ChatMessageWidget(QWidget):
                 self.text_browser.setFixedHeight(final_h)
         finally:
             self._is_resizing_geometry = False
+
+    def set_knowledge_sources(self, sources: List[Dict[str, Any]]):
+        """
+        Устанавливает список использованных источников базы знаний.
+        Если sources пуст, HUD-контейнер скрывается без остаточных отступов.
+        Если sources содержит элементы, монтируется неоновый HUD-контейнер с микро-чипами.
+        """
+        self.knowledge_sources = sources or []
+        if getattr(self, "knowledge_hud", None) is not None:
+            self.knowledge_hud.set_sources(self.knowledge_sources)
+            self._update_bubble_geometry()
 
     def set_text(self, text: str):
         self.original_text = text

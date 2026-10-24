@@ -184,6 +184,8 @@ class ChatBubbleBuilderMixin:
             if hasattr(widget, "set_scene_art_state"):
                 cue_t = widget.visual_intent.get("prompt", "") if isinstance(widget.visual_intent, dict) else getattr(widget.visual_intent, "prompt", "")
                 widget.set_scene_art_state(is_ready=True, cue_text=cue_t)
+        if msg.get("knowledge_sources") and hasattr(widget, "set_knowledge_sources"):
+            widget.set_knowledge_sources(msg.get("knowledge_sources"))
         widget.tts_requested.connect(lambda txt, w=widget: self._enqueue_tts_task(txt, w))
         widget.translate_requested.connect(self._on_message_translate_requested)
         widget.regenerate_requested.connect(self._on_message_regenerate_requested)
@@ -459,6 +461,9 @@ class ChatBubbleBuilderMixin:
             parent=getattr(self, "chat_scroll_content", getattr(self, "chat_container", None)),
             **kwargs
         )
+        k_sources = kwargs.get("knowledge_sources") or (getattr(self, "_pending_knowledge_sources", None) if not is_user else None)
+        if k_sources and hasattr(msg, "set_knowledge_sources"):
+            msg.set_knowledge_sources(k_sources)
         msg.tts_requested.connect(lambda txt, w=msg: self._enqueue_tts_task(txt, w))
         msg.translate_requested.connect(self._on_message_translate_requested)
         msg.regenerate_requested.connect(self._on_message_regenerate_requested)

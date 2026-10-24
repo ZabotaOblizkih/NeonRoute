@@ -28,6 +28,50 @@ RE_GALLERY_TRIGGER = re.compile(
 )
 
 
+
+def sanitize_messages_for_memory(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Очищает историю сообщений от системных блоков базы знаний (<KnowledgeBase>, <Document>,
+    <AttachedDocument>, цитат и технических сниппетов) перед передачей в MemoryExtractor.
+    Гарантирует, что мануалы и таблицы не загрязняют долговременную память пользователя в LanceDB.
+    """
+    if not messages:
+        return []
+
+    sanitized: List[Dict[str, Any]] = []
+    patterns = [
+        re.compile(r"<KnowledgeBase>[\s\S]*?</KnowledgeBase>", re.IGNORECASE),
+        re.compile(r"<Document[\s\S]*?</Document>", re.IGNORECASE),
+        re.compile(r"<AttachedDocument[\s\S]*?</AttachedDocument>", re.IGNORECASE),
+        re.compile(r"\[Источник:\s*[^\]]+\]", re.IGNORECASE),
+        re.compile(r"\[Документ:\s*[^\]]+\]", re.IGNORECASE),
+        re.compile(r"\[Chunk\s*#?[0-9a-zA-Z_-]+\]", re.IGNORECASE),
+    ]
+
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        m_copy = dict(m)
+        raw_text = str(m_copy.get("text") or m_copy.get("content") or "")
+
+        clean_text = raw_text
+        for pat in patterns:
+            clean_text = pat.sub("", clean_text)
+
+        clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
+
+        if clean_text:
+            if "content" in m:
+                m_copy["content"] = clean_text
+            if "text" in m:
+                m_copy["text"] = clean_text
+            if "content" not in m and "text" not in m:
+                m_copy["content"] = clean_text
+            sanitized.append(m_copy)
+
+    return sanitized
+
+
 class AssistantFlowControllerMixin:
     """Изолированный контроллер диалогового цикла и логики режима «💬 Ассистент» (Элария)."""
 
@@ -330,6 +374,18 @@ class AssistantFlowControllerMixin:
                     knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
                     matched_names = [d.get("filename") for d in matched_knowledge_docs]
                     logger.info(f"[AssistantFlow] База знаний: найдено {len(matched_knowledge_docs)} релевантных документов для запроса: {matched_names}")
+
+                    # Формируем краткие метаданные источников для визуального HUD-индикатора
+                    knowledge_sources = [
+                        {
+                            "filename": d.get("filename"),
+                            "chunk_id": d.get("chunk_id", d.get("best_chunk_id", 0)),
+                            "snippet": (d.get("snippet") or d.get("content_snippet") or d.get("content") or "")[:300],
+                            "score": float(d.get("score", d.get("relevance_score", 0.0)))
+                        }
+                        for d in matched_knowledge_docs
+                    ]
+                    self._pending_knowledge_sources = knowledge_sources
             except Exception as e_km:
                 logger.warning(f"[AssistantFlow] Ошибка поиска по базе знаний: {e_km}")
 
@@ -447,7 +503,8 @@ class AssistantFlowControllerMixin:
                 "is_excel": is_excel,
                 "is_word": is_word,
                 "is_roleplay": False,
-                "has_vision": bool(vision_content)
+                "has_vision": bool(vision_content),
+                "knowledge_sources": getattr(self, "_pending_knowledge_sources", [])
             }
         )
 
@@ -816,6 +873,14 @@ class AssistantFlowControllerMixin:
 
         self._pending_gallery_art_widget = msg_widget
 
+        # Применяем метаданные источников знаний к HUD-контейнеру бабла
+        sources = getattr(self, "_pending_knowledge_sources", None)
+        if sources:
+            if msg_widget and hasattr(msg_widget, "set_knowledge_sources"):
+                msg_widget.set_knowledge_sources(sources)
+            if hasattr(self, "chat_stream") and hasattr(self.chat_stream, "set_knowledge_sources"):
+                self.chat_stream.set_knowledge_sources(sources)
+
         # Активация киберпанк-лоадера ожидания кадра в бабле
         if has_gallery and hasattr(msg_widget, "show_art_loading_placeholder"):
             msg_widget.show_art_loading_placeholder()
@@ -844,6 +909,7 @@ class AssistantFlowControllerMixin:
             self._dispatch_art_to_forge(extracted_image_prompt, msg_widget, getattr(self, "_current_user_request", ""))
 
         self._turn_bubble = None
+        self._pending_knowledge_sources = None
         if not extracted_image_prompt and not has_gallery:
             self._trigger_assistant_memory_extraction()
         self._current_user_request = ""
@@ -861,6 +927,8 @@ class AssistantFlowControllerMixin:
 
         try:
             from services.memory_extractor import MemoryExtractor
-            MemoryExtractor.extract_facts_async(messages, context=self)
+            clean_messages = sanitize_messages_for_memory(messages)
+            if clean_messages and len(clean_messages) >= 2:
+                MemoryExtractor.extract_facts_async(clean_messages, context=self)
         except Exception as e:
             logger.warning(f"[AssistantFlow] Ошибка вызова экстракции памяти: {e}")

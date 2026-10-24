@@ -254,17 +254,20 @@ class ChatFlowControllerMixin:
         replace_last: bool = True,
         trigger_memory: bool = False,
         image_path: Optional[Union[str, Path]] = None,
-        file_paths: Optional[List[Union[str, Path]]] = None
+        file_paths: Optional[List[Union[str, Path]]] = None,
+        knowledge_sources: Optional[List[Dict[str, Any]]] = None
     ) -> None:
         """
         Единый адаптер синхронизации состояния диалога (Single Source of Truth).
         Синхронизирует chat_history (формат LLM) и current_session['messages'] (UI/JSON),
         предотвращая рассинхрон состояния диалога и потерю сообщений.
+        Сохраняет knowledge_sources для персистентности HUD-индикатора источников.
         """
         is_user = (role.lower() in ("user", "вы", "пользователь"))
         clean_content = str(content or "").strip()
         str_img = str(image_path) if image_path else None
         str_files = [str(p) for p in file_paths] if file_paths else []
+        sources = knowledge_sources if knowledge_sources is not None else getattr(self, "_pending_knowledge_sources", None)
 
         # 1. Синхронизация chat_history (OpenAI формат для модели)
         if hasattr(self, "chat_history") and isinstance(self.chat_history, list):
@@ -292,6 +295,8 @@ class ChatFlowControllerMixin:
                         # Сброс устаревшего visual_intent при перегенерации текстового ответа
                         if not is_user:
                             m.pop("visual_intent", None)
+                            if sources:
+                                m["knowledge_sources"] = list(sources)
                         updated = True
                         break
 
@@ -312,6 +317,8 @@ class ChatFlowControllerMixin:
                     msg_entry["image_path"] = str_img
                 if str_files:
                     msg_entry["file_paths"] = str_files
+                if not is_user and sources:
+                    msg_entry["knowledge_sources"] = list(sources)
                 messages.append(msg_entry)
 
             # 3. Детерминированное сохранение на диск
@@ -940,6 +947,10 @@ class ChatFlowControllerMixin:
             self._turn_bubble = self._append_message(
                 sender_name, "", is_user=False, avatar_path=avatar
             )
+            if hasattr(self._turn_bubble, "set_knowledge_sources"):
+                p_sources = getattr(self, "_pending_knowledge_sources", None)
+                if p_sources:
+                    self._turn_bubble.set_knowledge_sources(p_sources)
         elif self.typing_loader is not None:
             self._remove_typing_loader()
             # Гарантированный сброс устаревшего visual_intent у нового бабла

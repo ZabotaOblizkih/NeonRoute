@@ -194,6 +194,14 @@ class MemoryExtractor:
                 role = m.get("role") or ("user" if m.get("is_user") else "assistant")
                 sender = "Пользователь" if role == "user" else "Ассистент (Элария)"
                 txt = str(m.get("text") or m.get("content") or "").strip()
+                # Вырезаем системные блоки базы знаний и цитаты
+                txt = re.sub(r"<KnowledgeBase>[\s\S]*?</KnowledgeBase>", "", txt, flags=re.IGNORECASE)
+                txt = re.sub(r"<Document[\s\S]*?</Document>", "", txt, flags=re.IGNORECASE)
+                txt = re.sub(r"<AttachedDocument[\s\S]*?</AttachedDocument>", "", txt, flags=re.IGNORECASE)
+                txt = re.sub(r"\[Источник:\s*[^\]]+\]", "", txt, flags=re.IGNORECASE)
+                txt = re.sub(r"\[Документ:\s*[^\]]+\]", "", txt, flags=re.IGNORECASE)
+                txt = re.sub(r"\[Chunk\s*#?[0-9a-zA-Z_-]+\]", "", txt, flags=re.IGNORECASE)
+                txt = txt.strip()
                 # Пропускаем сервисные теги инструментов и системные логи
                 if txt.startswith(("[IMAGE_PROMPT", "<<TOOL:", "[Системный")):
                     continue

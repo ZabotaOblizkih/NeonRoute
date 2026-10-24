@@ -25,6 +25,122 @@ COMMON_STOPWORDS: Set[str] = {
     "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did"
 }
 
+# Разговорные фразы и приветствия (small talk), при которых поиск по базе знаний отключается
+CONVERSATIONAL_PHRASES: Set[str] = {
+    "привет", "здравствуй", "здравствуйте", "приветствую", "добрый день", "доброе утро", "добрый вечер", "доброй ночи",
+    "хай", "ку", "салют", "хей", "эй",
+    "как дела", "как ты", "как поживаешь", "как жизнь", "как успехи", "что делаешь", "что нового", "привет как дела",
+    "спасибо", "благодарю", "большое спасибо", "спасибо большое", "огромное спасибо", "спасибо огромное", "мерси", "пасиб", "сяп",
+    "пока", "до свидания", "прощай", "до скорого", "до встречи", "спокойной ночи", "до завтра",
+    "ок", "хорошо", "ясно", "понятно", "отлично", "супер", "ладно", "договорились",
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening", "howdy",
+    "how are you", "how are you doing", "what's up", "whats up", "how's it going", "hows it going",
+    "thanks", "thank you", "thx", "thank you so much", "thanks a lot",
+    "bye", "goodbye", "see you", "see ya", "good night",
+    "ok", "okay", "cool", "alright", "clear", "got it"
+}
+
+
+def is_conversational_query(query: str) -> bool:
+    """
+    Проверяет, является ли запрос разговорной / приветственной фразой (small talk).
+    Для таких запросов поиск по базе знаний отключается, чтобы предотвратить ложные срабатывания (Gatekeeper).
+    """
+    if not query or not query.strip():
+        return False
+    clean = re.sub(r"[^\w\s]", " ", query.lower())
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return False
+
+    if clean in CONVERSATIONAL_PHRASES:
+        return True
+
+    words = clean.split()
+    if len(words) <= 4:
+        filtered_words = [w for w in words if w not in ("элария", "elaria", "тебе", "вам", "же", "ли", "друг", "bot", "пожалуйста", "пж", "большое", "огромное")]
+        filtered_str = " ".join(filtered_words)
+        if filtered_str in CONVERSATIONAL_PHRASES:
+            return True
+
+        remainder = " " + filtered_str + " "
+        for phrase in sorted(CONVERSATIONAL_PHRASES, key=len, reverse=True):
+            pattern = r"\b" + re.escape(phrase) + r"\b"
+            remainder = re.sub(pattern, " ", remainder)
+
+        remainder_clean = re.sub(r"\s+", " ", remainder).strip()
+        if not remainder_clean or len(remainder_clean) <= 2:
+            return True
+
+    return False
+
+
+def is_table_row(line: str) -> bool:
+    """Проверяет, является ли строка строкой markdown таблицы."""
+    s = line.strip()
+    return bool(s.startswith("|") and s.endswith("|") and s.count("|") >= 2)
+
+
+def is_table_separator(line: str) -> bool:
+    """Проверяет, является ли строка строкой-разделителем markdown таблицы (|---|---|)."""
+    s = line.strip()
+    return bool(re.match(r"^\|(?:\s*:?-+:?\s*\|)+$", s))
+
+
+def chunk_table(
+    table_lines: List[str],
+    max_chunk: int = 900,
+    overlap_rows: int = 1
+) -> List[str]:
+    """
+    Нарезка Markdown таблицы на чанки с гарантированным сохранением шапки (headers + separator)
+    в каждом чанке и сохранением целостности строк (строго по \n, без разрезания строк таблицы).
+    """
+    if not table_lines:
+        return []
+
+    # Если таблица целиком помещается в max_chunk, возвращаем единым блоком
+    full_table = "\n".join(table_lines)
+    if len(full_table) <= max_chunk:
+        return [full_table]
+
+    # Шапка таблицы (первая строка — названия колонок, вторая — разделитель)
+    header = table_lines[0]
+    separator = table_lines[1] if len(table_lines) > 1 and is_table_separator(table_lines[1]) else ""
+    header_block = f"{header}\n{separator}\n" if separator else f"{header}\n"
+
+    data_rows = table_lines[2:] if separator else table_lines[1:]
+    if not data_rows:
+        return [full_table]
+
+    chunks: List[str] = []
+    current_rows: List[str] = []
+    header_len = len(header_block)
+
+    i = 0
+    while i < len(data_rows):
+        row = data_rows[i]
+        current_len = header_len + sum(len(r) + 1 for r in current_rows)
+        if current_rows and (current_len + len(row) + 1 > max_chunk):
+            chunk_content = header_block + "\n".join(current_rows)
+            chunks.append(chunk_content.strip())
+            overlap_count = min(overlap_rows, len(current_rows))
+            if overlap_count > 0:
+                current_rows = current_rows[-overlap_count:]
+            else:
+                current_rows = []
+        current_rows.append(row)
+        i += 1
+
+    if current_rows:
+        chunk_content = header_block + "\n".join(current_rows)
+        if chunks and len(current_rows) == 1 and len(chunks[-1]) + len(current_rows[0]) + 1 <= max_chunk + 100:
+            chunks[-1] = chunks[-1] + "\n" + current_rows[0]
+        else:
+            chunks.append(chunk_content.strip())
+
+    return chunks
+
 
 class BM25Index:
     """
@@ -329,7 +445,9 @@ class HybridSearchEngine:
     ) -> List[Dict[str, Any]]:
         """
         Нарезка документа на семантические чанки (размер 600–900 символов с перекрытием 100 символов).
-        Сохраняет целостность параграфов, предложений и строк.
+        Сохраняет целостность параграфов, предложений, строк и таблиц:
+        - Для Markdown/CSV/TSV/XLSX таблиц гарантирует сохранение заголовков колонок во всех чанках.
+        - Нарезает строки таблиц строго по границам строк (\\n).
         """
         if not text or not text.strip():
             return []
@@ -346,59 +464,88 @@ class HybridSearchEngine:
                 "char_count": len(clean_text)
             }]
 
-        paragraphs = clean_text.split("\n\n")
+        lines = clean_text.splitlines()
+        blocks: List[Tuple[str, Any]] = []
+        current_text_lines: List[str] = []
+
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            # Обнаружение таблицы по строке заголовка и последующему разделителю |---|
+            if is_table_row(line) and idx + 1 < len(lines) and is_table_separator(lines[idx + 1]):
+                if current_text_lines:
+                    blocks.append(("text", "\n".join(current_text_lines)))
+                    current_text_lines = []
+                table_lines = [line, lines[idx + 1]]
+                idx += 2
+                while idx < len(lines) and is_table_row(lines[idx]):
+                    table_lines.append(lines[idx])
+                    idx += 1
+                blocks.append(("table", table_lines))
+            else:
+                current_text_lines.append(line)
+                idx += 1
+
+        if current_text_lines:
+            blocks.append(("text", "\n".join(current_text_lines)))
+
         raw_chunks: List[str] = []
-        current_chunk = ""
 
-        for p in paragraphs:
-            p_strip = p.strip()
-            if not p_strip:
-                continue
-
-            if not current_chunk:
-                current_chunk = p_strip
-            elif len(current_chunk) + 2 + len(p_strip) <= max_chunk:
-                current_chunk += "\n\n" + p_strip
+        for b_type, b_content in blocks:
+            if b_type == "table":
+                # Сквозное сохранение структуры таблицы и шапок
+                t_chunks = chunk_table(b_content, max_chunk=max_chunk, overlap_rows=1)
+                raw_chunks.extend(t_chunks)
             else:
-                # Если текущий чанк достиг достаточного размера (min_chunk)
-                if len(current_chunk) >= min_chunk:
-                    raw_chunks.append(current_chunk)
-                    # Формируем перекрытие (последние ~overlap символов)
-                    overlap_slice = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
-                    sp_idx = overlap_slice.find(" ")
-                    if sp_idx != -1 and sp_idx < len(overlap_slice) - 10:
-                        overlap_slice = overlap_slice[sp_idx + 1:]
-                    current_chunk = (overlap_slice + "\n\n" + p_strip).strip()
-                else:
-                    current_chunk += "\n\n" + p_strip
+                # Стандартная нарезка текстовых блоков
+                paragraphs = b_content.split("\n\n")
+                current_chunk = ""
 
-            # Если отдельный абзац превышает max_chunk, нарезаем его по предложениям
-            while len(current_chunk) > max_chunk:
-                split_pos = current_chunk.rfind(". ", min_chunk, max_chunk)
-                if split_pos == -1:
-                    split_pos = current_chunk.rfind("\n", min_chunk, max_chunk)
-                if split_pos == -1:
-                    split_pos = current_chunk.rfind(" ", min_chunk, max_chunk)
-                if split_pos == -1:
-                    split_pos = max_chunk
-                else:
-                    split_pos += 1  # Захватываем точку или пробел
+                for p in paragraphs:
+                    p_strip = p.strip()
+                    if not p_strip:
+                        continue
 
-                chunk_slice = current_chunk[:split_pos].strip()
-                raw_chunks.append(chunk_slice)
+                    if not current_chunk:
+                        current_chunk = p_strip
+                    elif len(current_chunk) + 2 + len(p_strip) <= max_chunk:
+                        current_chunk += "\n\n" + p_strip
+                    else:
+                        if len(current_chunk) >= min_chunk:
+                            raw_chunks.append(current_chunk)
+                            overlap_slice = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
+                            sp_idx = overlap_slice.find(" ")
+                            if sp_idx != -1 and sp_idx < len(overlap_slice) - 10:
+                                overlap_slice = overlap_slice[sp_idx + 1:]
+                            current_chunk = (overlap_slice + "\n\n" + p_strip).strip()
+                        else:
+                            current_chunk += "\n\n" + p_strip
 
-                overlap_slice = chunk_slice[-overlap:] if len(chunk_slice) > overlap else chunk_slice
-                sp_idx = overlap_slice.find(" ")
-                if sp_idx != -1 and sp_idx < len(overlap_slice) - 10:
-                    overlap_slice = overlap_slice[sp_idx + 1:]
-                current_chunk = (overlap_slice + " " + current_chunk[split_pos:]).strip()
+                    while len(current_chunk) > max_chunk:
+                        split_pos = current_chunk.rfind(". ", min_chunk, max_chunk)
+                        if split_pos == -1:
+                            split_pos = current_chunk.rfind("\n", min_chunk, max_chunk)
+                        if split_pos == -1:
+                            split_pos = current_chunk.rfind(" ", min_chunk, max_chunk)
+                        if split_pos == -1:
+                            split_pos = max_chunk
+                        else:
+                            split_pos += 1
 
-        if current_chunk:
-            # Если остаточный фрагмент слишком короткий и помещается в предыдущий чанк, объединяем
-            if raw_chunks and len(current_chunk) < 300 and len(raw_chunks[-1]) + len(current_chunk) + 2 <= max_chunk + 150:
-                raw_chunks[-1] = (raw_chunks[-1] + "\n\n" + current_chunk).strip()
-            else:
-                raw_chunks.append(current_chunk)
+                        chunk_slice = current_chunk[:split_pos].strip()
+                        raw_chunks.append(chunk_slice)
+
+                        overlap_slice = chunk_slice[-overlap:] if len(chunk_slice) > overlap else chunk_slice
+                        sp_idx = overlap_slice.find(" ")
+                        if sp_idx != -1 and sp_idx < len(overlap_slice) - 10:
+                            overlap_slice = overlap_slice[sp_idx + 1:]
+                        current_chunk = (overlap_slice + " " + current_chunk[split_pos:]).strip()
+
+                if current_chunk:
+                    if raw_chunks and len(current_chunk) < 300 and len(raw_chunks[-1]) + len(current_chunk) + 2 <= max_chunk + 150:
+                        raw_chunks[-1] = (raw_chunks[-1] + "\n\n" + current_chunk).strip()
+                    else:
+                        raw_chunks.append(current_chunk)
 
         # Формируем финальный список чанков
         result: List[Dict[str, Any]] = []
@@ -450,6 +597,9 @@ class HybridSearchEngine:
     ) -> List[Dict[str, Any]]:
         """
         Трехконтурный поиск: BM25 + Dense + RRF & Weighted Linear Fusion.
+        Снабжен фильтром ложных срабатываний (Gatekeeper):
+        - Отсекает разговорные фразы (small talk).
+        - При отсутствии точных совпадений ключевых слов (BM25 == 0.0) требует dense_score >= 0.75.
         :param query: Поисковый запрос
         :param top_k: Количество возвращаемых чанков (по умолчанию 3)
         :param threshold: Порог отсева нерелевантного шума
@@ -457,6 +607,10 @@ class HybridSearchEngine:
         :return: Список наиболее релевантных словарей чанков с полями score, bm25_score, dense_score
         """
         if not self.chunks or not query or not query.strip():
+            return []
+
+        # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
+        if is_conversational_query(query):
             return []
 
         use_alpha = self.alpha if alpha is None else alpha
@@ -499,12 +653,17 @@ class HybridSearchEngine:
             if dense_scores[idx] > 1e-4:
                 dense_ranks[int(idx)] = rank
 
-        # --- Контур 3: RRF & Weighted Fusion ---
+        # --- Контур 3: RRF & Weighted Fusion с Gatekeeper-валидацией ---
         candidates: List[Dict[str, Any]] = []
 
         for idx in range(num_chunks):
             s_bm25 = float(norm_bm25[idx])
             s_dense = float(dense_scores[idx])
+
+            # Gatekeeper: при отсутствии точных совпадений ключевых слов / артикулов (BM25 == 0.0),
+            # кандидат допускается ТОЛЬКО при сильном семантическом сходстве (dense_score >= 0.75).
+            if s_bm25 <= 1e-5 and s_dense < 0.75:
+                continue
 
             # RRF (Reciprocal Rank Fusion)
             # score_rrf = 1/(k + rank_bm25) + 1/(k + rank_dense)

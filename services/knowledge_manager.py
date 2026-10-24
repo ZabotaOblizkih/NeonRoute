@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional, Set, Union, Tuple
 from config import KNOWLEDGE_BASE_DIR, KNOWLEDGE_REGISTRY_PATH
 from utils.file_utils import atomic_write_json
 from services.document_parser import DocumentParser, ParsedDocument
+from services.hybrid_search import is_conversational_query
 from PyQt6.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger("NeonRoute.KnowledgeManager")
@@ -593,6 +594,10 @@ class KnowledgeManager:
         if not query or not query.strip():
             return []
 
+        # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
+        if is_conversational_query(query):
+            return []
+
         # 1. Гибридный поиск по чанкам (BM25 + Dense + RRF)
         chunks_by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         try:
@@ -665,6 +670,16 @@ class KnowledgeManager:
             best_chunk = file_chunks[0] if file_chunks else None
             chunk_score = best_chunk.get("score", 0.0) if best_chunk else 0.0
 
+            # Gatekeeper: если нет совпадения по триггерам/имени файла, требуем от чанка либо BM25 > 0,
+            # либо высокой семантической уверенности (dense_score >= 0.75)
+            if score_points <= 0.0:
+                if not best_chunk:
+                    continue
+                b_bm25 = best_chunk.get("bm25_score", 0.0)
+                b_dense = best_chunk.get("dense_score", 0.0)
+                if b_bm25 <= 1e-5 and b_dense < 0.75:
+                    continue
+
             # Синтез скоров гибридного поиска и триггерного фильтра
             combined_score = max(norm_score, chunk_score)
 
@@ -684,6 +699,10 @@ class KnowledgeManager:
             if fn not in processed_files and fn in documents:
                 best_ch = f_chunks[0]
                 ch_sc = best_ch.get("score", 0.0)
+                ch_bm25 = best_ch.get("bm25_score", 0.0)
+                ch_dense = best_ch.get("dense_score", 0.0)
+                if ch_bm25 <= 1e-5 and ch_dense < 0.75:
+                    continue
                 if ch_sc >= threshold:
                     doc_entry = dict(documents[fn])
                     doc_entry["relevance_score"] = min(1.0, round(ch_sc, 3))
@@ -771,6 +790,10 @@ class KnowledgeManager:
         Возвращает топ-2..3 наиболее точных чанков с указанием filename, chunk_id, score, text.
         """
         if not query or not query.strip():
+            return []
+
+        # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
+        if is_conversational_query(query):
             return []
         engine = cls.get_search_engine(custom_dir, custom_index_path)
         return engine.search(query, top_k=top_k, threshold=threshold)

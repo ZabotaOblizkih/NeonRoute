@@ -185,3 +185,16 @@ class ChatStreamWidget(QWidget):
             except Exception:
                 pass
             self._btn_load_more = None
+
+    def set_knowledge_sources(self, sources: list):
+        """Пробрасывает метаданные источников знаний в активный виджет сообщения ассистента."""
+        target = getattr(self.window, "_turn_bubble", None) or getattr(self.window, "_current_streaming_widget", None)
+        if target is None and hasattr(self, "chat_layout"):
+            for i in reversed(range(self.chat_layout.count())):
+                item = self.chat_layout.itemAt(i)
+                w = item.widget() if item else None
+                if w and getattr(w, "is_user", None) is False:
+                    target = w
+                    break
+        if target and hasattr(target, "set_knowledge_sources"):
+            target.set_knowledge_sources(sources)
