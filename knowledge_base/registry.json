@@ -1,6 +1,32 @@
 {
   "version": 1,
-  "last_synced_at": "2026-10-24T22:56:48.194657",
-  "total_documents": 0,
-  "documents": {}
+  "last_synced_at": "2026-10-24T23:18:41.158708",
+  "total_documents": 1,
+  "documents": {
+    "Текстовый документ.txt": {
+      "filename": "Текстовый документ.txt",
+      "relative_path": "Текстовый документ.txt",
+      "path": "C:\\NeonRoute\\knowledge_base\\Текстовый документ.txt",
+      "mtime": 1792871998.8881075,
+      "hash": "22f8f685b7c3ec3a360f7d2b8ecbe6f6e65caa1984e64e74d322b62579602c8c",
+      "size_bytes": 27394,
+      "size_kb": 26.75,
+      "line_count": 405,
+      "page_count": null,
+      "updated_at": "2026-10-24T23:00:09.814029",
+      "triggers": [
+        "части",
+        "передач",
+        "танка",
+        "тип",
+        "вала",
+        "коленчатого",
+        "оборотов",
+        "число",
+        "двигателя",
+        "боевого"
+      ],
+      "status": "parsed"
+    }
+  }
 }

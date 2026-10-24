@@ -29,17 +29,29 @@ class ParsedDocument:
 class DocumentParser:
     """Легковесный парсер документов, кода и логов на CPU без VRAM."""
 
-    TEXT_EXTENSIONS = {
-        ".txt", ".md", ".py", ".json", ".csv", ".log",
-        ".yaml", ".yml", ".ini", ".cfg", ".toml", ".sh",
-        ".bat", ".ps1", ".js", ".ts", ".html", ".htm", ".xml", ".css"
+    CODE_EXTENSIONS = {
+        ".py", ".js", ".ts", ".html", ".htm", ".css", ".cpp", ".c", ".h",
+        ".cs", ".rs", ".go", ".java", ".sql", ".sh", ".bat", ".ps1"
     }
 
-    OFFICE_EXTENSIONS = {
-        ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".pdf"
+    CONFIG_EXTENSIONS = {
+        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env", ".xml", ".fb2"
     }
 
-    SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | OFFICE_EXTENSIONS
+    TABLE_EXTENSIONS = {
+        ".csv", ".tsv", ".xlsx", ".xls"
+    }
+
+    DOCUMENT_EXTENSIONS = {
+        ".txt", ".log", ".md", ".pdf", ".docx", ".doc", ".pptx"
+    }
+
+    SUPPORTED_EXTENSIONS = (
+        CODE_EXTENSIONS | CONFIG_EXTENSIONS | TABLE_EXTENSIONS | DOCUMENT_EXTENSIONS
+    )
+
+    TEXT_EXTENSIONS = CODE_EXTENSIONS | CONFIG_EXTENSIONS | {".txt", ".log", ".md", ".csv", ".tsv"}
+    OFFICE_EXTENSIONS = {".docx", ".doc", ".xlsx", ".xls", ".pptx", ".pdf"}
 
     @classmethod
     def is_supported(cls, path: Union[str, Path]) -> bool:
@@ -91,6 +103,10 @@ class DocumentParser:
                 raw_content = cls._parse_doc_binary(path)
             elif ext in (".xlsx", ".xls"):
                 raw_content = cls._parse_excel(path)
+            elif ext in (".csv", ".tsv"):
+                raw_content = cls._parse_csv_or_tsv(path)
+            elif ext in (".fb2", ".xml"):
+                raw_content = cls._parse_fb2_or_xml(path)
             elif ext == ".pptx":
                 raw_content = cls._parse_pptx(path)
             elif ext in (".html", ".htm"):
@@ -99,7 +115,7 @@ class DocumentParser:
                 text = cls._read_text_safely(path)
                 raw_content = cls._parse_json_or_chat(text)
             else:
-                # Текстовые файлы и код (.txt, .md, .py, .csv, .log, .yaml, .yml, .ini, .cfg и др.)
+                # Текстовые файлы, код и конфиги (.txt, .md, .py, .yaml, .toml, .ini, .cpp, .rs, .env, .sql, .log и др.)
                 raw_content = cls._read_text_safely(path)
 
             raw_content = raw_content.strip() if raw_content else ""
@@ -154,10 +170,13 @@ class DocumentParser:
         else:
             size_str = f"{size_kb:.1f}" if size_kb > 0 else "0"
 
+        ext = Path(filename).suffix.lower()
+        icon = "📊" if ext in (".csv", ".tsv", ".xlsx", ".xls") else "📄"
+
         if page_count is not None:
-            return f"📄 {filename} | {page_count} стр. | {size_str} КБ"
+            return f"{icon} {filename} | {page_count} стр. | {size_str} КБ"
         else:
-            return f"📄 {filename} | {line_count} строк | {size_str} КБ"
+            return f"{icon} {filename} | {line_count} строк | {size_str} КБ"
 
     @classmethod
     def _read_text_safely(cls, path: Path) -> str:
@@ -313,6 +332,8 @@ class DocumentParser:
                     if row_txt:
                         lines.append(" | ".join(row_txt))
             return "\n".join(lines)
+        except ImportError:
+            return "[Для чтения DOCX требуется python-docx. Установите: pip install python-docx]"
         except Exception as e:
             logger.debug(f"python-docx parsing failed: {e}")
             return cls._read_text_safely(path)
@@ -357,6 +378,8 @@ class DocumentParser:
                 if rows_data:
                     tables.append(f"### Лист: {sheet_name}\n" + "\n".join(rows_data))
             return "\n\n".join(tables)
+        except ImportError:
+            return "[Для чтения Excel (.xlsx/.xls) требуется openpyxl. Установите: pip install openpyxl]"
         except Exception as e:
             logger.debug(f"openpyxl parsing failed: {e}")
             return ""
@@ -368,10 +391,113 @@ class DocumentParser:
                     pass
 
     @classmethod
-    def _parse_csv(cls, path: Path) -> str:
-        """Чтение CSV файла."""
-        lines = cls._read_text_safely(path).splitlines()
-        return "\n".join(lines[:120])
+    def _parse_csv_or_tsv(cls, path: Path) -> str:
+        """
+        Чтение CSV и TSV файлов через встроенный модуль csv с конвертацией
+        первых строк в компактную Markdown-таблицу.
+        """
+        import csv
+        import io
+
+        raw_text = cls._read_text_safely(path)
+        if not raw_text.strip():
+            return ""
+
+        ext = path.suffix.lower()
+        delimiter = "\t" if ext == ".tsv" else ","
+
+        sample_lines = raw_text.splitlines()[:15]
+        sample_str = "\n".join(sample_lines)
+
+        if ext != ".tsv":
+            try:
+                sniffer = csv.Sniffer()
+                dialect = sniffer.sniff(sample_str, delimiters=",;\t|")
+                delimiter = dialect.delimiter
+            except Exception:
+                delimiter = "," if sample_str.count(",") >= sample_str.count(";") else ";"
+
+        try:
+            reader = csv.reader(io.StringIO(raw_text), delimiter=delimiter)
+            rows = []
+            for row in reader:
+                if any(c.strip() for c in row):
+                    rows.append([c.strip().replace("\n", " ") for c in row])
+                if len(rows) >= 100:
+                    break
+
+            if not rows:
+                return raw_text[:3000]
+
+            header = rows[0]
+            col_count = len(header)
+            md_lines = [" | ".join(header), " | ".join(["---"] * col_count)]
+
+            for r in rows[1:]:
+                if len(r) < col_count:
+                    r = r + [""] * (col_count - len(r))
+                elif len(r) > col_count:
+                    r = r[:col_count]
+                md_lines.append(" | ".join(r))
+
+            total_lines = len(raw_text.splitlines())
+            if total_lines > len(rows):
+                md_lines.append(f"\n... [показано {len(rows)} строк из {total_lines}]")
+
+            return "\n".join(md_lines)
+        except Exception as e:
+            logger.debug(f"CSV parsing error: {e}")
+            return "\n".join(sample_lines[:80])
+
+    _parse_csv = _parse_csv_or_tsv
+
+    @classmethod
+    def _parse_fb2_or_xml(cls, path: Path) -> str:
+        """
+        Парсинг FB2-книг и XML документов через xml.etree.ElementTree (без внешних зависимостей).
+        Извлекает чистый текст, заголовки и метаданные без XML-тегов и бинарных данных.
+        """
+        import xml.etree.ElementTree as ET
+
+        try:
+            raw_bytes = path.read_bytes()
+            root = ET.fromstring(raw_bytes)
+
+            lines: List[str] = []
+            for elem in root.iter():
+                tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                tag_lower = tag.lower()
+
+                # Пропускаем бинарные данные картинок и скрипты
+                if tag_lower in ("binary", "script", "style"):
+                    continue
+
+                text_val = (elem.text or "").strip()
+                if text_val:
+                    if tag_lower in ("book-title", "title"):
+                        lines.append(f"### {text_val}")
+                    elif tag_lower in ("p", "paragraph"):
+                        lines.append(text_val)
+                    elif tag_lower in ("subtitle",):
+                        lines.append(f"**{text_val}**")
+                    elif tag_lower in ("first-name", "last-name"):
+                        lines.append(f"Автор: {text_val}")
+                    elif tag_lower not in ("fictionbook", "body", "section", "description", "title-info", "author"):
+                        lines.append(text_val)
+
+            content = "\n\n".join(lines).strip()
+            if content:
+                return content
+
+            all_text = [t.strip() for t in root.itertext() if t.strip()]
+            return "\n".join(all_text)
+        except Exception as e:
+            logger.debug(f"XML/FB2 ET parse failed ({path.name}): {e}")
+            raw_text = cls._read_text_safely(path)
+            no_binary = re.sub(r"<binary[\s\S]*?</binary>", "", raw_text, flags=re.IGNORECASE)
+            no_tags = re.sub(r"<[^>]+>", "\n", no_binary)
+            cleaned_lines = [l.strip() for l in no_tags.splitlines() if l.strip()]
+            return "\n".join(cleaned_lines)
 
     @classmethod
     def _parse_pptx(cls, path: Path) -> str:

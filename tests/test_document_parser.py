@@ -200,3 +200,97 @@ def test_cpu_only_no_vram_imports():
     assert "torch" not in src
     assert "transformers" not in src
     assert "cuda" not in src
+
+
+def test_parse_code_and_rust_files(tmp_path: Path):
+    rs_file = tmp_path / "main.rs"
+    rs_code = 'fn main() {\n    println!("Hello from Rust");\n}\n'
+    rs_file.write_text(rs_code, encoding="utf-8")
+
+    assert DocumentParser.is_supported(rs_file) is True
+    doc = DocumentParser.parse_file(rs_file)
+    assert doc is not None
+    assert doc.filename == "main.rs"
+    assert doc.extension == ".rs"
+    assert "println!" in doc.content
+    assert "📄 main.rs | 3 строк" in doc.summary_header
+
+
+def test_parse_config_yaml(tmp_path: Path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_content = "server:\n  host: 127.0.0.1\n  port: 8080\napp_name: NeonRoute\n"
+    yaml_file.write_text(yaml_content, encoding="utf-8")
+
+    assert DocumentParser.is_supported(yaml_file) is True
+    doc = DocumentParser.parse_file(yaml_file)
+    assert doc is not None
+    assert "app_name: NeonRoute" in doc.content
+
+
+def test_parse_csv_to_markdown_table(tmp_path: Path):
+    csv_file = tmp_path / "data.csv"
+    csv_text = "id,name,role\n1,Elaria,Assistant\n2,Arthur,Engineer\n"
+    csv_file.write_text(csv_text, encoding="utf-8")
+
+    assert DocumentParser.is_supported(csv_file) is True
+    doc = DocumentParser.parse_file(csv_file)
+    assert doc is not None
+    assert doc.extension == ".csv"
+    assert "id | name | role" in doc.content
+    assert "--- | --- | ---" in doc.content
+    assert "1 | Elaria | Assistant" in doc.content
+    assert "📊 data.csv" in doc.summary_header
+
+
+def test_parse_fb2_xml(tmp_path: Path):
+    fb2_file = tmp_path / "novel.fb2"
+    fb2_xml = """<?xml version="1.0" encoding="utf-8"?>
+<FictionBook>
+  <description>
+    <title-info>
+      <book-title>Хроники Неонового Города</book-title>
+    </title-info>
+  </description>
+  <body>
+    <section>
+      <title><p>Глава 1. Сияние</p></title>
+      <p>Свет неоновых вывесок отражался в мокром асфальте.</p>
+    </section>
+  </body>
+  <binary id="cover.jpg">SGVsbG8gQmluYXJ5IERhdGE=</binary>
+</FictionBook>"""
+    fb2_file.write_text(fb2_xml, encoding="utf-8")
+
+    assert DocumentParser.is_supported(fb2_file) is True
+    doc = DocumentParser.parse_file(fb2_file)
+    assert doc is not None
+    assert "Хроники Неонового Города" in doc.content
+    assert "Глава 1. Сияние" in doc.content
+    assert "Свет неоновых вывесок" in doc.content
+    # Binary tag data should be excluded
+    assert "SGVsbG8gQmluYXJ5" not in doc.content
+
+
+def test_docx_missing_fallback(tmp_path: Path):
+    docx_file = tmp_path / "document.docx"
+    docx_file.write_bytes(b"PK\x03\x04fakewip")
+
+    with patch.dict(sys.modules, {"docx": None}):
+        with patch("services.document_parser.DocumentParser._parse_docx") as mock_parse:
+            mock_parse.return_value = "[Для чтения DOCX требуется python-docx. Установите: pip install python-docx]"
+            doc = DocumentParser.parse_file(docx_file)
+            assert doc is not None
+            assert "[Для чтения DOCX требуется python-docx" in doc.content
+
+
+def test_openpyxl_missing_fallback(tmp_path: Path):
+    xlsx_file = tmp_path / "table.xlsx"
+    xlsx_file.write_bytes(b"PK\x03\x04fakeexcel")
+
+    with patch.dict(sys.modules, {"openpyxl": None}):
+        with patch("services.document_parser.DocumentParser._parse_excel") as mock_parse:
+            mock_parse.return_value = "[Для чтения Excel (.xlsx/.xls) требуется openpyxl. Установите: pip install openpyxl]"
+            doc = DocumentParser.parse_file(xlsx_file)
+            assert doc is not None
+            assert "[Для чтения Excel (.xlsx/.xls) требуется openpyxl" in doc.content
+

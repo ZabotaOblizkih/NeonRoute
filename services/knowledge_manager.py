@@ -102,7 +102,7 @@ class KnowledgeManager:
     и ведет единый синхронизированный реестр registry.json.
     """
 
-    SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".log", ".py", ".json", ".md"}
+    SUPPORTED_EXTENSIONS = DocumentParser.SUPPORTED_EXTENSIONS
 
     @classmethod
     def get_knowledge_dir(cls, custom_dir: Optional[Path] = None) -> Path:

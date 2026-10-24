@@ -188,22 +188,42 @@ class KnowledgeManagerDialog(FramelessDialog):
         self._setup_ui()
         self.reload_documents()
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
+
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(24, 40, 24, 20)
         root_layout.setSpacing(14)
 
-        # 1. Заголовок и счетчик
-        header_layout = QVBoxLayout()
-        header_layout.setSpacing(4)
+        # 1. Заголовок и счетчик + кнопка закрытия [ ✕ ]
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(10)
+
+        header_text_layout = QVBoxLayout()
+        header_text_layout.setSpacing(4)
 
         self.title_label = TitleLabel("Знания Эларии", self)
         self.title_label.setStyleSheet("color: #00F0FF; font-size: 20px; font-weight: 700;")
-        header_layout.addWidget(self.title_label)
+        header_text_layout.addWidget(self.title_label)
 
         self.caption_label = CaptionLabel("0 документов • 0 триггеров", self)
         self.caption_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
-        header_layout.addWidget(self.caption_label)
+        header_text_layout.addWidget(self.caption_label)
+
+        header_layout.addLayout(header_text_layout, 1)
+
+        # Кнопка закрытия [ ✕ ]
+        self.close_btn = TransparentToolButton(FIF.CLOSE, self)
+        self.close_btn.setToolTip("Закрыть")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.reject)
+        self.btn_close = self.close_btn  # Дополнительный алиас
+        header_layout.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         root_layout.addLayout(header_layout)
 
@@ -297,7 +317,7 @@ class KnowledgeManagerDialog(FramelessDialog):
             self,
             "Выберите документы для базы знаний Эларии",
             "",
-            "Поддерживаемые файлы (*.pdf *.txt *.log *.py *.json *.md);;Все файлы (*.*)"
+            "Все поддерживаемые документы (*.pdf *.docx *.xlsx *.txt *.md *.json *.yaml *.yml *.toml *.csv *.py *.js *.ts *.cpp *.cs *.rs *.sql *.sh *.bat *.fb2);;Документы Office (*.pdf *.docx *.xlsx);;Исходный код и конфиги (*.py *.js *.ts *.cpp *.cs *.rs *.sql *.json *.yaml *.toml);;Все файлы (*.*)"
         )
         if not file_paths:
             return

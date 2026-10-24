@@ -126,6 +126,40 @@ def test_import_unsupported_extension(tmp_path: Path):
     assert success is False
 
 
+def test_import_extended_formats(tmp_path: Path):
+    kb_dir = tmp_path / "knowledge_base"
+    kb_dir.mkdir()
+    reg_file = kb_dir / "registry.json"
+
+    # CSV
+    csv_file = tmp_path / "stats.csv"
+    csv_file.write_text("model,vram_mb,latency_ms\nllama3,4000,45\nforge,3500,120\n", encoding="utf-8")
+    assert KnowledgeManager.import_file(csv_file, custom_dir=kb_dir, custom_registry=reg_file) is True
+
+    # Rust
+    rs_file = tmp_path / "engine.rs"
+    rs_file.write_text("pub struct FastEngine {\n    pub memory_limit: usize,\n}\n", encoding="utf-8")
+    assert KnowledgeManager.import_file(rs_file, custom_dir=kb_dir, custom_registry=reg_file) is True
+
+    # YAML
+    yml_file = tmp_path / "settings.yml"
+    yml_file.write_text("app_mode: engineer\nactive_device: cpu\n", encoding="utf-8")
+    assert KnowledgeManager.import_file(yml_file, custom_dir=kb_dir, custom_registry=reg_file) is True
+
+    # Sync check
+    reg = KnowledgeManager.load_registry(reg_file, kb_dir)
+    assert reg["total_documents"] == 3
+    assert "stats.csv" in reg["documents"]
+    assert "engine.rs" in reg["documents"]
+    assert "settings.yml" in reg["documents"]
+
+    # Verify triggers were extracted
+    csv_doc = reg["documents"]["stats.csv"]
+    assert len(csv_doc["triggers"]) > 0
+    assert csv_doc["status"] == "parsed"
+
+
+
 def test_knowledge_sync_worker_thread(qapp, tmp_path: Path):
     from services.knowledge_manager import KnowledgeSyncWorker
     worker = KnowledgeSyncWorker()
@@ -168,6 +202,23 @@ def test_knowledge_manager_dialog_ui(qapp, tmp_path: Path, monkeypatch):
     assert isinstance(card, DocumentCardWidget)
     assert card.filename == "guide.txt"
     assert len(card.doc.get("triggers", [])) > 0
+
+    # Check close button
+    assert isinstance(dlg.close_btn, TransparentToolButton)
+    assert dlg.close_btn.toolTip() == "Закрыть"
+
+    rejected = []
+    dlg.rejected.connect(lambda: rejected.append(True))
+    dlg.close_btn.click()
+    assert len(rejected) == 1
+
+    # Check Esc key press
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import Qt, QEvent
+    esc_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    dlg.keyPressEvent(esc_event)
+    assert len(rejected) == 2
+
     dlg.close()
 
 
