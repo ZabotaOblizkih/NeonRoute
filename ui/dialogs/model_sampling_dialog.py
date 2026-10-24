@@ -6,14 +6,16 @@ Modernized with QFluentWidgets components under Agentrules.md.
 """
 
 from typing import Dict, Any
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtGui import QColor, QMouseEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QDoubleSpinBox, QSpinBox
 )
 from qfluentwidgets import (
     Slider,
+    DoubleSpinBox,
+    SpinBox,
     CheckBox,
     PushButton,
     PrimaryPushButton,
@@ -21,6 +23,131 @@ from qfluentwidgets import (
 )
 
 from services.session_manager import get_default_sampling_params
+
+
+class SamplingSlider(Slider):
+    """
+    Кастомный слайдер для параметров сэмплинга:
+    - Плавное и естественное перетаскивание бегунка зажатой ЛКМ (нативная логика Slider)
+    - Включен трекинг реального времени self.setTracking(True)
+    - Защита от смещения значения при простом движении мыши (hover) без нажатия
+    - ClickFocus и отключение wheelEvent
+    """
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent=parent)
+        self.setTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.handle.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched == self.handle:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() != Qt.MouseButton.LeftButton:
+                    return True
+                self._pressedPos = self.handle.mapToParent(event.pos())
+            elif event.type() == QEvent.Type.MouseMove:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    slider_pos = self.handle.mapToParent(event.pos())
+                    self.setValue(self._posToValue(slider_pos))
+                    self._pressedPos = slider_pos
+                    self.sliderMoved.emit(self.value())
+                    return True
+                return True
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() != Qt.MouseButton.LeftButton:
+                    return True
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() != Qt.MouseButton.LeftButton:
+            e.ignore()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        # Реагируем на перемещение СТРОГО при зажатой левой кнопке мыши
+        if not (e.buttons() & Qt.MouseButton.LeftButton):
+            e.ignore()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        if e.button() != Qt.MouseButton.LeftButton:
+            e.ignore()
+            return
+        super().mouseReleaseEvent(e)
+
+    def wheelEvent(self, e):
+        # Отключаем случайное изменение значений колесиком мыши
+        e.ignore()
+
+
+class SamplingDoubleSpinBox(DoubleSpinBox):
+    """
+    Поле числового ввода с плавающей точкой (Temperature, Min-P, Repetition Penalty):
+    - Стрелки вверх/вниз гарантированно инкрементируют/декрементируют значение с точным шагом
+    - Границы minimum / singleStep строго соблюдаются
+    - Отключение wheelEvent во избежание случайного скролла значений
+    - ClickFocus
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        try:
+            self.downButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.downButton.clicked.connect(self.stepDown)
+        try:
+            self.upButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.upButton.clicked.connect(self.stepUp)
+
+    def stepDown(self):
+        new_val = max(self.minimum(), self.value() - self.singleStep())
+        self.setValue(round(new_val, self.decimals()))
+
+    def stepUp(self):
+        new_val = min(self.maximum(), self.value() + self.singleStep())
+        self.setValue(round(new_val, self.decimals()))
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class SamplingSpinBox(SpinBox):
+    """
+    Поле целочисленного ввода (Max Tokens):
+    - Стрелки вверх/вниз гарантированно инкрементируют/декрементируют значение с точным шагом (64)
+    - Нижняя граница minimum (256) и верхняя maximum (4096) строго соблюдаются
+    - Отключение wheelEvent
+    - ClickFocus
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        try:
+            self.downButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.downButton.clicked.connect(self.stepDown)
+        try:
+            self.upButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.upButton.clicked.connect(self.stepUp)
+
+    def stepDown(self):
+        new_val = max(self.minimum(), self.value() - self.singleStep())
+        self.setValue(int(new_val))
+
+    def stepUp(self):
+        new_val = min(self.maximum(), self.value() + self.singleStep())
+        self.setValue(int(new_val))
+
+    def wheelEvent(self, e):
+        e.ignore()
 
 
 class ModelSamplingDialog(QDialog):
@@ -82,7 +209,7 @@ class ModelSamplingDialog(QDialog):
                 font-size: 12px;
                 font-weight: 600;
             }
-            QDoubleSpinBox, QSpinBox {
+            DoubleSpinBox, SpinBox, SamplingDoubleSpinBox, SamplingSpinBox, QDoubleSpinBox, QSpinBox {
                 background-color: rgba(22, 32, 50, 0.75);
                 color: #00F0FF;
                 border: 1px solid rgba(0, 240, 255, 0.30);
@@ -91,13 +218,13 @@ class ModelSamplingDialog(QDialog):
                 font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
                 font-size: 12px;
                 font-weight: 600;
-                min-width: 72px;
+                min-width: 90px;
             }
-            QDoubleSpinBox:focus, QSpinBox:focus {
+            DoubleSpinBox:focus, SpinBox:focus, SamplingDoubleSpinBox:focus, SamplingSpinBox:focus, QDoubleSpinBox:focus, QSpinBox:focus {
                 border-color: #00F0FF;
                 background-color: rgba(28, 40, 64, 0.85);
             }
-            QDoubleSpinBox:disabled, QSpinBox:disabled {
+            DoubleSpinBox:disabled, SpinBox:disabled, SamplingDoubleSpinBox:disabled, SamplingSpinBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
                 background-color: rgba(15, 23, 42, 0.40);
                 border-color: rgba(148, 163, 184, 0.20);
                 color: #64748B;
@@ -142,7 +269,7 @@ class ModelSamplingDialog(QDialog):
         t_header = QHBoxLayout()
         lbl_t = QLabel("Температура (Temperature):", self)
         lbl_t.setProperty("class", "param_label")
-        self.spin_temp = QDoubleSpinBox(self)
+        self.spin_temp = SamplingDoubleSpinBox(self)
         self.spin_temp.setRange(0.10, 2.00)
         self.spin_temp.setSingleStep(0.05)
         self.spin_temp.setDecimals(2)
@@ -151,7 +278,7 @@ class ModelSamplingDialog(QDialog):
         t_header.addWidget(self.spin_temp)
         temp_row.addLayout(t_header)
 
-        self.slider_temp = Slider(Qt.Orientation.Horizontal, self)
+        self.slider_temp = SamplingSlider(Qt.Orientation.Horizontal, self)
         self.slider_temp.setRange(10, 200)
         self.slider_temp.setSingleStep(5)
         self.slider_temp.setPageStep(10)
@@ -164,7 +291,7 @@ class ModelSamplingDialog(QDialog):
         mp_header = QHBoxLayout()
         lbl_mp = QLabel("Min-P Sampling:", self)
         lbl_mp.setProperty("class", "param_label")
-        self.spin_min_p = QDoubleSpinBox(self)
+        self.spin_min_p = SamplingDoubleSpinBox(self)
         self.spin_min_p.setRange(0.00, 0.20)
         self.spin_min_p.setSingleStep(0.01)
         self.spin_min_p.setDecimals(2)
@@ -173,7 +300,7 @@ class ModelSamplingDialog(QDialog):
         mp_header.addWidget(self.spin_min_p)
         min_p_row.addLayout(mp_header)
 
-        self.slider_min_p = Slider(Qt.Orientation.Horizontal, self)
+        self.slider_min_p = SamplingSlider(Qt.Orientation.Horizontal, self)
         self.slider_min_p.setRange(0, 20)
         self.slider_min_p.setSingleStep(1)
         self.slider_min_p.setPageStep(2)
@@ -186,7 +313,7 @@ class ModelSamplingDialog(QDialog):
         rp_header = QHBoxLayout()
         lbl_rp = QLabel("Штраф за повторы (Repetition Penalty):", self)
         lbl_rp.setProperty("class", "param_label")
-        self.spin_rep_pen = QDoubleSpinBox(self)
+        self.spin_rep_pen = SamplingDoubleSpinBox(self)
         self.spin_rep_pen.setRange(1.00, 1.30)
         self.spin_rep_pen.setSingleStep(0.01)
         self.spin_rep_pen.setDecimals(2)
@@ -195,7 +322,7 @@ class ModelSamplingDialog(QDialog):
         rp_header.addWidget(self.spin_rep_pen)
         rep_row.addLayout(rp_header)
 
-        self.slider_rep_pen = Slider(Qt.Orientation.Horizontal, self)
+        self.slider_rep_pen = SamplingSlider(Qt.Orientation.Horizontal, self)
         self.slider_rep_pen.setRange(100, 130)
         self.slider_rep_pen.setSingleStep(1)
         self.slider_rep_pen.setPageStep(5)
@@ -208,7 +335,7 @@ class ModelSamplingDialog(QDialog):
         tok_header = QHBoxLayout()
         lbl_tok = QLabel("Макс. токенов (Max Tokens):", self)
         lbl_tok.setProperty("class", "param_label")
-        self.spin_max_tokens = QSpinBox(self)
+        self.spin_max_tokens = SamplingSpinBox(self)
         self.spin_max_tokens.setRange(256, 4096)
         self.spin_max_tokens.setSingleStep(64)
         tok_header.addWidget(lbl_tok)
@@ -216,7 +343,7 @@ class ModelSamplingDialog(QDialog):
         tok_header.addWidget(self.spin_max_tokens)
         tokens_row.addLayout(tok_header)
 
-        self.slider_max_tokens = Slider(Qt.Orientation.Horizontal, self)
+        self.slider_max_tokens = SamplingSlider(Qt.Orientation.Horizontal, self)
         self.slider_max_tokens.setRange(256, 4096)
         self.slider_max_tokens.setSingleStep(64)
         self.slider_max_tokens.setPageStep(256)
@@ -232,17 +359,21 @@ class ModelSamplingDialog(QDialog):
 
         layout.addLayout(params_box)
 
-        # Connect signals
+        # Connect signals for real-time dynamic synchronization on the fly
         self.slider_temp.valueChanged.connect(self._on_temp_slider_changed)
+        self.slider_temp.sliderMoved.connect(self._on_temp_slider_changed)
         self.spin_temp.valueChanged.connect(self._on_temp_spin_changed)
 
         self.slider_min_p.valueChanged.connect(self._on_min_p_slider_changed)
+        self.slider_min_p.sliderMoved.connect(self._on_min_p_slider_changed)
         self.spin_min_p.valueChanged.connect(self._on_min_p_spin_changed)
 
         self.slider_rep_pen.valueChanged.connect(self._on_rep_pen_slider_changed)
+        self.slider_rep_pen.sliderMoved.connect(self._on_rep_pen_slider_changed)
         self.spin_rep_pen.valueChanged.connect(self._on_rep_pen_spin_changed)
 
         self.slider_max_tokens.valueChanged.connect(self._on_max_tokens_slider_changed)
+        self.slider_max_tokens.sliderMoved.connect(self._on_max_tokens_slider_changed)
         self.spin_max_tokens.valueChanged.connect(self._on_max_tokens_spin_changed)
         self.chk_dm_mode.toggled.connect(lambda _: self._on_user_input_changed())
 
@@ -310,53 +441,67 @@ class ModelSamplingDialog(QDialog):
 
     def _on_temp_slider_changed(self, val: int):
         self._on_user_input_changed()
-        self.spin_temp.blockSignals(True)
-        self.spin_temp.setValue(val / 100.0)
-        self.spin_temp.blockSignals(False)
+        target = round(val / 100.0, 2)
+        if abs(self.spin_temp.value() - target) > 0.001:
+            self.spin_temp.blockSignals(True)
+            self.spin_temp.setValue(target)
+            self.spin_temp.blockSignals(False)
 
     def _on_temp_spin_changed(self, val: float):
         self._on_user_input_changed()
-        self.slider_temp.blockSignals(True)
-        self.slider_temp.setValue(int(round(val * 100)))
-        self.slider_temp.blockSignals(False)
+        target = int(round(val * 100))
+        if self.slider_temp.value() != target:
+            self.slider_temp.blockSignals(True)
+            self.slider_temp.setValue(target)
+            self.slider_temp.blockSignals(False)
 
     def _on_min_p_slider_changed(self, val: int):
         self._on_user_input_changed()
-        self.spin_min_p.blockSignals(True)
-        self.spin_min_p.setValue(val / 100.0)
-        self.spin_min_p.blockSignals(False)
+        target = round(val / 100.0, 2)
+        if abs(self.spin_min_p.value() - target) > 0.001:
+            self.spin_min_p.blockSignals(True)
+            self.spin_min_p.setValue(target)
+            self.spin_min_p.blockSignals(False)
 
     def _on_min_p_spin_changed(self, val: float):
         self._on_user_input_changed()
-        self.slider_min_p.blockSignals(True)
-        self.slider_min_p.setValue(int(round(val * 100)))
-        self.slider_min_p.blockSignals(False)
+        target = int(round(val * 100))
+        if self.slider_min_p.value() != target:
+            self.slider_min_p.blockSignals(True)
+            self.slider_min_p.setValue(target)
+            self.slider_min_p.blockSignals(False)
 
     def _on_rep_pen_slider_changed(self, val: int):
         self._on_user_input_changed()
-        self.spin_rep_pen.blockSignals(True)
-        self.spin_rep_pen.setValue(val / 100.0)
-        self.spin_rep_pen.blockSignals(False)
+        target = round(val / 100.0, 2)
+        if abs(self.spin_rep_pen.value() - target) > 0.001:
+            self.spin_rep_pen.blockSignals(True)
+            self.spin_rep_pen.setValue(target)
+            self.spin_rep_pen.blockSignals(False)
 
     def _on_rep_pen_spin_changed(self, val: float):
         self._on_user_input_changed()
-        self.slider_rep_pen.blockSignals(True)
-        self.slider_rep_pen.setValue(int(round(val * 100)))
-        self.slider_rep_pen.blockSignals(False)
+        target = int(round(val * 100))
+        if self.slider_rep_pen.value() != target:
+            self.slider_rep_pen.blockSignals(True)
+            self.slider_rep_pen.setValue(target)
+            self.slider_rep_pen.blockSignals(False)
 
     def _on_max_tokens_slider_changed(self, val: int):
         self._on_user_input_changed()
         snapped = round(val / 64) * 64
         snapped = max(256, min(4096, snapped))
-        self.spin_max_tokens.blockSignals(True)
-        self.spin_max_tokens.setValue(snapped)
-        self.spin_max_tokens.blockSignals(False)
+        if self.spin_max_tokens.value() != snapped:
+            self.spin_max_tokens.blockSignals(True)
+            self.spin_max_tokens.setValue(snapped)
+            self.spin_max_tokens.blockSignals(False)
 
     def _on_max_tokens_spin_changed(self, val: int):
         self._on_user_input_changed()
-        self.slider_max_tokens.blockSignals(True)
-        self.slider_max_tokens.setValue(val)
-        self.slider_max_tokens.blockSignals(False)
+        if self.slider_max_tokens.value() != val:
+            self.slider_max_tokens.blockSignals(True)
+            self.slider_max_tokens.setValue(val)
+            self.slider_max_tokens.blockSignals(False)
 
     def _reset_defaults(self):
         self._is_resetting = True

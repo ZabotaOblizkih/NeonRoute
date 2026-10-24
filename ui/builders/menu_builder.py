@@ -6,6 +6,8 @@ Modernized with QFluentWidgets RoundMenu and Action components under Agentrules.
 
 import os
 from typing import TYPE_CHECKING
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QMenuBar, QMenu
 from PyQt6.QtGui import QActionGroup, QKeySequence, QShortcut
 from qfluentwidgets import (
     RoundMenu,
@@ -16,6 +18,63 @@ from config import HISTORY_DIR
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
+
+
+class ClickOnlyMenuBar(QMenuBar):
+    """
+    QMenuBar с открытием выпадающих списков строго по клику ЛКМ (clicked).
+    Полностью подавляет открытие и переключение по наведению курсора (hover / mouseMoveEvent / enterEvent),
+    обеспечивая стандартное поведение:
+    - меню открывается строго по нажатию левой кнопки мыши (LMB);
+    - пока меню открыто, клик по другому пункту закрывает предыдущее и открывает новое;
+    - повторный клик по активному пункту или клик мимо закрывает меню.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(False)
+        self._closing_action = None
+
+    def addMenu(self, *args, **kwargs):
+        action = super().addMenu(*args, **kwargs)
+        menu = action.menu() if hasattr(action, "menu") else None
+        if not menu and len(args) > 0 and isinstance(args[0], QMenu):
+            menu = args[0]
+        if menu:
+            try:
+                menu.aboutToHide.connect(lambda a=action: self._on_menu_about_to_hide(a))
+            except Exception:
+                pass
+        return action
+
+    def _on_menu_about_to_hide(self, action):
+        self._closing_action = action
+        QTimer.singleShot(180, self._clear_closing_action)
+
+    def _clear_closing_action(self):
+        self._closing_action = None
+
+    def mousePressEvent(self, event):
+        # Открытие меню строго по клику левой кнопки мыши
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+
+        action = self.actionAt(event.pos())
+        # Повторный клик по уже открытому или закрывающемуся пункту — закрывает меню без повторного открытия
+        if action and (action == self.activeAction() or action == self._closing_action):
+            self._closing_action = None
+            self.setActiveAction(None)
+            if action.menu():
+                action.menu().close()
+            event.accept()
+            return
+
+        self._closing_action = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # Полностью подавляем открытие/переключение меню при наведении курсора (hover)
+        event.ignore()
 
 
 def _create_round_menu(title: str, parent=None) -> RoundMenu:

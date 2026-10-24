@@ -378,6 +378,21 @@ class MainWindow(
         self.btn_refresh_models = self.sidebar.btn_refresh_models
         self.chat_list_widget = self.sidebar.chat_list_widget
 
+        # Первичное быстрое наполнение lm_combo найденными .gguf моделями через ServerConfigResolver
+        try:
+            from services.server_config import ServerConfigResolver
+            discovered_models = ServerConfigResolver.discover_gguf_models()
+            if discovered_models:
+                self.lm_combo.blockSignals(True)
+                self.lm_combo.clear()
+                self.lm_combo.addItems(list(discovered_models.keys()))
+                active_cfg_model = self.app_config.get("active_model", "")
+                if active_cfg_model and self.lm_combo.findText(active_cfg_model) >= 0:
+                    self.lm_combo.setCurrentIndex(self.lm_combo.findText(active_cfg_model))
+                self.lm_combo.blockSignals(False)
+        except Exception as e:
+            logger.debug(f"Initial GGUF discovery error: {e}")
+
         # 2. Main Central Work Area
         self.main_content = self._create_main_content()
         splitter.addWidget(self.main_content)
@@ -532,6 +547,7 @@ class MainWindow(
 
         # Process Manager Signals
         self.process_manager.action_completed.connect(self._on_process_action_completed)
+        self.process_manager.server_state_changed.connect(self._on_server_state_changed)
 
         # Health Checker Background Worker (Non-blocking)
         self.health_worker.health_updated.connect(self._on_health_updated)
