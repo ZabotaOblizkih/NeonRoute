@@ -243,6 +243,17 @@ class DialogControllerMixin:
         dialog = AboutDialog(self)
         dialog.exec()
 
+    def _open_knowledge_manager_dialog(self):
+        """Открывает диалоговое окно базы знаний Эларии."""
+        try:
+            from ui.dialogs.knowledge_manager_dialog import KnowledgeManagerDialog
+            dlg = KnowledgeManagerDialog(parent=self)
+            dlg.exec()
+        except Exception as e:
+            logger.error(f"[NeonRoute] Ошибка открытия окна базы знаний Эларии: {e}", exc_info=True)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Ошибка базы знаний", f"Не удалось открыть базу знаний:\n{e}")
+
     def open_dependency_dialog(self):
         from ui.dialogs.dependency_dialog import DependencyDialog
         dlg = DependencyDialog(parent=self)

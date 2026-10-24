@@ -195,6 +195,7 @@ class MainWindow(
         self.process_manager.lm_client = self.lm_client
         self.lm_client.set_process_manager(self.process_manager)
         self.chat_controller = self
+        self._knowledge_sync_worker = None
 
         # State Variables
         self.current_mode = "assistant"  # "assistant" or "roleplay"
@@ -587,6 +588,19 @@ class MainWindow(
             if missing:
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(800, self.open_dependency_dialog)
+
+        # Фоновая синхронизация базы знаний Эларии (CPU, 0 МБ VRAM)
+        try:
+            from services.knowledge_manager import KnowledgeSyncWorker
+            self._knowledge_sync_worker = KnowledgeSyncWorker(self)
+            self._knowledge_sync_worker.sync_finished.connect(self._on_knowledge_sync_finished)
+            self._knowledge_sync_worker.start()
+        except Exception as e:
+            logger.warning(f"[NeonRoute] Не удалось запустить фоновую синхронизацию знаний: {e}")
+
+    def _on_knowledge_sync_finished(self, registry_data: dict):
+        total = registry_data.get("total_documents", len(registry_data.get("documents", {})))
+        logger.info(f"[NeonRoute] Фоновая синхронизация базы знаний завершена: {total} документов.")
 
     def _load_saved_sessions(self):
         """Loads all sessions from C:\\NeonRoute\\history\\ or creates a fresh one."""
@@ -1513,6 +1527,13 @@ class MainWindow(
                 self.reminder_controller.tray_icon.hide()
             except Exception as e_tray:
                 logger.debug(f"Error stopping reminder timer or hiding tray icon: {e_tray}")
+
+        if hasattr(self, "_knowledge_sync_worker") and self._knowledge_sync_worker:
+            try:
+                if self._knowledge_sync_worker.isRunning():
+                    self._knowledge_sync_worker.wait(400)
+            except Exception:
+                pass
 
         # Hide main window to give instant responsiveness
         self.hide()

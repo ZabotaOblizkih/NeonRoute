@@ -267,6 +267,11 @@ class MenuBuilder:
         act_asst_settings.triggered.connect(lambda *_: window._open_user_settings_dialog(0))
         system_menu.addAction(act_asst_settings)
 
+        act_knowledge = Action(FIF.BOOK_SHELF, "Знания Эларии...", window)
+        act_knowledge.setToolTip("Управление документами и ключевыми триггерами базы знаний")
+        act_knowledge.triggered.connect(lambda *_: window._open_knowledge_manager_dialog())
+        system_menu.addAction(act_knowledge)
+
         act_gallery = Action(FIF.PEOPLE, "Галерея персонажей...", window)
         act_gallery.triggered.connect(lambda *_: window._open_characters_gallery_dialog())
         system_menu.addAction(act_gallery)
