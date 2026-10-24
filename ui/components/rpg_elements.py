@@ -204,11 +204,10 @@ class RPGThoughtWidget(QFrame):
         self.setObjectName("RPGThoughtFrame")
         self.setStyleSheet("""
             QFrame#RPGThoughtFrame {
-                background-color: rgba(22, 17, 38, 0.88);
-                border: 1px solid rgba(167, 139, 250, 0.35);
-                border-left: 3px solid #A78BFA;
-                border-radius: 8px;
-                margin-top: 2px;
+                background-color: rgba(25, 20, 42, 0.65);
+                border: 1px solid rgba(167, 139, 250, 0.25);
+                border-radius: 10px;
+                margin-top: 3px;
                 margin-bottom: 4px;
             }
         """)
@@ -230,7 +229,7 @@ class RPGThoughtWidget(QFrame):
             QTextBrowser {
                 background: transparent;
                 border: none;
-                color: #DDD6FE;
+                color: #E9D5FF;
                 font-family: 'Inter', 'Segoe UI', sans-serif;
                 font-style: italic;
                 font-size: 11px;
@@ -280,10 +279,9 @@ class RPGChoicesWidget(QFrame):
         self.setObjectName("RPGChoicesFrame")
         self.setStyleSheet("""
             QFrame#RPGChoicesFrame {
-                background-color: rgba(10, 16, 28, 0.92);
-                border: 1px solid rgba(0, 240, 255, 0.25);
-                border-left: 3px solid #38BDF8;
-                border-radius: 8px;
+                background-color: rgba(15, 23, 42, 0.75);
+                border: 1px solid rgba(0, 240, 255, 0.20);
+                border-radius: 10px;
                 margin-top: 6px;
                 margin-bottom: 4px;
             }
@@ -301,22 +299,27 @@ class RPGChoicesWidget(QFrame):
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(18, 28, 46, 0.8);
+                    background-color: rgba(22, 32, 50, 0.65);
                     color: #F1F5F9;
-                    border: 1px solid rgba(56, 189, 248, 0.35);
-                    border-radius: 6px;
+                    border: 1px solid rgba(56, 189, 248, 0.25);
+                    border-radius: 8px;
                     padding: 6px 12px;
                     text-align: left;
                     font-size: 11px;
                     font-weight: 500;
                 }
                 QPushButton:hover {
-                    background-color: rgba(0, 240, 255, 0.20);
+                    background-color: rgba(0, 240, 255, 0.18);
                     border-color: #00F0FF;
                     color: #00F0FF;
                 }
                 QPushButton:pressed {
-                    background-color: rgba(0, 240, 255, 0.35);
+                    background-color: rgba(0, 240, 255, 0.30);
+                }
+                QPushButton:disabled {
+                    background-color: rgba(15, 23, 42, 0.40);
+                    border-color: rgba(148, 163, 184, 0.15);
+                    color: #64748B;
                 }
             """)
             btn.clicked.connect(lambda _, ch=raw_choice: self._on_btn_clicked(ch))
@@ -356,10 +359,9 @@ class RPGStatusWidget(QFrame):
         self.setObjectName("RPGStatusHUD")
         self.setStyleSheet("""
             QFrame#RPGStatusHUD {
-                background-color: rgba(10, 16, 28, 0.94);
-                border: 1px solid rgba(0, 240, 255, 0.28);
-                border-left: 3px solid #00F0FF;
-                border-radius: 8px;
+                background-color: rgba(15, 23, 42, 0.80);
+                border: 1px solid rgba(0, 240, 255, 0.25);
+                border-radius: 10px;
                 margin-top: 6px;
                 margin-bottom: 4px;
             }

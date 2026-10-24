@@ -11,6 +11,7 @@ from typing import Optional, List, Union, Any
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QWidget, QPushButton
+from qfluentwidgets import ToolTipFilter, ToolTipPosition
 
 from ui.components.chat_bubble import ChatMessageWidget
 
@@ -86,15 +87,16 @@ class AssistantChatMessageWidget(ChatMessageWidget):
         chip_btn.setObjectName("ArtProposalChip")
         chip_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         chip_btn.setToolTip(f"Запустить генерацию кадра в Forge:\n{prompt}")
+        chip_btn.installEventFilter(ToolTipFilter(chip_btn, 300, ToolTipPosition.BOTTOM))
         chip_btn.setStyleSheet("""
             QPushButton#ArtProposalChip {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(0, 240, 255, 0.14),
-                    stop:1 rgba(14, 165, 233, 0.20));
+                    stop:0 rgba(0, 240, 255, 0.12),
+                    stop:1 rgba(14, 165, 233, 0.18));
                 color: #00F0FF;
                 border: 1px solid rgba(0, 240, 255, 0.45);
-                border-radius: 12px;
-                padding: 5px 14px;
+                border-radius: 14px;
+                padding: 6px 16px;
                 font-family: 'Inter', 'Segoe UI', sans-serif;
                 font-size: 11px;
                 font-weight: 600;
@@ -106,7 +108,7 @@ class AssistantChatMessageWidget(ChatMessageWidget):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 rgba(0, 240, 255, 0.28),
                     stop:1 rgba(14, 165, 233, 0.36));
-                border-color: #38BDF8;
+                border-color: #00F0FF;
                 color: #FFFFFF;
             }
             QPushButton#ArtProposalChip:pressed {
@@ -119,8 +121,18 @@ class AssistantChatMessageWidget(ChatMessageWidget):
             }
         """)
 
-        if on_generate:
-            chip_btn.clicked.connect(lambda: on_generate())
+        def _safe_generate():
+            chip_btn.setEnabled(False)
+            chip_btn.setText("⏳ Запуск генерации...")
+            if on_generate:
+                try:
+                    on_generate()
+                except Exception as ex:
+                    logger.error(f"Art generation invocation failed: {ex}")
+                    chip_btn.setEnabled(True)
+                    chip_btn.setText("🎨 Сгенерировать иллюстрацию")
+
+        chip_btn.clicked.connect(_safe_generate)
 
         self.art_proposal_chip = chip_btn
 

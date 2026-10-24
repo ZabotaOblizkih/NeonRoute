@@ -33,7 +33,36 @@ DEFAULT_ELARIA_SYSTEM_PROMPT = (
     "замена кода: готовый код или блок до/после с аннотациями типов\n"
     "критерий проверки: ast-валидация без ошибок, сохранение сигнатур методов\n"
     "[/engineer_task]\n"
-    "3. внутри блока [engineer_task] исключи вежливые обращения, вводные фразы и пояснительную воду."
+    "3. внутри блока [engineer_task] исключи вежливые обращения, вводные фразы и пояснительную воду.\n\n"
+    "протокол визуализации (навык «галерея»):\n"
+    "ты обладаешь встроенным навыком «галерея» для визуализации сцен, локаций и создания артов.\n"
+    "когда собеседник просит тебя что-то показать, нарисовать, визуализировать, сделать фото/селфи или когда диалог естественно располагает к иллюстрации кадра:\n"
+    "1. поддержи диалог тёплым живым ответом от первого лица.\n"
+    "2. строго в самый конец своего сообщения добавь команду вызова навыка: [GALERY].\n"
+    "3. фактический рендеринг выполняет автономный графический модуль neonroute сразу после твоего ответа."
+)
+
+GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
+    "\n\n[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]\n"
+    "The user has requested an image. Act as an expert prompt engineer for Stable Diffusion.\n"
+    "Target model / aesthetic profile: {model_hint}.\n\n"
+    "Prompt Engineering Rules:\n"
+    "1. Tag Language: STRICTLY English.\n"
+    "2. Structure: Dense comma-separated keywords and short phrases (NO full sentences or conversational filler).\n"
+    "3. Word Order Priority:\n"
+    "   [Main subject & action] -> [Environment & location] -> [Lighting & mood] -> [Style & medium] -> [Camera angle / framing] -> [Quality modifiers].\n"
+    "4. Density: 35–60 evocative Danbooru/SD tags without fluff.\n"
+    "5. Framing Flag: Always append one aspect ratio flag to the end:\n"
+    "   --ar wide (landscapes, rooms, sceneries, architecture, vehicles)\n"
+    "   --ar portrait (standing characters, full body, outfits, vertical interactions/embrace)\n"
+    "   --ar square (face close-ups, selfies, busts, single small items)\n"
+    "6. Do NOT write negative prompts (injected automatically).\n\n"
+    "Output Format:\n"
+    "CRITICAL: Do NOT write any conversational filler, greetings, or Russian text.\n"
+    "Output STRICTLY AND ONLY the generation tag on a single line:\n"
+    "[IMAGE_PROMPT: <comma-separated SD positive tags> --ar <wide|portrait|square> --model {target_model_id}]\n\n"
+    "Example:\n"
+    "[IMAGE_PROMPT: 1girl, sitting on windowsill, looking through window at night city, heavy rain on glass, cozy oversized sweater, holding steaming mug, soft warm indoor lamp light, neon reflections, cinematic lighting, 8k uhd, sharp focus --ar portrait --model {target_model_id}]"
 )
 
 
@@ -98,3 +127,17 @@ class AssistantPromptBuilder:
             sys_prompt += "\nUser requested a Word document. Format response with clean headers and bullet lists."
 
         return user_info_block + relevant_memory_block + assistant_instruction + sys_prompt
+
+    @staticmethod
+    def build_gallery_art_prompt(
+        user_query: str,
+        target_model_id: str = "realistic",
+        target_model_desc: str = ""
+    ) -> str:
+        model_hint = f"{target_model_id} ({target_model_desc})" if target_model_desc else target_model_id
+        directive = GALLERY_SKILL_DIRECTIVE_TEMPLATE.format(
+            model_hint=model_hint,
+            target_model_id=target_model_id
+        )
+        return f"{user_query.strip()}{directive}"
+

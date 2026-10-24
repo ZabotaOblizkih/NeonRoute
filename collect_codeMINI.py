@@ -40,6 +40,8 @@ IGNORE_DIRS = {
     "temp",
     "tmp",
     "migrations",
+    "pyqt-fluent-widgets",      # Исключение PyQt-Fluent-Widgets
+    "pyqt_fluent_widgets",      # На случай написания через подчеркивание
 }
 
 # Маски названий файлов, которые нужно пропускать

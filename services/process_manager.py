@@ -1,6 +1,6 @@
 """
 Process Manager Service for NeonRoute
-Controls lifecycle of external local AI backends (LM Studio and SD WebUI Forge).
+Controls lifecycle of external local AI backends (headless llama-server, LM Studio, and SD WebUI Forge).
 Supports non-blocking background startup, graceful tree-kill on exit,
 and status monitoring.
 """
@@ -14,6 +14,7 @@ import socket
 import logging
 import threading
 import subprocess
+from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple, List, Any
 
@@ -22,8 +23,20 @@ import requests
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from config import FORGE_LAUNCHER_PATH, LM_STUDIO_CLI_CMD
+from services.server_config import ServerConfigResolver
 
 logger = logging.getLogger("NeonRoute.ProcessManager")
+
+
+class ServerState(str, Enum):
+    """Lifecycle states for local LLM server."""
+    STOPPED = "STOPPED"
+    STARTING = "STARTING"
+    READY = "READY"
+    SWITCHING_MODEL = "SWITCHING_MODEL"
+    EVICTED_FOR_FORGE = "EVICTED_FOR_FORGE"
+    RESTORING = "RESTORING"
+    ERROR = "ERROR"
 
 
 def _get_win32_hidden_process_flags(create_new_group: bool = False) -> Tuple[Optional[subprocess.STARTUPINFO], int]:
@@ -43,21 +56,59 @@ def _get_win32_hidden_process_flags(create_new_group: bool = False) -> Tuple[Opt
 
 class ProcessManager(QObject):
     """
-    Orchestrates execution of external local AI servers (LM Studio, SD WebUI Forge).
-    Ensures non-blocking process invocation and clean VRAM deallocation on exit.
+    Orchestrates execution of external local AI servers (llama-server, LM Studio, SD WebUI Forge).
+    Ensures non-blocking process invocation, state machine management, and clean VRAM deallocation on exit.
     """
     lms_status_changed = pyqtSignal(bool, str)     # is_running, message
     forge_status_changed = pyqtSignal(bool, str)   # is_running, message
     action_completed = pyqtSignal(str, bool, str)  # action_name, success, message
+    server_state_changed = pyqtSignal(str, str)    # state_name, message
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._forge_process: Optional[subprocess.Popen] = None
         self._forge_log_file: Optional[Any] = None
+        self._llama_process: Optional[subprocess.Popen] = None
+        self._llama_log_file: Optional[Any] = None
+        self._server_state: ServerState = ServerState.STOPPED
+        self._process_lock = threading.RLock()
         self._lms_exe: Optional[str] = self._locate_lms()
         self._lms_safe_profile_applied: bool = False
         self._is_loading_lms: bool = False
-        self.lm_client: Optional[Any] = None
+        self._lm_client: Optional[Any] = None
+
+    @property
+    def lm_client(self) -> Optional[Any]:
+        return self._lm_client
+
+    @lm_client.setter
+    def lm_client(self, client: Optional[Any]):
+        self._lm_client = client
+        if client and hasattr(client, "set_process_manager"):
+            try:
+                client.set_process_manager(self)
+            except Exception:
+                pass
+
+    @property
+    def server_state(self) -> ServerState:
+        return self._server_state
+
+    def _set_server_state(self, new_state: ServerState, message: str = ""):
+        self._server_state = new_state
+        logger.info(f"[ProcessManager.ServerState] {new_state.value}: {message}")
+        try:
+            self.server_state_changed.emit(new_state.value, message)
+        except Exception:
+            pass
+
+    def has_headless_server(self) -> bool:
+        """Checks if headless llama-server.exe is available via ServerConfigResolver."""
+        try:
+            return ServerConfigResolver.resolve_server_exe() is not None
+        except Exception as e:
+            logger.debug(f"has_headless_server check error: {e}")
+            return False
 
     @staticmethod
     def locate_lms() -> Optional[str]:
@@ -91,7 +142,7 @@ class ProcessManager(QObject):
         return None
 
     # =========================================================================
-    # LM Studio Management
+    # Headless llama-server / LM Studio Management
     # =========================================================================
 
     def is_port_open(self, host: str = "127.0.0.1", port: int = 1234, timeout: float = 1.0) -> bool:
@@ -103,14 +154,317 @@ class ProcessManager(QObject):
             return False
 
     def is_lm_studio_running(self) -> bool:
-        """Checks if LM Studio API server is responding on port 1234."""
+        """Checks if LLM API server is running (either tracked llama-server process or port 1234)."""
+        if self._llama_process is not None and self._llama_process.poll() is None:
+            return True
         return self.is_port_open("127.0.0.1", 1234, timeout=0.8)
 
+    def _kill_llama_server_instance(self, for_forge_eviction: bool = False):
+        """
+        Gracefully terminates llama-server.exe process tree:
+        - Terminates self._llama_process via taskkill /F /T /PID <pid>
+        - Closes log file handle
+        - Terminates any orphaned llama-server.exe processes
+        - Waits for port 1234 to close (up to 3.0s with 0.1s step)
+        - Sets ServerState to EVICTED_FOR_FORGE or STOPPED
+        """
+        with self._process_lock:
+            # 1. Kill tracked process
+            if self._llama_process is not None:
+                pid = getattr(self._llama_process, "pid", None)
+                if pid:
+                    try:
+                        s_info, s_flags = _get_win32_hidden_process_flags()
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(pid)],
+                            capture_output=True,
+                            timeout=5,
+                            startupinfo=s_info,
+                            creationflags=s_flags
+                        )
+                        logger.info(f"llama-server process (PID {pid}) terminated via taskkill.")
+                    except Exception as e:
+                        logger.warning(f"Error terminating llama-server PID {pid}: {e}")
+                self._llama_process = None
+
+            if self._llama_log_file and not getattr(self._llama_log_file, "closed", True):
+                try:
+                    self._llama_log_file.close()
+                except Exception:
+                    pass
+                self._llama_log_file = None
+
+            # 2. Check for orphaned llama-server.exe processes
+            try:
+                s_info, s_flags = _get_win32_hidden_process_flags()
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        pname = (proc.info.get('name') or '').lower()
+                        if "llama-server" in pname:
+                            logger.info(f"Terminating residual llama-server PID {proc.pid}")
+                            subprocess.run(
+                                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                capture_output=True,
+                                timeout=3,
+                                startupinfo=s_info,
+                                creationflags=s_flags
+                            )
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            except Exception as e:
+                logger.debug(f"Residual llama-server cleanup error: {e}")
+
+            # 3. Wait for port 1234 to close (up to 3.0s with 0.1s step)
+            port = 1234
+            try:
+                port = ServerConfigResolver.load_ini().get("port", 1234)
+            except Exception:
+                pass
+
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if not self.is_port_open("127.0.0.1", port, timeout=0.1):
+                    break
+                time.sleep(0.1)
+
+            # 4. Set state
+            next_state = ServerState.EVICTED_FOR_FORGE if for_forge_eviction else ServerState.STOPPED
+            msg = "LLM выгружен для Forge" if for_forge_eviction else "Сервер LLM остановлен"
+            self._set_server_state(next_state, msg)
+            if not for_forge_eviction:
+                self.lms_status_changed.emit(False, msg)
+
+    def start_llama_server_sync(
+        self,
+        model_identifier: Optional[str] = None,
+        context_length: Optional[int] = None,
+        gpu_layers: Optional[int] = None,
+        is_restore: bool = False
+    ) -> bool:
+        """
+        Synchronously launches headless llama-server.exe:
+        - Kills any previous running instance under _process_lock
+        - Sets state to RESTORING (if is_restore) or STARTING
+        - Reads settings from server_config.ini via ServerConfigResolver
+        - Resolves binary, model path, CUDA dll dir, and mmproj
+        - Launches subprocess.Popen with hidden window and streaming logs
+        - Polls GET /v1/models (up to 60s) until HTTP 200 OK
+        - Sets state to READY and synchronizes lm_client
+        """
+        with self._process_lock:
+            # 1. Kill existing instance if running
+            self._kill_llama_server_instance()
+
+            # 2. Update state to STARTING or RESTORING
+            start_state = ServerState.RESTORING if is_restore else ServerState.STARTING
+            start_msg = "Восстановление сервера LLM..." if is_restore else "Запуск сервера llama-server..."
+            self._set_server_state(start_state, start_msg)
+            self.lms_status_changed.emit(False, start_msg)
+
+            try:
+                # 3. Load INI config
+                ini_cfg = ServerConfigResolver.load_ini()
+                host = ini_cfg.get("host", "127.0.0.1")
+                port = ini_cfg.get("port", 1234)
+
+                # 4. Resolve binary
+                server_exe = ServerConfigResolver.resolve_server_exe()
+                if not server_exe:
+                    logger.error("llama-server.exe executable not found on any cascade level.")
+                    self._set_server_state(ServerState.ERROR, "Бинарник llama-server.exe не найден.")
+                    self.lms_status_changed.emit(False, "Бинарник llama-server.exe не найден.")
+                    return False
+
+                # 5. Resolve model path
+                target_id = model_identifier or getattr(self.lm_client, "_last_loaded_model_id", None)
+                if not target_id:
+                    try:
+                        from utils.config_manager import ConfigManager
+                        cfg_json = ConfigManager.load_config()
+                        target_id = cfg_json.get("active_model")
+                    except Exception:
+                        pass
+
+                model_path = ServerConfigResolver.resolve_model_path(target_id)
+                if not model_path:
+                    logger.error(f"Model '{target_id}' could not be resolved to a valid GGUF file.")
+                    self._set_server_state(ServerState.ERROR, f"Модель '{target_id}' не найдена.")
+                    self.lms_status_changed.emit(False, f"Модель '{target_id}' не найдена.")
+                    return False
+
+                effective_ctx = context_length or ini_cfg.get("default_context", 14336)
+                effective_ngl = gpu_layers if gpu_layers is not None else ini_cfg.get("gpu_layers", 99)
+
+                # 6. Assemble CLI arguments (strict list, no shell=True)
+                cmd = [
+                    str(server_exe),
+                    "-m", str(model_path),
+                    "-c", str(effective_ctx),
+                    "-ngl", str(effective_ngl),
+                    "-fa", str(ini_cfg.get("flash_attn", "on")),
+                    "-ctk", str(ini_cfg.get("cache_type_k", "q8_0")),
+                    "-ctv", str(ini_cfg.get("cache_type_v", "q8_0")),
+                    "-np", str(ini_cfg.get("parallel_slots", 1)),
+                    "--port", str(port),
+                    "--host", str(host),
+                ]
+
+                mmproj = ServerConfigResolver.resolve_mmproj_for_model(model_path)
+                if mmproj:
+                    cmd.extend(["--mmproj", str(mmproj)])
+
+                # 7. Environment & CUDA PATH
+                env = os.environ.copy()
+                cuda_dir = ServerConfigResolver.resolve_cuda_dir(server_exe)
+                if cuda_dir:
+                    env["PATH"] = f"{str(cuda_dir)};{env.get('PATH', '')}"
+
+                # 8. Setup log file
+                logs_dir = Path("logs")
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                log_file_path = logs_dir / "llama_server.log"
+
+                if self._llama_log_file and not getattr(self._llama_log_file, "closed", True):
+                    try:
+                        self._llama_log_file.close()
+                    except Exception:
+                        pass
+
+                self._llama_log_file = open(log_file_path, "a", encoding="utf-8", errors="replace", buffering=1)
+
+                # 9. Popen with hidden flags
+                startupinfo, flags = _get_win32_hidden_process_flags(create_new_group=True)
+                try:
+                    self._llama_process = subprocess.Popen(
+                        cmd,
+                        cwd=str(server_exe.parent),
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        bufsize=1,
+                        startupinfo=startupinfo,
+                        creationflags=flags
+                    )
+                except Exception as popen_err:
+                    logger.error(f"Failed to spawn llama-server.exe: {popen_err}")
+                    if self._llama_log_file:
+                        self._llama_log_file.close()
+                        self._llama_log_file = None
+                    self._set_server_state(ServerState.ERROR, str(popen_err))
+                    self.lms_status_changed.emit(False, str(popen_err))
+                    return False
+
+                # 10. Background stream reader for stdout
+                def _stream_llama_stdout(proc: subprocess.Popen, file_handle: Any):
+                    llama_logger = logging.getLogger("NeonRoute.LlamaServer")
+                    try:
+                        for raw_line in iter(proc.stdout.readline, ''):
+                            if not raw_line:
+                                break
+                            try:
+                                file_handle.write(raw_line)
+                                file_handle.flush()
+                            except Exception:
+                                pass
+                            line = raw_line.strip()
+                            if line:
+                                llama_logger.debug(line)
+                    except Exception as stream_err:
+                        llama_logger.debug(f"llama stdout stream closed: {stream_err}")
+                    finally:
+                        try:
+                            file_handle.close()
+                        except Exception:
+                            pass
+
+                threading.Thread(
+                    target=_stream_llama_stdout,
+                    args=(self._llama_process, self._llama_log_file),
+                    daemon=True
+                ).start()
+
+                # 11. Polling readiness handshake GET http://{host}:{port}/v1/models (up to 60s)
+                models_url = f"http://{host}:{port}/v1/models"
+                timeout_s = 60.0
+                start_time = time.time()
+                server_ready = False
+
+                while time.time() - start_time < timeout_s:
+                    if self._llama_process and self._llama_process.poll() is not None:
+                        exit_code = self._llama_process.poll()
+                        err_msg = f"Процесс llama-server завершился с кодом {exit_code}. См. logs/llama_server.log"
+                        logger.error(err_msg)
+                        self._llama_process = None
+                        self._set_server_state(ServerState.ERROR, err_msg)
+                        self.lms_status_changed.emit(False, err_msg)
+                        return False
+
+                    try:
+                        resp = requests.get(models_url, timeout=0.35)
+                        if resp.status_code == 200:
+                            server_ready = True
+                            break
+                    except Exception:
+                        pass
+
+                    time.sleep(0.35)
+
+                if server_ready:
+                    elapsed = round(time.time() - start_time, 1)
+                    ready_msg = f"Модель {model_path.stem} готова к работе ({elapsed} с)."
+                    logger.info(f"llama-server ready on {host}:{port} in {elapsed}s.")
+                    self._set_server_state(ServerState.READY, ready_msg)
+                    self.lms_status_changed.emit(True, "Сервер LLM запущен.")
+                    if hasattr(self, "lm_client") and self.lm_client:
+                        self.lm_client._is_model_unloaded = False
+                        self.lm_client._last_loaded_model_id = model_path.stem
+                        self.lm_client._current_loaded_ctx = effective_ctx
+                    return True
+                else:
+                    err_msg = f"Превышено время ожидания запуска llama-server ({timeout_s} с)."
+                    logger.warning(err_msg)
+                    self._kill_llama_server_instance()
+                    self._set_server_state(ServerState.ERROR, err_msg)
+                    self.lms_status_changed.emit(False, err_msg)
+                    return False
+            except Exception as e:
+                logger.error(f"Error starting llama-server: {e}")
+                self._kill_llama_server_instance()
+                self._set_server_state(ServerState.ERROR, str(e))
+                self.lms_status_changed.emit(False, str(e))
+                return False
+
     def start_lm_studio_async(self):
-        """Launches 'lms server start' in a separate thread to avoid UI freeze."""
+        """Launches LLM server in a separate thread to avoid UI freeze."""
         threading.Thread(target=self._run_lms_start, daemon=True).start()
 
     def _run_lms_start(self):
+        if self.has_headless_server():
+            if self.is_lm_studio_running() and self._server_state == ServerState.READY:
+                logger.info("LLM server is already running and ready on port 1234.")
+                self.lms_status_changed.emit(True, "Сервер LLM уже активен.")
+                self.action_completed.emit("lms_start", True, "LLM сервер уже работает.")
+                return
+
+            target_model = getattr(self.lm_client, "_last_loaded_model_id", None)
+            if not target_model:
+                try:
+                    from utils.config_manager import ConfigManager
+                    target_model = ConfigManager.load_config().get("active_model")
+                except Exception:
+                    pass
+
+            ok = self.start_llama_server_sync(model_identifier=target_model)
+            if ok:
+                self.action_completed.emit("lms_start", True, "LLM сервер успешно запущен.")
+            else:
+                self.action_completed.emit("lms_start", False, "Не удалось запустить LLM сервер.")
+            return
+
+        # Legacy LMS CLI fallback
         if self.is_lm_studio_running():
             logger.info("LM Studio server is already running on port 1234.")
             self.lms_status_changed.emit(True, "Сервер LM Studio уже активен.")
@@ -136,7 +490,6 @@ class ProcessManager(QObject):
 
         logger.info(f"Starting LM Studio server via CLI: {lms_bin} server start")
         try:
-            # lms server start launches background daemon and exits
             s_info, s_flags = _get_win32_hidden_process_flags()
             result = subprocess.run(
                 [lms_bin, "server", "start"],
@@ -161,10 +514,20 @@ class ProcessManager(QObject):
             self.action_completed.emit("lms_start", False, str(e))
 
     def stop_lm_studio_async(self):
-        """Stops LM Studio server via 'lms server stop' in background thread."""
+        """Stops LLM server in background thread."""
         threading.Thread(target=self._run_lms_stop, daemon=True).start()
 
     def _run_lms_stop(self):
+        if self.has_headless_server() or self._llama_process is not None:
+            logger.info("Stopping headless llama-server...")
+            self._kill_llama_server_instance(for_forge_eviction=False)
+            if hasattr(self, "lm_client") and self.lm_client:
+                self.lm_client._is_model_unloaded = True
+                self.lm_client._last_loaded_model_id = None
+            self.lms_status_changed.emit(False, "Сервер LLM остановлен.")
+            self.action_completed.emit("lms_stop", True, "LLM сервер остановлен.")
+            return
+
         lms_bin = self._lms_exe or "lms"
         logger.info(f"Stopping LM Studio server: {lms_bin} server stop")
         try:
@@ -189,14 +552,29 @@ class ProcessManager(QObject):
 
     def get_available_lms_models(self) -> List[str]:
         """
-        Discovers all available LM Studio models via:
-        1. 'lms ls --json' CLI
-        2. Text table parsing of 'lms ls' CLI (fallback)
-        3. Scanning ~/.lmstudio/models and ~/.cache/lm-studio/models directories for .gguf files
+        Discovers all available LM Studio / GGUF models:
+        1. Fast discovery via ServerConfigResolver.discover_gguf_models() (< 20 ms)
+        2. Fallback to 'lms ls --json', text table parsing, and directory scanning
         Returns a deduplicated list of model identifiers.
         """
-        lms_bin = self._lms_exe or "lms"
         models: List[str] = []
+        try:
+            discovered = ServerConfigResolver.discover_gguf_models()
+            for key, path in discovered.items():
+                parent_name = path.parent.name
+                if parent_name and parent_name.lower() not in ("models", "bin") and parent_name not in models:
+                    models.append(parent_name)
+                if path.stem and path.stem not in models:
+                    models.append(path.stem)
+                if key and key not in models:
+                    models.append(key)
+        except Exception as e:
+            logger.debug(f"Fast GGUF model scan error: {e}")
+
+        if models:
+            return models
+
+        lms_bin = self._lms_exe or "lms"
         s_info, s_flags = _get_win32_hidden_process_flags()
 
         # 1. Try 'lms ls --json'
@@ -265,11 +643,9 @@ class ProcessManager(QObject):
             if root.exists() and root.is_dir():
                 try:
                     for gguf in root.rglob("*.gguf"):
-                        # Skip vision projection adapters
                         if gguf.name.lower().startswith("mmproj"):
                             continue
                         rel = gguf.relative_to(root)
-                        # Example: bartowski/L3-8B-Stheno-v3.2-GGUF/L3-8B-Stheno-v3.2-Q4_K_S.gguf
                         key = rel.parent.name if rel.parent.name else gguf.stem
                         if key and key not in models:
                             models.append(key)
@@ -280,9 +656,18 @@ class ProcessManager(QObject):
 
     def get_loaded_lms_models(self) -> List[str]:
         """
-        Queries LM Studio CLI (lms ps --json) for models currently loaded in memory.
-        Returns list of model keys, identifiers, and paths.
+        Queries models currently loaded in memory.
+        In headless mode, returns the active model identifier.
+        In legacy mode, calls 'lms ps --json'.
         """
+        if self.has_headless_server():
+            if self._server_state == ServerState.READY:
+                if hasattr(self, "lm_client") and self.lm_client:
+                    last_id = getattr(self.lm_client, "_last_loaded_model_id", None)
+                    if last_id and not getattr(self.lm_client, "_is_model_unloaded", False):
+                        return [str(last_id)]
+            return []
+
         lms_bin = self._lms_exe or "lms"
         loaded: List[str] = []
         s_info, s_flags = _get_win32_hidden_process_flags()
@@ -335,10 +720,31 @@ class ProcessManager(QObject):
 
     def is_lms_model_loaded(self, model_key: str) -> bool:
         """
-        Checks if the target model (or key/path substring) is already loaded and ready in LM Studio memory.
-        Uses active instances via self.get_loaded_lms_models() (lms ps) to avoid false positives from GET /v1/models catalog.
+        Checks if the target model (or key/path substring) is already loaded and ready in memory.
         """
         if not model_key:
+            return False
+
+        if self.has_headless_server():
+            if self._server_state != ServerState.READY:
+                return False
+            if hasattr(self, "lm_client") and self.lm_client:
+                if getattr(self.lm_client, "_is_model_unloaded", False):
+                    return False
+                last_id = getattr(self.lm_client, "_last_loaded_model_id", None)
+                if not last_id:
+                    return False
+                if model_key.lower() == str(last_id).lower() or Path(model_key).stem.lower() == Path(str(last_id)).stem.lower():
+                    return True
+                try:
+                    p1 = ServerConfigResolver.resolve_model_path(model_key)
+                    p2 = ServerConfigResolver.resolve_model_path(str(last_id))
+                    if p1 and p2 and p1 == p2:
+                        return True
+                except Exception:
+                    pass
+            elif self._llama_process is not None and self._llama_process.poll() is None:
+                return True
             return False
 
         loaded = self.get_loaded_lms_models()
@@ -346,7 +752,6 @@ class ProcessManager(QObject):
             return False
 
         target = model_key.strip().lower()
-        # Clean target from common suffixes/paths for flexible matching
         target_stem = Path(target).stem.lower().replace("-gguf", "")
 
         for item in loaded:
@@ -363,13 +768,13 @@ class ProcessManager(QObject):
         return False
 
     def load_lms_model_async(self, model_key: str, device_mode: str = "Auto"):
-        """Loads a model into memory via lms CLI in background, with graceful CPU fallback on OOM."""
+        """Loads a model into memory in background, with graceful CPU fallback on OOM."""
         model_name = model_key
         if getattr(self, "_is_loading_lms", False):
             logger.info("[ProcessManager] Загрузка модели уже выполняется, дублирующий вызов пропущен.")
             return
 
-        # Если модель уже в памяти LM Studio — не дергаем повторную загрузку
+        # Если модель уже в памяти — не дергаем повторную загрузку
         if hasattr(self, "lm_client") and self.lm_client and self.lm_client.is_model_loaded(model_name):
             logger.info(f"[ProcessManager] Модель '{model_name}' уже готова к работе.")
             return
@@ -386,7 +791,24 @@ class ProcessManager(QObject):
             if not model_key:
                 return
 
-            # Единая точка входа: если подключен lm_client, используем его безопасный загрузчик
+            if self.has_headless_server():
+                self._set_server_state(ServerState.SWITCHING_MODEL, f"Загрузка модели '{model_key}'...")
+                from config import MODE_PROFILES
+                target_context = MODE_PROFILES.get("assistant", {}).get("context_length", 14336)
+                ngl = 0 if device_mode in ("CPU Only", "0", "0.0", "cpu") else None
+                ok = self.start_llama_server_sync(
+                    model_identifier=model_key,
+                    context_length=target_context,
+                    gpu_layers=ngl
+                )
+                if ok:
+                    self._lms_safe_profile_applied = True
+                    self.action_completed.emit("lms_load", True, f"Модель {model_key} готова к работе.")
+                else:
+                    self.action_completed.emit("lms_load", False, f"Не удалось загрузить модель {model_key}.")
+                return
+
+            # Legacy fallback: если подключен lm_client, используем его безопасный загрузчик
             if hasattr(self, "lm_client") and self.lm_client:
                 logger.info(f"[ProcessManager] Делегирование безопасной загрузки '{model_key}' в LMStudioClient...")
                 success = self.lm_client.ensure_model_loaded(model_key)
@@ -421,6 +843,18 @@ class ProcessManager(QObject):
             self.action_completed.emit("lms_load", False, str(e))
         finally:
             self._is_loading_lms = False
+
+    def evict_llm_for_forge_sync(self) -> bool:
+        """
+        Synchronously stops llama-server to free 100% of GPU VRAM for SD WebUI Forge.
+        Sets ServerState to EVICTED_FOR_FORGE while preserving _last_loaded_model_id in lm_client.
+        """
+        logger.info("ProcessManager: evicting LLM server for Forge diffusion generation...")
+        with self._process_lock:
+            self._kill_llama_server_instance(for_forge_eviction=True)
+            if hasattr(self, "lm_client") and self.lm_client:
+                self.lm_client._is_model_unloaded = True
+            return True
 
     # =========================================================================
     # SD WebUI Forge Management
@@ -507,7 +941,6 @@ class ProcessManager(QObject):
                     for raw_line in iter(proc.stdout.readline, ''):
                         if not raw_line:
                             break
-                        # Запись в файл на диске
                         try:
                             file_handle.write(raw_line)
                             file_handle.flush()
@@ -517,13 +950,11 @@ class ProcessManager(QObject):
                         line = raw_line.strip()
                         if not line:
                             continue
-                        # Фильтрация спама частых прогресс-баров tqdm
                         if "%|" in line and ("it/s" in line or "s/it" in line):
                             continue
                         if line.startswith("tiled upscale:"):
                             continue
 
-                        # Трансляция значимых событий в консоль логов NeonRoute
                         forge_logger.info(line)
                 except Exception as stream_err:
                     forge_logger.debug(f"Forge stdout reader closed: {stream_err}")
@@ -543,12 +974,11 @@ class ProcessManager(QObject):
             self.forge_status_changed.emit(False, "Запуск ядра Forge (ожидание порта 7860)...")
 
             # Честный цикл ожидания открытия порта (Handshake) с защитой от сбоя процесса
-            startup_timeout = 150  # Запас времени для холодного старта Torch/CUDA
+            startup_timeout = 150
             start_time = time.time()
             server_ready = False
 
             while time.time() - start_time < startup_timeout:
-                # Проверка: не упал ли процесс в процессе инициализации
                 if self._forge_process and self._forge_process.poll() is not None:
                     exit_code = self._forge_process.poll()
                     err_msg = f"Процесс Forge неожиданно завершился до открытия порта (код {exit_code}). Проверьте logs/forge.log"
@@ -564,7 +994,6 @@ class ProcessManager(QObject):
                     self.action_completed.emit("forge_start", False, err_msg)
                     return
 
-                # Проверка доступности сетевого интерфейса 7860
                 if self.is_port_open("127.0.0.1", 7860, timeout=0.8):
                     server_ready = True
                     break
@@ -605,7 +1034,6 @@ class ProcessManager(QObject):
         if self._forge_process is not None and self._forge_process.pid:
             pid = self._forge_process.pid
             try:
-                # Use taskkill /F /T /PID on Windows for clean recursive termination
                 s_info, s_flags = _get_win32_hidden_process_flags()
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -644,8 +1072,12 @@ class ProcessManager(QObject):
             pass
 
     def unload_all_lms_models(self):
-        """Выгрузка всех моделей LM Studio для освобождения VRAM при закрытии приложения."""
-        logger.info("ProcessManager: выгрузка всех моделей LM Studio...")
+        """Выгрузка всех моделей LM Studio / llama-server для освобождения VRAM при закрытии приложения."""
+        logger.info("ProcessManager: выгрузка всех моделей LM Studio / llama-server...")
+        if self.has_headless_server() or self._llama_process is not None:
+            self._kill_llama_server_instance(for_forge_eviction=False)
+            return
+
         try:
             resp = requests.post("http://127.0.0.1:1234/api/v0/models/unload", timeout=1.5)
             if resp.status_code == 200:
@@ -677,7 +1109,7 @@ class ProcessManager(QObject):
     def shutdown_all(self):
         """Called upon MainWindow close to terminate background subprocesses and free VRAM."""
         logger.info("ProcessManager: shutting down managed processes and releasing VRAM...")
-        
+
         # 1. Сначала мгновенно глушим дерево процессов Forge (занимает <0.1 сек)
         if self._forge_process is not None and self._forge_process.pid:
             pid = self._forge_process.pid
@@ -718,5 +1150,8 @@ class ProcessManager(QObject):
         except Exception as e:
             logger.debug(f"Residual Forge cleanup error: {e}")
 
-        # 2. Выгружаем модели LM Studio для освобождения VRAM
+        # 2. Глушим дерево процессов llama-server.exe
+        self._kill_llama_server_instance(for_forge_eviction=False)
+
+        # 3. Выгружаем модели LM Studio для освобождения VRAM (сохраняет совместимость с тестами)
         self.unload_all_lms_models()

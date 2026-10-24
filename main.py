@@ -117,7 +117,7 @@ def main():
     app.setApplicationVersion(APP_VERSION)
 
     window = MainWindow()
-    window.show()
+    window.showMaximized()
 
     sys.exit(app.exec())
 

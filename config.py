@@ -21,12 +21,16 @@ WORKSPACE_DIR = BASE_DIR / "workspace"
 ASSETS_DIR = BASE_DIR / "assets"
 MEMORY_DB_PATH = DATA_DIR / "memory.db"
 CONFIG_PATH = BASE_DIR / "config.json"
+SERVER_CONFIG_INI_PATH = BASE_DIR / "server_config.ini"
+LOCAL_BIN_DIR = BASE_DIR / "bin"
+LOCAL_MODELS_DIR = BASE_DIR / "models"
+LLAMA_SERVER_BAT_PATH = BASE_DIR / "run_llama_server.bat"
 ART_DIRECTOR_MODELS_PATH = DATA_DIR / "art_director_models.json"
 LORA_REGISTRY_PATH = DATA_DIR / "lora_registry.json"
 # ENTITIES_JSON_PATH = DATA_DIR / "entities.json"  # Deprecated and removed
 
 # Ensure all managed directories exist
-for folder in [BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR, CHARACTERS_DIR, HISTORY_DIR, BACKGROUNDS_DIR, DATA_DIR, CONFIG_DIR, WORKSPACE_DIR, ASSETS_DIR]:
+for folder in [BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR, CHARACTERS_DIR, HISTORY_DIR, BACKGROUNDS_DIR, DATA_DIR, CONFIG_DIR, WORKSPACE_DIR, ASSETS_DIR, LOCAL_BIN_DIR, LOCAL_MODELS_DIR]:
     folder.mkdir(parents=True, exist_ok=True)
 
 # Network Endpoints for Local AI Backends

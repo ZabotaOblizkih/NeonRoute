@@ -31,7 +31,7 @@
       ],
       "pipeline": {
         "sampler": "DPM++ SDE Karras",
-        "steps": 15,
+        "steps": 20,
         "cfg_scale": 1.5,
         "clip_skip": 1,
         "hires_upscaler": "4x-UltraSharp",

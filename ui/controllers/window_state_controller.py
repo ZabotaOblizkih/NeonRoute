@@ -38,6 +38,11 @@ class WindowStateMixin:
             self._bg_render_cache = None
 
     def paintEvent(self, event):
+        if hasattr(super(), "paintEvent"):
+            try:
+                super().paintEvent(event)
+            except Exception:
+                pass
         painter = QPainter(self)
         if getattr(self, '_bg_render_cache', None) and not self._bg_render_cache.isNull():
             painter.drawPixmap(0, 0, self._bg_render_cache)
@@ -91,13 +96,21 @@ class WindowStateMixin:
             QMainWindow.keyPressEvent(self, event)
 
     def resizeEvent(self, event):
-        if isinstance(self, QMainWindow):
-            QMainWindow.resizeEvent(self, event)
+        if hasattr(super(), "resizeEvent"):
+            try:
+                super().resizeEvent(event)
+            except Exception:
+                pass
         self._update_background_cache()
         if self.isFullScreen() and hasattr(self, "floating_close_btn") and self.floating_close_btn.isVisible():
             self._position_floating_close_btn()
 
     def changeEvent(self, event):
+        if hasattr(super(), "changeEvent"):
+            try:
+                super().changeEvent(event)
+            except Exception:
+                pass
         if event.type() == QEvent.Type.WindowStateChange:
             if self.isFullScreen():
                 if hasattr(self, "sidebar"):
@@ -124,8 +137,14 @@ class WindowStateMixin:
                 if hasattr(self, "btn_fullscreen"):
                     self.btn_fullscreen.setText("⛶")
                     self.btn_fullscreen.setToolTip("Полноэкранный режим чата (F11)")
-        if isinstance(self, QMainWindow):
-            QMainWindow.changeEvent(self, event)
+
+    def nativeEvent(self, eventType, message):
+        if hasattr(super(), "nativeEvent"):
+            try:
+                return super().nativeEvent(eventType, message)
+            except Exception:
+                pass
+        return False, 0
 
 
 __all__ = ["WindowStateMixin"]

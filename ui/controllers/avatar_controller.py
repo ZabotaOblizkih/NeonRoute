@@ -332,6 +332,8 @@ class AvatarControllerMixin:
             logger.error(f"Error opening avatar lightbox: {e}", exc_info=True)
 
     def _on_header_avatar_mouse_press(self, event):
+        if hasattr(self, "header_avatar_lbl") and hasattr(self.header_avatar_lbl, "reset_hover"):
+            self.header_avatar_lbl.reset_hover()
         if event.button() == Qt.MouseButton.LeftButton:
             av_path = self._get_current_avatar_path()
             if av_path and av_path.exists():
@@ -396,6 +398,8 @@ class AvatarControllerMixin:
                 act_rename.triggered.connect(self._on_rename_clicked)
 
             target_widget = getattr(self, "header_avatar_lbl", None)
+            if target_widget and hasattr(target_widget, "reset_hover"):
+                target_widget.reset_hover()
             if isinstance(pos, QPoint) and target_widget:
                 global_pos = target_widget.mapToGlobal(pos)
             else:

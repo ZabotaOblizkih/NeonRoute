@@ -38,6 +38,27 @@ class HardwareEngineMixin:
     # -------------------------------------------------------------------------
     # 1. Мониторинг здоровья серверов и телеметрия VRAM/RAM
     # -------------------------------------------------------------------------
+    @pyqtSlot(str, str)
+    def _on_server_state_changed(self, old_state: str, new_state: str):
+        logger.info(f"[ServerState] {old_state} -> {new_state}")
+        norm = (new_state or "").lower()
+        if norm == "ready":
+            self.pill_lm.set_status(True, "llama-server Online")
+            self.btn_lms_toggle.setText("⚡ Стоп LLM")
+            self.btn_lms_toggle.setToolTip("Остановить локальный сервер llama-server.exe (порт 1234)")
+        elif norm in ("starting", "restoring", "switching_model"):
+            self.pill_lm.set_status(False, f"Запуск ({new_state})...")
+            self.btn_lms_toggle.setText("⚡ Стоп LLM")
+            self.btn_lms_toggle.setToolTip("Локальный сервер llama-server.exe запускается...")
+        elif norm in ("stopped", "error"):
+            self.pill_lm.set_status(False, "Offline")
+            self.btn_lms_toggle.setText("⚡ Старт LLM")
+            self.btn_lms_toggle.setToolTip("Запустить / остановить локальный сервер llama-server.exe (порт 1234)")
+        elif norm == "evicted_for_forge":
+            self.pill_lm.set_status(False, "Выгружен для Forge")
+            self.btn_lms_toggle.setText("⚡ Старт LLM")
+            self.btn_lms_toggle.setToolTip("LLM выгружен из VRAM для работы Forge. Нажмите для ручного возврата.")
+
     @pyqtSlot(dict)
     def _on_health_updated(self, health: dict):
         # 1. LM Studio
@@ -45,7 +66,7 @@ class HardwareEngineMixin:
         lm_msg = health.get("lm_msg", "LM Studio Offline")
         self.pill_lm.set_status(lm_ok, lm_msg)
         if lm_ok or self.process_manager.is_lm_studio_running():
-            self.btn_lms_toggle.setText("⚡ Стоп LMS")
+            self.btn_lms_toggle.setText("⚡ Стоп LLM")
             self.btn_lms_toggle.setStyleSheet("""
                 QPushButton {
                     background-color: #2D1A15;
@@ -62,7 +83,7 @@ class HardwareEngineMixin:
                 }
             """)
         else:
-            self.btn_lms_toggle.setText("⚡ Старт LMS")
+            self.btn_lms_toggle.setText("⚡ Старт LLM")
             self.btn_lms_toggle.setStyleSheet("""
                 QPushButton {
                     background-color: #111A28;
@@ -209,7 +230,7 @@ class HardwareEngineMixin:
         elif action_name == "lms_stop":
             self.statusBar().showMessage(message, 5000)
             self.pill_lm.set_status(False, "LM Studio Offline")
-            self.btn_lms_toggle.setText("⚡ Старт LMS")
+            self.btn_lms_toggle.setText("⚡ Старт LLM")
             self.btn_lms_toggle.setStyleSheet("""
                 QPushButton {
                     background-color: #111A28;

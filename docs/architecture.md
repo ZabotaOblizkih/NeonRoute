@@ -335,7 +335,7 @@ sequenceDiagram
 
     User->>MW: Закрытие окна (closeEvent)
     MW->>MW: event.ignore(), self.hide()
-    MW->>Dialog: .show() (Glassmorphism индикатор)
+    MW->>Dialog: .show() (Glassmorphic индикатор)
     MW->>SW: .start()
     SW->>Watchdog: threading.Thread(target=_watchdog, daemon=True).start(8.0s)
     
@@ -542,3 +542,402 @@ flowchart TD
 | `tests/test_session_manager.py` | 55 | Атомарное сохранение сессий, ACID-запись через `.tmp`, миграция старых форматов. |
 | `tests/test_document_parser.py` | 44 | Безопасное извлечение текста из .docx, .xlsx, .pptx, .pdf без повреждения рантайма. |
 | **ИТОГО** | **487** | **100% Pass Rate (0 failed, 0 skipped, 0 warnings)** |
+
+---
+
+## 9. Архитектура интеграций и сетевая топология внешних сервисов (C4 Container Level)
+
+### 9.1. Сетевая топология внешних сервисов и IPC
+Оркестратор **NeonRoute** выступает в роли локального координатора, объединяющего изолированные микросервисы через стандартизированные протоколы (REST, HTTP/SSE, IPC/CLI):
+
+```
+                                  ┌────────────────────────┐
+                                  │   Chub.ai Catalog API  │
+                                  │ (https://api.chub.ai)  │
+                                  └───────────▲────────────┘
+                                              │ HTTPS REST
+                                              │ (WAF Bypass Headers)
+┌──────────────────────┐  HTTP REST   ┌───────┴────────────────┐  HTTPS REST   ┌────────────────────────┐
+│ LM Studio API Server │◄────────────►│       NeonRoute        │◄─────────────►│ Civitai Model Catalog  │
+│ (http://127.0.0.1:1234)│ SSE Streaming│   Orchestrator Core    │ SHA256 Check  │ (https://civitai.com)  │
+└──────────────────────┘              │  (PyQt6 / Python 3.10) │               └────────────────────────┘
+                                      └───────┬───────┬────────┘
+                                              │       │
+                                    HTTP REST │       │ HTTP REST
+                             (/sdapi/v1/...)  │       │ (GET/POST /synthesize)
+                                              ▼       ▼
+                                   ┌────────────┐   ┌────────────┐
+                                   │ SD WebUI   │   │ F5-TTS     │
+                                   │ Forge      │   │ Voice Core │
+                                   │ (:7860)    │   │ (:5010)    │
+                                   └────────────┘   └────────────┘
+```
+
+#### Спецификация сетевых эндпоинтов:
+- **LM Studio (`127.0.0.1:1234`)**:
+  - `GET /v1/models`: Запрос списка загруженных/доступных GGUF моделей.
+  - `POST /v1/chat/completions`: Вызов генерации текста и Vision-анализа (`Qwen2.5-VL`). Поддерживает Server-Sent Events (`stream=True`) и JSON Schema (`response_format`).
+  - `POST /api/v0/models/unload` / `lms unload --all`: Команда выгрузки весов из VRAM при переключении на SD Forge.
+- **SD WebUI Forge (`127.0.0.1:7860`)**:
+  - `POST /sdapi/v1/txt2img`: Пайплайн генерации с поддержкой Hires.fix, ADetailer (`face_yolov8n.pt`, `hand_yolov8n.pt`) и VAE Tiling.
+  - `POST /sdapi/v1/options`: Динамическая смена активного чекпоинта (`sd_model_checkpoint`).
+  - `POST /sdapi/v1/unload-checkpoint` & `POST /sdapi/v1/free-vram`: Освобождение памяти GPU (~3.2 ГБ) и очистка CUDA-кэша.
+  - `GET /sdapi/v1/progress`: Опрос прогресса выполнения текущего шага генерации.
+  - `POST /sdapi/v1/interrupt`: Мгновенная остановка рендера.
+- **F5-TTS (`127.0.0.1:5010`)**:
+  - `GET /health`: Проверка статуса сервиса синтеза.
+  - `POST /synthesize`: Передача текста и эталонного аудио для CPU-синтеза голоса.
+- **Chub.ai (`https://api.chub.ai`)**:
+  - `GET /api/characters/search`: Поиск карточек персонажей с фильтрацией по тегам, токенам и языкам (`tags=Russian Language`).
+  - `GET /api/characters/{full_path}?full=true`: Скачивание полных метаданных Tavern V2 (с запасным декодированием b64-содержимого из PNG-аватарок CDN).
+- **Civitai (`https://civitai.com/api/v1`)**:
+  - `GET /model-versions/by-hash/{hash}`: Автоматическое определение рекомендованных параметров (Sampler, Steps, CFG Scale, Hires Upscaler) по AutoV2 SHA256-хэшу файла модели.
+
+---
+
+### 9.2. Распределение нагрузки на RAM и VRAM
+В системе четко разграничены области вычислений на GPU и CPU:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        GPU VRAM (8192 MB Budget)                       │
+│ ┌───────────────────────────────────┐ ┌──────────────────────────────┐ │
+│ │          LM Studio Core           │ │       SD WebUI Forge         │ │
+│ │ Qwen 7B / L3-8B Q4_K_M (4.2-5.5 GB│ │ SD 1.5 Checkpoint (3.2-4.8 GB)│ │
+│ │        [Монопольный режим]        │ │     [Монопольный режим]      │ │
+│ └───────────────────────────────────┘ └──────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────┘
+                                   │ (Переключение через VRAMArbiter)
+┌──────────────────────────────────▼─────────────────────────────────────┐
+│                       System RAM (16 GB Budget)                        │
+│ ┌──────────────────────┐ ┌─────────────────────┐ ┌───────────────────┐ │
+│ │   FastEmbed ONNX     │ │   F5-TTS Voice      │ │  SQLite & LanceDB │ │
+│ │  (MiniLM-L12-v2)     │ │   (CPU Synthesis)   │ │  (In-Memory/File) │ │
+│ │  ~180 MB RAM         │ │   ~650 MB RAM       │ │  ~120 MB RAM      │ │
+│ └──────────────────────┘ └─────────────────────┘ └───────────────────┘ │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 9.3. Политика отказоустойчивости (Fault Tolerance) и Fallback
+
+Мониторинг фоновых сервисов и обработка ошибок рантайма выполняются через `HealthCheckWorker`, `ProcessManager` и таймауты REST-клиентов:
+
+1. **Монитор доступности (`health_checker.py`)**:
+   `HealthCheckWorker` запускается в фоновом потоке `QThread` и выполняет неблокирующий опрос сокетов каждые 3500 мс (`_is_port_open`).
+   - Порт **1234** (LM Studio): проверяется доступность сокета.
+   - Порт **7860** (SD Forge): проверяется открытость порта и успешность вызова `GET /sdapi/v1/progress`.
+   - Порт **5010** (F5-TTS): проверяется доступность сокета.
+   - Сигнал `health_updated` излучается строго при изменении состояния бэкендов, обновляя светодиодные индикаторы `StatusPill`.
+
+2. **Стратегия обработчиков и Fallback**:
+   - **SD WebUI Forge не отвечает**: При вызове генерации `ForgeClient.text_to_image` выполняет предстартовую проверку `is_server_ready(timeout=1.0s)`. Если сервер не ответил, генерируется `ForgeOfflineError`, пользователь получает системный toast с предложенным действием ("Запустите Forge через кнопку в нижней панели"). Если генерация зависает во время инференса, потоковый воркер `_poll_progress_loop` фиксирует отсутствие прогресса (>90s) и активирует сигналы прерывания `interrupt()`.
+   - **Многоуровневый откат рендера (Multi-tier Render Fallback)**:
+     - *Попытка 1*: Полный рендер (Hires.fix + ADetailer).
+     - *Попытка 2*: В случае сбоя или если детектор обнаруживает интимную/динамическую позу (`has_intimate_or_dynamic_triggers`), ADetailer автоматически отключается (`alwayson_scripts` вырезается), сохраняя Hires.fix.
+     - *Попытка 3*: Если происходит переполнение VRAM (`CUDA out of memory`), система сбрасывает `enable_hr = False` и выполняет базовый рендер.
+   - **F5-TTS не отвечает**: В случае неготовности фонового сервера `TTSService` перехватывает `ConnectionError/Timeout` и мгновенно формирует локальный гармонический 2.5-секундный WAV-звук (`_generate_chime_wav`) средствами встроенного модуля `wave` (без падения приложения и с сохранением работоспособности виджета аудиоплеера).
+   - **LM Studio не отвечает**: При потере связи с портом 1234 интерфейс разблокирует селектор моделей `lm_combo`, позволяя пользователю выбрать альтернативный рабочий сервер или перезапустить процесс через `ProcessManager.start_lm_studio_async()`.
+
+---
+
+## 10. Подсистема долгосрочной памяти и RAG (memory_db.py, LanceDB, SQLite)
+
+### 10.1. Спецификация схемы баз данных
+
+Хранение долгосрочных фактов, сюжетных хроник и планировщика организовано в комбинированном реляционно-векторном хранилище:
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │ SQLite Database: data/memory.db         │
+                    ├─────────────────────────────────────────┤
+                    │  user_memory (id, fact, created_at)     │
+                    │  reminders (id, text, remind_at, ...)   │
+                    │  rp_memory (id, session_id, fact, ...)  │
+                    └────────────────────┬────────────────────┘
+                                         │ (Синхронизация по ID)
+                                         ▼
+                    ┌─────────────────────────────────────────┐
+                    │ LanceDB Vector Store: data/vector_memory│
+                    ├─────────────────────────────────────────┤
+                    │  facts (id, text, vector[384])          │
+                    │  rp_memories (id, session_id, text, ...)│
+                    └─────────────────────────────────────────┘
+```
+
+#### 1. Реляционные таблицы SQLite (`data/memory.db`):
+- **`user_memory`**:
+  - `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`): уникальный идентификатор факта.
+  - `fact` (`TEXT NOT NULL`): нормализованный факт о пользователе в 3-м лице.
+  - `created_at` (`TEXT NOT NULL`): дата создания (`DD.MM.YYYY`).
+- **`reminders`**:
+  - `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`): уникальный идентификатор напоминания.
+  - `text` (`TEXT NOT NULL`): текст напоминания.
+  - `remind_at` (`TEXT NOT NULL`): целевое время срабатывания (`YYYY-MM-DD HH:MM:SS`).
+  - `status` (`TEXT DEFAULT 'pending'`): статус (`'pending'`, `'done'`).
+  - `created_at` (`TEXT NOT NULL`): время создания.
+  - *Индекс*: `CREATE INDEX idx_reminders_status_time ON reminders(status, remind_at);`
+- **`rp_memory`**:
+  - `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`): уникальный идентификатор сюжетной вехи.
+  - `session_id` (`TEXT NOT NULL`): UUID сессии ролевого чата.
+  - `fact` (`TEXT NOT NULL`): текст сюжетного воспоминания.
+  - `created_at` (`TEXT NOT NULL`): штамп времени.
+  - *Индекс*: `CREATE INDEX idx_rp_memory_sess ON rp_memory(session_id);`
+
+#### 2. Структура коллекций векторной базы LanceDB (`data/vector_memory/`):
+- **Коллекция `facts` (Глобальная память ассистента Эларии)**:
+  - `id` (`string`): строковый ID, соответствующий `user_memory.id`.
+  - `text` (`string`): нормализованный текст факта.
+  - `vector` (`list[float]`): 384-мерный эмбеддинг.
+- **Коллекция `rp_memories` (Изолированная сюжетная память сессий)**:
+  - `id` (`string`): строковый ID из `rp_memory.id`.
+  - `session_id` (`string`): UUID ролевой сессии для изоляции.
+  - `text` (`string`): текст воспоминания.
+  - `vector` (`list[float]`): 384-мерный эмбеддинг.
+  - `timestamp` (`string`): UNIX-время создания.
+
+---
+
+### 10.2. Пайплайн эмбеддингов и семантический поиск
+
+1. **Векторизация**:
+   - **Модель**: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` из пакета `FastEmbed`.
+   - **Размерность**: 384 измерений (`float32`).
+   - **Рантайм**: Выполняется строго на **CPU ONNX Runtime** (0 МБ VRAM).
+2. **Пороги косинусного сходства (Cosine Distance Thresholds)**:
+   - *Глобальный поиск ассистента (`search_relevant_facts`)*: `top_k = 5`, максимальная дистанция `max_distance <= 0.48`. Факты с дистанцией > 0.48 отсекаются как шум.
+   - *Сюжетный поиск ролевого режима (`search_rp_memories`)*: `top_k = 4`, максимальная дистанция `max_distance <= 0.42`.
+   - *Семантическая дедупликация (`add_fact` / `add_rp_memory`)*: при сохранении нового факта рассчитывается косинусная дистанция до существующих векторов. Если дистанция `< 0.22` (для `add_fact`) или `< 0.20` (для `add_rp_memory`), факт признается семантическим дубликатом и игнорируется.
+3. **Маршрутизация в `model_router.py`**:
+   `ModelRouter` рассчитывает косинусное сходство векторного эмбеддинга пользовательского запроса с векторами `routing_description` зарегистрированных моделей. При отсутствии явных триггеров выбор делается в пользу модели с наивысшим косинусным сходством (при пороговом значении `>= 0.35` и отрыве `> 0.05` от дефолтной модели).
+
+---
+
+### 10.3. Жизненный цикл контекста и алгоритм вытеснения
+
+#### 1. Извлечение и нормализация фактов (`memory_extractor.py`):
+- Фоновый воркер `MemoryExtractor` анализирует завершенные ходы диалога.
+- Для отсева шума выполняется предварительная фильтрация: отсекаются чистый этикет ("привет", "спасибо"), прямые команды генерации арта и вопросы к боту.
+- Экстракция выполняется через LLM с передачей JSON-схемы (`response_format`).
+- Функция `normalize_fact_text` выполняет грамматическую нормализацию местоимений 1-го лица ("я", "мне", "мой") в 3-е лицо ("Пользователь", "Пользователю", "Проект пользователя"), исключая путаницу идентичностей в системном промпте.
+
+#### 2. Стратегия вытеснения и сжатия контекста ("Трёхъякорная модель" `RoleplayEviction`):
+При приближении длины истории к лимиту контекстного окна (24K в RP режиме) подсистема `ContextWindowBuilder` применяет алгоритм трех якорей:
+
+```
+[Anchor 1: System Prompt (messages[0])]  <-- 100% Заморожен (KV-Cache Frozen)
+[Anchor 2: Plot Root (history[0])]      <-- Завязка (first_mes) никогда не вытесняется
+┌─────────────────────────────────────┐
+│     EVICTION ZONE (history[1:-12])   │  <-- Поочередное вытеснение старых ходов
+└─────────────────────────────────────┘
+[Anchor 3: Operational Tail (-12)]      <-- Оперативный контекст последних 12 ходов
+```
+
+- **Якорь 1 (Системный промпт)**: `messages[0]` заморожен на 100%. Динамические контексты подклеиваются в конец последнего сообщения пользователя (`messages[-1]`), обеспечивая сохранение KV-кэша LM Studio на протяжении 50+ ходов.
+- **Якорь 2 (Завязка сюжета)**: Сообщение `history[0]` (каноническое приветствие `first_mes`) закреплено и не вытесняется.
+- **Якорь 3 (Оперативный хвост)**: Последние 12 сообщений (`history[-12:]`) сохраняются для поддержания нити диалога.
+- **Зона вытеснения (`history[1:-12]`)**: Сообщения из средней части поочередно вытесняются и перемещаются в архив `deep_history`. В случае прямых вопросов пользователя ("помнишь, как в начале...") выполняется фоллбэк-поиск по сохраненному архиву `deep_history`.
+
+---
+
+## 11. Механика очереди задач, SSE-стриминг и протокол отмены
+
+### 11.1. Модель приоритетов и прерываний (`TaskQueueWorker`)
+
+Все тяжелые операции обрабатываются синглтоном `TaskQueueWorker` (поток `QThread`), управляющим приоритетной очередью `PriorityQueue`:
+
+- **Ограничение исполнителей**: Жесткий лимит `max_workers = 1`. Задачи исполняются строго последовательно.
+- **Шкала приоритетов**:
+  - `PRIORITY_HIGH` (**0**): Интерактивные ответы языковой модели (`task_type="llm"`).
+  - `PRIORITY_NORMAL` (**10**): Генерация арта (`image`, `scene_art`), синтез речи (`tts`), создание документов (`file`), перевод карточек (`translation`).
+  - `PRIORITY_LOW` (**20**): Фоновый анализ и извлечение памяти (`memory`, `RPCastExtractor`).
+
+```
+Входящие задачи ---> ┌──────────────────────────────────────────────┐
+                     │ PriorityQueue (PRIORITY_HIGH -> LOW)        │
+                     └──────────────────────┬───────────────────────┘
+                                            │
+                                            ▼
+                     ┌──────────────────────────────────────────────┐
+                     │ Single Worker Execution (max_workers = 1)   │
+                     └──────────────────────────────────────────────┘
+```
+
+- **Механизм вытеснения (`abort_tasks_by_type`)**:
+  При поступлении нового ввода пользователя фоновые задачи с низким приоритетом (например, извлечение памяти `memory`) мгновенно отменяются, высвобождая очередь.
+
+---
+
+### 11.2. Потоковая передача данных (SSE / Token Streaming)
+
+1. **Запрос к LM Studio**: Клиент `LMStudioClient` отправляет запрос к `/v1/chat/completions` с параметром `stream=True`.
+2. **Чтение потока SSE**: Клиент считывает чанки `data: { ... }` из HTTP-потока и генерирует PyQt-сигнал `token_streamed(chunk)`.
+3. **QTimer-буферизация (35ms / ~28 FPS)**:
+   Прием сигналов в GUI-потоке накладывает высокий накладной расход на перерисовку Qt. `MainWindow` накапливает входящие токены в строковом буфере `_stream_token_buffer`. Потоковый таймер `_stream_flush_timer` с интервалом **35 мс** сбрасывает накопленный фрагмент в виджет бабла `ChatMessageWidget.append_stream_chunk()`, устраняя микрофризы GUI.
+4. **Фильтрация скрытых тегов на лету**:
+   - Служебные блоки рассуждений `<think>...</think>`, `<thought>...</thought>` и спецтокены `<|im_start|>`, `<|im_end|>` вырезаются с помощью `TextRegexFilter`.
+   - Теги команд генерации арта `[IMAGE_PROMPT: ...]` извлекаются регулярным выражением `RE_IMAGE_TAG`. Текст реплики очищается от тега, а сам промпт передается подсистеме `ArtDirector`.
+
+---
+
+### 11.3. Механизм безопасной отмены задач (Task Cancellation)
+
+При нажатии пользователем кнопки «Стоп» (`btn_stop`) активируется следующий детерминированный протокол отмены:
+
+```
+[Кнопка Стоп] ---> MainWindow.abort_generation()
+                       │
+                       ├───> TaskQueueWorker.abort_current() [флаг is_aborted = True]
+                       ├───> LMStudioClient.abort() [закрытие HTTP сокета]
+                       ├───> ForgeClient.interrupt() [POST /sdapi/v1/interrupt]
+                       └───> Очистка _stream_token_buffer и останов QTimer
+```
+
+1. `MainWindow.abort_generation()` сбрасывает флаги состояния `is_busy = False`.
+2. `TaskQueueWorker.abort_current()` устанавливает `threading.Event` `is_aborted` для активной задачи и вызывает её функцию отмены `abort_fn`.
+3. `LMStudioClient.abort()` принудительно закрывает сокет активного соединения `_active_response.close()`.
+4. `ForgeClient.interrupt()` отправляет запрос `POST /sdapi/v1/interrupt` (таймаут 5.0с) на сервер Forge и закрывает сессию `requests.Session`.
+5. Буфер потока `_stream_token_buffer` очищается, таймер `_stream_flush_timer` останавливается, элементы ввода в UI разблокируются.
+
+---
+
+## 12. Модель безопасности песочницы и аудит-хуки (`sandbox_guard.py`)
+
+### 12.1. Конкретные правила изоляции и матрица системных вызовов
+
+Безопасность выполнения кода субагента «Инженер» обеспечивается системным периметром `sandbox_guard.py` через низкоуровневые аудит-хуки Python `sys.addaudithook` и подмену `builtins.__import__`:
+
+#### Матрица системных вызовов и разрешений:
+
+| Системный вызов / Модуль | Статус в песочнице | Механизм контроля |
+| :--- | :---: | :--- |
+| `os.system`, `os.popen`, `os.spawn*` | **ЗАБЛОКИРОВАНО** | Подмена функций в модуле `os` на заглушки, генерирующие `PermissionError`. |
+| `subprocess.*` | **ЗАБЛОКИРОВАНО** | Аудит-хук `subprocess.*` блокирует запуск процессов (за исключением вызовов из самого ядра `sandbox_manager.py`). |
+| `socket.connect`, `bind`, `listen`, `socket` | **ЗАБЛОКИРОВАНО** | Аудит-хук `socket.*` блокирует открытие сетевых сокетов для предотвращения утечек данных. |
+| `ctypes`, `winreg`, `shutil` | **ЗАБЛОКИРОВАНО** | Заблокированы на уровне `guarded_import` в `builtins.__import__`. |
+| `urllib.request`, `urllib.robotparser` | **ЗАБЛОКИРОВАНО** | Заблокированы сетевые подмодули `urllib`. |
+| `os.chdir` | **ОГРАНИЧЕНО** | Разрешен переход строго внутри каталога `workspace/projects/<session_id>/`. |
+| `open` (чтение) | **РАЗРЕШЕНО** | Чтение разрешено для локальных файлов и системных ресурсов. |
+| `open` (запись `'w'`, `'a'`, `'+'`) | **ОГРАНИЧЕНО** | Разрешена запись СТРОГО в каталоги `workspace/`, `tempfile.gettempdir()` и кэш `.matplotlib`. Запись в системные каталоги (`C:\Windows`, `C:\Program Files`) вызывает `PermissionError`. |
+
+---
+
+### 12.2. Разграничение прав и интерактивный запуск (`workspace_launcher.py`)
+
+В системе четко разделены два режима запуска пользовательского и сгенерированного кода:
+
+1. **Автономное тестирование песочницы (`sandbox_runner.py` / `SandboxManager.run_script`)**:
+   - Выполняется в изолированном процессе: `python -m services.sandbox_runner <script_path>`.
+   - Внутри дочернего процесса перед исполнением кода обязательно вызывается `sandbox_guard.install_guard()`.
+   - **Headless Smoke Harness**: Для графических приложений (Tkinter, Pygame, PyQt6) выполняется перехват главного цикла событий (`mainloop`, `pygame.event.get()`, `QApplication.exec()`). Симулируются события ввода (клики, нажатия клавиш) и закрытие окна через 800 мс для верификации отсутствия ошибок без зависания процесса.
+2. **Интерактивный запуск пользователем (`workspace_launcher.py`)**:
+   - Запускается при клике пользователем по кнопке «▶ Запустить» на карточке файла в UI.
+   - Скрипт запускается интерактивно в отдельном окне командной строки Windows (`cmd.exe /k python script.py`) в рабочей директории `workspace/projects/<session_id>/`.
+   - Позволяет пользователю свободно взаимодействовать с программой (вводить данные через `input()`, играть в созданные игры на Pygame).
+   - Файлы документов (`.docx`, `.xlsx`) открываются в штатных приложениях ОС через `os.startfile()`.
+
+---
+
+## 13. Спецификация конфигурации приложения (config.py, config.json)
+
+### 13.1. Единый источник правды (SSOT) и схема `config.json`
+
+Файл `config.json` служит единым источником правды для пользовательских настроек, профилей сэмплинга и параметров активных моделей. Загрузка и атомарная запись выполняются через `ConfigManager`:
+
+```json
+{
+  "theme": "dark",
+  "chat_font_size": 13,
+  "auto_translate": false,
+  "active_model": "qwen2.5-coder-7b-instruct",
+  "engineer_model": "qwen2.5-coder-7b-instruct",
+  "engineer_model_name": "qwen2.5-coder-7b-instruct",
+  "rp_model_name": "",
+  "assistant_model_name": "",
+  "compute_device_mode": "Auto",
+  "background_path": "",
+  "background_dim_opacity": 140,
+  "context_length": 24576,
+  "context_length_roleplay": 24576,
+  "context_length_assistant": 14336,
+  "context_length_engineer": 28672,
+  "default_sampling_roleplay": {
+    "temperature": 1.10,
+    "min_p": 0.05,
+    "top_p": 0.95,
+    "repeat_penalty": 1.02,
+    "max_tokens": 4096,
+    "is_dm_mode": false
+  },
+  "default_sampling_assistant": {
+    "temperature": 0.70,
+    "min_p": 0.05,
+    "repeat_penalty": 1.05,
+    "max_tokens": 1024
+  },
+  "default_sampling_engineer": {
+    "temperature": 0.10,
+    "min_p": 0.00,
+    "repeat_penalty": 1.00,
+    "max_tokens": 4096
+  },
+  "auto_generate_art": false,
+  "visualizer_settings": {
+    "auto_generate_art": false,
+    "steps": 28,
+    "cfg_scale": 6.0,
+    "sampler_name": "DPM++ 2M",
+    "denoising_strength": 0.35,
+    "default_style": "realistic"
+  },
+  "translation_settings": {
+    "temperature": 0.20,
+    "max_tokens_limit": 4096
+  }
+}
+```
+
+---
+
+### 13.2. Профили режимов (`MODE_PROFILES`) и аппаратные лимиты VRAM
+
+В `config.py` зафиксированы централизованные профили режимов с учетом физических ограничений графического адаптера (NVIDIA GeForce RTX 5050 Laptop 8GB VRAM):
+
+#### Таблица параметров `MODE_PROFILES`:
+
+| Режим (`mode`) | Лимит контекста (`context_length`) | Буфер истории (`history_tokens`) | Лимит сообщений (`history_limit`) | Temperature | Min-P | Repetition Penalty | Max Tokens |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`assistant`** | 14 336 (14K) | 11 000 | 60 | 0.70 | 0.05 | 1.05 | 1024 |
+| **`roleplay`** | 24 576 (24K) | 18 000 | 65 | 1.10 | 0.05 | 1.02 | 4096 |
+| **`engineer`** | 28 672 (28K) | 22 000 | 50 | 0.15 | 0.00 | 1.00 | 4096 |
+
+#### Аппаратные лимиты VRAM и предохранители:
+- **`VRAM_TOTAL_BUDGET_MB = 8192`** (8 GB VRAM): Общий физический бюджет видеопамяти.
+- **`VRAM_SAFE_LIMIT_MB = 7000`**: Предельный порог предупреждения о высоком давлении на видеопамять.
+- **`HARDWARE_MAX_CONTEXT_LENGTH = 28672`** (28K): Абсолютный аппаратный потолок размера контекста LLM.
+- **`MASTER_MAX_RESPONSE_TOKENS = 4096`** (4K): Абсолютный потолок длины генерируемого ответа за один проход.
+- **Порог WDDM**: Порог свободной VRAM `>= 3800 МБ` для старта инференса в SD Forge.
+
+---
+
+### 13.3. Пресеты модели генерации изображений (`DEFAULT_SD_SETTINGS`)
+
+Базовые эталонные настройки диффузионного рендера SD 1.5 в `config.py`:
+
+```python
+DEFAULT_SD_SETTINGS = {
+    "steps": 20,
+    "width": 768,
+    "height": 768,
+    "cfg_scale": 6.8,
+    "sampler_name": "DPM++ 2M",
+    "scheduler": "Karras",
+    "enable_hr": True,
+    "hr_scale": 1.30,
+    "hr_upscaler": "4x-UltraSharp",
+    "denoising_strength": 0.35,
+    "hr_second_pass_steps": 12,
+    "negative_prompt": "bad anatomy, poorly drawn, deformed, extra limbs, missing limbs, bad hands, blurry"
+}
+```

@@ -15,11 +15,13 @@ from services.regex_filter import TextRegexFilter
 from services.task_queue import InferenceTask
 from services.model_router import ModelRouter, normalize_model_choice
 from services.art_director import VisualIntent, TargetSubject
+from services.assistant_prompt_builder import AssistantPromptBuilder
 from ui.components.chat_bubble import ChatMessageWidget
 
 logger = logging.getLogger("NeonRoute.AssistantFlow")
 
 RE_IMAGE_TAG = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', re.IGNORECASE)
+RE_GALLERY_TRIGGER = re.compile(r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ)\]', re.IGNORECASE)
 
 
 class AssistantFlowControllerMixin:
@@ -107,7 +109,7 @@ class AssistantFlowControllerMixin:
                     _req = str(_h.get("content", ""))
                     break
 
-        _should_art = (not vision_content and self._should_trigger_assistant_art(_req))
+        _should_art = False
 
         mode_profile = get_mode_profile("assistant")
         base_history_limit = mode_profile.get("history_limit", 60)
@@ -255,8 +257,181 @@ class AssistantFlowControllerMixin:
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)
 
+    def _dispatch_art_to_forge(self, extracted_image_prompt: str, target_widget: Any, raw_user_query: str):
+        if not extracted_image_prompt:
+            return
+
+        raw_prompt = extracted_image_prompt.strip()
+        router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
+        active_models = {
+            str(m.get("id", "")).lower().strip(): m.get("id")
+            for m in router.profiles if m.get("active", True) and m.get("id")
+        }
+
+        model_match = re.search(r'(?:--model|--style)[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', raw_prompt, re.I)
+        llm_style = model_match.group(1).lower().strip() if model_match else None
+        raw_prompt = re.sub(r'(?:--model|--style)[:=\s]+["\']?[a-zA-Z0-9_\-]+["\']?', '', raw_prompt, flags=re.I).strip(' ,')
+
+        neg_match = re.search(r'(?:--neg|--negative)[:=\s]+(.*?)(?=(?:--model|--style|--ar|$))', raw_prompt, re.I)
+        custom_neg = neg_match.group(1).strip().strip(' ,') if neg_match else ""
+        raw_prompt = re.sub(r'(?:--neg|--negative)[:=\s]+.*?(?=(?:--model|--style|--ar|$))', '', raw_prompt, flags=re.I).strip(' ,')
+
+        ar_match = re.search(r'--ar[:=\s]+([a-zA-Z0-9:]+)', raw_prompt, re.I)
+        extracted_ar = ar_match.group(1).lower().strip() if ar_match else None
+        raw_prompt = re.sub(r'--ar[:=\s]+[a-zA-Z0-9:]+', '', raw_prompt, flags=re.I).strip(' ,')
+
+        # Разрешение модели: если в GUI выбран конкретный чекпоинт — передаем его, иначе None (для роутера)
+        norm_combo = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
+        if norm_combo:
+            effective_style = norm_combo
+        elif llm_style and llm_style in active_models:
+            effective_style = active_models[llm_style]
+        else:
+            effective_style = None
+
+        # Извлечение исходного запроса пользователя
+        last_req = (raw_user_query or "").strip()
+        if not last_req:
+            last_req = getattr(self, "_current_user_request", "").strip()
+        if not last_req and hasattr(self, "chat_history") and self.chat_history:
+            for _h in reversed(self.chat_history):
+                if _h.get("role") == "user":
+                    last_req = str(_h.get("content", "")).strip()
+                    break
+        low_u = last_req.lower()
+
+        # Безопасное определение автопортрета (отсекаем вежливое обращение по имени)
+        clean_user_intent = re.sub(r'^\s*элари[яею]?\b[\s,:-]*', '', low_u, flags=re.I).strip()
+        is_self_portrait = bool(
+            any(k in clean_user_intent for k in (
+                "себя", "твой портрет", "свой портрет", "твой образ", "свой образ",
+                "как ты выглядишь", "сделай селфи", "твое селфи", "твоё селфи", "автопортрет"
+            ))
+            or re.search(r'\b(нарисуй|покажи|изобрази)\s+элари[юея]\b', low_u, re.I)
+            or re.search(r'\b(elaria|элария)\b', raw_prompt, re.I)
+        )
+
+        # Определение сида (Seed Lock)
+        last_gen = getattr(self, "_last_art_meta", {}) or (
+            self.current_session.get("last_generation", {}) if getattr(self, "current_session", None) else {}
+        )
+        base_seed = last_gen.get("seed", -1)
+        is_seed_lock = bool(base_seed and base_seed > 0 and (
+            any(k in low_u for k in [
+                "такую же", "такой же", "такое же", "ту же", "тот же",
+                "в той же позе", "в этой же позе", "в том же ракурсе",
+                "оставь как есть", "оставь позу", "оставь лицо",
+                "то же самое", "тоже самое"
+            ]) or
+            re.search(r'\bповтори\b', low_u)
+        ))
+        target_seed = base_seed if is_seed_lock else -1
+
+        target_subject = TargetSubject.ELARIA if is_self_portrait else TargetSubject.SCENE_OBJECT
+
+        v_intent = VisualIntent(
+            prompt=raw_prompt,
+            target_subject=target_subject,
+            user_neg=custom_neg,
+            suggested_model=effective_style,
+            seed=target_seed,
+            aspect_ratio=extracted_ar,
+            raw_user_query=last_req,
+            session_id=self.current_session.get("id") if getattr(self, "current_session", None) else None,
+            mode="assistant"
+        )
+        if target_widget is not None:
+            target_widget.visual_intent = v_intent
+
+        target_char = "Элария" if is_self_portrait else None
+
+        auto_art = self.app_config.get("auto_generate_art", False) if hasattr(self, "app_config") and isinstance(self.app_config, dict) else False
+        if auto_art and hasattr(self, "pill_forge") and self.pill_forge.is_online:
+            self._on_scene_art_requested(visual_intent=v_intent, widget=target_widget, preferred_style=effective_style, character_name=target_char)
+        else:
+            if target_widget is not None and hasattr(target_widget, "add_art_proposal_chip"):
+                target_widget.add_art_proposal_chip(
+                    raw_prompt,
+                    lambda v=v_intent, w=target_widget, s=effective_style, c=target_char: self._on_scene_art_requested(visual_intent=v, widget=w, preferred_style=s, character_name=c)
+                )
+
+    def _enqueue_gallery_art_pass(self, user_query: str):
+        best_model_id = "realistic"
+        best_desc = ""
+        try:
+            router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
+            matched_id, score = router.match_prompt(user_query)
+            if matched_id:
+                best_model_id = matched_id
+                for m in router.profiles:
+                    if m.get("id") == matched_id:
+                        guidance = (m.get("llm_guidance") or "").strip()
+                        best_desc = guidance if guidance else (m.get("routing_description") or m.get("name") or "")
+                        break
+        except Exception:
+            pass
+
+        full_prompt = AssistantPromptBuilder.build_gallery_art_prompt(user_query, best_model_id, best_desc)
+        messages = [{"role": "user", "content": full_prompt}]
+
+        model_name = None
+        if hasattr(self, "lm_combo") and self.lm_combo:
+            model_name = self.lm_combo.currentText().strip()
+            if model_name.startswith("default"):
+                model_name = None
+
+        llm_kwargs = {
+            "messages": messages,
+            "model": model_name,
+            "temperature": 0.40,
+            "stop": ["\n\nПользователь:", "\n\nUser:"],
+            "is_roleplay": False,
+            "is_engineer": False,
+            "context_length": 4096,
+            "max_tokens": 512,
+            "stream": False
+        }
+
+        task = InferenceTask(
+            name="Gallery Art Pass",
+            task_type="llm",
+            func=self.lm_client.chat_completion,
+            kwargs=llm_kwargs,
+            abort_fn=self.lm_client.abort,
+            metadata={
+                "silent": True,
+                "is_gallery_art_pass": True,
+                "is_roleplay": False
+            }
+        )
+
+        if hasattr(self, "_active_tasks") and isinstance(self._active_tasks, dict):
+            self._active_tasks[task.id] = task
+        if hasattr(self, "task_queue") and self.task_queue:
+            self.task_queue.enqueue(task)
+
     def _handle_assistant_llm_response(self, text: str):
         """Обрабатывает ответ Эларии, парсит арт-протокол, Ambiguity Gate и инициирует память."""
+        if getattr(self, "_is_running_gallery_art_pass", False):
+            self._is_running_gallery_art_pass = False
+            target_widget = getattr(self, "_pending_gallery_art_widget", None)
+            user_query = getattr(self, "_pending_gallery_user_query", "")
+            self._pending_gallery_art_widget = None
+            self._pending_gallery_user_query = None
+
+            img_match = RE_IMAGE_TAG.search(text)
+            if img_match:
+                extracted = re.sub(r'^[\s\*_\-\#]+', '', img_match.group(1)).strip()
+                self._dispatch_art_to_forge(extracted, target_widget, user_query)
+            return
+
+        has_gallery = bool(RE_GALLERY_TRIGGER.search(text))
+        if has_gallery:
+            text = RE_GALLERY_TRIGGER.sub('', text).strip()
+
+        # Очистка от сгенерированных моделью фейковых Markdown-картинок вида ![alt](url)
+        text = re.sub(r'!\[.*?\]\(.*?\)', '', text).strip()
+
         img_match = RE_IMAGE_TAG.search(text)
         extracted_image_prompt = None
         if img_match:
@@ -279,7 +454,15 @@ class AssistantFlowControllerMixin:
         text = re.sub(r'(?:\*\*|__)?(?:Positive\s+Prompt|Позитивный\s+промпт)[:\s*]*', '', text, flags=re.IGNORECASE).strip()
 
         if not text:
-            text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
+            if has_gallery:
+                text = random.choice([
+                    "Поймала образ. Сейчас соберу сцену... 🎨",
+                    "Отличная задумка. Уже настраиваю рендер.",
+                    "Секунду, перевожу мысль в кадр...",
+                    "Взяла в работу. Сейчас покажу, как это выглядит."
+                ])
+            else:
+                text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
 
         sender_name = "Элария"
         avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
@@ -303,100 +486,27 @@ class AssistantFlowControllerMixin:
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()
 
-        # ── ОБРАБОТКА АРТ-ПРОТОКОЛА ──
-        if extracted_image_prompt:
-            raw_prompt = extracted_image_prompt.strip()
-            router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-            active_models = {
-                str(m.get("id", "")).lower().strip(): m.get("id")
-                for m in router.profiles if m.get("active", True) and m.get("id")
-            }
-
-            model_match = re.search(r'(?:--model|--style)[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', raw_prompt, re.I)
-            llm_style = model_match.group(1).lower().strip() if model_match else None
-            raw_prompt = re.sub(r'(?:--model|--style)[:=\s]+["\']?[a-zA-Z0-9_\-]+["\']?', '', raw_prompt, flags=re.I).strip(' ,')
-
-            neg_match = re.search(r'(?:--neg|--negative)[:=\s]+(.*?)(?=(?:--model|--style|--ar|$))', raw_prompt, re.I)
-            custom_neg = neg_match.group(1).strip().strip(' ,') if neg_match else ""
-            raw_prompt = re.sub(r'(?:--neg|--negative)[:=\s]+.*?(?=(?:--model|--style|--ar|$))', '', raw_prompt, flags=re.I).strip(' ,')
-
-            ar_match = re.search(r'--ar[:=\s]+([a-zA-Z0-9:]+)', raw_prompt, re.I)
-            extracted_ar = ar_match.group(1).lower().strip() if ar_match else None
-            raw_prompt = re.sub(r'--ar[:=\s]+[a-zA-Z0-9:]+', '', raw_prompt, flags=re.I).strip(' ,')
-
-            # Разрешение модели: если в GUI выбран конкретный чекпоинт — передаем его, иначе None (для роутера)
-            norm_combo = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
-            if norm_combo:
-                effective_style = norm_combo
-            elif llm_style and llm_style in active_models:
-                effective_style = active_models[llm_style]
-            else:
-                effective_style = None
-
-            # Извлечение исходного запроса пользователя
-            last_req = getattr(self, "_current_user_request", "").strip()
-            if not last_req and hasattr(self, "chat_history") and self.chat_history:
+        # ── ВТОРОЙ ПРОХОД: [GALERY] ──
+        if has_gallery:
+            self._pending_gallery_art_widget = msg_widget
+            target_query = getattr(self, "_current_user_request", "")
+            if not target_query and hasattr(self, "chat_history") and self.chat_history:
                 for _h in reversed(self.chat_history):
                     if _h.get("role") == "user":
-                        last_req = str(_h.get("content", "")).strip()
+                        target_query = str(_h.get("content", ""))
                         break
-            low_u = last_req.lower()
+            self._pending_gallery_user_query = target_query
+            self._is_running_gallery_art_pass = True
+            if hasattr(self, "_last_llm_msg_text"):
+                self._last_llm_msg_text = None
+            self._enqueue_gallery_art_pass(target_query)
 
-            # Безопасное определение автопортрета (отсекаем вежливое обращение по имени)
-            clean_user_intent = re.sub(r'^\s*элари[яею]?\b[\s,:-]*', '', low_u, flags=re.I).strip()
-            is_self_portrait = bool(
-                any(k in clean_user_intent for k in (
-                    "себя", "твой портрет", "свой портрет", "твой образ", "свой образ",
-                    "как ты выглядишь", "сделай селфи", "твое селфи", "твоё селфи", "автопортрет"
-                ))
-                or re.search(r'\b(нарисуй|покажи|изобрази)\s+элари[юея]\b', low_u, re.I)
-                or re.search(r'\b(elaria|элария)\b', raw_prompt, re.I)
-            )
-
-            # Определение сида (Seed Lock)
-            last_gen = getattr(self, "_last_art_meta", {}) or (
-                self.current_session.get("last_generation", {}) if getattr(self, "current_session", None) else {}
-            )
-            base_seed = last_gen.get("seed", -1)
-            is_seed_lock = bool(base_seed and base_seed > 0 and (
-                any(k in low_u for k in [
-                    "такую же", "такой же", "такое же", "ту же", "тот же",
-                    "в той же позе", "в этой же позе", "в том же ракурсе",
-                    "оставь как есть", "оставь позу", "оставь лицо",
-                    "то же самое", "тоже самое"
-                ]) or
-                re.search(r'\bповтори\b', low_u)
-            ))
-            target_seed = base_seed if is_seed_lock else -1
-
-            target_subject = TargetSubject.ELARIA if is_self_portrait else TargetSubject.SCENE_OBJECT
-
-            v_intent = VisualIntent(
-                prompt=raw_prompt,
-                target_subject=target_subject,
-                user_neg=custom_neg,
-                suggested_model=effective_style,
-                seed=target_seed,
-                aspect_ratio=extracted_ar,
-                raw_user_query=last_req,
-                session_id=self.current_session.get("id") if getattr(self, "current_session", None) else None,
-                mode="assistant"
-            )
-            msg_widget.visual_intent = v_intent
-
-            target_char = "Элария" if is_self_portrait else None
-
-            auto_art = self.app_config.get("auto_generate_art", False)
-            if auto_art and hasattr(self, "pill_forge") and self.pill_forge.is_online:
-                self._on_scene_art_requested(visual_intent=v_intent, widget=msg_widget, preferred_style=effective_style, character_name=target_char)
-            else:
-                msg_widget.add_art_proposal_chip(
-                    raw_prompt,
-                    lambda v=v_intent, w=msg_widget, s=effective_style, c=target_char: self._on_scene_art_requested(visual_intent=v, widget=w, preferred_style=s, character_name=c)
-                )
+        # ── ОБРАБОТКА АРТ-ПРОТОКОЛА (ПРЯМОЙ ВЫЗОВ С ИЗВЛЕЧЕННЫМ ТЕГОМ) ──
+        elif extracted_image_prompt:
+            self._dispatch_art_to_forge(extracted_image_prompt, msg_widget, getattr(self, "_current_user_request", ""))
 
         self._turn_bubble = None
-        if not extracted_image_prompt:
+        if not extracted_image_prompt and not has_gallery:
             self._trigger_assistant_memory_extraction()
         self._current_user_request = ""
 

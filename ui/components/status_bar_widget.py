@@ -211,11 +211,11 @@ class MainStatusBar(QStatusBar):
         self.addPermanentWidget(self.lbl_ram)
         self.addPermanentWidget(self.bar_ram)
 
-        # 3. LM Studio Process Controls & Status Badge
-        self.btn_lms_toggle = PillPushButton("⚡ Старт LMS", self)
+        # 3. Headless LLM / llama-server.exe Process Controls & Status Badge
+        self.btn_lms_toggle = PillPushButton("⚡ Старт LLM", self)
         self.btn_lms_toggle.setCheckable(False)
         self.btn_lms_toggle.setFixedHeight(24)
-        self.btn_lms_toggle.setToolTip("Запустить сервер LM Studio (lms server start)")
+        self.btn_lms_toggle.setToolTip("Запустить / остановить локальный сервер llama-server.exe (порт 1234)")
         self.btn_lms_toggle.installEventFilter(ToolTipFilter(self.btn_lms_toggle, showDelay=250, position=ToolTipPosition.TOP))
         self.btn_lms_toggle.setStyleSheet("""
             PillPushButton, QPushButton {
@@ -236,7 +236,7 @@ class MainStatusBar(QStatusBar):
             self.btn_lms_toggle.clicked.connect(self.window._toggle_lms_server)
         self.addPermanentWidget(self.btn_lms_toggle)
 
-        self.pill_lm = ServiceStatusBadge("LM Studio", 1234, self)
+        self.pill_lm = ServiceStatusBadge("LLM Server", 1234, self)
         self.addPermanentWidget(self.pill_lm)
 
         # 4. SD WebUI Forge Process Controls & Status Badge

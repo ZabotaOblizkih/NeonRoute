@@ -54,6 +54,11 @@ class DummyAssistantHost(AssistantFlowControllerMixin):
         self._sync_turn = MagicMock()
         self._append_message = MagicMock()
         self._on_scene_art_requested = MagicMock()
+        self._active_tasks = {}
+        self.task_queue = MagicMock()
+        self.lm_client = MagicMock()
+        self.lm_combo = MagicMock()
+        self.lm_combo.currentText.return_value = "default"
 
 
 class TestAssistantArtTriggers:
@@ -217,3 +222,117 @@ class TestAssistantMemoryExtractionGuard:
         with patch.object(host, "_trigger_assistant_memory_extraction") as mock_trigger:
             host._handle_assistant_llm_response(raw_response)
             mock_trigger.assert_not_called()
+
+
+class TestAssistantPromptBuilderSSOT:
+    """Проверка централизованных констант и построителя промпта навыка в assistant_prompt_builder.py."""
+
+    def test_default_system_prompt_contains_gallery_protocol(self):
+        from services.assistant_prompt_builder import DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "протокол визуализации (навык «галерея»):" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "[GALERY]" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "добавь команду вызова навыка: [GALERY]" in DEFAULT_ELARIA_SYSTEM_PROMPT
+
+    def test_gallery_skill_directive_template_rules(self):
+        from services.assistant_prompt_builder import GALLERY_SKILL_DIRECTIVE_TEMPLATE
+        assert "[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]" in GALLERY_SKILL_DIRECTIVE_TEMPLATE
+        assert "CRITICAL: Do NOT write any conversational filler, greetings, or Russian text." in GALLERY_SKILL_DIRECTIVE_TEMPLATE
+        assert "[IMAGE_PROMPT: <comma-separated SD positive tags> --ar <wide|portrait|square> --model {target_model_id}]" in GALLERY_SKILL_DIRECTIVE_TEMPLATE
+
+    def test_build_gallery_art_prompt_formats_correctly(self):
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        prompt = AssistantPromptBuilder.build_gallery_art_prompt(
+            user_query="нарисуй девушку на балконе",
+            target_model_id="cyberrealistic",
+            target_model_desc="Киберпанк и глянец"
+        )
+        assert prompt.startswith("нарисуй девушку на балконе")
+        assert "cyberrealistic (Киберпанк и глянец)" in prompt
+        assert "--model cyberrealistic" in prompt
+
+
+class TestGalleryTwoPassProtocol:
+    """Проверка двухпроходного механизма [GALERY] -> SD Forge."""
+
+    @pytest.fixture
+    def host(self):
+        return DummyAssistantHost()
+
+    def test_first_pass_cleans_gallery_tag_and_enqueues_second_pass(self, host):
+        host._current_user_request = "Представь, как ты пьешь кофе на балконе"
+        raw_response = "Представила! Утренний прохладный воздух, чашка ароматного кофе... [GALERY]"
+        bubble = FakeBubble()
+        host._turn_bubble = bubble
+
+        with patch.object(host, "_trigger_assistant_memory_extraction") as mock_mem:
+            host._handle_assistant_llm_response(raw_response)
+            mock_mem.assert_not_called()
+
+        assert "[GALERY]" not in bubble.text
+        assert "Представила!" in bubble.text
+        assert host._is_running_gallery_art_pass is True
+        assert host._pending_gallery_art_widget is bubble
+        assert host._pending_gallery_user_query == "Представь, как ты пьешь кофе на балконе"
+        host.task_queue.enqueue.assert_called_once()
+        task = host.task_queue.enqueue.call_args[0][0]
+        assert task.metadata.get("silent") is True
+        assert task.metadata.get("is_gallery_art_pass") is True
+        assert task.kwargs.get("stream") is False
+
+    def test_second_pass_silently_dispatches_to_forge_without_ui_messages(self, host):
+        bubble = FakeBubble()
+        bubble.set_text("Мой ответ про кофе.")
+        host._is_running_gallery_art_pass = True
+        host._pending_gallery_art_widget = bubble
+        host._pending_gallery_user_query = "Представь, как ты пьешь кофе на балконе"
+
+        second_pass_response = (
+            "[IMAGE_PROMPT: 1girl, sitting on balcony, drinking coffee, morning light, realistic, 8k uhd --ar portrait --model realistic]"
+        )
+
+        with patch.object(host, "_append_message") as mock_append:
+            host._handle_assistant_llm_response(second_pass_response)
+            # Второй проход не должен создавать новых сообщений
+            mock_append.assert_not_called()
+
+        assert host._is_running_gallery_art_pass is False
+        assert host._pending_gallery_art_widget is None
+        assert host._pending_gallery_user_query is None
+        assert bubble.visual_intent is not None
+        assert "1girl, sitting on balcony" in bubble.visual_intent.prompt
+        assert bubble.visual_intent.aspect_ratio == "portrait"
+        # Текст первого бабла должен остаться без изменений
+        assert bubble.text == "Мой ответ про кофе."
+
+    def test_only_gallery_tag_fallback_text(self, host):
+        # Если модель вернула только [GALERY] без текста
+        bubble = FakeBubble()
+        host._turn_bubble = bubble
+        host._current_user_request = "покажи космос"
+
+        with patch.object(host, "_enqueue_gallery_art_pass"):
+            host._handle_assistant_llm_response("[GALERY]")
+
+        assert len(bubble.text.strip()) > 0
+        assert "[GALERY]" not in bubble.text
+        assert "Связь с моделью" not in bubble.text
+
+    @pytest.mark.parametrize("marker", [
+        "[GALERY]", "[GALLERY]", "[galery]", "[gallery]",
+        "[ГАЛЕРЕЯ]", "[Галерея]", "[галерея]"
+    ])
+    def test_all_gallery_trigger_variants_recognized_and_stripped(self, host, marker):
+        bubble = FakeBubble()
+        host._turn_bubble = bubble
+        host._current_user_request = "Нарисуй закат над морем"
+        raw_response = f"Вот такой волшебный закат! {marker}\n![Девушка в шляпе](https://example.com/image.jpg)"
+
+        with patch.object(host, "_enqueue_gallery_art_pass") as mock_enqueue:
+            host._handle_assistant_llm_response(raw_response)
+            mock_enqueue.assert_called_once_with("Нарисуй закат над морем")
+
+        assert marker not in bubble.text
+        assert "![Девушка в шляпе]" not in bubble.text
+        assert "https://example.com/image.jpg" not in bubble.text
+        assert "Вот такой волшебный закат!" in bubble.text
+        assert host._is_running_gallery_art_pass is True
