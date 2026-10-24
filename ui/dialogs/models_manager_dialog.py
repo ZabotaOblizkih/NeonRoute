@@ -5,10 +5,18 @@ from ui.models_manager_dialog import (
     ModelsManagerDialog,
     ForgeScanWorker,
     RoutingTestWorker,
+    CivitaiParamsWorker,
+    RoutingResultBadge,
+    FluentEditableComboBox,
+    FluentTextEdit,
 )
 
 __all__ = [
     "ModelsManagerDialog",
     "ForgeScanWorker",
     "RoutingTestWorker",
+    "CivitaiParamsWorker",
+    "RoutingResultBadge",
+    "FluentEditableComboBox",
+    "FluentTextEdit",
 ]

@@ -1,9 +1,7 @@
 """
 Models Manager Dialog for NeonRoute.
 Configures available Stable Diffusion Forge checkpoints, pipeline generation parameters,
-and FastEmbed vector routing rules.
-Allows scanning checkpoints from Forge, editing routing descriptions,
-auto-configuring generation parameters via Civitai API with safe fallback, and live prompt testing.
+and FastEmbed vector routing rules in modern Windows 11 / Glassmorphism aesthetic.
 """
 
 import logging
@@ -12,12 +10,30 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QLineEdit, QTextEdit, QTableWidget, QTableWidgetItem, QCheckBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QHeaderView, QMessageBox, QFrame, QWidget, QApplication,
-    QSpinBox, QDoubleSpinBox, QGroupBox, QSplitter, QFormLayout, QScrollArea
+    QSplitter, QFormLayout, QScrollArea
+)
+from qfluentwidgets import (
+    LineEdit,
+    SearchLineEdit,
+    TextEdit,
+    ComboBox,
+    EditableComboBox,
+    CheckBox,
+    Slider,
+    SpinBox,
+    DoubleSpinBox,
+    PushButton,
+    PrimaryPushButton,
+    TransparentToolButton,
+    TableWidget,
+    FluentIcon as FIF,
+    setTheme,
+    Theme
 )
 
 from services.model_router import ModelRouter
@@ -27,8 +43,303 @@ from services.art_director_config import (
 )
 from services.forge_client import ForgeClient
 from services.forge_models import sync_registry_with_user_config
+class SamplingSlider(Slider):
+    """
+    Кастомный слайдер для параметров рендера:
+    - Плавное и естественное перетаскивание бегунка зажатой ЛКМ
+    - Живой трекинг в реальном времени self.setTracking(True)
+    - ClickFocus и отключение случайного wheelEvent
+    """
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent=parent)
+        self.setTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.handle.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched == self.handle:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() != Qt.MouseButton.LeftButton:
+                    return True
+                self._pressedPos = self.handle.mapToParent(event.pos())
+            elif event.type() == QEvent.Type.MouseMove:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    slider_pos = self.handle.mapToParent(event.pos())
+                    self.setValue(self._posToValue(slider_pos))
+                    self._pressedPos = slider_pos
+                    self.sliderMoved.emit(self.value())
+                    return True
+                return True
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() != Qt.MouseButton.LeftButton:
+                    return True
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() != Qt.MouseButton.LeftButton:
+            e.ignore()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if not (e.buttons() & Qt.MouseButton.LeftButton):
+            e.ignore()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        if e.button() != Qt.MouseButton.LeftButton:
+            e.ignore()
+            return
+        super().mouseReleaseEvent(e)
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class SamplingDoubleSpinBox(DoubleSpinBox):
+    """
+    Числовой счетчик с плавающей точкой (CFG Scale, Денойз Hires):
+    - Стрелки с точным шагом
+    - Отключение wheelEvent во избежание случайного скролла
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        try:
+            self.downButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.downButton.clicked.connect(self.stepDown)
+        try:
+            self.upButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.upButton.clicked.connect(self.stepUp)
+
+    def stepDown(self):
+        new_val = max(self.minimum(), self.value() - self.singleStep())
+        self.setValue(round(new_val, self.decimals()))
+
+    def stepUp(self):
+        new_val = min(self.maximum(), self.value() + self.singleStep())
+        self.setValue(round(new_val, self.decimals()))
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class SamplingSpinBox(SpinBox):
+    """
+    Целочисленный счетчик (Шаги, Clip Skip):
+    - Стрелки с точным шагом
+    - Отключение wheelEvent во избежание случайного скролла
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        try:
+            self.downButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.downButton.clicked.connect(self.stepDown)
+        try:
+            self.upButton.clicked.disconnect()
+        except Exception:
+            pass
+        self.upButton.clicked.connect(self.stepUp)
+
+    def stepDown(self):
+        new_val = max(self.minimum(), self.value() - self.singleStep())
+        self.setValue(int(new_val))
+
+    def stepUp(self):
+        new_val = min(self.maximum(), self.value() + self.singleStep())
+        self.setValue(int(new_val))
+
+    def wheelEvent(self, e):
+        e.ignore()
 
 logger = logging.getLogger("NeonRoute.ModelsManager")
+
+
+class FluentEditableComboBox(EditableComboBox):
+    """
+    EditableComboBox с поддержкой setEditText для бесшовной обратной совместимости.
+    """
+    def setEditText(self, text: str):
+        self.setText(text or "")
+
+
+class FluentTextEdit(TextEdit):
+    """
+    TextEdit с методами text() и setText() для строковой совместимости.
+    """
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text: str):
+        self.setPlainText(text or "")
+
+
+class RoutingResultBadge(QFrame):
+    """
+    Стилизованный цветной бейдж для отображения результатов сопоставления модели:
+    - Мгновенное совпадение по триггеру (изумрудный акцент)
+    - Векторное сходство FastEmbed (неоновый циан)
+    - Выбор по умолчанию для нейтральных запросов (лазурный)
+    - Аварийный фоллбэк (сланцевый)
+    - Ошибки сопоставления (кораллово-красный)
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("RoutingResultBadge")
+        self._current_text = ""
+        self._setup_ui()
+        self.set_idle()
+
+    def _setup_ui(self):
+        self.setFixedHeight(48)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 6, 14, 6)
+        layout.setSpacing(10)
+
+        self.icon_lbl = QLabel(self)
+        self.icon_lbl.setFixedWidth(24)
+        self.icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.icon_lbl)
+
+        self.text_lbl = QLabel(self)
+        self.text_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.text_lbl.setWordWrap(True)
+        layout.addWidget(self.text_lbl, stretch=1)
+
+        self.tag_lbl = QLabel(self)
+        self.tag_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tag_lbl.setVisible(False)
+        layout.addWidget(self.tag_lbl)
+
+    def set_idle(self):
+        self._apply_style("idle")
+        self.icon_lbl.setText("💡")
+        self.text_lbl.setText(
+            "<span style='color: #94A3B8; font-size: 11px;'><i>"
+            "Введите запрос сцены и нажмите «Проверить выбор» для расчета векторного соответствия..."
+            "</i></span>"
+        )
+        self.tag_lbl.setVisible(False)
+        self._current_text = "Введите запрос сцены и нажмите «Проверить выбор» для расчета векторного соответствия..."
+
+    def set_loading(self):
+        self._apply_style("loading")
+        self.icon_lbl.setText("⏳")
+        self.text_lbl.setText(
+            "<span style='color: #F59E0B; font-size: 11px;'><i>"
+            "Вычисление семантического сходства FastEmbed на CPU..."
+            "</i></span>"
+        )
+        self.tag_lbl.setVisible(False)
+        self._current_text = "Вычисление семантического сходства FastEmbed на CPU..."
+
+    def set_success(self, winner_name: str, winner_ckpt: str, reason: str, score: float):
+        ckpt_str = f" • <span style='color: #64748B; font-family: Consolas, monospace;'>{winner_ckpt}</span>" if winner_ckpt else ""
+        self.icon_lbl.setText("🎯")
+        self.text_lbl.setText(
+            f"<b style='color: #FFFFFF; font-size: 12px;'>{winner_name}</b>{ckpt_str}"
+        )
+        self.tag_lbl.setVisible(True)
+
+        if reason == "trigger":
+            self._apply_style("trigger")
+            self.tag_lbl.setText("⚡ ТРИГГЕР СТИЛЯ")
+            self.tag_lbl.setStyleSheet("""
+                background-color: rgba(16, 185, 129, 0.20);
+                color: #34D399;
+                border: 1px solid rgba(16, 185, 129, 0.50);
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: 700;
+            """)
+        elif reason == "default":
+            self._apply_style("default")
+            self.tag_lbl.setText(f"🔷 ПО УМОЛЧАНИЮ ({score:.2f})")
+            self.tag_lbl.setStyleSheet("""
+                background-color: rgba(56, 189, 248, 0.20);
+                color: #38BDF8;
+                border: 1px solid rgba(56, 189, 248, 0.50);
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: 700;
+            """)
+        elif reason == "vector":
+            self._apply_style("vector")
+            self.tag_lbl.setText(f"🧠 FASTEMBED ({score:.2f})")
+            self.tag_lbl.setStyleSheet("""
+                background-color: rgba(0, 240, 255, 0.20);
+                color: #00F0FF;
+                border: 1px solid rgba(0, 240, 255, 0.50);
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: 700;
+            """)
+        else:
+            self._apply_style("fallback")
+            self.tag_lbl.setText(f"⚪ ФОЛЛБЭК ({score:.2f})")
+            self.tag_lbl.setStyleSheet("""
+                background-color: rgba(148, 163, 184, 0.20);
+                color: #CBD5E1;
+                border: 1px solid rgba(148, 163, 184, 0.50);
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: 700;
+            """)
+        self._current_text = f"Выбрана модель: {winner_name} • {winner_ckpt} ({reason})"
+
+    def set_error(self, message: str):
+        self._apply_style("error")
+        self.icon_lbl.setText("❌")
+        self.text_lbl.setText(f"<span style='color: #F87171; font-size: 11px;'>{message}</span>")
+        self.tag_lbl.setVisible(False)
+        self._current_text = message
+
+    def _apply_style(self, mode: str):
+        border_color = "rgba(255, 255, 255, 0.08)"
+        bg_color = "rgba(18, 24, 38, 0.65)"
+        if mode == "trigger":
+            border_color = "rgba(16, 185, 129, 0.40)"
+            bg_color = "rgba(16, 185, 129, 0.08)"
+        elif mode == "vector":
+            border_color = "rgba(0, 240, 255, 0.40)"
+            bg_color = "rgba(0, 240, 255, 0.08)"
+        elif mode == "default":
+            border_color = "rgba(56, 189, 248, 0.40)"
+            bg_color = "rgba(56, 189, 248, 0.08)"
+        elif mode == "error":
+            border_color = "rgba(239, 68, 68, 0.40)"
+            bg_color = "rgba(239, 68, 68, 0.08)"
+        elif mode == "loading":
+            border_color = "rgba(245, 158, 11, 0.40)"
+            bg_color = "rgba(245, 158, 11, 0.08)"
+
+        self.setStyleSheet(f"""
+            QFrame#RoutingResultBadge {{
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            }}
+        """)
+
+    def setText(self, text: str):
+        self._current_text = text
+        self.text_lbl.setText(text)
+
+    def text(self) -> str:
+        return self._current_text
+
 
 class RoutingTestWorker(QThread):
     result_ready = pyqtSignal(str, float, str, list)  # (best_id, score, reason, snapshot_profiles)
@@ -98,6 +409,10 @@ class CivitaiParamsWorker(QThread):
 
 
 class ModelsManagerDialog(QDialog):
+    """
+    Центральный пульт управления чекпоинтами SD Forge, пайплайном рендера
+    и семантическим роутингом FastEmbed CPU ONNX в эстетике Glassmorphism.
+    """
 
     @staticmethod
     def _get_default_negative(checkpoint_name: str = "", model_id: str = "") -> str:
@@ -112,13 +427,6 @@ class ModelsManagerDialog(QDialog):
         else:
             return "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text"
 
-    """
-    Dialog for managing SD Forge models and vector routing descriptions.
-    Includes Forge checkpoint scanning, inline editing of models/descriptions,
-    semi-automatic Civitai API pipeline configuration,
-    and real-time cosine similarity testing via FastEmbed CPU ONNX.
-    """
-
     def __init__(
         self,
         forge_client: Optional[ForgeClient] = None,
@@ -126,6 +434,8 @@ class ModelsManagerDialog(QDialog):
         art_director: Optional[Any] = None
     ):
         super().__init__(parent)
+        setTheme(Theme.DARK)
+
         self.forge_client = forge_client or ForgeClient()
         self.art_director = art_director or getattr(parent, "art_director", None)
 
@@ -153,174 +463,134 @@ class ModelsManagerDialog(QDialog):
         self._scan_worker: Optional[ForgeScanWorker] = None
         self._civitai_worker: Optional[CivitaiParamsWorker] = None
 
+        self.setObjectName("ModelsManagerDialog")
         self.setWindowTitle("🎨 Модели генерации, параметры пайплайна и роутинг — NeonRoute")
-        self.resize(1240, 760)
-        self.setMinimumSize(980, 620)
+        self.resize(1260, 780)
+        self.setMinimumSize(1020, 680)
+        self.setModal(True)
 
         self._setup_ui()
         self._populate_table()
 
-        # Неблокирующий фоновый опрос Forge сразу после отрисовки UI
+        # Неблокирующий фоновый опрос Forge сразу после отрисовки интерфейса
         self._start_forge_scan(silent=True)
 
     def _setup_ui(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: #0A0D14;
+            QDialog#ModelsManagerDialog {
+                background-color: rgba(10, 13, 20, 0.96);
                 color: #CBD5E1;
+                border: 1px solid rgba(0, 240, 255, 0.22);
+                border-radius: 14px;
             }
             QLabel {
                 color: #CBD5E1;
+                font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
                 font-size: 12px;
             }
-            QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-                background-color: #121824;
-                color: #F8FAFC;
-                border: 1px solid #1E2B42;
-                border-radius: 6px;
-                padding: 4px 8px;
-                font-size: 12px;
-                selection-background-color: #00F0FF;
-                selection-color: #000000;
+            QFrame#LeftPanel, QFrame#EditorPanel, QFrame#TestPanel {
+                background-color: rgba(14, 19, 31, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 12px;
             }
-            QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-                border-color: #00F0FF;
+            QFrame#LeftPanel:hover, QFrame#EditorPanel:hover, QFrame#TestPanel:hover {
+                border-color: rgba(0, 240, 255, 0.18);
             }
-            QComboBox::drop-down {
-                border: none;
-                width: 20px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #121824;
-                color: #E2E8F0;
-                border: 1px solid #1E2B42;
-                selection-background-color: #1E2B45;
-                selection-color: #00F0FF;
-            }
-            QTableWidget {
-                background-color: #0E1420;
-                color: #E2E8F0;
-                border: 1px solid #1E2B42;
+            QFrame#ParamCard {
+                background-color: rgba(18, 24, 38, 0.60);
+                border: 1px solid rgba(255, 255, 255, 0.05);
                 border-radius: 8px;
-                gridline-color: #182236;
-                font-size: 12px;
-                selection-background-color: #1E293B;
-                selection-color: #00F0FF;
-            }
-            QHeaderView::section {
-                background-color: #162035;
-                color: #94A3B8;
-                font-weight: bold;
-                padding: 6px;
-                border: none;
-                border-bottom: 1px solid #1E2B42;
-                border-right: 1px solid #1E2B42;
-            }
-            QCheckBox {
-                color: #CBD5E1;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #263550;
-                border-radius: 4px;
-                background-color: #121824;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #00F0FF;
-                border-color: #00F0FF;
-            }
-            QGroupBox {
-                border: 1px solid #1E2B42;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-                font-size: 12px;
-                font-weight: bold;
-                color: #38BDF8;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
+                padding: 10px;
             }
             QSplitter::handle {
-                background-color: #1E2B42;
-                width: 2px;
+                background-color: rgba(255, 255, 255, 0.06);
+                width: 3px;
             }
-            QPushButton {
-                background-color: #1A2438;
+            QSplitter::handle:hover {
+                background-color: #00F0FF;
+            }
+            TableWidget {
+                background-color: rgba(11, 15, 25, 0.90);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
                 color: #E2E8F0;
-                border: 1px solid #263550;
-                border-radius: 6px;
-                padding: 6px 14px;
+                gridline-color: rgba(255, 255, 255, 0.04);
+                selection-background-color: rgba(0, 240, 255, 0.15);
+                selection-color: #00F0FF;
                 font-size: 12px;
-                font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: #24334E;
-                border-color: #00F0FF;
+            TableWidget::item {
+                padding: 6px 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            }
+            TableWidget::item:selected {
+                background-color: rgba(0, 240, 255, 0.15);
                 color: #00F0FF;
+                font-weight: 600;
             }
-            QPushButton#PrimaryBtn {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366F1, stop:1 #4F46E5);
-                border: 1px solid #818CF8;
+            TableWidget::item:hover {
+                background-color: rgba(255, 255, 255, 0.04);
+            }
+            QHeaderView::section {
+                background-color: rgba(18, 24, 38, 0.95);
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 6px 8px;
+                border: none;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                border-right: 1px solid rgba(255, 255, 255, 0.04);
+            }
+            PrimaryPushButton#PrimaryBtn {
+                background-color: #00F0FF;
+                color: #000000;
+                font-weight: 700;
+                border: 1px solid #00F0FF;
+                border-radius: 6px;
+            }
+            PrimaryPushButton#PrimaryBtn:hover {
+                background-color: #38BDF8;
+                border-color: #38BDF8;
+                color: #000000;
+            }
+            PrimaryPushButton#PrimaryBtn:pressed {
+                background-color: #0284C7;
+                border-color: #0284C7;
                 color: #FFFFFF;
             }
-            QPushButton#PrimaryBtn:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7C3AED, stop:1 #6366F1);
-                border-color: #00F0FF;
-            }
-            QPushButton#AutoFillBtn {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #059669, stop:1 #10B981);
-                border: 1px solid #34D399;
+            PrimaryPushButton#TestBtn {
+                background-color: #0284C7;
                 color: #FFFFFF;
-            }
-            QPushButton#AutoFillBtn:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #10B981, stop:1 #34D399);
-                border-color: #00F0FF;
-            }
-            QPushButton#TestBtn {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0284C7, stop:1 #2563EB);
+                font-weight: 600;
                 border: 1px solid #38BDF8;
-                color: #FFFFFF;
+                border-radius: 6px;
             }
-            QPushButton#TestBtn:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0EA5E9, stop:1 #3B82F6);
+            PrimaryPushButton#TestBtn:hover {
+                background-color: #0369A1;
                 border-color: #00F0FF;
             }
-            QPushButton#DeleteBtn {
-                background-color: #2D1418;
-                border: 1px solid #7F1D1D;
-                color: #F87171;
-                padding: 4px;
+            PushButton#AutoFillBtn {
+                background-color: rgba(16, 185, 129, 0.15);
+                border: 1px solid rgba(16, 185, 129, 0.40);
+                color: #34D399;
+                font-weight: 600;
             }
-            QPushButton#DeleteBtn:hover {
-                background-color: #451A20;
-                border-color: #EF4444;
-                color: #EF4444;
-            }
-            QFrame#TestPanel {
-                background-color: #0C101A;
-                border: 1px solid #1E293B;
-                border-radius: 8px;
-            }
-            QFrame#EditorPanel {
-                background-color: #0B101D;
-                border: 1px solid #1E2B42;
-                border-radius: 8px;
+            PushButton#AutoFillBtn:hover {
+                background-color: rgba(16, 185, 129, 0.25);
+                border-color: #34D399;
+                color: #6EE7B7;
             }
         """)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 12, 14, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(18, 16, 18, 16)
+        main_layout.setSpacing(12)
 
         # 1. Header Banner
         hdr_layout = QVBoxLayout()
-        hdr_layout.setSpacing(2)
-        title_lbl = QLabel("🎨 УПРАВЛЕНИЕ МОДЕЛЯМИ, ПАРАМЕТРАМИ ГЕНЕРАЦИИ И РОУТИНГОМ", self)
-        title_lbl.setStyleSheet("color: #00F0FF; font-size: 15px; font-weight: 900; letter-spacing: 0.5px;")
+        hdr_layout.setSpacing(3)
+        title_lbl = QLabel("🎨 Управление моделями, параметрами генерации и роутингом", self)
+        title_lbl.setStyleSheet("color: #00F0FF; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;")
         hdr_layout.addWidget(title_lbl)
 
         sub_lbl = QLabel(
@@ -333,39 +603,41 @@ class ModelsManagerDialog(QDialog):
         hdr_layout.addWidget(sub_lbl)
         main_layout.addLayout(hdr_layout)
 
-        # 2. Central Splitter (Left: Models Table | Right: Model Editor Form)
+        # 2. Central Splitter (Left: Table | Right: Editor)
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setHandleWidth(4)
 
         # --- LEFT PANEL: Table of models ---
-        left_widget = QWidget(self)
+        left_widget = QFrame(self)
+        left_widget.setObjectName("LeftPanel")
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 6, 0)
-        left_layout.setSpacing(8)
+        left_layout.setContentsMargins(12, 12, 12, 12)
+        left_layout.setSpacing(10)
 
         tbl_bar = QHBoxLayout()
         tbl_bar.setSpacing(8)
-        lbl_tbl = QLabel("<b>Зарегистрированные модели:</b>", self)
+        lbl_tbl = QLabel("<b>Зарегистрированные модели:</b>", left_widget)
+        lbl_tbl.setStyleSheet("color: #38BDF8; font-size: 12px;")
         tbl_bar.addWidget(lbl_tbl)
         tbl_bar.addStretch()
 
-        self.btn_refresh_forge = QPushButton("🔄 Сканировать Forge", self)
+        self.btn_refresh_forge = PushButton("Сканировать Forge", left_widget, icon=FIF.SYNC)
         self.btn_refresh_forge.setToolTip("Запросить чекпоинты из Forge (get_models) и обнаружить новые файлы")
         self.btn_refresh_forge.clicked.connect(lambda: self._start_forge_scan(silent=False))
         tbl_bar.addWidget(self.btn_refresh_forge)
 
-        self.btn_civitai = QPushButton("🌐 Каталог Civitai", self)
+        self.btn_civitai = PushButton("Каталог Civitai", left_widget, icon=FIF.GLOBE)
         self.btn_civitai.setToolTip("Открыть каталог Civitai / Civitai Red для поиска и скачивания моделей")
         self.btn_civitai.clicked.connect(self._open_civitai_catalog)
         tbl_bar.addWidget(self.btn_civitai)
 
-        self.btn_add_model = QPushButton("➕ Добавить", self)
+        self.btn_add_model = PushButton("Добавить", left_widget, icon=FIF.ADD)
         self.btn_add_model.setToolTip("Добавить новую модель в таблицу")
         self.btn_add_model.clicked.connect(self._add_empty_model_row)
         tbl_bar.addWidget(self.btn_add_model)
         left_layout.addLayout(tbl_bar)
 
-        self.table = QTableWidget(self)
+        self.table = TableWidget(left_widget)
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels([
             "Вкл",
@@ -378,146 +650,240 @@ class ModelsManagerDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
 
-        self.table.setColumnWidth(0, 50)
-        self.table.setColumnWidth(1, 140)
-        self.table.setColumnWidth(3, 38)
+        self.table.setColumnWidth(0, 48)
+        self.table.setColumnWidth(1, 150)
+        self.table.setColumnWidth(3, 44)
 
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(40)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(TableWidget.SelectionMode.SingleSelection)
         self.table.currentCellChanged.connect(self._on_table_cell_changed)
         left_layout.addWidget(self.table, stretch=1)
 
         splitter.addWidget(left_widget)
 
-        # --- RIGHT PANEL: Form Editor ---
+        # --- RIGHT PANEL: Form Editor inside ScrollArea ---
         right_scroll = QScrollArea(self)
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        if right_scroll.viewport():
+            right_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            right_scroll.viewport().setStyleSheet("background: transparent;")
 
         right_container = QFrame()
         right_container.setObjectName("EditorPanel")
         right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(14, 12, 14, 12)
-        right_layout.setSpacing(10)
+        right_layout.setContentsMargins(16, 14, 16, 14)
+        right_layout.setSpacing(12)
 
-        lbl_edit_title = QLabel("⚙️ <b>Редактор параметров модели</b>", self)
+        lbl_edit_title = QLabel("⚙️ <b>Редактор параметров модели</b>", right_container)
         lbl_edit_title.setStyleSheet("color: #00F0FF; font-size: 13px; font-weight: bold;")
         right_layout.addWidget(lbl_edit_title)
 
-        # Model Info Form
+        # 1. Model Info Form (Checkpoint, Name, Triggers, Default)
         form_info = QFormLayout()
-        form_info.setSpacing(8)
+        form_info.setSpacing(10)
         form_info.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        self.input_name = QLineEdit(self)
-        self.input_name.setPlaceholderText("Название модели")
+        self.input_name = LineEdit(right_container)
+        self.input_name.setPlaceholderText("Пользовательское название модели")
         self.input_name.textChanged.connect(self._on_input_name_changed)
         form_info.addRow("Название:", self.input_name)
 
-        # Checkpoint selection + Civitai Autofill Button
         ckpt_row = QHBoxLayout()
-        ckpt_row.setSpacing(6)
-        self.combo_checkpoint = QComboBox(self)
-        self.combo_checkpoint.setEditable(True)
-        self.combo_checkpoint.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        ckpt_row.setSpacing(8)
+        self.combo_checkpoint = FluentEditableComboBox(right_container)
         for cp in self.available_checkpoints:
             self.combo_checkpoint.addItem(cp)
         self.combo_checkpoint.currentTextChanged.connect(self._on_combo_checkpoint_changed)
         ckpt_row.addWidget(self.combo_checkpoint, stretch=1)
 
-        self.btn_autofill_params = QPushButton("🌐 Автонастройка параметров (Civitai)", self)
+        self.btn_autofill_params = PushButton("Автонастройка (Civitai)", right_container, icon=FIF.CLOUD_DOWNLOAD)
         self.btn_autofill_params.setObjectName("AutoFillBtn")
         self.btn_autofill_params.setToolTip("Запросить рекомендованные автором параметры с Civitai или применить Safe Defaults")
         self.btn_autofill_params.clicked.connect(self._on_autofill_params_clicked)
         ckpt_row.addWidget(self.btn_autofill_params)
-        form_info.addRow("Чекпоинт:", ckpt_row)
+        form_info.addRow("Чекпоинт Forge:", ckpt_row)
 
-        self.chk_is_default = QCheckBox("Использовать по умолчанию (для нейтральных запросов без указания стиля)", self)
+        self.chk_is_default = CheckBox("Использовать по умолчанию (для нейтральных запросов без указания стиля)", right_container)
+        self.chk_is_default.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: 500;")
         self.chk_is_default.toggled.connect(self._on_is_default_toggled)
         form_info.addRow("", self.chk_is_default)
 
-        self.edit_style_triggers = QLineEdit(self)
-        self.edit_style_triggers.setPlaceholderText("Например: 3d, pixar, мультфильм, cgi (через запятую)")
-        form_info.addRow("Триггеры стиля (через запятую):", self.edit_style_triggers)
+        self.edit_style_triggers = LineEdit(right_container)
+        self.edit_style_triggers.setPlaceholderText("Например: киберпанк, неон, sci-fi, латекс (через запятую)")
+        form_info.addRow("Триггеры стиля:", self.edit_style_triggers)
 
         right_layout.addLayout(form_info)
 
-        # Group 1: Pipeline Parameters
-        grp_pipeline = QGroupBox("⚙️ Параметры рендера (Pipeline)", self)
-        grid_pipe = QFormLayout(grp_pipeline)
-        grid_pipe.setSpacing(8)
-        grid_pipe.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        # 2. Pipeline Parameters Card
+        card_pipeline = QFrame(right_container)
+        card_pipeline.setObjectName("ParamCard")
+        pipe_layout = QVBoxLayout(card_pipeline)
+        pipe_layout.setContentsMargins(12, 10, 12, 10)
+        pipe_layout.setSpacing(10)
 
-        self.combo_sampler = QComboBox(self)
+        lbl_pipe_hdr = QLabel("⚙️ <b>Параметры рендера (Pipeline)</b>", card_pipeline)
+        lbl_pipe_hdr.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: bold;")
+        pipe_layout.addWidget(lbl_pipe_hdr)
+
+        # Sampler & Upscaler row
+        combos_row = QHBoxLayout()
+        combos_row.setSpacing(14)
+
+        sampler_box = QVBoxLayout()
+        sampler_box.setSpacing(3)
+        sampler_box.addWidget(QLabel("Семплер:", card_pipeline))
+        self.combo_sampler = ComboBox(card_pipeline)
         self.combo_sampler.addItems(["DPM++ 2M Karras", "Euler a", "DPM++ SDE Karras", "Euler", "DDIM"])
-        grid_pipe.addRow("Семплер:", self.combo_sampler)
+        sampler_box.addWidget(self.combo_sampler)
+        combos_row.addLayout(sampler_box, stretch=1)
 
-        spin_row = QHBoxLayout()
-        spin_row.setSpacing(10)
+        upscaler_box = QVBoxLayout()
+        upscaler_box.setSpacing(3)
+        upscaler_box.addWidget(QLabel("Hires.fix апскейлер:", card_pipeline))
+        self.combo_upscaler = ComboBox(card_pipeline)
+        base_upscalers = ["4x-UltraSharp", "R-ESRGAN 4x+ Anime6B", "DAT x2", "Lanczos"]
+        for u in base_upscalers:
+            self.combo_upscaler.addItem(u)
+        upscaler_box.addWidget(self.combo_upscaler)
+        combos_row.addLayout(upscaler_box, stretch=1)
 
-        spin_row.addWidget(QLabel("Шаги (Steps):", self))
-        self.spin_steps = QSpinBox(self)
+        pipe_layout.addLayout(combos_row)
+
+        # Sliders grid: Steps & CFG Scale | Denoise & Clip Skip
+        grid_sliders = QGridLayout()
+        grid_sliders.setHorizontalSpacing(16)
+        grid_sliders.setVerticalSpacing(8)
+
+        # Steps
+        steps_box = QVBoxLayout()
+        steps_box.setSpacing(2)
+        h_steps = QHBoxLayout()
+        h_steps.addWidget(QLabel("Шаги (Steps):", card_pipeline))
+        h_steps.addStretch()
+        self.spin_steps = SamplingSpinBox(card_pipeline)
         self.spin_steps.setRange(10, 60)
         self.spin_steps.setValue(25)
-        spin_row.addWidget(self.spin_steps)
+        h_steps.addWidget(self.spin_steps)
+        steps_box.addLayout(h_steps)
 
-        spin_row.addWidget(QLabel("CFG Scale:", self))
-        self.spin_cfg = QDoubleSpinBox(self)
+        self.slider_steps = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
+        self.slider_steps.setRange(10, 60)
+        self.slider_steps.setValue(25)
+        self.slider_steps.valueChanged.connect(self._on_steps_slider_changed)
+        self.slider_steps.sliderMoved.connect(self._on_steps_slider_changed)
+        self.spin_steps.valueChanged.connect(self._on_steps_spin_changed)
+        steps_box.addWidget(self.slider_steps)
+        grid_sliders.addLayout(steps_box, 0, 0)
+
+        # CFG Scale
+        cfg_box = QVBoxLayout()
+        cfg_box.setSpacing(2)
+        h_cfg = QHBoxLayout()
+        h_cfg.addWidget(QLabel("CFG Scale:", card_pipeline))
+        h_cfg.addStretch()
+        self.spin_cfg = SamplingDoubleSpinBox(card_pipeline)
         self.spin_cfg.setRange(1.0, 15.0)
         self.spin_cfg.setSingleStep(0.5)
         self.spin_cfg.setDecimals(1)
         self.spin_cfg.setValue(6.0)
-        spin_row.addWidget(self.spin_cfg)
+        h_cfg.addWidget(self.spin_cfg)
+        cfg_box.addLayout(h_cfg)
 
-        spin_row.addWidget(QLabel("Clip Skip:", self))
-        self.spin_clip_skip = QSpinBox(self)
-        self.spin_clip_skip.setRange(1, 2)
-        self.spin_clip_skip.setValue(1)
-        spin_row.addWidget(self.spin_clip_skip)
+        self.slider_cfg = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
+        self.slider_cfg.setRange(10, 150)
+        self.slider_cfg.setSingleStep(5)
+        self.slider_cfg.setValue(60)
+        self.slider_cfg.valueChanged.connect(self._on_cfg_slider_changed)
+        self.slider_cfg.sliderMoved.connect(self._on_cfg_slider_changed)
+        self.spin_cfg.valueChanged.connect(self._on_cfg_spin_changed)
+        cfg_box.addWidget(self.slider_cfg)
+        grid_sliders.addLayout(cfg_box, 0, 1)
 
-        grid_pipe.addRow("Инференс:", spin_row)
-
-        # Быстрый статический список апскейлеров (без блокирующего HTTP-запроса к Forge при старте)
-        base_upscalers = ["4x-UltraSharp", "R-ESRGAN 4x+ Anime6B", "DAT x2", "Lanczos"]
-        self.combo_upscaler = QComboBox(self)
-        for u in base_upscalers:
-            self.combo_upscaler.addItem(u)
-        grid_pipe.addRow("Hires.fix апскейлер:", self.combo_upscaler)
-
-        self.spin_hires_denoise = QDoubleSpinBox(self)
+        # Denoise
+        denoise_box = QVBoxLayout()
+        denoise_box.setSpacing(2)
+        h_denoise = QHBoxLayout()
+        h_denoise.addWidget(QLabel("Денойз Hires:", card_pipeline))
+        h_denoise.addStretch()
+        self.spin_hires_denoise = SamplingDoubleSpinBox(card_pipeline)
         self.spin_hires_denoise.setRange(0.10, 0.70)
         self.spin_hires_denoise.setSingleStep(0.01)
         self.spin_hires_denoise.setDecimals(2)
         self.spin_hires_denoise.setValue(0.32)
-        grid_pipe.addRow("Денойз Hires:", self.spin_hires_denoise)
+        h_denoise.addWidget(self.spin_hires_denoise)
+        denoise_box.addLayout(h_denoise)
 
-        self.input_negative_prompt = QLineEdit(self)
-        self.input_negative_prompt.setPlaceholderText("Рекомендуемый негативный промпт для этой модели...")
-        grid_pipe.addRow("Негативный промпт:", self.input_negative_prompt)
+        self.slider_hires_denoise = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
+        self.slider_hires_denoise.setRange(10, 70)
+        self.slider_hires_denoise.setSingleStep(1)
+        self.slider_hires_denoise.setValue(32)
+        self.slider_hires_denoise.valueChanged.connect(self._on_hires_denoise_slider_changed)
+        self.slider_hires_denoise.sliderMoved.connect(self._on_hires_denoise_slider_changed)
+        self.spin_hires_denoise.valueChanged.connect(self._on_hires_denoise_spin_changed)
+        denoise_box.addWidget(self.slider_hires_denoise)
+        grid_sliders.addLayout(denoise_box, 1, 0)
 
-        right_layout.addWidget(grp_pipeline)
+        # Clip Skip
+        clip_box = QVBoxLayout()
+        clip_box.setSpacing(2)
+        h_clip = QHBoxLayout()
+        h_clip.addWidget(QLabel("Clip Skip:", card_pipeline))
+        h_clip.addStretch()
+        self.spin_clip_skip = SamplingSpinBox(card_pipeline)
+        self.spin_clip_skip.setRange(1, 4)
+        self.spin_clip_skip.setValue(1)
+        h_clip.addWidget(self.spin_clip_skip)
+        clip_box.addLayout(h_clip)
 
-        # Group 2: FastEmbed Vector Routing
-        grp_routing = QGroupBox("🧠 Семантический роутинг (FastEmbed CPU)", self)
-        layout_routing = QVBoxLayout(grp_routing)
-        layout_routing.setSpacing(6)
+        self.slider_clip_skip = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
+        self.slider_clip_skip.setRange(1, 4)
+        self.slider_clip_skip.setValue(1)
+        self.slider_clip_skip.valueChanged.connect(self._on_clip_skip_slider_changed)
+        self.slider_clip_skip.sliderMoved.connect(self._on_clip_skip_slider_changed)
+        self.spin_clip_skip.valueChanged.connect(self._on_clip_skip_spin_changed)
+        clip_box.addWidget(self.slider_clip_skip)
+        grid_sliders.addLayout(clip_box, 1, 1)
 
-        layout_routing.addWidget(QLabel("Описание эстетики / стилистики для FastEmbed:", self))
-        self.input_desc = QTextEdit(self)
+        pipe_layout.addLayout(grid_sliders)
+
+        # Negative prompt TextEdit
+        pipe_layout.addWidget(QLabel("Негативный промпт по умолчанию:", card_pipeline))
+        self.input_negative_prompt = FluentTextEdit(card_pipeline)
+        self.input_negative_prompt.setPlaceholderText("worst quality, low quality, bad anatomy, deformed limbs...")
+        self.input_negative_prompt.setFixedHeight(54)
+        pipe_layout.addWidget(self.input_negative_prompt)
+
+        right_layout.addWidget(card_pipeline)
+
+        # 3. Vector Routing Card
+        card_routing = QFrame(right_container)
+        card_routing.setObjectName("ParamCard")
+        rout_layout = QVBoxLayout(card_routing)
+        rout_layout.setContentsMargins(12, 10, 12, 10)
+        rout_layout.setSpacing(8)
+
+        lbl_rout_hdr = QLabel("🧠 <b>Семантический роутинг (FastEmbed CPU)</b>", card_routing)
+        lbl_rout_hdr.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: bold;")
+        rout_layout.addWidget(lbl_rout_hdr)
+
+        rout_layout.addWidget(QLabel("Описание эстетики / стилистики для FastEmbed:", card_routing))
+        self.input_desc = FluentTextEdit(card_routing)
         self.input_desc.setPlaceholderText("Семантическое описание стилистики, объектов, эстетики для FastEmbed...")
         self.input_desc.setFixedHeight(64)
-        layout_routing.addWidget(self.input_desc)
+        rout_layout.addWidget(self.input_desc)
 
-        layout_routing.addWidget(QLabel("Подсказка для Эларии (llm_guidance, макс. 160 симв. / 8 тегов):", self))
-        self.input_guidance = QTextEdit(self)
+        rout_layout.addWidget(QLabel("Подсказка для Эларии (llm_guidance, макс. 160 симв. / 8 тегов):", card_routing))
+        self.input_guidance = FluentTextEdit(card_routing)
         self.input_guidance.setPlaceholderText("Инструкция для Эларии: целевые теги, ограничения (макс. 160 символов, до 8 тегов)...")
         self.input_guidance.setFixedHeight(54)
         self.input_guidance.textChanged.connect(self._on_input_guidance_changed)
-        layout_routing.addWidget(self.input_guidance)
+        rout_layout.addWidget(self.input_guidance)
 
-        right_layout.addWidget(grp_routing)
+        right_layout.addWidget(card_routing)
         right_layout.addStretch()
 
         right_scroll.setWidget(right_container)
@@ -527,57 +893,115 @@ class ModelsManagerDialog(QDialog):
         splitter.setStretchFactor(1, 6)
         main_layout.addWidget(splitter, stretch=1)
 
-        # 3. Live Vector Routing Test Panel
+        # 4. Live Vector Routing Test Panel
         test_panel = QFrame(self)
         test_panel.setObjectName("TestPanel")
         test_layout = QVBoxLayout(test_panel)
-        test_layout.setContentsMargins(12, 8, 12, 8)
-        test_layout.setSpacing(6)
+        test_layout.setContentsMargins(14, 10, 14, 10)
+        test_layout.setSpacing(8)
 
-        test_title = QLabel("🧪 <b>Тестовый запрос (проверка векторного сопоставления в реальном времени):</b>", self)
+        test_title = QLabel("🧪 <b>Тестовый запрос (проверка векторного сопоставления в реальном времени):</b>", test_panel)
         test_title.setStyleSheet("color: #38BDF8; font-size: 12px;")
         test_layout.addWidget(test_title)
 
         test_input_row = QHBoxLayout()
-        test_input_row.setSpacing(8)
+        test_input_row.setSpacing(10)
 
-        self.input_test_prompt = QLineEdit(self)
+        self.input_test_prompt = SearchLineEdit(test_panel)
         self.input_test_prompt.setPlaceholderText("Введите текст сцены (например: 'cyberpunk girl on neon street' или 'портрет девушки в парке')...")
+        self.input_test_prompt.setClearButtonEnabled(True)
         self.input_test_prompt.returnPressed.connect(self._run_test_match)
+        self.input_test_prompt.searchSignal.connect(self._run_test_match)
         test_input_row.addWidget(self.input_test_prompt, stretch=1)
 
-        self.btn_test_match = QPushButton("🎯 Проверить выбор", self)
+        self.btn_test_match = PrimaryPushButton("Проверить выбор", test_panel, icon=FIF.SEARCH)
         self.btn_test_match.setObjectName("TestBtn")
         self.btn_test_match.clicked.connect(self._run_test_match)
         test_input_row.addWidget(self.btn_test_match)
 
         test_layout.addLayout(test_input_row)
 
-        self.lbl_test_result = QLabel("<i>Введите запрос и нажмите «Проверить выбор» для расчета косинусного сходства...</i>", self)
-        self.lbl_test_result.setWordWrap(True)
-        self.lbl_test_result.setStyleSheet("color: #94A3B8; font-size: 11px; padding-top: 2px;")
-        test_layout.addWidget(self.lbl_test_result)
-        self.test_result_label = self.lbl_test_result
+        self.result_badge = RoutingResultBadge(test_panel)
+        test_layout.addWidget(self.result_badge)
+        self.lbl_test_result = self.result_badge
+        self.test_result_label = self.result_badge
 
         main_layout.addWidget(test_panel)
 
-        # 4. Bottom Actions
+        # 5. Bottom Actions
         actions_row = QHBoxLayout()
         actions_row.setSpacing(10)
 
-        self.btn_save = QPushButton("💾 Сохранить", self)
+        self.btn_save = PrimaryPushButton("Сохранить", self, icon=FIF.SAVE)
         self.btn_save.setObjectName("PrimaryBtn")
+        self.btn_save.setFixedHeight(34)
         self.btn_save.clicked.connect(self._save_all)
         actions_row.addWidget(self.btn_save)
 
         actions_row.addStretch()
 
-        self.btn_close = QPushButton("✕ Закрыть", self)
+        self.btn_close = PushButton("Закрыть", self, icon=FIF.CLOSE)
+        self.btn_close.setObjectName("CloseBtn")
+        self.btn_close.setFixedHeight(34)
         self.btn_close.clicked.connect(self.accept)
         actions_row.addWidget(self.btn_close)
 
         main_layout.addLayout(actions_row)
 
+    # ---------------- Synchronized Slider & SpinBox Slots ---------------- #
+    def _on_steps_slider_changed(self, val: int):
+        if self.spin_steps.value() != val:
+            self.spin_steps.blockSignals(True)
+            self.spin_steps.setValue(val)
+            self.spin_steps.blockSignals(False)
+
+    def _on_steps_spin_changed(self, val: int):
+        if self.slider_steps.value() != val:
+            self.slider_steps.blockSignals(True)
+            self.slider_steps.setValue(val)
+            self.slider_steps.blockSignals(False)
+
+    def _on_cfg_slider_changed(self, val: int):
+        target = round(val / 10.0, 1)
+        if abs(self.spin_cfg.value() - target) > 0.01:
+            self.spin_cfg.blockSignals(True)
+            self.spin_cfg.setValue(target)
+            self.spin_cfg.blockSignals(False)
+
+    def _on_cfg_spin_changed(self, val: float):
+        target = int(round(val * 10))
+        if self.slider_cfg.value() != target:
+            self.slider_cfg.blockSignals(True)
+            self.slider_cfg.setValue(target)
+            self.slider_cfg.blockSignals(False)
+
+    def _on_hires_denoise_slider_changed(self, val: int):
+        target = round(val / 100.0, 2)
+        if abs(self.spin_hires_denoise.value() - target) > 0.001:
+            self.spin_hires_denoise.blockSignals(True)
+            self.spin_hires_denoise.setValue(target)
+            self.spin_hires_denoise.blockSignals(False)
+
+    def _on_hires_denoise_spin_changed(self, val: float):
+        target = int(round(val * 100))
+        if self.slider_hires_denoise.value() != target:
+            self.slider_hires_denoise.blockSignals(True)
+            self.slider_hires_denoise.setValue(target)
+            self.slider_hires_denoise.blockSignals(False)
+
+    def _on_clip_skip_slider_changed(self, val: int):
+        if self.spin_clip_skip.value() != val:
+            self.spin_clip_skip.blockSignals(True)
+            self.spin_clip_skip.setValue(val)
+            self.spin_clip_skip.blockSignals(False)
+
+    def _on_clip_skip_spin_changed(self, val: int):
+        if self.slider_clip_skip.value() != val:
+            self.slider_clip_skip.blockSignals(True)
+            self.slider_clip_skip.setValue(val)
+            self.slider_clip_skip.blockSignals(False)
+
+    # ---------------- UI Event Handlers ---------------- #
     def _on_input_name_changed(self, text: str):
         if 0 <= self.current_selected_row < len(self.row_widgets):
             self.row_widgets[self.current_selected_row]["name"] = text
@@ -594,7 +1018,7 @@ class ModelsManagerDialog(QDialog):
 
     def _on_table_cell_changed(self, cur_row: int, cur_col: int, prev_row: int, prev_col: int):
         if cur_row != prev_row and cur_row >= 0:
-            if prev_row >= 0 and prev_row < len(self.row_widgets):
+            if 0 <= prev_row < len(self.row_widgets):
                 self._save_form_to_model(prev_row)
             self.current_selected_row = cur_row
             self._load_model_to_form(cur_row)
@@ -651,7 +1075,7 @@ class ModelsManagerDialog(QDialog):
             g_parts = [t.strip() for t in guidance_val.split(",") if t.strip()][:8]
             guidance_val = ", ".join(g_parts)
         r["llm_guidance"] = guidance_val
-        r["negative_prompt"] = self.input_negative_prompt.text().strip()
+        r["negative_prompt"] = self.input_negative_prompt.toPlainText().strip()
 
         is_default = self.chk_is_default.isChecked()
         raw_triggers = [t.strip() for t in self.edit_style_triggers.text().split(",") if t.strip()]
@@ -672,7 +1096,7 @@ class ModelsManagerDialog(QDialog):
             "clip_skip": self.spin_clip_skip.value(),
             "hires_upscaler": self.combo_upscaler.currentText(),
             "hires_denoise": round(self.spin_hires_denoise.value(), 2),
-            "negative_prompt": self.input_negative_prompt.text().strip()
+            "negative_prompt": self.input_negative_prompt.toPlainText().strip()
         }
 
     def _load_model_to_form(self, row_idx: int):
@@ -684,10 +1108,14 @@ class ModelsManagerDialog(QDialog):
         self.combo_checkpoint.blockSignals(True)
         self.combo_sampler.blockSignals(True)
         self.spin_steps.blockSignals(True)
+        self.slider_steps.blockSignals(True)
         self.spin_cfg.blockSignals(True)
+        self.slider_cfg.blockSignals(True)
         self.spin_clip_skip.blockSignals(True)
+        self.slider_clip_skip.blockSignals(True)
         self.combo_upscaler.blockSignals(True)
         self.spin_hires_denoise.blockSignals(True)
+        self.slider_hires_denoise.blockSignals(True)
         self.input_negative_prompt.blockSignals(True)
         self.input_desc.blockSignals(True)
         self.input_guidance.blockSignals(True)
@@ -711,9 +1139,17 @@ class ModelsManagerDialog(QDialog):
             self.combo_sampler.addItem(pipe["sampler"])
             self.combo_sampler.setCurrentText(pipe["sampler"])
 
-        self.spin_steps.setValue(pipe.get("steps", 25))
-        self.spin_cfg.setValue(pipe.get("cfg_scale", 6.0))
-        self.spin_clip_skip.setValue(pipe.get("clip_skip", 1))
+        steps_val = pipe.get("steps", 25)
+        self.spin_steps.setValue(steps_val)
+        self.slider_steps.setValue(steps_val)
+
+        cfg_val = pipe.get("cfg_scale", 6.0)
+        self.spin_cfg.setValue(cfg_val)
+        self.slider_cfg.setValue(int(round(cfg_val * 10)))
+
+        clip_val = pipe.get("clip_skip", 1)
+        self.spin_clip_skip.setValue(clip_val)
+        self.slider_clip_skip.setValue(clip_val)
 
         idx_u = self.combo_upscaler.findText(pipe.get("hires_upscaler", "4x-UltraSharp"))
         if idx_u >= 0:
@@ -722,10 +1158,12 @@ class ModelsManagerDialog(QDialog):
             self.combo_upscaler.addItem(pipe["hires_upscaler"])
             self.combo_upscaler.setCurrentText(pipe["hires_upscaler"])
 
-        self.spin_hires_denoise.setValue(pipe.get("hires_denoise", 0.32))
+        denoise_val = pipe.get("hires_denoise", 0.32)
+        self.spin_hires_denoise.setValue(denoise_val)
+        self.slider_hires_denoise.setValue(int(round(denoise_val * 100)))
 
         neg = pipe.get("negative_prompt", r.get("negative_prompt", ""))
-        self.input_negative_prompt.setText(neg)
+        self.input_negative_prompt.setPlainText(neg)
 
         self.input_desc.setPlainText(r.get("routing_description", ""))
         self.input_guidance.setPlainText(r.get("llm_guidance", ""))
@@ -738,10 +1176,14 @@ class ModelsManagerDialog(QDialog):
         self.combo_checkpoint.blockSignals(False)
         self.combo_sampler.blockSignals(False)
         self.spin_steps.blockSignals(False)
+        self.slider_steps.blockSignals(False)
         self.spin_cfg.blockSignals(False)
+        self.slider_cfg.blockSignals(False)
         self.spin_clip_skip.blockSignals(False)
+        self.slider_clip_skip.blockSignals(False)
         self.combo_upscaler.blockSignals(False)
         self.spin_hires_denoise.blockSignals(False)
+        self.slider_hires_denoise.blockSignals(False)
         self.input_negative_prompt.blockSignals(False)
         self.input_desc.blockSignals(False)
         self.input_guidance.blockSignals(False)
@@ -750,8 +1192,7 @@ class ModelsManagerDialog(QDialog):
 
     def _on_autofill_params_clicked(self):
         """
-        Запускается СТРОГО по клику пользователя.
-        Запрашивает Civitai в неблокирующем QThread или выставляет Safe Defaults при отсутствии сети.
+        Запрашивает параметры Civitai в неблокирующем QThread или выставляет Safe Defaults.
         """
         checkpoint = self.combo_checkpoint.currentText().strip()
         if not checkpoint:
@@ -762,7 +1203,8 @@ class ModelsManagerDialog(QDialog):
             return
 
         self.btn_autofill_params.setEnabled(False)
-        self.btn_autofill_params.setText("⏳ Опрос Civitai...")
+        self.btn_autofill_params.setText("Опрос Civitai...")
+        self.btn_autofill_params.setIcon(FIF.SYNC)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
         self._civitai_worker = CivitaiParamsWorker(checkpoint, parent=self)
@@ -780,9 +1222,17 @@ class ModelsManagerDialog(QDialog):
                 self.combo_sampler.addItem(params["sampler"])
                 self.combo_sampler.setCurrentText(params["sampler"])
 
-            self.spin_steps.setValue(params.get("steps", 25))
-            self.spin_cfg.setValue(params.get("cfg_scale", 6.0))
-            self.spin_clip_skip.setValue(params.get("clip_skip", 1))
+            steps_val = params.get("steps", 25)
+            self.spin_steps.setValue(steps_val)
+            self.slider_steps.setValue(steps_val)
+
+            cfg_val = params.get("cfg_scale", 6.0)
+            self.spin_cfg.setValue(cfg_val)
+            self.slider_cfg.setValue(int(round(cfg_val * 10)))
+
+            clip_val = params.get("clip_skip", 1)
+            self.spin_clip_skip.setValue(clip_val)
+            self.slider_clip_skip.setValue(clip_val)
 
             idx_u = self.combo_upscaler.findText(params.get("hires_upscaler", "4x-UltraSharp"))
             if idx_u >= 0:
@@ -791,8 +1241,11 @@ class ModelsManagerDialog(QDialog):
                 self.combo_upscaler.addItem(params["hires_upscaler"])
                 self.combo_upscaler.setCurrentText(params["hires_upscaler"])
 
-            self.spin_hires_denoise.setValue(params.get("hires_denoise", 0.32))
-            self.input_negative_prompt.setText(params.get("negative_prompt", ""))
+            denoise_val = params.get("hires_denoise", 0.32)
+            self.spin_hires_denoise.setValue(denoise_val)
+            self.slider_hires_denoise.setValue(int(round(denoise_val * 100)))
+
+            self.input_negative_prompt.setPlainText(params.get("negative_prompt", ""))
 
             # Синхронизируем изменения с текущей выбранной моделью
             if self.current_selected_row >= 0:
@@ -805,7 +1258,6 @@ class ModelsManagerDialog(QDialog):
             if status == "success":
                 QMessageBox.information(self, "Успех", f"✅ {msg}")
             else:
-                # Ошибка сети / таймаут / 404 — предупреждаем о применении дефолтов
                 QMessageBox.warning(self, "Внимание (Параметры по умолчанию)", f"⚠️ {msg}")
 
         except Exception as e:
@@ -814,7 +1266,8 @@ class ModelsManagerDialog(QDialog):
         finally:
             QApplication.restoreOverrideCursor()
             self.btn_autofill_params.setEnabled(True)
-            self.btn_autofill_params.setText("🌐 Автонастройка параметров (Civitai)")
+            self.btn_autofill_params.setText("Автонастройка (Civitai)")
+            self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
 
     def _on_civitai_params_error(self, err_msg: str):
         try:
@@ -823,7 +1276,8 @@ class ModelsManagerDialog(QDialog):
         finally:
             QApplication.restoreOverrideCursor()
             self.btn_autofill_params.setEnabled(True)
-            self.btn_autofill_params.setText("🌐 Автонастройка параметров (Civitai)")
+            self.btn_autofill_params.setText("Автонастройка (Civitai)")
+            self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
 
     def _start_forge_scan(self, silent: bool = False):
         """Запускает фоновое сканирование Forge без блокировки главного потока интерфейса."""
@@ -833,7 +1287,8 @@ class ModelsManagerDialog(QDialog):
         self._scan_silent = silent
         if not silent:
             self.btn_refresh_forge.setEnabled(False)
-            self.btn_refresh_forge.setText("⏳ Опрос Forge...")
+            self.btn_refresh_forge.setText("Опрос Forge...")
+            self.btn_refresh_forge.setIcon(FIF.SYNC)
 
         self._scan_worker = ForgeScanWorker(self.forge_client, parent=self)
         self._scan_worker.scan_completed.connect(self._on_forge_scan_completed)
@@ -842,7 +1297,8 @@ class ModelsManagerDialog(QDialog):
     def _on_forge_scan_completed(self, raw_models: list, installed_list: list, upscalers: list):
         if not getattr(self, "_scan_silent", True):
             self.btn_refresh_forge.setEnabled(True)
-            self.btn_refresh_forge.setText("🔄 Сканировать Forge")
+            self.btn_refresh_forge.setText("Сканировать Forge")
+            self.btn_refresh_forge.setIcon(FIF.SYNC)
 
         # 1. Обновление списка апскейлеров новыми данными из Forge
         if upscalers:
@@ -981,7 +1437,7 @@ class ModelsManagerDialog(QDialog):
         self.table.scrollToBottom()
 
     def _populate_table(self):
-        """Fills table with model rows and selects first row."""
+        """Заполняет таблицу моделями и активирует первую строку."""
         self.table.setRowCount(0)
         self.row_widgets.clear()
         for m in self.models:
@@ -993,10 +1449,10 @@ class ModelsManagerDialog(QDialog):
             self._load_model_to_form(0)
 
     def _add_model_row(self, model_data: Dict[str, Any]):
-        """Adds a single interactive model row with widgets to the table."""
+        """Добавляет строку модели с современными элементами управления."""
         row_idx = self.table.rowCount()
         self.table.insertRow(row_idx)
-        self.table.setRowHeight(row_idx, 38)
+        self.table.setRowHeight(row_idx, 40)
 
         model_id = model_data.get("id") or f"model_{uuid.uuid4().hex[:6]}"
         is_active = model_data.get("active", model_data.get("is_active", True))
@@ -1021,15 +1477,16 @@ class ModelsManagerDialog(QDialog):
         # Col 0: Active in auto-router CheckBox
         chk_container = QWidget()
         chk_layout = QHBoxLayout(chk_container)
-        chk_layout.setContentsMargins(0, 0, 0, 0)
+        chk_layout.setContentsMargins(6, 0, 6, 0)
         chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chk = QCheckBox()
+        chk = CheckBox(chk_container)
         chk.setChecked(bool(is_active))
         chk.setToolTip("Включить модель в автоматический семантический роутер")
         chk_layout.addWidget(chk)
         self.table.setCellWidget(row_idx, 0, chk_container)
 
         # Col 1: Model Name
+        from PyQt6.QtWidgets import QTableWidgetItem
         item_name = QTableWidgetItem(name)
         item_name.setFlags(item_name.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.table.setItem(row_idx, 1, item_name)
@@ -1039,16 +1496,24 @@ class ModelsManagerDialog(QDialog):
         item_ckpt.setFlags(item_ckpt.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.table.setItem(row_idx, 2, item_ckpt)
 
-        # Col 3: Delete Button
-        btn_del = QPushButton("🗑️")
-        btn_del.setObjectName("DeleteBtn")
-        btn_del.setToolTip("Удалить модель")
-        btn_del.setFixedSize(28, 28)
-        btn_del.clicked.connect(lambda _, r_id=model_id: self._remove_model_by_id(r_id))
+        # Col 3: Delete Button (TransparentToolButton with red hover)
         del_container = QWidget()
         del_layout = QHBoxLayout(del_container)
-        del_layout.setContentsMargins(0, 0, 0, 0)
+        del_layout.setContentsMargins(4, 0, 4, 0)
         del_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_del = TransparentToolButton(FIF.DELETE, del_container)
+        btn_del.setToolTip("Удалить модель из реестра")
+        btn_del.setFixedSize(28, 28)
+        btn_del.setStyleSheet("""
+            TransparentToolButton {
+                border-radius: 4px;
+                padding: 2px;
+            }
+            TransparentToolButton:hover {
+                background-color: rgba(239, 68, 68, 0.25);
+            }
+        """)
+        btn_del.clicked.connect(lambda _, r_id=model_id: self._remove_model_by_id(r_id))
         del_layout.addWidget(btn_del)
         self.table.setCellWidget(row_idx, 3, del_container)
 
@@ -1079,7 +1544,7 @@ class ModelsManagerDialog(QDialog):
         self.row_widgets.append(row_info)
 
     def _add_empty_model_row(self):
-        """Adds a new blank model row."""
+        """Добавляет пустой шаблон новой модели."""
         if self.current_selected_row >= 0:
             self._save_form_to_model(self.current_selected_row)
 
@@ -1112,7 +1577,7 @@ class ModelsManagerDialog(QDialog):
         self.table.scrollToBottom()
 
     def _remove_model_by_id(self, model_id: str):
-        """Removes a model row from the table."""
+        """Удаляет модель из таблицы."""
         idx = next((i for i, r in enumerate(self.row_widgets) if r["id"] == model_id), -1)
         if idx == -1:
             return
@@ -1146,10 +1611,9 @@ class ModelsManagerDialog(QDialog):
 
         test_text = self.input_test_prompt.text().strip()
         if not test_text:
-            self.lbl_test_result.setText("<span style='color:#F59E0B;'>⚠️ Введите текст сцены для проверки.</span>")
+            self.result_badge.set_error("⚠️ Введите текст сцены для проверки.")
             return
 
-        # Снимаем актуальный in-memory снимок всех моделей из таблицы и формы
         current_profiles = []
         for r in self.row_widgets:
             current_profiles.append({
@@ -1167,12 +1631,12 @@ class ModelsManagerDialog(QDialog):
 
         active_count = sum(1 for p in current_profiles if p.get("active"))
         if active_count == 0:
-            self.lbl_test_result.setText("<span style='color:#EF4444;'>❌ В таблице нет ни одной активной модели (отметьте галочками 'Вкл').</span>")
+            self.result_badge.set_error("❌ В таблице нет ни одной активной модели (отметьте галочками 'Вкл').")
             return
 
         self.btn_test_match.setEnabled(False)
-        self.btn_test_match.setText("⏳ Расчёт...")
-        self.lbl_test_result.setText("<i>Вычисление семантического сходства FastEmbed...</i>")
+        self.btn_test_match.setText("Расчёт...")
+        self.result_badge.set_loading()
 
         self._test_worker = RoutingTestWorker(test_text, current_profiles, self.router, parent=self)
         self._test_worker.result_ready.connect(self._on_test_match_success)
@@ -1181,7 +1645,7 @@ class ModelsManagerDialog(QDialog):
 
     def _on_test_match_success(self, winner_id: str, score: float, reason: str, profiles: list):
         self.btn_test_match.setEnabled(True)
-        self.btn_test_match.setText("🎯 Проверить выбор")
+        self.btn_test_match.setText("Проверить выбор")
 
         winner_name = winner_id
         winner_ckpt = ""
@@ -1191,25 +1655,13 @@ class ModelsManagerDialog(QDialog):
                 winner_ckpt = p.get("checkpoint", "")
                 break
 
-        if reason == "trigger":
-            explanation = "<span style='color:#34D399;'>(совпадение по триггеру стиля)</span>"
-        elif reason == "default":
-            explanation = f"<span style='color:#38BDF8;'>(по умолчанию для нейтральных запросов, сходство: {score:.2f})</span>"
-        elif reason == "vector":
-            explanation = f"<span style='color:#00F0FF;'>(семантическое сходство FastEmbed: {score:.2f})</span>"
-        else:
-            explanation = f"<span style='color:#94A3B8;'>(фоллбэк: {score:.2f})</span>"
-
-        ckpt_info = f" • <code>{winner_ckpt}</code>" if winner_ckpt else ""
-        self.lbl_test_result.setText(
-            f"🎯 Выбрана модель: <b style='color:#FFFFFF;'>{winner_name}</b>{ckpt_info} {explanation}"
-        )
+        self.result_badge.set_success(winner_name, winner_ckpt, reason, score)
         self._test_worker = None
 
     def _on_test_match_failed(self, err_msg: str):
         self.btn_test_match.setEnabled(True)
-        self.btn_test_match.setText("🎯 Проверить выбор")
-        self.lbl_test_result.setText(f"<span style='color:#EF4444;'>❌ Ошибка: {err_msg}</span>")
+        self.btn_test_match.setText("Проверить выбор")
+        self.result_badge.set_error(f"Ошибка роутинга: {err_msg}")
         self._test_worker = None
 
     def _on_test_prompt_clicked(self):
@@ -1226,7 +1678,7 @@ class ModelsManagerDialog(QDialog):
 
     def _save_all(self):
         """
-        Persists all models to data/art_director_models.json and updates router embeddings.
+        Сохраняет модели в data/art_director_models.json и синхронизирует кэш FastEmbed.
         """
         if self.current_selected_row >= 0:
             self._save_form_to_model(self.current_selected_row)
@@ -1257,7 +1709,7 @@ class ModelsManagerDialog(QDialog):
                     "clip_skip": self.spin_clip_skip.value(),
                     "hires_upscaler": self.combo_upscaler.currentText(),
                     "hires_denoise": round(self.spin_hires_denoise.value(), 2),
-                    "negative_prompt": self.input_negative_prompt.text().strip()
+                    "negative_prompt": self.input_negative_prompt.toPlainText().strip()
                 }
 
             neg = pipe.get("negative_prompt") or r.get("negative_prompt", "")
@@ -1289,17 +1741,17 @@ class ModelsManagerDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Таблица моделей пуста.")
             return
 
-        # 1. Save to data/art_director_models.json via router and config manager
+        # 1. Запись в data/art_director_models.json
         self.router.save_profiles(models_to_save)
         save_art_director_models(models_to_save)
 
-        # 2. Update FastEmbed embeddings
+        # 2. Обновление FastEmbed эмбеддингов
         if self.art_director and hasattr(self.art_director, "router") and self.art_director.router:
             self.art_director.router.update_embeddings()
         else:
             self.router.update_embeddings()
 
-        # 3. Synchronize Forge model registry
+        # 3. Синхронизация реестра моделей Forge
         sync_registry_with_user_config()
 
         self.models = models_to_save
@@ -1315,4 +1767,6 @@ class ModelsManagerDialog(QDialog):
             self._scan_worker.wait(150)
         if self._test_worker and self._test_worker.isRunning():
             self._test_worker.wait(150)
+        if self._civitai_worker and self._civitai_worker.isRunning():
+            self._civitai_worker.wait(150)
         super().closeEvent(event)
