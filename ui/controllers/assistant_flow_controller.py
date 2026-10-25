@@ -428,11 +428,15 @@ class AssistantFlowControllerMixin:
             enable_reasoning=enable_reasoning
         )
 
-        # Дополнительная страховка наличия KnowledgeBase в первом системном сообщении
-        if knowledge_block and messages and messages[0].get("role") == "system":
+        # Дополнительная страховка наличия KnowledgeBase и REASONING_PROTOCOL в системном промпте
+        if messages and messages[0].get("role") == "system":
             sys_content = messages[0].get("content", "")
-            if "<KnowledgeBase>" not in sys_content:
-                messages[0]["content"] = f"{knowledge_block}\n\n{sys_content}"
+            if knowledge_block and "<KnowledgeBase>" not in sys_content:
+                sys_content = f"{sys_content}\n\n{knowledge_block}"
+            if enable_reasoning and "<think>" not in sys_content:
+                from services.assistant_prompt_builder import REASONING_PROTOCOL
+                sys_content = f"{sys_content}\n\n{REASONING_PROTOCOL}"
+            messages[0]["content"] = sys_content
 
         if _should_art:
             best_model_id = "realistic"
@@ -534,6 +538,9 @@ class AssistantFlowControllerMixin:
         self._active_tasks[task.id] = task
         # Инициализация потокового парсера мыслей <think>...</think>
         self._thought_stream_parser = ThoughtStreamParser()
+        self.is_busy = True
+        if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer and not self._stream_flush_timer.isActive():
+            self._stream_flush_timer.start()
         self.task_queue.enqueue(task)
 
     def _dispatch_art_to_forge(self, extracted_image_prompt: str, target_widget: Any, raw_user_query: str):
@@ -814,6 +821,11 @@ class AssistantFlowControllerMixin:
 
     def _handle_assistant_llm_response(self, text: str):
         """Обрабатывает ответ Эларии, парсит арт-протокол, Ambiguity Gate, мысли <think> и инициирует память."""
+        # 0. Сброс состояния занятости и остановка таймера стриминга
+        self.is_busy = False
+        if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer and self._stream_flush_timer.isActive():
+            self._stream_flush_timer.stop()
+
         # 1. Финализация потокового парсера мыслей <think>...</think>
         thought_data = None
         if getattr(self, "_thought_stream_parser", None) is not None:

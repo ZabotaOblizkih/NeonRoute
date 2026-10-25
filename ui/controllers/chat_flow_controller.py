@@ -271,12 +271,18 @@ class ChatFlowControllerMixin:
         sources = knowledge_sources if knowledge_sources is not None else getattr(self, "_pending_knowledge_sources", None)
         t_data = thought if thought is not None else getattr(self, "_pending_thought_data", None)
 
-        # 1. Синхронизация chat_history (OpenAI формат для модели)
+        # 1. Синхронизация chat_history (OpenAI формат для модели с сохранением паттерна <think>)
+        llm_content = clean_content
+        if not is_user and t_data and isinstance(t_data, dict):
+            thought_body = str(t_data.get("content") or "").strip()
+            if thought_body and "<think>" not in clean_content:
+                llm_content = f"<think>\n{thought_body}\n</think>\n\n{clean_content}"
+
         if hasattr(self, "chat_history") and isinstance(self.chat_history, list):
             if replace_last and self.chat_history and self.chat_history[-1].get("role") == role:
-                self.chat_history[-1]["content"] = clean_content
+                self.chat_history[-1]["content"] = llm_content
             else:
-                self.chat_history.append({"role": role, "content": clean_content})
+                self.chat_history.append({"role": role, "content": llm_content})
 
         # 2. Синхронизация current_session['messages'] (JSON для диска и UI)
         if getattr(self, "current_session", None) and isinstance(self.current_session, dict):
@@ -915,17 +921,42 @@ class ChatFlowControllerMixin:
         self.task_queue.enqueue(task)
 
     def _flush_stream_buffer(self, force: bool = False):
-        """Сбрасывает накопленный буфер токенов в бабл текущего хода с частотой ~28 FPS."""
+        """Сбрасывает накопленный буфер токенов в бабл текущего хода с частотой ~28 FPS с подавлением служебных тегов."""
         if not hasattr(self, "_stream_token_buffer") or not self._stream_token_buffer:
             if not force and hasattr(self, "_stream_flush_timer") and self._stream_flush_timer.isActive():
                 if getattr(self, "_current_streaming_widget", None) is None:
                     self._stream_flush_timer.stop()
             return
 
-        chunk_to_render = self._stream_token_buffer
-        self._stream_token_buffer = ""
-
+        buf = self._stream_token_buffer
         bubble = getattr(self, "_turn_bubble", None)
+
+        # Регулярные выражения для потокового подавления арт-триггеров
+        re_gallery_full = re.compile(r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ|ГАЛЕРИЯ|ГАЛЛЕРЕЯ|ГАЛЛЕРИЯ)\]', re.IGNORECASE)
+        re_gallery_prefix = re.compile(r'\[(?:[gGгГ][a-zA-Zа-яА-ЯёЁ]{0,9})?$', re.IGNORECASE)
+
+        # 1. Мгновенная активация киберпанк-лоадера и вырезание готового тега из потока
+        if re_gallery_full.search(buf):
+            if bubble is not None and hasattr(bubble, "show_art_loading_placeholder"):
+                bubble.show_art_loading_placeholder()
+            buf = re_gallery_full.sub('', buf)
+
+        # 2. Скользящее окно: удержание незавершенного префикса маркера от вывода на экран
+        chunk_to_render = buf
+        if not force:
+            partial_match = re_gallery_prefix.search(buf)
+            if partial_match:
+                split_idx = partial_match.start()
+                chunk_to_render = buf[:split_idx]
+                self._stream_token_buffer = buf[split_idx:]
+            else:
+                self._stream_token_buffer = ""
+        else:
+            self._stream_token_buffer = ""
+
+        if not chunk_to_render:
+            return
+
         if bubble is not None:
             try:
                 bubble.append_stream_chunk(chunk_to_render)
