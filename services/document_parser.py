@@ -65,7 +65,7 @@ class DocumentParser:
     def parse_file(
         cls,
         file_path: Union[str, Path],
-        max_chars: int = 14000
+        max_chars: Optional[int] = 14000
     ) -> Optional[ParsedDocument]:
         """
         Разбирает файл любого поддерживаемого формата (текст, код, логи, PDF, офис)
@@ -122,7 +122,7 @@ class DocumentParser:
             line_count = len(raw_content.splitlines()) if raw_content else 0
 
             total = len(raw_content)
-            if total > max_chars:
+            if max_chars is not None and max_chars > 0 and total > max_chars:
                 is_truncated = True
                 content = raw_content[:max_chars] + (
                     f"\n\n[... Документ сокращен: показаны первые {max_chars} символов из {total}. "

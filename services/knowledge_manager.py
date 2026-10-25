@@ -447,7 +447,7 @@ class KnowledgeManager:
                 else:
                     fpath = k_dir / fname
                     if fpath.exists():
-                        parsed_doc = DocumentParser.parse_file(fpath)
+                        parsed_doc = DocumentParser.parse_file(fpath, max_chars=None)
                         if parsed_doc and parsed_doc.content:
                             doc_chunks = HybridSearchEngine.chunk_text(parsed_doc.content, filename=fname)
                             all_chunks.extend(doc_chunks)
