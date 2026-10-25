@@ -309,6 +309,9 @@ class ProcessManager(QObject):
                     "--host", str(host),
                 ]
 
+                if ini_cfg.get("no_mmap", True):
+                    cmd.append("--no-mmap")
+
                 mmproj = ServerConfigResolver.resolve_mmproj_for_model(model_path)
                 if mmproj:
                     cmd.extend(["--mmproj", str(mmproj)])

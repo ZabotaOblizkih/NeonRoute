@@ -57,6 +57,7 @@ class ServerConfigResolver:
         "cache_type_k": "q8_0",
         "cache_type_v": "q8_0",
         "parallel_slots": 1,
+        "no_mmap": True,
         "server_bin_path": "",
         "cuda_dll_dir": "",
         "models_dir": "",
@@ -112,6 +113,12 @@ class ServerConfigResolver:
                 cfg["cache_type_k"] = _sanitize_ini_value(s.get("cache_type_k")) or cfg["cache_type_k"]
             if "cache_type_v" in s:
                 cfg["cache_type_v"] = _sanitize_ini_value(s.get("cache_type_v")) or cfg["cache_type_v"]
+            if "no_mmap" in s:
+
+                raw_nm = _sanitize_ini_value(s.get("no_mmap")).lower()
+
+                cfg["no_mmap"] = raw_nm in ("true", "1", "yes", "on")
+
             if "parallel_slots" in s:
                 try:
                     cfg["parallel_slots"] = int(_sanitize_ini_value(s.get("parallel_slots")))
