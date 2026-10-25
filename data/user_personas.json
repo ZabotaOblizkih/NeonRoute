@@ -1,0 +1,13 @@
+{
+  "persona_default": {
+    "name": "Игрок",
+    "avatar_path": null,
+    "bio": "",
+    "gender": "male",
+    "personality": "",
+    "backstory": "",
+    "inventory": "",
+    "visual_dna": "",
+    "outfit": ""
+  }
+}

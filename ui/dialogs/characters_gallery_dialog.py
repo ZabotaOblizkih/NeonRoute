@@ -427,6 +427,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
         self.characters: List[Dict[str, Any]] = []  # list of {"card": CharacterCard, "path": Path}
         self.active_entry: Optional[Dict[str, Any]] = None
+        self.selected_card: Optional[CharacterCard] = None
         self.current_greeting_idx: int = 0
         self._showing_ru: bool = True
         self.active_companion_idx: int = -1
@@ -1723,8 +1724,13 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         card: CharacterCard = self.active_entry["card"]
         text = self.input_first_mes.toPlainText().strip()
         has_cyr = bool(text and re.search(r'[а-яА-ЯёЁ]{3,}', text))
-        showing_ru = getattr(self, "_showing_ru", False) and has_cyr
-        card.set_greeting_variant(self.current_greeting_idx, text, is_ru=showing_ru)
+        showing_ru = getattr(self, "_showing_ru", False)
+        if showing_ru:
+            if has_cyr:
+                card.set_greeting_variant(self.current_greeting_idx, text, is_ru=True)
+            # Если в режиме RU нет кириллицы, не затираем существующий русский перевод
+        else:
+            card.set_greeting_variant(self.current_greeting_idx, text, is_ru=False)
 
     def _update_greeting_display(self):
         if not self.active_entry:
@@ -1828,27 +1834,23 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         if getattr(self, "_showing_ru", False):
             if _has_cyrillic(desc):
                 card.description_ru = desc
-            else:
+            elif not getattr(card, "description_ru", None):
                 card.description = desc
-                card.description_ru = ""
 
             if _has_cyrillic(personality):
                 card.personality_ru = personality
-            else:
+            elif not getattr(card, "personality_ru", None):
                 card.personality = personality
-                card.personality_ru = ""
 
             if _has_cyrillic(scenario):
                 card.scenario_ru = scenario
-            else:
+            elif not getattr(card, "scenario_ru", None):
                 card.scenario = scenario
-                card.scenario_ru = ""
 
             if _has_cyrillic(mes_example):
                 card.mes_example_ru = mes_example
-            else:
+            elif not getattr(card, "mes_example_ru", None):
                 card.mes_example = mes_example
-                card.mes_example_ru = ""
         else:
             card.description = desc
             card.personality = personality
@@ -1894,10 +1896,23 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         target["first_mes"] = card.first_mes
         target["alternate_greetings"] = getattr(card, "alternate_greetings", [])
 
-        for key in ("description", "personality", "scenario", "mes_example", "first_mes", "alternate_greetings"):
+        for key in ("description", "personality", "scenario", "mes_example", "first_mes"):
             attr_ru = f"{key}_ru"
-            if hasattr(card, attr_ru) and getattr(card, attr_ru) is not None:
-                target[attr_ru] = getattr(card, attr_ru)
+            val = getattr(card, attr_ru, None)
+            if val:
+                target[attr_ru] = val
+            elif target.get(attr_ru) and not val:
+                setattr(card, attr_ru, target[attr_ru])
+            else:
+                target[attr_ru] = val or ""
+
+        alts_ru = getattr(card, "alternate_greetings_ru", None)
+        if alts_ru:
+            target["alternate_greetings_ru"] = alts_ru
+        elif target.get("alternate_greetings_ru") and not alts_ru:
+            card.alternate_greetings_ru = target["alternate_greetings_ru"]
+        else:
+            target["alternate_greetings_ru"] = target.get("alternate_greetings_ru", []) or []
 
         if card.avatar_path:
             target["avatar_path"] = str(card.avatar_path)
@@ -1977,6 +1992,11 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         else:
             card.selected_greeting_idx = None
 
-        self.character_selected.emit(card)
-        self.start_session_requested.emit(card)
+        self.selected_card = card
+        was_executing = self.isVisible()
         self.accept()
+        if was_executing:
+            QTimer.singleShot(0, lambda: self.start_session_requested.emit(card))
+        else:
+            self.start_session_requested.emit(card)
+        self.character_selected.emit(card)

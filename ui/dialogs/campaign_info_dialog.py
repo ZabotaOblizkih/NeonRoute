@@ -44,6 +44,7 @@ from qfluentwidgets import (
 from config import CHARACTERS_DIR
 from services.rp_cast_manager import RPCastManager
 from services.session_manager import SessionManager
+from ui.common.icon_utils import SafeFIF
 
 try:
     from config import LOREBOOKS_DIR
@@ -151,7 +152,7 @@ class CampaignInfoDialog(QDialog):
         self.title_lbl.setStyleSheet("color: #00F0FF; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;")
         header.addWidget(self.title_lbl, 1)
 
-        self.btn_choose_lore = PushButton("Выбрать лор", self, icon=FIF.BOOK_SHELF)
+        self.btn_choose_lore = PushButton("Выбрать лор", self, icon=SafeFIF.BOOK_SHELF)
         self.btn_choose_lore.setToolTip("Подключить модуль правил или лорбук к этой сессии")
         self.btn_choose_lore.installEventFilter(ToolTipFilter(self.btn_choose_lore, showDelay=300, position=ToolTipPosition.BOTTOM))
         self.btn_choose_lore.clicked.connect(self._open_select_lore_dialog)

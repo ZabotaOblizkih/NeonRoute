@@ -840,29 +840,36 @@ class MainWindow(
             from services.macro_engine import MacroEngine
             u_name = self._get_active_user_name() or "Игрок"
 
-            if effective_raw:
-                greeting = MacroEngine.process(effective_raw, user_name=u_name, char_name=character_card.name)
-            else:
-                greeting = f"*{character_card.name} появляется перед вами и ждет ваших слов.*"
-
             if cached_ru:
-                cached_ru = MacroEngine.process(cached_ru, user_name=u_name, char_name=character_card.name)
+                greeting = MacroEngine.process(cached_ru, user_name=u_name, char_name=character_card.name)
+                msg_widget = self._append_message(
+                    character_card.name,
+                    greeting,
+                    is_user=False,
+                    avatar_path=character_card.avatar_path,
+                    translated_text=None,
+                    is_showing_translation=False
+                )
+            else:
+                if effective_raw:
+                    greeting = MacroEngine.process(effective_raw, user_name=u_name, char_name=character_card.name)
+                else:
+                    greeting = f"*{character_card.name} появляется перед вами и ждет ваших слов.*"
 
-            latin_cnt = sum(1 for c in greeting if 'a' <= c.lower() <= 'z')
-            cyr_cnt = sum(1 for c in greeting if 'а' <= c.lower() <= 'я')
-            is_eng = latin_cnt > cyr_cnt and latin_cnt > 15
-            show_trans = bool(cached_ru) and (self.auto_translate or is_eng)
+                latin_cnt = sum(1 for c in greeting if 'a' <= c.lower() <= 'z')
+                cyr_cnt = sum(1 for c in greeting if 'а' <= c.lower() <= 'я')
+                is_eng = latin_cnt > cyr_cnt and latin_cnt > 15
 
-            msg_widget = self._append_message(
-                character_card.name,
-                greeting,
-                is_user=False,
-                avatar_path=character_card.avatar_path,
-                translated_text=cached_ru or None,
-                is_showing_translation=show_trans
-            )
-            if not cached_ru and self.auto_translate and is_eng:
-                self._enqueue_translation_task(greeting, msg_widget)
+                msg_widget = self._append_message(
+                    character_card.name,
+                    greeting,
+                    is_user=False,
+                    avatar_path=character_card.avatar_path,
+                    translated_text=None,
+                    is_showing_translation=False
+                )
+                if self.auto_translate and is_eng:
+                    self._enqueue_translation_task(greeting, msg_widget)
 
             # 2. Синхронизация завязки в память модели (Root Anchor)
             self.chat_history.append({"role": "assistant", "content": greeting})
@@ -921,19 +928,22 @@ class MainWindow(
                 return
             current_idx = (current_idx + 1) % len(p)
             item = p[current_idx]
-            effective_raw = item["effective"]
-            cached_ru = item["ru"]
+            effective_raw = item.get("effective")
+            cached_ru = item.get("ru")
 
             from services.macro_engine import MacroEngine
             u_name = self._get_active_user_name() or "Игрок"
-            new_text = MacroEngine.process(effective_raw, user_name=u_name, char_name=character_card.name)
             if cached_ru:
-                cached_ru = MacroEngine.process(cached_ru, user_name=u_name, char_name=character_card.name)
+                new_text = MacroEngine.process(cached_ru, user_name=u_name, char_name=character_card.name)
+                trans_text = None
+            else:
+                new_text = MacroEngine.process(effective_raw or "", user_name=u_name, char_name=character_card.name)
+                trans_text = None
 
             if hasattr(msg_widget, "set_text"):
                 msg_widget.set_text(new_text)
             if hasattr(msg_widget, "set_translation"):
-                msg_widget.set_translation(cached_ru or None)
+                msg_widget.set_translation(trans_text)
 
             if self.chat_history:
                 self.chat_history[0]["content"] = new_text
@@ -943,7 +953,7 @@ class MainWindow(
                     self.current_session["chat_history"][0]["content"] = new_text
                 if self.current_session.get("messages"):
                     self.current_session["messages"][0]["text"] = new_text
-                    self.current_session["messages"][0]["translated_text"] = cached_ru or None
+                    self.current_session["messages"][0]["translated_text"] = trans_text
                 self.current_session["active_greeting_idx"] = current_idx
                 self._save_current_session()
 

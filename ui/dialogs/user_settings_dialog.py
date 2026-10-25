@@ -1,28 +1,167 @@
 """
-User Settings & Personas Dialog for NeonRoute.
-Allows configuring user identity for Assistant mode and multiple RP Personas.
+UserSettingsDialog for NeonRoute.
+Provides user identity configuration for Elaria Assistant mode and RPG Player Personas Manager.
+Refactored strictly according to Section 9 of neonroute_ui_spec.md and Agentrules.md:
+- Glassmorphism dark aesthetic: background rgba(10, 13, 20, 0.95), border-radius 14px, thin border rgba(255, 255, 255, 0.08)
+- Tab navigation using QFluentWidgets SegmentedWidget:
+  • Tab 1: «⚡ Ассистент»
+  • Tab 2: «🎭 Ролевой чат» (Player Personas Manager)
+- Tab 1: Circular interactive user avatar with preview and file selection, LineEdit for user name,
+  matte TextEdit for bio context (<UserInfo>), ComboBox for LM Studio model, SegmentedWidget for art generation mode.
+- Tab 2: Two-panel persona manager:
+  • Left panel: Persona list with [➕ Создать], [★ Сделать основным], [🗑️ Удалить]
+  • Right panel: Detailed persona card (avatar, hero name, grammatical gender switch, traits, backstory,
+    starting inventory, Visual DNA, SD outfit)
+- Action bar: [ 💾 Сохранить изменения ] (#00F0FF / Neon Cyan) and [ ✕ Отмена ]
+- Persistence to data/user_profiles.json, data/user_personas.json, and config.json
 """
 
 import uuid
 import shutil
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QRect
+from PyQt6.QtGui import (
+    QPixmap, QPainter, QColor, QPen, QPainterPath
+)
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QTextEdit, QPushButton, QComboBox, QRadioButton, QButtonGroup,
-    QTabWidget, QWidget, QFileDialog, QMessageBox, QSizePolicy,
-    QListWidget, QListWidgetItem, QScrollArea
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QWidget,
+    QStackedWidget, QListWidget, QListWidgetItem,
+    QScrollArea, QFileDialog, QMessageBox, QFrame, QSizePolicy
 )
 
-from config import CHARACTERS_DIR, DEFAULT_AUTO_GENERATE_ART
+from qfluentwidgets import (
+    SegmentedWidget,
+    PushButton,
+    PrimaryPushButton,
+    TransparentPushButton,
+    LineEdit,
+    TextEdit,
+    ComboBox,
+    FluentIcon as FIF
+)
+
+from config import CHARACTERS_DIR, DATA_DIR, DEFAULT_AUTO_GENERATE_ART
 from services.session_manager import SessionManager
 from utils.config_manager import ConfigManager
+from utils.file_utils import atomic_write_json
 from ui.components.chat_bubble import render_circular_avatar
 
 logger = logging.getLogger("NeonRoute.UserSettingsDialog")
+
+
+class InteractiveAvatarWidget(QWidget):
+    """
+    Интерактивный круглый аватар со сглаживанием, подсветкой при наведении
+    и поддержкой прямого клика для смены изображения.
+    """
+    avatar_clicked = pyqtSignal()
+
+    def __init__(self, size: int = 64, parent=None):
+        super().__init__(parent)
+        self.avatar_size = size
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pixmap = QPixmap()
+        self._is_hovered = False
+        self.setToolTip("Нажмите, чтобы выбрать новое изображение")
+
+    def setPixmap(self, pixmap: QPixmap):
+        self._pixmap = pixmap
+        self.update()
+
+    def pixmap(self) -> QPixmap:
+        return self._pixmap
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.avatar_clicked.emit()
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        rect_f = self.rect().adjusted(1, 1, -1, -1)
+
+        if not self._pixmap.isNull():
+            scaled = self._pixmap.scaled(
+                self.avatar_size, self.avatar_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            # Center in widget
+            dx = (self.width() - scaled.width()) // 2
+            dy = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(dx, dy, scaled)
+        else:
+            painter.setBrush(QColor(15, 23, 42))
+            painter.setPen(QPen(QColor(0, 240, 255, 60), 1.0))
+            painter.drawEllipse(rect_f)
+
+        # Soft ring / glow border
+        if self._is_hovered:
+            painter.setBrush(QColor(0, 240, 255, 25))
+            painter.setPen(QPen(QColor(0, 240, 255, 220), 2.0))
+            painter.drawEllipse(rect_f)
+        else:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(255, 255, 255, 30), 1.2))
+            painter.drawEllipse(rect_f)
+
+
+class _TabCompatProxy:
+    """Адаптер для обратной совместимости с self.tab_widget.setCurrentIndex()."""
+    def __init__(self, dialog: 'UserSettingsDialog'):
+        self._dlg = dialog
+
+    def setCurrentIndex(self, idx: int):
+        self._dlg.set_current_tab(idx)
+
+    def currentIndex(self) -> int:
+        return self._dlg.stacked_widget.currentIndex()
+
+
+class _RadioCompat:
+    """Адаптер для совместимости с радиокнопками rb_art_auto / rb_art_manual."""
+    def __init__(self, segmented: SegmentedWidget, target_key: str):
+        self._seg = segmented
+        self._target_key = target_key
+
+    def isChecked(self) -> bool:
+        return self._seg.currentRouteKey() == self._target_key
+
+    def setChecked(self, checked: bool):
+        if checked:
+            self._seg.setCurrentItem(self._target_key)
+
+
+class _GenderComboCompat:
+    """Адаптер для совместимости со старым self.combo_rp_gender."""
+    def __init__(self, segmented: SegmentedWidget):
+        self._seg = segmented
+
+    def currentIndex(self) -> int:
+        return 1 if self._seg.currentRouteKey() == "female" else 0
+
+    def setCurrentIndex(self, idx: int):
+        self._seg.setCurrentItem("female" if idx == 1 else "male")
+
+    def blockSignals(self, b: bool):
+        pass
 
 
 class UserSettingsDialog(QDialog):
@@ -31,111 +170,12 @@ class UserSettingsDialog(QDialog):
 
     def __init__(self, initial_tab: int = 0, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Личные настройки профиля")
-        self.setFixedSize(580, 720)
+        self.setWindowTitle("Личные настройки профиля — NeonRoute")
+        self.resize(820, 700)
+        self.setMinimumSize(780, 640)
         self.setModal(True)
 
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #0E131F;
-                color: #CBD5E1;
-                border: 1px solid #1E273A;
-                border-radius: 10px;
-            }
-            QTabWidget::pane {
-                border: 1px solid #1E273A;
-                background-color: #121824;
-                border-radius: 8px;
-                top: -1px;
-            }
-            QTabBar::tab {
-                background-color: #0F1420;
-                color: #94A3B8;
-                padding: 8px 18px;
-                margin-right: 4px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QTabBar::tab:selected {
-                background-color: #121824;
-                color: #00F0FF;
-                border: 1px solid #1E273A;
-                border-bottom: 1px solid #121824;
-            }
-            QLabel {
-                color: #94A3B8;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QLineEdit, QTextEdit {
-                background-color: #0A0D14;
-                color: #F8FAFC;
-                border: 1px solid #1E2B42;
-                border-radius: 6px;
-                padding: 6px;
-                font-size: 12px;
-            }
-            QLineEdit:focus, QTextEdit:focus {
-                border-color: #00F0FF;
-            }
-            QComboBox {
-                background-color: #0A0D14;
-                color: #F8FAFC;
-                border: 1px solid #1E2B42;
-                border-radius: 6px;
-                padding: 4px 8px;
-                font-size: 12px;
-            }
-            QListWidget {
-                background-color: #0A0D14;
-                border: 1px solid #1E2B42;
-                border-radius: 6px;
-                color: #CBD5E1;
-            }
-            QListWidget::item {
-                padding: 6px 10px;
-                border-bottom: 1px solid #141C2B;
-            }
-            QListWidget::item:selected {
-                background-color: #1C263B;
-                color: #00F0FF;
-            }
-            QRadioButton {
-                color: #CBD5E1;
-                font-size: 12px;
-                spacing: 6px;
-            }
-            QRadioButton::indicator:checked {
-                background-color: #00F0FF;
-                border: 2px solid #FFFFFF;
-                border-radius: 6px;
-            }
-            QPushButton {
-                background-color: #172133;
-                color: #E2E8F0;
-                border: 1px solid #283954;
-                border-radius: 6px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #202D45;
-                border-color: #00F0FF;
-                color: #00F0FF;
-            }
-            QPushButton#btn_save_all {
-                background-color: #004D54;
-                border: 1px solid #00F0FF;
-                color: #FFFFFF;
-                font-weight: bold;
-            }
-            QPushButton#btn_save_all:hover {
-                background-color: #00737D;
-            }
-        """)
+        self._apply_glassmorphism_styles()
 
         loaded_profiles = SessionManager.load_user_profiles()
         self.profiles: Dict[str, Any] = loaded_profiles if isinstance(loaded_profiles, dict) else {}
@@ -148,76 +188,273 @@ class UserSettingsDialog(QDialog):
         self._is_populating: bool = False
 
         self._setup_ui()
-        self.tab_widget.setCurrentIndex(initial_tab)
+
+        # Backward compatibility proxy
+        self.tab_widget = _TabCompatProxy(self)
+
+        self.set_current_tab(initial_tab)
         self._load_assistant_fields()
         self._load_rp_personas_list()
 
+    def _apply_glassmorphism_styles(self):
+        self.setStyleSheet("""
+            QDialog {
+                background-color: rgba(10, 13, 20, 0.95);
+                color: #CBD5E1;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 14px;
+            }
+            QLabel {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+            }
+            QLabel.section_title {
+                color: #00F0FF;
+                font-size: 13px;
+                font-weight: 800;
+                letter-spacing: 0.5px;
+            }
+            QLabel.field_label {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QLabel.field_label_accent {
+                color: #00F0FF;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QLabel.hint_sub {
+                color: #64748B;
+                font-size: 11px;
+                font-weight: normal;
+            }
+            QFrame.glass_card {
+                background-color: rgba(14, 19, 31, 0.65);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 10px;
+            }
+            LineEdit {
+                background-color: rgba(14, 19, 31, 0.85);
+                color: #F8FAFC;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 12px;
+            }
+            LineEdit:focus {
+                border: 1px solid #00F0FF;
+                background-color: rgba(16, 24, 40, 0.95);
+            }
+            TextEdit {
+                background-color: rgba(8, 12, 20, 0.92);
+                color: #F8FAFC;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                padding: 8px;
+                font-size: 12px;
+            }
+            TextEdit:focus {
+                border: 1px solid #00F0FF;
+                background-color: rgba(10, 15, 26, 0.96);
+            }
+            ComboBox {
+                background-color: rgba(14, 19, 31, 0.85);
+                color: #F8FAFC;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 6px;
+                padding: 5px 10px;
+                font-size: 12px;
+            }
+            ComboBox:focus {
+                border: 1px solid #00F0FF;
+            }
+            QListWidget {
+                background-color: rgba(8, 12, 20, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 6px;
+                padding: 8px 10px;
+                margin-bottom: 4px;
+                color: #CBD5E1;
+                font-weight: 500;
+            }
+            QListWidget::item:hover {
+                background-color: rgba(0, 240, 255, 0.08);
+                border-color: rgba(0, 240, 255, 0.3);
+            }
+            QListWidget::item:selected {
+                background-color: rgba(0, 240, 255, 0.16);
+                border: 1px solid #00F0FF;
+                color: #00F0FF;
+                font-weight: bold;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            PrimaryPushButton {
+                background-color: #00F0FF;
+                color: #0A0D14;
+                font-weight: bold;
+                font-size: 12px;
+                border: 1px solid #00F0FF;
+                border-radius: 6px;
+                padding: 7px 18px;
+            }
+            PrimaryPushButton:hover {
+                background-color: #38BDF8;
+                border-color: #38BDF8;
+                color: #0A0D14;
+            }
+            PrimaryPushButton:pressed {
+                background-color: #00B4D8;
+                border-color: #00B4D8;
+                color: #000000;
+            }
+        """)
+
     def _setup_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
+        root.setContentsMargins(18, 16, 18, 16)
         root.setSpacing(12)
 
-        self.tab_widget = QTabWidget(self)
-        self.tab_widget.addTab(self._create_assistant_tab(), "⚡ Ассистент")
-        self.tab_widget.addTab(self._create_rp_tab(), "🎭 Ролевой чат")
-        root.addWidget(self.tab_widget)
+        # 1. Top Navigation: SegmentedWidget
+        self.nav_segmented = SegmentedWidget(self)
+        self.nav_segmented.addItem(
+            routeKey="tab_asst",
+            text="⚡ Ассистент",
+            onClick=lambda: self.set_current_tab(0)
+        )
+        self.nav_segmented.addItem(
+            routeKey="tab_rp",
+            text="🎭 Ролевой чат",
+            onClick=lambda: self.set_current_tab(1)
+        )
+        root.addWidget(self.nav_segmented)
 
+        # 2. Content: QStackedWidget
+        self.stacked_widget = QStackedWidget(self)
+        self.tab_asst_widget = self._create_assistant_tab()
+        self.tab_rp_widget = self._create_rp_tab()
+
+        self.stacked_widget.addWidget(self.tab_asst_widget)
+        self.stacked_widget.addWidget(self.tab_rp_widget)
+        root.addWidget(self.stacked_widget, 1)
+
+        # 3. Bottom Action Bar
         btn_box = QHBoxLayout()
+        btn_box.setSpacing(10)
         btn_box.addStretch()
 
-        self.btn_cancel = QPushButton("Отмена", self)
+        self.btn_cancel = TransparentPushButton("✕ Отмена", self)
         self.btn_cancel.clicked.connect(self.reject)
         btn_box.addWidget(self.btn_cancel)
 
-        self.btn_save_all = QPushButton("💾 Сохранить всё", self)
+        self.btn_save_all = PrimaryPushButton("💾 Сохранить изменения", self)
         self.btn_save_all.setObjectName("btn_save_all")
         self.btn_save_all.clicked.connect(self._save_all_and_close)
         btn_box.addWidget(self.btn_save_all)
 
         root.addLayout(btn_box)
 
+    def set_current_tab(self, index: int):
+        idx = max(0, min(1, index))
+        self.stacked_widget.setCurrentIndex(idx)
+        route_key = "tab_asst" if idx == 0 else "tab_rp"
+        self.nav_segmented.setCurrentItem(route_key)
+
+    # =========================================================================
+    # Вкладка 1: «⚡ Ассистент»
+    # =========================================================================
     def _create_assistant_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(14)
+        # 1. User Avatar Block
+        avatar_card = QFrame(widget)
+        avatar_card.setProperty("class", "glass_card")
+        avatar_card_layout = QHBoxLayout(avatar_card)
+        avatar_card_layout.setContentsMargins(14, 12, 14, 12)
+        avatar_card_layout.setSpacing(14)
 
-        self.asst_avatar_lbl = QLabel(widget)
-        self.asst_avatar_lbl.setFixedSize(52, 52)
-        top_row.addWidget(self.asst_avatar_lbl)
+        self.asst_avatar_lbl = InteractiveAvatarWidget(size=64, parent=avatar_card)
+        self.asst_avatar_lbl.avatar_clicked.connect(self._choose_assistant_avatar)
+        avatar_card_layout.addWidget(self.asst_avatar_lbl)
 
-        btn_ch_avatar = QPushButton("🖼️ Выбрать аватар...", widget)
+        asst_avatar_info = QVBoxLayout()
+        asst_avatar_info.setSpacing(4)
+        asst_avatar_title = QLabel("АВАТАР ПОЛЬЗОВАТЕЛЯ (В ЧАТЕ С ЭЛАРИЕЙ)", avatar_card)
+        asst_avatar_title.setProperty("class", "field_label")
+        asst_avatar_info.addWidget(asst_avatar_title)
+
+        asst_avatar_hint = QLabel("Кликните на аватар или выберите файл на диске для сообщений в чате", avatar_card)
+        asst_avatar_hint.setProperty("class", "hint_sub")
+        asst_avatar_info.addWidget(asst_avatar_hint)
+
+        btn_ch_avatar = PushButton("🖼️ Выбрать файл...", avatar_card, icon=FIF.PHOTO)
+        btn_ch_avatar.setFixedWidth(160)
         btn_ch_avatar.clicked.connect(self._choose_assistant_avatar)
-        top_row.addWidget(btn_ch_avatar)
-        top_row.addStretch()
-        layout.addLayout(top_row)
+        asst_avatar_info.addWidget(btn_ch_avatar)
 
-        layout.addWidget(QLabel("ИМЯ / ОБРАЩЕНИЕ К ВАМ:"))
-        self.asst_name_input = QLineEdit(widget)
-        self.asst_name_input.setPlaceholderText("Например: Пользователь, Шеф, Алексей")
+        avatar_card_layout.addLayout(asst_avatar_info, 1)
+        layout.addWidget(avatar_card)
+
+        # 2. Name Field
+        lbl_name = QLabel("ИМЯ / ОБРАЩЕНИЕ К ВАМ:")
+        lbl_name.setProperty("class", "field_label")
+        layout.addWidget(lbl_name)
+
+        self.asst_name_input = LineEdit(widget)
+        self.asst_name_input.setPlaceholderText("Например: Алексей, Шеф, Пользователь")
+        self.asst_name_input.textChanged.connect(self._on_asst_name_changed)
         layout.addWidget(self.asst_name_input)
 
-        layout.addWidget(QLabel("КОНТЕКСТ О ВАС (ПОМНИТЬ ВСЕГДА):"))
-        self.asst_bio_input = QTextEdit(widget)
-        self.asst_bio_input.setPlaceholderText("Краткая выжимка о вас. Например:\nРазработчик. Предпочитаю лаконичные ответы.")
+        # 3. Bio Context (<UserInfo>)
+        lbl_bio = QLabel("КОНТЕКСТ О ВАС (ПОМНИТЬ ВСЕГДА):")
+        lbl_bio.setProperty("class", "field_label")
+        layout.addWidget(lbl_bio)
+
+        self.asst_bio_input = TextEdit(widget)
+        self.asst_bio_input.setFixedHeight(110)
+        self.asst_bio_input.setPlaceholderText(
+            "Постоянный био-контекст, который всегда инжектируется в системный блок <UserInfo>.\n"
+            "Например:\n"
+            "Разработчик Python/C++. Предпочитаю краткие ответы без лишней вводной вежливости."
+        )
         layout.addWidget(self.asst_bio_input)
 
-        layout.addWidget(QLabel("МОДЕЛЬ ДЛЯ ЭЛАРИИ (LM STUDIO):"))
-        self.combo_asst_model = QComboBox(widget)
+        # 4. Model Selection for Elaria
+        lbl_model = QLabel("МОДЕЛЬ ДЛЯ ЭЛАРИИ (LM STUDIO):")
+        lbl_model.setProperty("class", "field_label")
+        layout.addWidget(lbl_model)
+
+        self.combo_asst_model = ComboBox(widget)
         layout.addWidget(self.combo_asst_model)
 
-        layout.addWidget(QLabel("ГЕНЕРАЦИЯ ИЛЛЮСТРАЦИЙ ЭЛАРИЕЙ:"))
-        self.bg_art_mode = QButtonGroup(widget)
-        self.rb_art_manual = QRadioButton("Вручную (кнопка подтверждения под сообщением)", widget)
-        self.rb_art_auto = QRadioButton("Автоматически (сразу запускать SD Forge)", widget)
-        self.bg_art_mode.addButton(self.rb_art_manual, 0)
-        self.bg_art_mode.addButton(self.rb_art_auto, 1)
-        self.rb_art_manual.setChecked(True)
-        layout.addWidget(self.rb_art_manual)
-        layout.addWidget(self.rb_art_auto)
+        # 5. Art Generation Mode
+        lbl_art = QLabel("ГЕНЕРАЦИЯ ИЛЛЮСТРАЦИЙ ЭЛАРИЕЙ:")
+        lbl_art.setProperty("class", "field_label")
+        layout.addWidget(lbl_art)
+
+        self.art_mode_segmented = SegmentedWidget(widget)
+        self.art_mode_segmented.addItem("manual", "✋ Вручную (по кнопке в сообщении)")
+        self.art_mode_segmented.addItem("auto", "⚡ Автоматически (сразу в Forge)")
+        self.art_mode_segmented.setCurrentItem("manual")
+        layout.addWidget(self.art_mode_segmented)
+
+        # Backward compatibility aliases
+        self.rb_art_manual = _RadioCompat(self.art_mode_segmented, "manual")
+        self.rb_art_auto = _RadioCompat(self.art_mode_segmented, "auto")
 
         layout.addStretch()
         return widget
@@ -233,9 +470,9 @@ class UserSettingsDialog(QDialog):
         cfg = ConfigManager.load_config()
         auto_art = cfg.get("auto_generate_art", DEFAULT_AUTO_GENERATE_ART)
         if auto_art:
-            self.rb_art_auto.setChecked(True)
+            self.art_mode_segmented.setCurrentItem("auto")
         else:
-            self.rb_art_manual.setChecked(True)
+            self.art_mode_segmented.setCurrentItem("manual")
 
         self.combo_asst_model.blockSignals(True)
         self.combo_asst_model.clear()
@@ -247,10 +484,10 @@ class UserSettingsDialog(QDialog):
         if parent_combo and hasattr(parent_combo, "count") and parent_combo.count() > 0:
             for i in range(parent_combo.count()):
                 m_text = parent_combo.itemText(i).strip()
-                if m_text and self.combo_asst_model.findText(m_text) == -1:
+                if m_text and not m_text.startswith("default") and self.combo_asst_model.findText(m_text) == -1:
                     self.combo_asst_model.addItem(m_text)
             curr_parent_model = parent_combo.currentText().strip()
-            if curr_parent_model:
+            if curr_parent_model and not curr_parent_model.startswith("default"):
                 active_model = curr_parent_model
 
         if active_model:
@@ -264,134 +501,211 @@ class UserSettingsDialog(QDialog):
         self.combo_asst_model.blockSignals(False)
 
     def _choose_assistant_avatar(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Выберите аватар для Ассистента", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Выберите аватар для Ассистента", "", "Images (*.png *.jpg *.jpeg *.webp)"
+        )
         if f:
-            dest = CHARACTERS_DIR / f"user_asst_{Path(f).name}"
-            shutil.copy2(f, dest)
-            self.assistant_avatar_temp = str(dest)
-            self._update_assistant_avatar_preview()
+            try:
+                CHARACTERS_DIR.mkdir(parents=True, exist_ok=True)
+                dest = CHARACTERS_DIR / f"user_asst_{Path(f).name}"
+                shutil.copy2(f, dest)
+                self.assistant_avatar_temp = str(dest)
+                self._update_assistant_avatar_preview()
+            except Exception as e:
+                logger.error(f"Ошибка сохранения аватара ассистента: {e}")
 
     def _update_assistant_avatar_preview(self):
         p = Path(self.assistant_avatar_temp) if self.assistant_avatar_temp and Path(self.assistant_avatar_temp).exists() else None
         name = self.asst_name_input.text().strip() if hasattr(self, "asst_name_input") else "User"
-        pix = render_circular_avatar(p, name or "User", size=52, is_user=True)
+        pix = render_circular_avatar(p, name or "User", size=64, is_user=True)
         self.asst_avatar_lbl.setPixmap(pix)
 
+    def _on_asst_name_changed(self, text: str):
+        if not self.assistant_avatar_temp:
+            self._update_assistant_avatar_preview()
+
+    # =========================================================================
+    # Вкладка 2: «🎭 Ролевой чат» (Менеджер персон игрока)
+    # =========================================================================
     def _create_rp_tab(self) -> QWidget:
         widget = QWidget()
-        main_layout = QVBoxLayout(widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(8)
+        main_layout = QHBoxLayout(widget)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(12)
 
-        # Personas selector list at top
-        main_layout.addWidget(QLabel("ВАШИ ПЕРСОНАЖИ (ИГРОКИ ДЛЯ РП ЧАТА):"))
-        list_row = QHBoxLayout()
-        list_row.setSpacing(8)
+        # ----------------- ЛЕВАЯ ПАНЕЛЬ: СПИСОК ПЕРСОН -----------------
+        left_panel = QFrame(widget)
+        left_panel.setProperty("class", "glass_card")
+        left_panel.setFixedWidth(240)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(10, 12, 10, 12)
+        left_layout.setSpacing(8)
 
-        self.list_personas = QListWidget(widget)
-        self.list_personas.setFixedHeight(95)
+        lbl_list_title = QLabel("ПЕРСОНЫ ИГРОКА:", left_panel)
+        lbl_list_title.setProperty("class", "field_label")
+        left_layout.addWidget(lbl_list_title)
+
+        self.list_personas = QListWidget(left_panel)
         self.list_personas.currentRowChanged.connect(self._on_persona_row_changed)
-        list_row.addWidget(self.list_personas, stretch=1)
+        left_layout.addWidget(self.list_personas, 1)
 
-        btn_col = QVBoxLayout()
-        btn_col.setSpacing(4)
-        self.btn_new_persona = QPushButton("➕ Создать", widget)
+        # Buttons under list
+        self.btn_new_persona = PushButton("➕ Создать", left_panel)
         self.btn_new_persona.clicked.connect(self._create_new_persona)
-        btn_col.addWidget(self.btn_new_persona)
+        left_layout.addWidget(self.btn_new_persona)
 
-        self.btn_set_primary = QPushButton("★ Основной", widget)
+        self.btn_set_primary = PushButton("★ Сделать основным", left_panel)
         self.btn_set_primary.clicked.connect(self._set_current_as_primary)
-        btn_col.addWidget(self.btn_set_primary)
+        left_layout.addWidget(self.btn_set_primary)
 
-        self.btn_del_persona = QPushButton("🗑️ Удалить", widget)
+        self.btn_del_persona = PushButton("🗑️ Удалить", left_panel)
         self.btn_del_persona.clicked.connect(self._delete_current_persona)
-        btn_col.addWidget(self.btn_del_persona)
+        left_layout.addWidget(self.btn_del_persona)
 
-        list_row.addLayout(btn_col)
-        main_layout.addLayout(list_row)
+        main_layout.addWidget(left_panel)
 
-        # Scrollable form for detailed persona traits
-        scroll = QScrollArea(widget)
+        # ----------------- ПРАВАЯ ПАНЕЛЬ: ДЕТАЛЬНАЯ КАРТОЧКА -----------------
+        right_panel = QFrame(widget)
+        right_panel.setProperty("class", "glass_card")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(6)
+
+        scroll = QScrollArea(right_panel)
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: 1px solid #1E283D; background: transparent; border-radius: 6px; }")
 
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_layout.setContentsMargins(10, 8, 12, 8)
         scroll_layout.setSpacing(8)
 
-        # Avatar, Name and Gender row
+        # 1. Avatar & Hero Name & Gender
         id_row = QHBoxLayout()
-        id_row.setSpacing(10)
-        self.rp_avatar_lbl = QLabel(scroll_content)
-        self.rp_avatar_lbl.setFixedSize(50, 50)
+        id_row.setSpacing(12)
+
+        self.rp_avatar_lbl = InteractiveAvatarWidget(size=64, parent=scroll_content)
+        self.rp_avatar_lbl.avatar_clicked.connect(self._choose_rp_avatar)
         id_row.addWidget(self.rp_avatar_lbl)
 
-        btn_ch_rp_avatar = QPushButton("🖼️ Аватар...", scroll_content)
+        btn_ch_rp_avatar = PushButton("🖼️ Аватар...", scroll_content, icon=FIF.PHOTO)
         btn_ch_rp_avatar.clicked.connect(self._choose_rp_avatar)
         id_row.addWidget(btn_ch_rp_avatar)
 
-        name_box = QVBoxLayout()
-        name_box.setSpacing(2)
-        name_box.addWidget(QLabel("ИМЯ ПЕРСОНАЖА:"))
-        self.rp_name_input = QLineEdit(scroll_content)
+        name_col = QVBoxLayout()
+        name_col.setSpacing(3)
+        lbl_hero_name = QLabel("ИМЯ ГЕРОЯ (МАКРОС {{user}}):", scroll_content)
+        lbl_hero_name.setProperty("class", "field_label_accent")
+        name_col.addWidget(lbl_hero_name)
+
+        self.rp_name_input = LineEdit(scroll_content)
         self.rp_name_input.setPlaceholderText("Например: Дэниэл")
         self.rp_name_input.textChanged.connect(self._on_rp_name_changed)
-        name_box.addWidget(self.rp_name_input)
-        id_row.addLayout(name_box, stretch=1)
-
-        gender_box = QVBoxLayout()
-        gender_box.setSpacing(2)
-        gender_box.addWidget(QLabel("ПОЛ:"))
-        self.combo_rp_gender = QComboBox(scroll_content)
-        self.combo_rp_gender.addItem("Мужской (he/him)")
-        self.combo_rp_gender.addItem("Женский (she/her)")
-        gender_box.addWidget(self.combo_rp_gender)
-        id_row.addLayout(gender_box)
+        name_col.addWidget(self.rp_name_input)
+        id_row.addLayout(name_col, 1)
 
         scroll_layout.addLayout(id_row)
 
-        # Personality & Backstory for LLM
-        scroll_layout.addWidget(QLabel("ХАРАКТЕР И ПОВАДКИ:"))
-        self.rp_personality_input = QTextEdit(scroll_content)
-        self.rp_personality_input.setMaximumHeight(65)
-        self.rp_personality_input.setPlaceholderText("Например: Хладнокровный, наблюдательный археолог. В стрессе говорит коротко.")
+        # Gender Selector (SegmentedWidget)
+        gender_row = QHBoxLayout()
+        gender_row.setSpacing(8)
+        lbl_gender = QLabel("ГРАММАТИЧЕСКИЙ ПОЛ ГЕРОЯ:", scroll_content)
+        lbl_gender.setProperty("class", "field_label")
+        gender_row.addWidget(lbl_gender)
+
+        self.sw_gender = SegmentedWidget(scroll_content)
+        self.sw_gender.addItem("male", "♂ Мужской (he/him)", onClick=lambda: self._on_gender_changed("male"))
+        self.sw_gender.addItem("female", "♀ Женский (she/her)", onClick=lambda: self._on_gender_changed("female"))
+        self.sw_gender.setCurrentItem("male")
+        gender_row.addWidget(self.sw_gender, 1)
+        scroll_layout.addLayout(gender_row)
+
+        # Backward compatibility alias
+        self.combo_rp_gender = _GenderComboCompat(self.sw_gender)
+
+        # 2. Traits & Personality
+        lbl_pers = QLabel("ХАРАКТЕР И ПОВАДКИ (<PlayerCharacter>):", scroll_content)
+        lbl_pers.setProperty("class", "field_label")
+        scroll_layout.addWidget(lbl_pers)
+
+        self.rp_personality_input = TextEdit(scroll_content)
+        self.rp_personality_input.setFixedHeight(65)
+        self.rp_personality_input.setPlaceholderText(
+            "Например: Хладнокровный, наблюдательный наемник. В стрессе говорит коротко."
+        )
         scroll_layout.addWidget(self.rp_personality_input)
 
-        scroll_layout.addWidget(QLabel("ПРЕДЫСТОРИЯ И ПРОИСХОЖДЕНИЕ:"))
-        self.rp_backstory_input = QTextEdit(scroll_content)
-        self.rp_backstory_input.setMaximumHeight(75)
-        self.rp_backstory_input.setPlaceholderText("Например: Потомственный исследователь гробниц. Изучал древнеегипетские культы.")
+        # 3. Backstory
+        lbl_back = QLabel("ПРЕДЫСТОРИЯ И ПРОИСХОЖДЕНИЕ:", scroll_content)
+        lbl_back.setProperty("class", "field_label")
+        scroll_layout.addWidget(lbl_back)
+
+        self.rp_backstory_input = TextEdit(scroll_content)
+        self.rp_backstory_input.setFixedHeight(75)
+        self.rp_backstory_input.setPlaceholderText(
+            "Например: Бывший капитан стражи. Изучал древние культы и руины."
+        )
         scroll_layout.addWidget(self.rp_backstory_input)
 
-        scroll_layout.addWidget(QLabel("СТАРТОВЫЙ ИНВЕНТАРЬ (ЧЕРЕЗ ЗАПЯТУЮ):"))
-        self.rp_inventory_input = QLineEdit(scroll_content)
+        # 4. Inventory
+        lbl_inv = QLabel("СТАРТОВЫЙ ИНВЕНТАРЬ (ДЛЯ КАМПАНИИ):", scroll_content)
+        lbl_inv.setProperty("class", "field_label")
+        scroll_layout.addWidget(lbl_inv)
+
+        self.rp_inventory_input = LineEdit(scroll_content)
         self.rp_inventory_input.setPlaceholderText("Например: компас, блокнот с записями, фонарь, альпинистский трос")
         scroll_layout.addWidget(self.rp_inventory_input)
 
-        # SD Appearance & Outfit (Monospace style)
-        dna_lbl = QLabel("🎨 ВНЕШНОСТЬ ДЛЯ АРТОВ (SD VISUAL DNA):")
-        dna_lbl.setStyleSheet("color: #00F0FF; font-weight: bold;")
-        scroll_layout.addWidget(dna_lbl)
+        # 5. Visual DNA for SD Forge
+        lbl_dna = QLabel("🎨 VISUAL DNA (АНГЛИЙСКИЕ ТЕГИ ВНЕШНОСТИ ДЛЯ SD FORGE):", scroll_content)
+        lbl_dna.setProperty("class", "field_label_accent")
+        scroll_layout.addWidget(lbl_dna)
 
-        self.rp_visual_dna_input = QTextEdit(scroll_content)
-        self.rp_visual_dna_input.setMaximumHeight(65)
-        self.rp_visual_dna_input.setPlaceholderText("Английские теги: 1man, 28yo, athletic lean build, dark brown hair, stubble, hazel eyes")
-        self.rp_visual_dna_input.setStyleSheet("border: 1px solid #1E3A5F; background-color: #080D18; color: #38BDF8; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.rp_visual_dna_input = TextEdit(scroll_content)
+        self.rp_visual_dna_input.setFixedHeight(60)
+        self.rp_visual_dna_input.setStyleSheet("""
+            TextEdit {
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 11px;
+                color: #38BDF8;
+                background-color: rgba(6, 10, 18, 0.95);
+                border: 1px solid rgba(0, 240, 255, 0.25);
+            }
+        """)
+        self.rp_visual_dna_input.setPlaceholderText(
+            "1man, 28yo, athletic lean build, dark brown short hair, stubble, amber eyes"
+        )
         scroll_layout.addWidget(self.rp_visual_dna_input)
 
-        outfit_lbl = QLabel("👗 СТАРТОВАЯ ОДЕЖДА ДЛЯ АРТОВ (SD OUTFIT):")
-        outfit_lbl.setStyleSheet("color: #00F0FF; font-weight: bold;")
-        scroll_layout.addWidget(outfit_lbl)
+        # 6. SD Outfit
+        lbl_outfit = QLabel("👗 СТАРТОВАЯ ОДЕЖДА ДЛЯ АРТОВ (SD OUTFIT):", scroll_content)
+        lbl_outfit.setProperty("class", "field_label_accent")
+        scroll_layout.addWidget(lbl_outfit)
 
-        self.rp_outfit_input = QLineEdit(scroll_content)
-        self.rp_outfit_input.setPlaceholderText("Английские теги: linen explorer shirt, cargo pants, leather belt, combat boots")
-        self.rp_outfit_input.setStyleSheet("border: 1px solid #1E3A5F; background-color: #080D18; color: #38BDF8; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.rp_outfit_input = LineEdit(scroll_content)
+        self.rp_outfit_input.setStyleSheet("""
+            LineEdit {
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 11px;
+                color: #38BDF8;
+                background-color: rgba(6, 10, 18, 0.95);
+                border: 1px solid rgba(0, 240, 255, 0.25);
+            }
+        """)
+        self.rp_outfit_input.setPlaceholderText("linen explorer shirt, cargo pants, leather belt, combat boots")
         scroll_layout.addWidget(self.rp_outfit_input)
 
         scroll.setWidget(scroll_content)
-        main_layout.addWidget(scroll, stretch=1)
+        right_layout.addWidget(scroll)
+        main_layout.addWidget(right_panel, 1)
+
         return widget
+
+    def _on_gender_changed(self, gender_key: str):
+        if self._is_populating or not self.active_persona_id:
+            return
+        personas = self._get_personas_dict()
+        if self.active_persona_id in personas:
+            personas[self.active_persona_id]["gender"] = gender_key
 
     def _get_personas_dict(self) -> dict:
         rp_settings = self.profiles.get("rp_settings")
@@ -409,7 +723,7 @@ class UserSettingsDialog(QDialog):
             self.profiles["rp_settings"] = rp_settings = {}
         personas = self._get_personas_dict()
         if not personas:
-            personas["persona_default"] = {"name": "Игрок", "avatar_path": None, "bio": ""}
+            personas["persona_default"] = {"name": "Игрок", "avatar_path": None, "bio": "", "gender": "male"}
             rp_settings["active_persona_id"] = "persona_default"
 
         active_id = rp_settings.get("active_persona_id")
@@ -418,28 +732,35 @@ class UserSettingsDialog(QDialog):
             rp_settings["active_persona_id"] = active_id
 
         self.active_primary_persona_id = active_id
-        self.active_persona_id = active_id
+        if not self.active_persona_id or self.active_persona_id not in personas:
+            self.active_persona_id = active_id
 
         self.list_personas.blockSignals(True)
         self.list_personas.clear()
         selected_row = 0
+
         for idx, (pid, pdata) in enumerate(personas.items()):
-            p_name = pdata.get("name", "Персонаж")
-            label = f"👤 {p_name} ★ [Основной]" if pid == self.active_primary_persona_id else f"👤 {p_name}"
+            p_name = pdata.get("name", "Персонаж").strip() or "Персонаж"
+            is_pri = (pid == self.active_primary_persona_id)
+            label = f"★ {p_name} (Основной)" if is_pri else f"👤 {p_name}"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, pid)
+            if is_pri:
+                item.setForeground(QColor("#00F0FF"))
+            else:
+                item.setForeground(QColor("#CBD5E1"))
             self.list_personas.addItem(item)
-            if pid == active_id:
+            if pid == self.active_persona_id:
                 selected_row = idx
 
         self.list_personas.setCurrentRow(selected_row)
         self.list_personas.blockSignals(False)
 
-        self._populate_persona_fields(active_id)
+        self._populate_persona_fields(self.active_persona_id)
         self._is_populating = False
 
     def _populate_persona_fields(self, pid: str):
-        personas = (self.profiles.get("rp_settings") or {}).get("personas") or {}
+        personas = self._get_personas_dict()
         pdata = personas.get(pid, {}) if isinstance(personas, dict) else {}
 
         self.rp_name_input.blockSignals(True)
@@ -447,9 +768,7 @@ class UserSettingsDialog(QDialog):
         self.rp_name_input.blockSignals(False)
 
         gender = str(pdata.get("gender", "male")).lower()
-        self.combo_rp_gender.blockSignals(True)
-        self.combo_rp_gender.setCurrentIndex(1 if gender == "female" else 0)
-        self.combo_rp_gender.blockSignals(False)
+        self.sw_gender.setCurrentItem("female" if gender == "female" else "male")
 
         self.rp_personality_input.blockSignals(True)
         self.rp_personality_input.setPlainText(pdata.get("personality", ""))
@@ -500,7 +819,7 @@ class UserSettingsDialog(QDialog):
                 if item:
                     display = text.strip() or "Персонаж"
                     is_pri = (self.active_persona_id == getattr(self, "active_primary_persona_id", None))
-                    item.setText(f"👤 {display} ★ [Основной]" if is_pri else f"👤 {display}")
+                    item.setText(f"★ {display} (Основной)" if is_pri else f"👤 {display}")
             self._update_rp_avatar_preview()
 
     def _sync_current_persona_fields(self):
@@ -509,7 +828,7 @@ class UserSettingsDialog(QDialog):
         personas = self._get_personas_dict()
         if self.active_persona_id in personas:
             name = self.rp_name_input.text().strip() if hasattr(self, "rp_name_input") else ""
-            gender = "female" if (hasattr(self, "combo_rp_gender") and self.combo_rp_gender.currentIndex() == 1) else "male"
+            gender = self.sw_gender.currentRouteKey() if hasattr(self, "sw_gender") else "male"
             pers = self.rp_personality_input.toPlainText().strip() if hasattr(self, "rp_personality_input") else ""
             back = self.rp_backstory_input.toPlainText().strip() if hasattr(self, "rp_backstory_input") else ""
             inv = self.rp_inventory_input.text().strip() if hasattr(self, "rp_inventory_input") else ""
@@ -518,8 +837,8 @@ class UserSettingsDialog(QDialog):
 
             bio = f"{pers}\n{back}".strip() if (pers or back) else ""
 
-            personas[self.active_persona_id]["name"] = name or "Персонаж"
-            personas[self.active_persona_id]["gender"] = gender
+            personas[self.active_persona_id]["name"] = name
+            personas[self.active_persona_id]["gender"] = gender or "male"
             personas[self.active_persona_id]["personality"] = pers
             personas[self.active_persona_id]["backstory"] = back
             personas[self.active_persona_id]["bio"] = bio
@@ -543,7 +862,11 @@ class UserSettingsDialog(QDialog):
                 pid = it.data(Qt.ItemDataRole.UserRole)
                 name = (personas.get(pid) or {}).get("name", "Персонаж")
                 is_pri = (pid == self.active_primary_persona_id)
-                it.setText(f"👤 {name} ★ [Основной]" if is_pri else f"👤 {name}")
+                it.setText(f"★ {name} (Основной)" if is_pri else f"👤 {name}")
+                if is_pri:
+                    it.setForeground(QColor("#00F0FF"))
+                else:
+                    it.setForeground(QColor("#CBD5E1"))
 
     def _create_new_persona(self):
         self._sync_current_persona_fields()
@@ -562,6 +885,8 @@ class UserSettingsDialog(QDialog):
         }
         self.active_persona_id = new_id
         self._load_rp_personas_list()
+        self.rp_name_input.setFocus()
+        self.rp_name_input.selectAll()
 
     def _delete_current_persona(self):
         if not getattr(self, "active_persona_id", None):
@@ -588,29 +913,55 @@ class UserSettingsDialog(QDialog):
             next_pid = next(iter(personas.keys()))
         self.active_persona_id = next_pid
 
-        for widget in (self.rp_name_input, self.rp_personality_input, self.rp_backstory_input, self.rp_inventory_input, self.rp_visual_dna_input, self.rp_outfit_input):
-            widget.blockSignals(True)
-            widget.clear()
-            widget.blockSignals(False)
-
         self.rp_avatar_temp = None
         self._load_rp_personas_list()
 
     def _choose_rp_avatar(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Выберите аватар для RP персонажа", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Выберите аватар для RP персонажа", "", "Images (*.png *.jpg *.jpeg *.webp)"
+        )
         if f:
-            dest = CHARACTERS_DIR / f"user_rp_{Path(f).name}"
-            shutil.copy2(f, dest)
-            self.rp_avatar_temp = str(dest)
-            self._update_rp_avatar_preview()
+            try:
+                CHARACTERS_DIR.mkdir(parents=True, exist_ok=True)
+                dest = CHARACTERS_DIR / f"user_rp_{Path(f).name}"
+                shutil.copy2(f, dest)
+                self.rp_avatar_temp = str(dest)
+                self._update_rp_avatar_preview()
+            except Exception as e:
+                logger.error(f"Ошибка сохранения аватара героя: {e}")
 
     def _update_rp_avatar_preview(self):
         p = Path(self.rp_avatar_temp) if self.rp_avatar_temp and Path(self.rp_avatar_temp).exists() else None
         name = self.rp_name_input.text().strip() if hasattr(self, "rp_name_input") else "Hero"
-        pix = render_circular_avatar(p, name or "Hero", size=52, is_user=True)
+        pix = render_circular_avatar(p, name or "Hero", size=64, is_user=True)
         self.rp_avatar_lbl.setPixmap(pix)
 
+    # =========================================================================
+    # Валидация и Сохранение данных
+    # =========================================================================
+    def _validate_inputs(self) -> bool:
+        """Валидирует обязательные поля перед сохранением профилей."""
+        self._sync_current_persona_fields()
+
+        # Валидация текущей персоны в редакторе
+        if self.active_persona_id:
+            personas = self._get_personas_dict()
+            pdata = personas.get(self.active_persona_id, {})
+            p_name = pdata.get("name", "").strip()
+            if not p_name:
+                QMessageBox.warning(
+                    self,
+                    "Валидация персоны",
+                    "Имя героя не может быть пустым!\nПожалуйста, заполните поле «Имя героя»."
+                )
+                self.set_current_tab(1)
+                self.rp_name_input.setFocus()
+                return False
+
+        return True
+
     def _save_all_profiles(self):
+        """Сохраняет настройки профиля ассистента, персоны ролевого чата и параметры в config.json."""
         self.profiles["assistant_user"] = {
             "name": self.asst_name_input.text().strip() or "Пользователь",
             "avatar_path": self.assistant_avatar_temp,
@@ -622,13 +973,24 @@ class UserSettingsDialog(QDialog):
         rp_s = self.profiles.setdefault("rp_settings", {})
         rp_s["active_persona_id"] = getattr(self, "active_primary_persona_id", None) or self.active_persona_id
 
+        # 1. Сохранение основного файла профилей
         SessionManager.save_user_profiles(self.profiles)
 
+        # 2. Сохранение персон в data/user_personas.json
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            personas_file = DATA_DIR / "user_personas.json"
+            atomic_write_json(personas_file, rp_s.get("personas", {}))
+        except Exception as e:
+            logger.warning(f"Не удалось записать user_personas.json: {e}")
+
+        # 3. Сохранение настроек Эларии в config.json
         cfg = ConfigManager.load_config()
         cfg["user_name"] = self.asst_name_input.text().strip() or "Пользователь"
-        cfg["auto_generate_art"] = self.rb_art_auto.isChecked()
+        is_auto = (self.art_mode_segmented.currentRouteKey() == "auto") if hasattr(self, "art_mode_segmented") else self.rb_art_auto.isChecked()
+        cfg["auto_generate_art"] = is_auto
         selected_model = self.combo_asst_model.currentText().strip()
-        if selected_model:
+        if selected_model and not selected_model.startswith("default"):
             cfg["active_model"] = selected_model
         ConfigManager.save_config(cfg)
 
@@ -637,5 +999,7 @@ class UserSettingsDialog(QDialog):
         self.profiles_updated.emit()
 
     def _save_all_and_close(self):
+        if not self._validate_inputs():
+            return
         self._save_all_profiles()
         self.accept()

@@ -178,9 +178,12 @@ class RoleplayControllerMixin:
         """Opens Characters Gallery dialog for roleplay tavern."""
         from ui.dialogs.characters_gallery_dialog import CharactersGalleryDialog
         dlg = CharactersGalleryDialog(parent=self)
-        dlg.start_session_requested.connect(lambda card: self._create_new_session(mode="roleplay", character_card=card))
         dlg.card_saved.connect(self._on_character_card_updated)
-        dlg.exec()
+        res = dlg.exec()
+        if res:
+            card = getattr(dlg, "selected_card", None)
+            if card:
+                self._create_new_session(mode="roleplay", character_card=card)
 
     def _on_character_card_updated(self, card: CharacterCard):
         """Синхронизирует данные идентичности персонажа, локализацию и visual_dna в сессии и live-объекте."""
@@ -292,28 +295,34 @@ class RoleplayControllerMixin:
 
         def _on_done(task_id, result):
             reply = result.get("raw_reply", "") if isinstance(result, dict) else str(result)
-            # Парсинг делимитеров
-            parts = re.split(r'===([A-Za-z0-9_]+)===', reply)
+            # Парсинг делимитеров: устойчив к пробелам, регистру и маркдауну
+            parts = re.split(r'===+\s*([A-Za-z0-9_]+)\s*===+', reply, flags=re.IGNORECASE)
             res_dict = {}
             if len(parts) >= 3:
                 for i in range(1, len(parts), 2):
-                    key = parts[i].strip().upper()
+                    key = parts[i].upper().strip()
                     val = parts[i+1].strip()
-                    res_dict[key] = val
+                    val = re.sub(r'^[*\s`#_]+(?:\r?\n|$)', '', val)
+                    val = re.sub(r'(?:\r?\n|^)[*\s`#_]+$', '', val).strip()
+                    if val:
+                        res_dict[key] = val
 
-            if "DESCRIPTION" in res_dict: card.description_ru = res_dict["DESCRIPTION"]
-            if "PERSONALITY" in res_dict: card.personality_ru = res_dict["PERSONALITY"]
-            if "SCENARIO" in res_dict: card.scenario_ru = res_dict["SCENARIO"]
-            if "MES_EXAMPLE" in res_dict: card.mes_example_ru = res_dict["MES_EXAMPLE"]
-            if "FIRST_MES" in res_dict: card.first_mes_ru = res_dict["FIRST_MES"]
+            if res_dict.get("DESCRIPTION"): card.description_ru = res_dict["DESCRIPTION"]
+            if res_dict.get("PERSONALITY"): card.personality_ru = res_dict["PERSONALITY"]
+            if res_dict.get("SCENARIO"): card.scenario_ru = res_dict["SCENARIO"]
+            if res_dict.get("MES_EXAMPLE"): card.mes_example_ru = res_dict["MES_EXAMPLE"]
+            if res_dict.get("FIRST_MES"): card.first_mes_ru = res_dict["FIRST_MES"]
 
             # Извлечение всех переведённых альтернативных приветствий:
-            alt_ru = []
             if hasattr(card, "alternate_greetings") and card.alternate_greetings:
+                alt_ru = list(getattr(card, "alternate_greetings_ru", []) or [])
+                while len(alt_ru) < len(card.alternate_greetings):
+                    alt_ru.append("")
                 for idx in range(len(card.alternate_greetings)):
                     key = f"ALT_GREETING_{idx+1}"
-                    alt_ru.append(res_dict.get(key, ""))
-            card.alternate_greetings_ru = alt_ru
+                    if res_dict.get(key):
+                        alt_ru[idx] = res_dict[key]
+                card.alternate_greetings_ru = alt_ru
 
             # Сохранить на диск и в активную сессию
             TavernParser.save_card_translations(card)

@@ -19,10 +19,10 @@ def test_reasoning_protocol_injected_with_knowledge_block():
         user_name="Алексей",
         knowledge_block=kb_block
     )
-    assert "[reasoning_protocol]" in prompt
+    assert "[thinking_protocol" in prompt
     assert "<think>...</think>" in prompt
     assert "<KnowledgeBase>" in prompt
-    assert "Перед формированием ответа выполни внутренний анализ фактов" in prompt
+    assert "Перед формированием ответа обязательно выполни внутренний аудит фактов" in prompt
 
 
 def test_reasoning_protocol_injected_with_matched_knowledge_docs():
@@ -34,7 +34,7 @@ def test_reasoning_protocol_injected_with_matched_knowledge_docs():
         user_name="Алексей",
         matched_knowledge_docs=docs
     )
-    assert "[reasoning_protocol]" in prompt
+    assert "[thinking_protocol" in prompt
     assert "<KnowledgeBase>" in prompt
 
 
@@ -44,7 +44,7 @@ def test_reasoning_protocol_injected_with_enable_flag():
         user_name="Алексей",
         enable_reasoning=True
     )
-    assert "[reasoning_protocol]" in prompt
+    assert "[thinking_protocol" in prompt
     assert "<think>...</think>" in prompt
 
 
@@ -56,7 +56,7 @@ def test_reasoning_protocol_absent_in_standard_dialogue():
         knowledge_block=None,
         matched_knowledge_docs=None
     )
-    assert "[reasoning_protocol]" not in prompt
+    assert "[thinking_protocol" not in prompt
     assert "<think>" not in prompt
     assert "</think>" not in prompt
 
@@ -69,7 +69,7 @@ def test_context_window_builder_system_prompt_reasoning_flag():
         user_name="Алексей",
         enable_reasoning=False
     )
-    assert "[reasoning_protocol]" not in prompt_std
+    assert "[thinking_protocol" not in prompt_std
 
     # С рассуждениями
     prompt_reasoning = ContextWindowBuilder.build_system_prompt(
@@ -77,7 +77,7 @@ def test_context_window_builder_system_prompt_reasoning_flag():
         user_name="Алексей",
         enable_reasoning=True
     )
-    assert "[reasoning_protocol]" in prompt_reasoning
+    assert "[thinking_protocol" in prompt_reasoning
 
 
 def test_prepare_history_for_llm_cleans_think_tags():
@@ -179,7 +179,7 @@ def test_get_lm_studio_messages_end_to_end_sanitization():
     # Проверяем системный промпт
     sys_msg = messages[0]
     assert sys_msg["role"] == "system"
-    assert "[reasoning_protocol]" in sys_msg["content"]
+    assert "[thinking_protocol" in sys_msg["content"]
     assert "<KnowledgeBase>" in sys_msg["content"]
 
     # Проверяем историю: предыдущий ответ ассистента очищен

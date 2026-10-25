@@ -14,6 +14,7 @@ from qfluentwidgets import (
     Action,
     FluentIcon as FIF,
 )
+from ui.common.icon_utils import SafeFIF
 from config import HISTORY_DIR
 
 if TYPE_CHECKING:
@@ -267,7 +268,7 @@ class MenuBuilder:
         act_asst_settings.triggered.connect(lambda *_: window._open_user_settings_dialog(0))
         system_menu.addAction(act_asst_settings)
 
-        act_knowledge = Action(FIF.BOOK_SHELF, "Знания Эларии...", window)
+        act_knowledge = Action(SafeFIF.BOOK_SHELF, "Знания Эларии...", window)
         act_knowledge.setToolTip("Управление документами и ключевыми триггерами базы знаний")
         act_knowledge.triggered.connect(lambda *_: window._open_knowledge_manager_dialog())
         system_menu.addAction(act_knowledge)

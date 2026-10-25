@@ -52,11 +52,12 @@ DEFAULT_ELARIA_SYSTEM_PROMPT = (
 )
 
 REASONING_PROTOCOL = (
-    "[reasoning_protocol]\n"
-    "Перед формированием ответа выполни внутренний анализ фактов внутри тега <think>...</think>:\n"
-    "1. Сопоставь условия вопроса с фрагментами в <KnowledgeBase>.\n"
-    "2. Если источников несколько, свяжи их по артикулам, номерам или терминам.\n"
-    "3. Закрой тег </think> и сформируй четкий, доброжелательный ответ без служебных маркеров."
+    "\n[thinking_protocol: верификация источника]\n"
+    "Перед формированием ответа обязательно выполни внутренний аудит фактов строго внутри тега <think>...</think>:\n"
+    "- Факты из текста: [выпиши точные цифры, термины и утверждения строго из <KnowledgeBase>]\n"
+    "- Отсутствует в тексте: [явно укажи, каких деталей в источниках нет — запрещено додумывать их из общих знаний]\n"
+    "- Вывод: [сухой итог сопоставления]\n"
+    "После закрывающего тега </think> дай живой, естественный и точный ответ в стиле Эларии, опираясь исключительно на проверенные факты."
 )
 
 GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
@@ -158,7 +159,8 @@ class AssistantPromptBuilder:
             return ""
 
         inner = "\n".join(doc_blocks)
-        return f"<KnowledgeBase>\n{inner}\n</KnowledgeBase>"
+        xml_content = f"<KnowledgeBase>\n{inner}\n</KnowledgeBase>"
+        return f"{xml_content}\n\n{REASONING_PROTOCOL}"
 
     @staticmethod
     def build(
@@ -228,7 +230,7 @@ class AssistantPromptBuilder:
 
         # 6. Протокол рассуждений (селективно: при наличии базы знаний или флаге enable_reasoning)
         reasoning_section = ""
-        if enable_reasoning or has_knowledge:
+        if (enable_reasoning or has_knowledge) and REASONING_PROTOCOL not in knowledge_section:
             reasoning_section = f"\n{REASONING_PROTOCOL}\n"
 
         # 7. Спецификаторы генерации документов

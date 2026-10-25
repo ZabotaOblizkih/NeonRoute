@@ -37,6 +37,7 @@ from qfluentwidgets import (
 )
 
 from services.knowledge_manager import KnowledgeManager
+from ui.common.icon_utils import SafeFIF
 
 logger = logging.getLogger("NeonRoute.KnowledgeManagerDialog")
 
@@ -80,7 +81,13 @@ class DocumentCardWidget(SimpleCardWidget):
 
         # Определение иконки файла
         ext = Path(self.filename).suffix.lower()
-        icon = FIF.PDF if ext == ".pdf" else FIF.DOCUMENT
+        ICON_MAP = {
+            ".pdf": getattr(FIF, "DOCUMENT", FIF.DOCUMENT),
+            ".txt": getattr(FIF, "DOCUMENT", FIF.DOCUMENT),
+            ".md": getattr(FIF, "DOCUMENT", FIF.DOCUMENT),
+            ".json": getattr(FIF, "CODE", FIF.DOCUMENT),
+        }
+        icon = ICON_MAP.get(ext.lower(), FIF.DOCUMENT)
         icon_widget = IconWidget(icon, self)
         icon_widget.setFixedSize(24, 24)
         header_layout.addWidget(icon_widget, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -291,7 +298,7 @@ class KnowledgeManagerDialog(FramelessDialog):
             empty_layout.setContentsMargins(20, 60, 20, 60)
             empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            empty_icon = IconWidget(FIF.BOOK_SHELF, empty_frame)
+            empty_icon = IconWidget(SafeFIF.BOOK_SHELF, empty_frame)
             empty_icon.setFixedSize(48, 48)
             empty_layout.addWidget(empty_icon, 0, Qt.AlignmentFlag.AlignCenter)
 

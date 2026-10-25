@@ -762,18 +762,39 @@ class TavernParser:
                         "scenario": card.scenario,
                         "first_mes": card.first_mes,
                         "mes_example": card.mes_example,
-                        "system_prompt": card.system_prompt,
+                        "alternate_greetings": list(getattr(card, "alternate_greetings", []) or []),
+                        "system_prompt": getattr(card, "system_prompt", ""),
                         "post_history_instructions": getattr(card, "post_history_instructions", ""),
                         "scenery_dna": getattr(card, "scenery_dna", "")
                     }
                 }
             target = data.get("data", data) if ("spec" in data or "data" in data) else data
+
+            target["name"] = card.name
+            target["description"] = card.description
+            target["personality"] = card.personality
+            target["scenario"] = card.scenario
+            target["first_mes"] = card.first_mes
+            target["mes_example"] = card.mes_example
+            target["alternate_greetings"] = list(getattr(card, "alternate_greetings", []) or [])
+            target["system_prompt"] = getattr(card, "system_prompt", "")
+
+            # Защита и синхронизация полей _ru: если на диске уже есть перевод, а в объекте пусто — не затирать
+            for fld in ("description_ru", "personality_ru", "scenario_ru", "mes_example_ru", "first_mes_ru"):
+                val = getattr(card, fld, None)
+                if not val and target.get(fld):
+                    setattr(card, fld, target[fld])
+
+            alts_ru_val = getattr(card, "alternate_greetings_ru", None)
+            if not alts_ru_val and target.get("alternate_greetings_ru"):
+                card.alternate_greetings_ru = list(target["alternate_greetings_ru"])
+
             target["description_ru"] = card.description_ru
             target["personality_ru"] = card.personality_ru
             target["scenario_ru"] = card.scenario_ru
             target["mes_example_ru"] = card.mes_example_ru
             target["first_mes_ru"] = card.first_mes_ru
-            target["alternate_greetings_ru"] = card.alternate_greetings_ru or []
+            target["alternate_greetings_ru"] = list(getattr(card, "alternate_greetings_ru", []) or [])
             target["visual_dna"] = getattr(card, "visual_dna", "")
             target["scenery_dna"] = getattr(card, "scenery_dna", "")
             if "scenery_dna" in data and data is not target:

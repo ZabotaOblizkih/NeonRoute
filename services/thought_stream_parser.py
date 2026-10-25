@@ -31,6 +31,8 @@ class ThoughtStreamParser:
 
     THINK_OPEN_TAG = "<think>"
     THINK_CLOSE_TAG = "</think>"
+    OPEN_TAGS = ("<think>", "<thought>")
+    CLOSE_TAGS = ("</think>", "</thought>")
 
     def __init__(self):
         self.state: ThinkParserState = ThinkParserState.NORMAL_TEXT
@@ -62,8 +64,8 @@ class ThoughtStreamParser:
 
         while combined:
             if self.state == ThinkParserState.NORMAL_TEXT:
-                # Ищем открывающий тег <think>
-                match = re.search(r"<think>", combined, re.IGNORECASE)
+                # Ищем открывающий тег <think> или <thought>
+                match = re.search(r"<(think|thought)>", combined, re.IGNORECASE)
                 if match:
                     pre_text = combined[:match.start()]
                     if pre_text:
@@ -77,19 +79,23 @@ class ThoughtStreamParser:
                     combined = combined[match.end():]
                     continue
                 else:
-                    # Проверяем, не заканчивается ли combined префиксом <think>
+                    # Проверяем, не заканчивается ли combined префиксом <think> или <thought>
                     held = False
                     comb_lower = combined.lower()
-                    for k in range(min(len(self.THINK_OPEN_TAG) - 1, len(combined)), 0, -1):
-                        tail = comb_lower[-k:]
-                        if self.THINK_OPEN_TAG.startswith(tail):
-                            self.buffer = combined[-k:]
-                            to_emit = combined[:-k]
-                            if to_emit:
-                                self.normal_text += to_emit
-                                events.append(("normal_chunk", to_emit))
-                            held = True
-                            break
+                    max_k = 0
+                    for tag in self.OPEN_TAGS:
+                        for k in range(min(len(tag) - 1, len(combined)), 0, -1):
+                            tail = comb_lower[-k:]
+                            if tag.startswith(tail):
+                                if k > max_k:
+                                    max_k = k
+                    if max_k > 0:
+                        self.buffer = combined[-max_k:]
+                        to_emit = combined[:-max_k]
+                        if to_emit:
+                            self.normal_text += to_emit
+                            events.append(("normal_chunk", to_emit))
+                        held = True
 
                     if not held:
                         self.normal_text += combined
@@ -97,8 +103,8 @@ class ThoughtStreamParser:
                     break
 
             elif self.state == ThinkParserState.IN_THINK:
-                # Ищем закрывающий тег </think>
-                match = re.search(r"</think>", combined, re.IGNORECASE)
+                # Ищем закрывающий тег </think> или </thought>
+                match = re.search(r"</(think|thought)>", combined, re.IGNORECASE)
                 if match:
                     th_part = combined[:match.start()]
                     if th_part:
@@ -133,19 +139,23 @@ class ThoughtStreamParser:
                             events.append(("normal_chunk", norm_part))
                         break
 
-                    # Проверяем, не заканчивается ли combined префиксом </think>
+                    # Проверяем, не заканчивается ли combined префиксом </think> или </thought>
                     held = False
                     comb_lower = combined.lower()
-                    for k in range(min(len(self.THINK_CLOSE_TAG) - 1, len(combined)), 0, -1):
-                        tail = comb_lower[-k:]
-                        if self.THINK_CLOSE_TAG.startswith(tail):
-                            self.buffer = combined[-k:]
-                            to_emit = combined[:-k]
-                            if to_emit:
-                                self.thought_text += to_emit
-                                events.append(("thought_chunk", to_emit))
-                            held = True
-                            break
+                    max_k = 0
+                    for tag in self.CLOSE_TAGS:
+                        for k in range(min(len(tag) - 1, len(combined)), 0, -1):
+                            tail = comb_lower[-k:]
+                            if tag.startswith(tail):
+                                if k > max_k:
+                                    max_k = k
+                    if max_k > 0:
+                        self.buffer = combined[-max_k:]
+                        to_emit = combined[:-max_k]
+                        if to_emit:
+                            self.thought_text += to_emit
+                            events.append(("thought_chunk", to_emit))
+                        held = True
 
                     if not held:
                         self.thought_text += combined

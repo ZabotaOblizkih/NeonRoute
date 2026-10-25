@@ -227,17 +227,20 @@ class GalleryTranslationMixin:
             self.btn_translate_all.setEnabled(True)
             self.btn_translate_all.setText("🌐 Перевести всю карточку (RU)")
             if success:
-                self._showing_ru = True
-                if hasattr(self, "btn_toggle_lang"):
-                    self.btn_toggle_lang.setText("🌐 RU / EN")
                 if self.active_entry and self.active_entry["card"] == card:
                     self.input_desc.setPlainText(card.description_ru or "")
                     self.input_personality.setPlainText(card.personality_ru or "")
                     self.input_scenario.setPlainText(card.scenario_ru or "")
                     self.input_mes_example.setPlainText(card.mes_example_ru or "")
+                    self._showing_ru = True
+                    if hasattr(self, "btn_toggle_lang"):
+                        self.btn_toggle_lang.setText("🌐 RU / EN [RU]")
+                        self.btn_toggle_lang.setToolTip("Отображается: Русский перевод (RU). Нажмите для переключения на оригинал (EN).")
                     # Обновить текущее отображаемое первое сообщение с учетом активной страницы приветствий:
                     self._update_greeting_display()
                     self._save_changes(silent=True)
+                else:
+                    self._showing_ru = True
                 QMessageBox.information(self, "Успех", f"Карточка '{card.name}' успешно переведена на русский язык!")
             else:
                 QMessageBox.warning(self, "Ошибка", "Не удалось перевести карточку.")

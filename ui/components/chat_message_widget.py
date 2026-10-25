@@ -21,6 +21,7 @@ from qfluentwidgets import (
 )
 
 # Re-exports for clean API and tests
+from ui.common.icon_utils import SafeFIF
 from ui.components.chat_bubble import ChatMessageWidget
 from ui.components.assistant_chat_bubble import AssistantChatMessageWidget
 from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
@@ -29,7 +30,7 @@ from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
 class KnowledgeSourceChip(QFrame):
     """
     Микро-чип / бейдж источника знаний для HUD-индикатора.
-    - Иконка: FIF.DOCUMENT или FIF.BOOK_SHELF (для таблиц .csv/.xlsx — FIF.DOCUMENT).
+    - Иконка: FIF.DOCUMENT или SafeFIF.BOOK_SHELF (для таблиц .csv/.xlsx — FIF.DOCUMENT).
     - Текст бейджа: компактное имя файла и номер чанка (#4).
     - Tooltip: всплывающая подсказка с цитатой и релевантностью.
     """
@@ -66,7 +67,7 @@ class KnowledgeSourceChip(QFrame):
         if ext in (".csv", ".tsv", ".xlsx"):
             icon = FIF.DOCUMENT
         elif ext in (".pdf", ".fb2", ".epub", ".docx"):
-            icon = FIF.BOOK_SHELF
+            icon = SafeFIF.BOOK_SHELF
         else:
             icon = FIF.DOCUMENT
 
