@@ -373,8 +373,8 @@ class AssistantFlowControllerMixin:
                 if matched_knowledge_docs:
                     for doc in matched_knowledge_docs:
                         fname = doc.get("filename", "")
-                        if fname:
-                            snippet = KnowledgeManager.get_document_knowledge_snippet(fname, max_chars=6000)
+                        if fname and not doc.get("content_snippet"):
+                            snippet = KnowledgeManager.get_document_knowledge_snippet(fname, max_chars=2000)
                             if snippet:
                                 doc["content_snippet"] = snippet
                     knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
