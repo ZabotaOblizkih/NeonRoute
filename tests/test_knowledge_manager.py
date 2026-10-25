@@ -253,3 +253,43 @@ def test_menu_builder_has_knowledge_action(qapp):
                     break
     assert found is True
 
+
+def test_find_relevant_documents_top_3_chunks(tmp_path: Path, monkeypatch):
+    kb_dir = tmp_path / "knowledge_base"
+    kb_dir.mkdir()
+    reg_file = kb_dir / "registry.json"
+
+    doc_file = kb_dir / "telemetry_guide.txt"
+    doc_file.write_text("Архитектура телеметрии и мониторинг серверов.", encoding="utf-8")
+
+    KnowledgeManager.scan_and_sync(custom_dir=kb_dir, custom_registry=reg_file)
+
+    class MockSearchEngine:
+        def search(self, query, top_k=10, threshold=0.05):
+            return [
+                {"chunk_id": "c1", "filename": "telemetry_guide.txt", "text": "Чанк 1: телеметрия", "score": 0.95},
+                {"chunk_id": "c2", "filename": "telemetry_guide.txt", "text": "Чанк 2: метрики", "score": 0.85},
+                {"chunk_id": "c3", "filename": "telemetry_guide.txt", "text": "Чанк 3: алерты", "score": 0.75},
+                {"chunk_id": "c4", "filename": "telemetry_guide.txt", "text": "Чанк 4: лишний", "score": 0.65},
+            ]
+
+    monkeypatch.setattr(KnowledgeManager, "get_search_engine", lambda custom_dir=None, custom_index_path=None: MockSearchEngine())
+
+    results = KnowledgeManager.find_relevant_documents(
+        "телеметрия",
+        threshold=0.2,
+        custom_dir=kb_dir,
+        custom_registry=reg_file
+    )
+
+    assert len(results) == 1
+    doc = results[0]
+    assert doc["filename"] == "telemetry_guide.txt"
+    assert doc["chunk_id"] == "c1"
+    assert len(doc["matched_chunks"]) == 3
+    assert doc["matched_chunks"][0]["chunk_id"] == "c1"
+    assert doc["matched_chunks"][1]["chunk_id"] == "c2"
+    assert doc["matched_chunks"][2]["chunk_id"] == "c3"
+    assert doc["content_snippet"] == "Чанк 1: телеметрия\n\n---\n\nЧанк 2: метрики\n\n---\n\nЧанк 3: алерты"
+
+

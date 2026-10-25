@@ -294,3 +294,22 @@ def test_openpyxl_missing_fallback(tmp_path: Path):
             assert doc is not None
             assert "[Для чтения Excel (.xlsx/.xls) требуется openpyxl" in doc.content
 
+
+def test_clean_pdf_text_dekerning_and_hyphenation():
+    # 1. Склейка переносов слов через дефис на новую строку: "эксп-\nлуатации" -> "эксплуатации"
+    raw1 = "эксп-\nлуатации"
+    assert DocumentParser._clean_pdf_text(raw1) == "эксплуатации"
+
+    # 2. Склейка дефисных переносов внутри строки: "предназна- ченные" -> "предназначенные"
+    raw2 = "предназна- ченные"
+    assert DocumentParser._clean_pdf_text(raw2) == "предназначенные"
+
+    # 3. Де-керинг разрядки заголовков (3+ одиночных заглавных букв через пробел): "Т Е Х Н И К А" -> "ТЕХНИКА"
+    raw3 = "Т Е Х Н И К А"
+    assert DocumentParser._clean_pdf_text(raw3) == "ТЕХНИКА"
+
+    # 4. Граничные случаи: пустой текст и None
+    assert DocumentParser._clean_pdf_text("") == ""
+    assert DocumentParser._clean_pdf_text(None) == ""
+
+

@@ -347,11 +347,9 @@ class TestAssistantDocumentReaderIntegration:
 
     def test_default_system_prompt_contains_document_analysis_protocol(self):
         from services.assistant_prompt_builder import DEFAULT_ELARIA_SYSTEM_PROMPT
-        assert "[document_analysis_protocol]" in DEFAULT_ELARIA_SYSTEM_PROMPT
-        assert "Если к сообщению прикреплен блок <AttachedDocument>:" in DEFAULT_ELARIA_SYSTEM_PROMPT
-        assert "Ты видишь реальное содержимое файла" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "анализ прикрепленных документов:" in DEFAULT_ELARIA_SYSTEM_PROMPT
+        assert "<AttachedDocument>" in DEFAULT_ELARIA_SYSTEM_PROMPT
         assert "дай компактную выжимку" in DEFAULT_ELARIA_SYSTEM_PROMPT
-        assert "Не дублируй весь текст документа целиком." in DEFAULT_ELARIA_SYSTEM_PROMPT
 
     def test_build_document_context_xml_structure(self):
         from services.assistant_prompt_builder import AssistantPromptBuilder

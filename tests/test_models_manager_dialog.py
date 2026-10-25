@@ -129,3 +129,49 @@ class TestModelsManagerDialog:
         assert hasattr(dlg, "_run_test_query")
         assert dlg.lbl_test_result is dlg.result_badge
         assert dlg.test_result_label is dlg.result_badge
+
+    def test_models_manager_stop_all_workers_on_close_and_reject(self, qapp, mock_forge_client):
+        with patch.object(ModelsManagerDialog, "_start_forge_scan"):
+            dlg = ModelsManagerDialog(forge_client=mock_forge_client)
+
+        mock_worker = MagicMock()
+        mock_worker.isRunning.return_value = True
+        dlg._scan_worker = mock_worker
+
+        mock_test_worker = MagicMock()
+        mock_test_worker.isRunning.return_value = False
+        dlg._test_worker = mock_test_worker
+
+        dlg._stop_all_workers()
+
+        mock_worker.abort.assert_called_once()
+        mock_worker.quit.assert_called_once()
+        mock_worker.wait.assert_called_once_with(200)
+        mock_worker.setParent.assert_called_once_with(None)
+
+        assert dlg._scan_worker is None
+        assert dlg._test_worker is None
+
+    def test_civitai_search_worker_abort(self):
+        from ui.dialogs.civitai_catalog_dialog import CivitaiSearchWorker
+        worker = CivitaiSearchWorker("test", None, None, "Most Downloaded", False, 1)
+        assert not worker._is_aborted
+        worker.abort()
+        assert worker._is_aborted
+
+    def test_civitai_catalog_stop_all_workers(self, qapp):
+        from ui.dialogs.civitai_catalog_dialog import CivitaiCatalogDialog
+        with patch.object(CivitaiCatalogDialog, "_on_search_clicked"):
+            dlg = CivitaiCatalogDialog()
+
+        mock_worker = MagicMock()
+        mock_worker.isRunning.return_value = True
+        dlg._search_worker = mock_worker
+
+        dlg._stop_all_workers()
+
+        mock_worker.abort.assert_called_once()
+        mock_worker.quit.assert_called_once()
+        mock_worker.wait.assert_called_once_with(300)
+        mock_worker.setParent.assert_called_once_with(None)
+        assert dlg._search_worker is None

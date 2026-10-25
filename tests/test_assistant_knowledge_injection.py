@@ -131,8 +131,8 @@ def test_assistant_prompt_builder_knowledge_injection():
     assert '<Document name="server.log" triggers="ошибка, таймаут">' in prompt
     assert "[2026-10-24 22:00:00] Timeout detected." in prompt
     assert "[identity & persona]" in prompt
-    # Блок базы знаний должен располагаться перед системной инструкцией
-    assert prompt.index("<KnowledgeBase>") < prompt.index("[identity & persona]")
+    # Блок базы знаний должен располагаться в хвосте системного промпта (Recency Bias)
+    assert prompt.index("[identity & persona]") < prompt.index("<KnowledgeBase>")
 
 
 def test_assistant_flow_controller_knowledge_routing(qapp, tmp_path: Path, monkeypatch):

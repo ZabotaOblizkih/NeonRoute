@@ -218,6 +218,23 @@ class DocumentParser:
         return cls._read_text_safely(path)
 
     @classmethod
+    def _clean_pdf_text(cls, text: str) -> str:
+        """Очистка артефактов верстки PDF: склейка разорванных переносов и разрядки."""
+        if not text:
+            return ""
+        # 1. Склейка переносов слов через дефис на новую строку: "эксп-\nлуатации" -> "эксплуатации"
+        text = re.sub(r'([А-Яа-яA-Za-z]+)-\s*\n\s*([А-Яа-яA-Za-z]+)', r'\1\2', text)
+        # 2. Склейка дефисных переносов внутри строки: "предназна- ченные" -> "предназначенные"
+        text = re.sub(r'([А-Яа-яA-Za-z]{3,})-\s+([а-яa-z]{3,})', r'\1\2', text)
+        # 3. Де-керинг разрядки заголовков (3+ одиночных заглавных букв через пробел): "Т Е Х Н И К А" -> "ТЕХНИКА"
+        text = re.sub(
+            r'\b([А-ЯЁA-Z])(?:\s+([А-ЯЁA-Z])){2,}\b',
+            lambda m: re.sub(r'\s+', '', m.group(0)),
+            text
+        )
+        return text
+
+    @classmethod
     def _extract_pdf(cls, path: Path) -> Tuple[str, Optional[int]]:
         """
         Постраничное извлечение текста из PDF без нейросетей на CPU.
@@ -243,6 +260,7 @@ class DocumentParser:
                         logger.debug(f"Ошибка извлечения страницы {idx} PDF через pypdf: {pe}")
 
                 content = "\n\n".join(pages)
+                content = cls._clean_pdf_text(content)
                 if not content.strip():
                     content = "[PDF документ не содержит распознаваемого текстового слоя (возможно, сканированное изображение)]"
                 return content, page_count
@@ -269,6 +287,7 @@ class DocumentParser:
             doc.close()
 
             content = "\n\n".join(pages)
+            content = cls._clean_pdf_text(content)
             if not content.strip():
                 content = "[PDF документ не содержит распознаваемого текстового слоя (возможно, сканированное изображение)]"
             return content, page_count
@@ -293,6 +312,7 @@ class DocumentParser:
                     except Exception as pe:
                         logger.debug(f"Ошибка pdfplumber на странице {idx}: {pe}")
                 content = "\n\n".join(pages)
+                content = cls._clean_pdf_text(content)
                 if not content.strip():
                     content = "[PDF документ не содержит распознаваемого текстового слоя (возможно, сканированное изображение)]"
                 return content, page_count

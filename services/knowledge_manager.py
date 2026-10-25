@@ -689,29 +689,28 @@ class KnowledgeManager:
                 doc_entry["matched_triggers"] = list(dict.fromkeys(matched_trigs))
                 if best_chunk:
                     doc_entry["chunk_id"] = best_chunk.get("chunk_id")
-                    doc_entry["content_snippet"] = best_chunk.get("text")
-                    doc_entry["matched_chunks"] = file_chunks
+                    top_k_chunks = file_chunks[:3]
+                    snippets = [c.get("text", "").strip() for c in top_k_chunks if c.get("text")]
+                    doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_chunk.get("text")
+                    doc_entry["matched_chunks"] = top_k_chunks
                 matched_results.append(doc_entry)
                 processed_files.add(filename)
 
         # 4. Проверяем документы, найденные через чанки, но отсутствовавшие в цикле по триггерам
         for fn, f_chunks in chunks_by_file.items():
             if fn not in processed_files and fn in documents:
+                doc = documents[fn]
                 best_ch = f_chunks[0]
-                ch_sc = best_ch.get("score", 0.0)
-                ch_bm25 = best_ch.get("bm25_score", 0.0)
-                ch_dense = best_ch.get("dense_score", 0.0)
-                if ch_bm25 <= 1e-5 and ch_dense < 0.75:
-                    continue
-                if ch_sc >= threshold:
-                    doc_entry = dict(documents[fn])
-                    doc_entry["relevance_score"] = min(1.0, round(ch_sc, 3))
-                    doc_entry["matched_triggers"] = []
-                    doc_entry["chunk_id"] = best_ch.get("chunk_id")
-                    doc_entry["content_snippet"] = best_ch.get("text")
-                    doc_entry["matched_chunks"] = f_chunks
-                    matched_results.append(doc_entry)
-                    processed_files.add(fn)
+                doc_entry = dict(doc)
+                doc_entry["relevance_score"] = min(1.0, round(best_ch.get("score", 0.0), 3))
+                doc_entry["matched_triggers"] = []
+                doc_entry["chunk_id"] = best_ch.get("chunk_id")
+                top_k_chunks = f_chunks[:3]
+                snippets = [c.get("text", "").strip() for c in top_k_chunks if c.get("text")]
+                doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_ch.get("text")
+                doc_entry["matched_chunks"] = top_k_chunks
+                matched_results.append(doc_entry)
+                processed_files.add(fn)
 
         # 5. Сортировка по убыванию релевантности
         matched_results.sort(
