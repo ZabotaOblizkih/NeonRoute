@@ -96,8 +96,16 @@ class CivitaiSearchWorker(QThread):
         self.nsfw = nsfw
         self.page = max(1, page)
         self.cursor = cursor
+        self._is_aborted = False
+
+    def abort(self):
+        self._is_aborted = True
+        self.requestInterruption()
 
     def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+
         url = f"{CIVITAI_API_BASE}/models"
         params: Dict[str, Any] = {
             "limit": 20,
@@ -125,8 +133,13 @@ class CivitaiSearchWorker(QThread):
             "Accept": "application/json"
         }
 
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=14.0)
+            if self._is_aborted or self.isInterruptionRequested():
+                return
             if resp.status_code != 200:
                 err_detail = ""
                 try:
@@ -137,10 +150,15 @@ class CivitaiSearchWorker(QThread):
                 raise RuntimeError(f"Civitai вернул HTTP {resp.status_code}: {err_detail}")
             data = resp.json()
         except requests.exceptions.RequestException as e:
-            self.error_occurred.emit(f"Ошибка подключения: {e}")
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                self.error_occurred.emit(f"Ошибка подключения: {e}")
             return
         except Exception as e:
-            self.error_occurred.emit(f"Ошибка API Civitai: {e}")
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                self.error_occurred.emit(f"Ошибка API Civitai: {e}")
+            return
+
+        if self._is_aborted or self.isInterruptionRequested():
             return
 
         items = data.get("items") or []
@@ -151,6 +169,8 @@ class CivitaiSearchWorker(QThread):
 
         cards = []
         for it in items:
+            if self._is_aborted or self.isInterruptionRequested():
+                return
             if not isinstance(it, dict):
                 continue
 
@@ -192,7 +212,8 @@ class CivitaiSearchWorker(QThread):
                 "description": it.get("description") or ""
             })
 
-        self.results_ready.emit(cards, total_pages, total_items, next_cursor)
+        if not (self._is_aborted or self.isInterruptionRequested()):
+            self.results_ready.emit(cards, total_pages, total_items, next_cursor)
 
 
 class CivitaiThumbnailsBatchWorker(QThread):
@@ -206,6 +227,7 @@ class CivitaiThumbnailsBatchWorker(QThread):
 
     def abort(self):
         self._is_aborted = True
+        self.requestInterruption()
         if self._executor:
             try:
                 self._executor.shutdown(wait=False, cancel_futures=True)
@@ -213,7 +235,7 @@ class CivitaiThumbnailsBatchWorker(QThread):
                 pass
 
     def _fetch_single(self, idx: int, url: Optional[str]):
-        if self._is_aborted or not url:
+        if self._is_aborted or self.isInterruptionRequested() or not url:
             return
         cache_key = hashlib.md5(url.encode("utf-8")).hexdigest()
         cache_path = CIVITAI_CACHE_DIR / f"{cache_key}.png"
@@ -228,7 +250,7 @@ class CivitaiThumbnailsBatchWorker(QThread):
             except Exception:
                 return
 
-        if cache_path.exists() and not self._is_aborted:
+        if cache_path.exists() and not (self._is_aborted or self.isInterruptionRequested()):
             self.thumb_loaded.emit(idx, str(cache_path))
 
     def run(self):
@@ -273,6 +295,7 @@ class CivitaiDownloadWorker(QThread):
 
     def abort(self):
         self._is_aborted = True
+        self.requestInterruption()
 
     def run(self):
         url = self.download_url
@@ -627,6 +650,21 @@ class CivitaiCatalogDialog(QDialog):
         self.btn_prev_page.setEnabled(False)
         self.btn_next_page.setEnabled(False)
 
+        if self._search_worker and self._search_worker.isRunning():
+            try:
+                self._search_worker.results_ready.disconnect()
+                self._search_worker.error_occurred.disconnect()
+            except Exception:
+                pass
+            self._search_worker.abort()
+            self._search_worker.quit()
+            self._search_worker.wait(200)
+            if self._search_worker.isRunning():
+                try:
+                    self._search_worker.setParent(None)
+                except Exception:
+                    pass
+
         self._search_worker = CivitaiSearchWorker(
             query=query,
             model_type=m_type,
@@ -868,11 +906,66 @@ class CivitaiCatalogDialog(QDialog):
         self.download_box.setVisible(False)
         self.dl_progress_bar.setValue(0)
 
+    def _stop_all_workers(self):
+        """Безопасная остановка всех рабочих потоков диалога Civitai."""
+        workers = [self._search_worker, self._thumb_worker, self._download_worker]
+        for worker in workers:
+            if worker is None:
+                continue
+
+            # 1) Отключение сигналов от UI
+            for sig_name in (
+                "results_ready", "error_occurred",
+                "thumb_loaded",
+                "progress_updated", "finished_successfully"
+            ):
+                sig = getattr(worker, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+
+            # 2) Вызов abort() и quit()
+            if hasattr(worker, "abort"):
+                try:
+                    worker.abort()
+                except Exception:
+                    pass
+            try:
+                worker.requestInterruption()
+            except Exception:
+                pass
+            try:
+                worker.quit()
+            except Exception:
+                pass
+
+            # 3) Если поток все еще isRunning(), wait(300). Если не успел — отвязать parent (setParent(None))
+            try:
+                if worker.isRunning():
+                    worker.wait(300)
+            except Exception:
+                pass
+
+            try:
+                if worker.isRunning():
+                    worker.setParent(None)
+            except Exception:
+                pass
+
+        self._search_worker = None
+        self._thumb_worker = None
+        self._download_worker = None
+
     def closeEvent(self, event):
-        if self._thumb_worker and self._thumb_worker.isRunning():
-            self._thumb_worker.abort()
-            self._thumb_worker.wait(150)
-        if self._download_worker and self._download_worker.isRunning():
-            self._download_worker.abort()
-            self._download_worker.wait(200)
+        self._stop_all_workers()
         super().closeEvent(event)
+
+    def reject(self):
+        self._stop_all_workers()
+        super().reject()
+
+    def accept(self):
+        self._stop_all_workers()
+        super().accept()

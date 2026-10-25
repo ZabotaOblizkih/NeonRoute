@@ -350,17 +350,29 @@ class RoutingTestWorker(QThread):
         self.text = text
         self.profiles = profiles
         self.router = router
+        self._is_aborted = False
+
+    def abort(self):
+        self._is_aborted = True
+        self.requestInterruption()
 
     def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
         try:
             winner_id, score, reason = self.router.match_prompt_detailed(self.text, profiles=self.profiles)
-            if not winner_id:
-                self.error_occurred.emit("Не удалось определить подходящую модель среди активных.")
+            if self._is_aborted or self.isInterruptionRequested():
                 return
-            self.result_ready.emit(winner_id, score, reason, self.profiles)
+            if not winner_id:
+                if not (self._is_aborted or self.isInterruptionRequested()):
+                    self.error_occurred.emit("Не удалось определить подходящую модель среди активных.")
+                return
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                self.result_ready.emit(winner_id, score, reason, self.profiles)
         except Exception as e:
-            logger.error(f"[RoutingTestWorker] Ошибка тестирования маршрутизации: {e}", exc_info=True)
-            self.error_occurred.emit(str(e))
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                logger.error(f"[RoutingTestWorker] Ошибка тестирования маршрутизации: {e}", exc_info=True)
+                self.error_occurred.emit(str(e))
 
 
 class ForgeScanWorker(QThread):
@@ -370,24 +382,38 @@ class ForgeScanWorker(QThread):
     def __init__(self, forge_client: ForgeClient, parent=None):
         super().__init__(parent)
         self.forge_client = forge_client
+        self._is_aborted = False
+
+    def abort(self):
+        self._is_aborted = True
+        self.requestInterruption()
 
     def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
         try:
             raw_models = self.forge_client.get_models() or []
         except Exception:
             raw_models = []
+
+        if self._is_aborted or self.isInterruptionRequested():
+            return
 
         try:
             installed = self.forge_client.get_installed_checkpoints() or []
         except Exception:
             installed = []
 
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+
         try:
             upscalers = self.forge_client.get_upscalers() or []
         except Exception:
             upscalers = []
 
-        self.scan_completed.emit(raw_models, installed, upscalers)
+        if not (self._is_aborted or self.isInterruptionRequested()):
+            self.scan_completed.emit(raw_models, installed, upscalers)
 
 
 class CivitaiParamsWorker(QThread):
@@ -397,15 +423,24 @@ class CivitaiParamsWorker(QThread):
     def __init__(self, checkpoint: str, parent=None):
         super().__init__(parent)
         self.checkpoint = checkpoint
+        self._is_aborted = False
+
+    def abort(self):
+        self._is_aborted = True
+        self.requestInterruption()
 
     def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
         try:
             from services.civitai_service import fetch_civitai_parameters
             params = fetch_civitai_parameters(self.checkpoint)
-            self.params_ready.emit(params)
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                self.params_ready.emit(params)
         except Exception as e:
-            logger.error(f"[CivitaiParamsWorker] Ошибка запроса Civitai: {e}", exc_info=True)
-            self.error_occurred.emit(str(e))
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                logger.error(f"[CivitaiParamsWorker] Ошибка запроса Civitai: {e}", exc_info=True)
+                self.error_occurred.emit(str(e))
 
 
 class ModelsManagerDialog(QDialog):
@@ -1762,11 +1797,71 @@ class ModelsManagerDialog(QDialog):
             "Векторные эмбеддинги роутера обновлены!"
         )
 
+    def _stop_all_workers(self):
+        """Безопасная остановка всех фоновых потоков менеджера моделей."""
+        workers = [self._scan_worker, self._test_worker, self._civitai_worker]
+        for worker in workers:
+            if worker is None:
+                continue
+
+            # 1) Отключение сигналов от слотов диалога
+            for sig_name in ("scan_completed", "scan_failed", "result_ready", "error_occurred", "params_ready"):
+                sig = getattr(worker, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+
+            # 2) Если поддерживается — вызов stop()/abort() или requestInterruption()
+            if hasattr(worker, "abort"):
+                try:
+                    worker.abort()
+                except Exception:
+                    pass
+            elif hasattr(worker, "stop"):
+                try:
+                    worker.stop()
+                except Exception:
+                    pass
+
+            try:
+                worker.requestInterruption()
+            except Exception:
+                pass
+
+            # 3) Вызов thread.quit()
+            try:
+                worker.quit()
+            except Exception:
+                pass
+
+            # 4) Вызов thread.wait(200)
+            try:
+                if worker.isRunning():
+                    worker.wait(200)
+            except Exception:
+                pass
+
+            # 5) Если thread.isRunning() — setParent(None) для защиты от каскадного abort Qt
+            try:
+                if worker.isRunning():
+                    worker.setParent(None)
+            except Exception:
+                pass
+
+        self._scan_worker = None
+        self._test_worker = None
+        self._civitai_worker = None
+
     def closeEvent(self, event):
-        if self._scan_worker and self._scan_worker.isRunning():
-            self._scan_worker.wait(150)
-        if self._test_worker and self._test_worker.isRunning():
-            self._test_worker.wait(150)
-        if self._civitai_worker and self._civitai_worker.isRunning():
-            self._civitai_worker.wait(150)
+        self._stop_all_workers()
         super().closeEvent(event)
+
+    def reject(self):
+        self._stop_all_workers()
+        super().reject()
+
+    def accept(self):
+        self._stop_all_workers()
+        super().accept()
