@@ -535,6 +535,11 @@ class AssistantFlowControllerMixin:
             }
         )
 
+        print(f"\n[DIAG_THINK][1. ENQUEUE] Messages count: {len(messages)}")
+        sys_c = messages[0].get("content", "") if messages else ""
+        print(f"[DIAG_THINK][1. ENQUEUE] Has <KnowledgeBase> in system: {'<KnowledgeBase>' in sys_c}")
+        print(f"[DIAG_THINK][1. ENQUEUE] Has <think> directive in system: {'<think>' in sys_c}")
+        print(f"[DIAG_THINK][1. ENQUEUE] Last message role: {messages[-1].get('role')} | content: {repr(messages[-1].get('content', ''))[:100]}")
         self._active_tasks[task.id] = task
         # Инициализация потокового парсера мыслей <think>...</think>
         self._thought_stream_parser = ThoughtStreamParser()
@@ -965,6 +970,10 @@ class AssistantFlowControllerMixin:
         if has_gallery and hasattr(msg_widget, "show_art_loading_placeholder"):
             msg_widget.show_art_loading_placeholder()
 
+        print(f"[DIAG_THINK][3. FINALIZE] thought_data is None: {thought_data is None}")
+        if thought_data:
+            print(f"[DIAG_THINK][3. FINALIZE] thought content preview: {repr(thought_data.get('content', ''))[:120]}")
+        print(f"[DIAG_THINK][3. FINALIZE] raw text preview: {repr(text)[:120]}")
         self._sync_turn(role="assistant", content=text, replace_last=True, thought=thought_data)
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()

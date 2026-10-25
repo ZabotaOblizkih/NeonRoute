@@ -1032,6 +1032,9 @@ class ChatFlowControllerMixin:
 
         # Маршрутизация токенов через ThoughtStreamParser (если активен)
         if getattr(self, "_thought_stream_parser", None) is not None:
+            if not getattr(self, "_diag_chunk_logged", False):
+                self._diag_chunk_logged = True
+                print(f"[DIAG_THINK][2. STREAM FIRST CHUNKS] First chunk received: {repr(chunk)}")
             events = self._thought_stream_parser.feed(chunk)
             for ev_type, ev_data in events:
                 if ev_type == "start_think":
