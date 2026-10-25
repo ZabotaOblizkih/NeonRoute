@@ -293,3 +293,143 @@ def test_find_relevant_documents_top_3_chunks(tmp_path: Path, monkeypatch):
     assert doc["content_snippet"] == "Чанк 1: телеметрия\n\n---\n\nЧанк 2: метрики\n\n---\n\nЧанк 3: алерты"
 
 
+def test_fuse_contextual_query():
+    # 1. No previous query
+    assert KnowledgeManager._fuse_contextual_query("какой статус сервера", None) == "какой статус сервера"
+    assert KnowledgeManager._fuse_contextual_query("какой статус сервера", "   ") == "какой статус сервера"
+
+    # 2. Standalone short/long query without corrective or anaphoric markers -> NOT fused
+    assert KnowledgeManager._fuse_contextual_query("покажи подробнее", "как настроить сервер базы данных postgresql") == "покажи подробнее"
+    long_q = "один два три четыре пять шесть семь восемь"
+    assert KnowledgeManager._fuse_contextual_query(long_q, "предыдущий контекст запроса") == long_q
+
+    # 3. Anaphoric marker triggers fusion
+    ana_q = "покажи его код"
+    fused_ana = KnowledgeManager._fuse_contextual_query(ana_q, "как настроить сервер базы данных postgresql")
+    assert ana_q in fused_ana
+    assert any(tok in fused_ana for tok in ["настроить", "сервер", "базы", "данных", "postgresql"])
+
+    # 4. Corrective marker triggers fusion
+    corr_q = "не то, покажи другую информацию"
+    fused_corr = KnowledgeManager._fuse_contextual_query(corr_q, "сетевой маршрутизатор router vlan")
+    assert any(tok in fused_corr for tok in ["router", "сетевой", "маршрутизатор", "vlan"])
+
+
+def test_find_cross_references():
+    registered = {"config.py", "database.md", "logger.py", "main.py", "db.py"}
+    
+    # Direct match by filename (100% trust)
+    text1 = "Настройки хранятся в config.py, а схема описана в database.md"
+    refs1 = KnowledgeManager._find_cross_references(text1, registered)
+    assert "config.py" in refs1
+    assert "database.md" in refs1
+
+    # Match by formatted non-generic stem: "модуль logger" or "`logger`"
+    text2 = "Модуль logger отвечает за вывод логов в терминал"
+    refs2 = KnowledgeManager._find_cross_references(text2, registered)
+    assert "logger.py" in refs2
+
+    text2_quotes = "Используйте `logger` для трассировки"
+    refs2_quotes = KnowledgeManager._find_cross_references(text2_quotes, registered)
+    assert "logger.py" in refs2_quotes
+
+    # Generic stem in GENERIC_STEMS ("main" from main.py) should NOT match even if formatted
+    text_generic = "Смотри модуль `main`"
+    refs_generic = KnowledgeManager._find_cross_references(text_generic, registered)
+    assert "main.py" not in refs_generic
+
+    # Unformatted stem should NOT match
+    text_unformatted = "проверь logger здесь"
+    refs_unformatted = KnowledgeManager._find_cross_references(text_unformatted, registered)
+    assert "logger.py" not in refs_unformatted
+
+    # Stem with len < 4 ("db" from db.py) should NOT match
+    text3 = "Мы подключили `db` к сервису"
+    refs3 = KnowledgeManager._find_cross_references(text3, registered)
+    assert "db.py" not in refs3
+
+    # Empty inputs
+    assert KnowledgeManager._find_cross_references("", registered) == []
+    assert KnowledgeManager._find_cross_references("hello", set()) == []
+
+
+def test_find_relevant_documents_exclude_chunk_ids(tmp_path: Path, monkeypatch):
+    kb_dir = tmp_path / "knowledge_base"
+    kb_dir.mkdir()
+    reg_file = kb_dir / "registry.json"
+
+    doc_file = kb_dir / "network_spec.txt"
+    doc_file.write_text("Сетевая спецификация маршрутизации.", encoding="utf-8")
+    KnowledgeManager.scan_and_sync(custom_dir=kb_dir, custom_registry=reg_file)
+
+    class MockSearchEngine:
+        def search(self, query, top_k=15, threshold=0.05):
+            return [
+                {"chunk_id": "chunk_excluded", "filename": "network_spec.txt", "text": "Старый чанк", "score": 0.9},
+                {"chunk_id": "chunk_valid", "filename": "network_spec.txt", "text": "Новый чанк", "score": 0.8},
+            ]
+
+    monkeypatch.setattr(KnowledgeManager, "get_search_engine", lambda custom_dir=None, custom_index_path=None: MockSearchEngine())
+
+    # Exclude chunk_excluded
+    results = KnowledgeManager.find_relevant_documents(
+        "маршрутизация",
+        threshold=0.2,
+        custom_dir=kb_dir,
+        custom_registry=reg_file,
+        exclude_chunk_ids={"chunk_excluded"}
+    )
+
+    assert len(results) == 1
+    doc = results[0]
+    assert doc["chunk_id"] == "chunk_valid"
+    assert len(doc["matched_chunks"]) == 1
+    assert doc["matched_chunks"][0]["chunk_id"] == "chunk_valid"
+
+
+def test_find_relevant_documents_cross_reference_linker(tmp_path: Path, monkeypatch):
+    kb_dir = tmp_path / "knowledge_base"
+    kb_dir.mkdir()
+    reg_file = kb_dir / "registry.json"
+
+    doc1 = kb_dir / "service_a.txt"
+    doc1.write_text("Архитектура микросервиса А.", encoding="utf-8")
+    doc2 = kb_dir / "service_b.txt"
+    doc2.write_text("Спецификация и детали service_b.", encoding="utf-8")
+    KnowledgeManager.scan_and_sync(custom_dir=kb_dir, custom_registry=reg_file)
+
+    class MockSearchEngine:
+        def search(self, query, top_k=15, threshold=0.05):
+            # When searching for primary query
+            if "service_b" in query:
+                return [
+                    {"chunk_id": "b1", "filename": "service_b.txt", "text": "Контент service_b", "score": 0.85}
+                ]
+            return [
+                {"chunk_id": "a1", "filename": "service_a.txt", "text": "Сервис А ссылается на service_b.txt в работе", "score": 0.9}
+            ]
+
+    monkeypatch.setattr(KnowledgeManager, "get_search_engine", lambda custom_dir=None, custom_index_path=None: MockSearchEngine())
+
+    results = KnowledgeManager.find_relevant_documents(
+        "микросервис",
+        threshold=0.2,
+        custom_dir=kb_dir,
+        custom_registry=reg_file
+    )
+
+    assert len(results) >= 2
+    filenames = [r["filename"] for r in results]
+    assert "service_a.txt" in filenames
+    assert "service_b.txt" in filenames
+
+    # Find the cross-referenced entry
+    cross_doc = next(r for r in results if r["filename"] == "service_b.txt")
+    assert cross_doc.get("is_cross_reference") is True
+    assert cross_doc.get("matched_triggers") == ["cross_reference"]
+    # Child score capped below parent score
+    parent_doc = next(r for r in results if r["filename"] == "service_a.txt")
+    assert cross_doc["relevance_score"] == round(parent_doc["relevance_score"] - 0.05, 3)
+
+
+

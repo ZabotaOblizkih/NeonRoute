@@ -574,6 +574,72 @@ class KnowledgeManager:
         docs = reg.get("documents", {})
         return list(docs.values())
 
+    GENERIC_STEMS: Set[str] = {
+        "base", "core", "main", "test", "data", "view",
+        "flow", "app", "model", "route", "util", "utils", "user",
+        "doc", "docs", "file", "index", "init", "setup", "log"
+    }
+
+    @classmethod
+    def _fuse_contextual_query(cls, query: str, previous_query: Optional[str]) -> str:
+        """Склеивает запрос с контекстом ТОЛЬКО при явных маркерах коррекции или анафоры."""
+        if not previous_query or not previous_query.strip():
+            return query
+        q_lower = query.lower().strip()
+
+        # Маркеры явной коррекции прошлого ответа
+        corrective_markers = [
+            "не то", "не этот", "не эта", "не эти", "другой", "другое", 
+            "другие", "дальше", "следующ", "вместо", "перепутал", "не от", "именно от"
+        ]
+        is_corrective = any(m in q_lower for m in corrective_markers)
+
+        # Маркеры анафоры (прямая ссылка на объект из прошлого сообщения)
+        anaphoric_markers = [
+            "а в нем", "а у него", "а к нему", "покажи его", "покажи ее", 
+            "его код", "ее код", "у этого", "в этом"
+        ]
+        is_anaphoric = any(m in q_lower for m in anaphoric_markers)
+
+        # Если это самостоятельный запрос без маркеров связи — не засоряем его старыми темами
+        if not (is_corrective or is_anaphoric):
+            return query
+
+        prev_clean = re.sub(r"[^\w\s-]", " ", previous_query.lower())
+        prev_tokens = [w for w in prev_clean.split() if w not in ALL_STOPWORDS and len(w) >= 3 and not w.isdigit()]
+        if not prev_tokens:
+            return query
+
+        added_context = " ".join(dict.fromkeys(prev_tokens[:3]))
+        return f"{query} {added_context}"
+
+    @classmethod
+    def _find_cross_references(cls, text: str, registered_filenames: Set[str]) -> List[str]:
+        """Обнаруживает упоминания зарегистрированных файлов с защитой от ложных generic-совпадений."""
+        if not text or not registered_filenames:
+            return []
+        found: List[str] = []
+
+        # 1. Поиск по точному имени файла с расширением (100% доверие)
+        file_matches = re.findall(r'[\w\-]+\.(?:py|md|pdf|json|txt|log)', text, re.IGNORECASE)
+        for fm in file_matches:
+            for reg_fn in registered_filenames:
+                if fm.lower() == reg_fn.lower() and reg_fn not in found:
+                    found.append(reg_fn)
+
+        # 2. Поиск по стэму: только не-generic имена и только выделенные как сущности
+        for reg_fn in registered_filenames:
+            stem = Path(reg_fn).stem
+            stem_lower = stem.lower()
+            if stem_lower in cls.GENERIC_STEMS or len(stem) < 4 or reg_fn in found:
+                continue
+
+            # Требуем оформление: в кавычках/бэктиках (`config`, "config") или после "модуль/файл config"
+            entity_pattern = rf'(?:[`"\'«](\b{re.escape(stem)}\b)[`"\'»]|(?:модул[ьяеи]|файл[ае]?|модуле)\s+(\b{re.escape(stem)}\b))'
+            if re.search(entity_pattern, text, re.IGNORECASE):
+                found.append(reg_fn)
+        return found
+
     @classmethod
     def find_relevant_documents(
         cls,
@@ -581,7 +647,9 @@ class KnowledgeManager:
         threshold: float = 0.3,
         custom_dir: Optional[Path] = None,
         custom_registry: Optional[Path] = None,
-        custom_index_path: Optional[Path] = None
+        custom_index_path: Optional[Path] = None,
+        exclude_chunk_ids: Optional[Set[str]] = None,
+        previous_query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Ищет релевантные документы с использованием гибридного поиска (BM25 + Dense + RRF)
@@ -598,11 +666,17 @@ class KnowledgeManager:
         if is_conversational_query(query):
             return []
 
-        # 1. Гибридный поиск по чанкам (BM25 + Dense + RRF)
+        # 1. Гибридный поиск по чанкам (BM25 + Dense + RRF) с поддержкой Query Fusion и exclude_chunk_ids
+        search_query = cls._fuse_contextual_query(query, previous_query)
+        exclude_set = set(exclude_chunk_ids) if exclude_chunk_ids else set()
+
         chunks_by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         try:
             engine = cls.get_search_engine(custom_dir, custom_index_path)
-            chunk_hits = engine.search(query, top_k=10, threshold=0.05)
+            # Динамический оверсэмплинг против голодания после фильтрации exclude_set
+            oversample_k = min(50, 15 + len(exclude_set) * 2)
+            raw_chunk_hits = engine.search(search_query, top_k=oversample_k, threshold=0.05)
+            chunk_hits = [ch for ch in raw_chunk_hits if ch.get("chunk_id") not in exclude_set][:15]
             for ch in chunk_hits:
                 fn = ch.get("filename")
                 if fn:
@@ -712,12 +786,43 @@ class KnowledgeManager:
                 matched_results.append(doc_entry)
                 processed_files.add(fn)
 
-        # 5. Сортировка по убыванию релевантности
-        matched_results.sort(
-            key=lambda d: (d.get("relevance_score", 0.0), len(d.get("matched_triggers", []))),
-            reverse=True
-        )
+        # 5. Cross-Reference Linker: авто-добор чанков из упомянутых в результатах файлов
+        try:
+            registered_files = set(documents.keys())
+            cross_candidates: List[Tuple[str, float]] = []
+            for m_doc in matched_results[:2]:
+                snippet_text = m_doc.get("content_snippet", "")
+                parent_score = m_doc.get("relevance_score", 0.7)
+                for ref_fn in cls._find_cross_references(snippet_text, registered_files):
+                    if ref_fn not in processed_files and not any(ref_fn == c[0] for c in cross_candidates):
+                        cross_candidates.append((ref_fn, parent_score))
 
+            # Добираем до 2 файлов по перекрестным ссылкам
+            for ref_fn, parent_score in cross_candidates[:2]:
+                doc = documents.get(ref_fn, {})
+                engine = cls.get_search_engine(custom_dir, custom_index_path)
+                ref_hits = engine.search(f"{query} {Path(ref_fn).stem}", top_k=8, threshold=0.01)
+                valid_ref_chunks = [
+                    ch for ch in ref_hits 
+                    if ch.get("filename") == ref_fn and ch.get("chunk_id") not in exclude_set
+                ][:2]
+
+                if valid_ref_chunks:
+                    ref_snippets = [c.get("text", "").strip() for c in valid_ref_chunks if c.get("text")]
+                    doc_entry = dict(doc)
+                    # Скор дочернего документа кэпируется чуть ниже родительского
+                    doc_entry["relevance_score"] = round(max(0.1, parent_score - 0.05), 3)
+                    doc_entry["matched_triggers"] = ["cross_reference"]
+                    doc_entry["chunk_id"] = valid_ref_chunks[0].get("chunk_id")
+                    doc_entry["content_snippet"] = "\n\n---\n\n".join(ref_snippets)
+                    doc_entry["matched_chunks"] = valid_ref_chunks
+                    doc_entry["is_cross_reference"] = True
+                    matched_results.append(doc_entry)
+                    processed_files.add(ref_fn)
+        except Exception as ce:
+            logger.debug(f"[KnowledgeManager] Ошибка Cross-Reference Linker: {ce}")
+
+        matched_results.sort(key=lambda x: x.get("relevance_score", 0.0), reverse=True)
         return matched_results
 
     @classmethod

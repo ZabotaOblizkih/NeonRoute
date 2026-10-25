@@ -1,30 +1,30 @@
 {
   "version": 1,
-  "last_synced_at": "2026-10-25T12:19:17.732956",
+  "last_synced_at": "2026-10-25T16:04:15.837151",
   "total_documents": 1,
   "documents": {
-    "16_457041.pdf": {
-      "filename": "16_457041.pdf",
-      "relative_path": "16_457041.pdf",
-      "path": "C:\\NeonRoute\\knowledge_base\\16_457041.pdf",
-      "mtime": 1792917066.9037707,
-      "hash": "5e80d36222aa4c8f5cf41073511a3c62f4050a0fdd82146f965902bd78a2909e",
-      "size_bytes": 750271,
-      "size_kb": 732.69,
-      "line_count": 1358,
-      "page_count": 35,
-      "updated_at": "2026-10-25T11:32:27.688530",
+    "architecture.md": {
+      "filename": "architecture.md",
+      "relative_path": "architecture.md",
+      "path": "C:\\NeonRoute\\knowledge_base\\architecture.md",
+      "mtime": 1792798197.6717322,
+      "hash": "0060dd455c4e9fe67c5616dd45d5d3966f1e0e6a4c94ade5f4faa0cb325ca491",
+      "size_bytes": 76511,
+      "size_kb": 74.72,
+      "line_count": 943,
+      "page_count": null,
+      "updated_at": "2026-10-25T14:17:32.506113",
       "triggers": [
-        "платформы",
-        "борта",
-        "автомобиля",
-        "страница",
-        "масса",
-        "кПа",
-        "таблица",
-        "R20",
-        "подъема",
-        "R17"
+        "NeonRoute",
+        "VRAM",
+        "файлов",
+        "кодовой",
+        "базы",
+        "init__",
+        "RAM",
+        "REST",
+        "CPU",
+        "системы"
       ],
       "status": "parsed"
     }
