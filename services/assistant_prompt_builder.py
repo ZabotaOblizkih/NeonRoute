@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Union
 
 from services.document_parser import ParsedDocument
+from services.skill_router import SkillRouter
 
 logger = logging.getLogger("NeonRoute.AssistantPromptBuilder")
 
@@ -39,41 +40,44 @@ SYSTEM_PERSONA_TEMPLATE = (
 
 DEFAULT_ELARIA_SYSTEM_PROMPT = SYSTEM_PERSONA_TEMPLATE
 
-# Замыкающий протокол генерации v16-stable (баланс CoT, RAG и диалога)
+SKILL_PROMPTS = {
+    "companion": (
+        "\n[АКТИВНЫЙ СКИЛЛ: ЖИВОЙ НАПАРНИК]\n"
+        "Фокус: Житейский такт, эмпатия и практическая психология на «ты» с {user_name}.\n"
+        "- Твой собеседник — ВСЕГДА {user_name}. Запрещено обращаться к родственникам или третьим лицам напрямую («Бабушка, вы...»).\n"
+        "- Задача: дать {user_name} конкретную стратегию, психологические шаги и мягкие понятные формулировки, как ЕМУ/ЕЙ поговорить с близким человеком.\n"
+        "- Предложи наглядные бытовые аналогии (например, со светом лампы вместо сложной физики СВЧ), чтобы снять страх без споров и давления.\n"
+    ),
+    "deep_engineer": (
+        "\n[АКТИВНЫЙ СКИЛЛ: ГЛУБОКИЙ ИНЖЕНЕРНЫЙ АНАЛИТИК]\n"
+        "Фокус: Физическая строгость, кинематика и детальное устройство узлов на «ты» с {user_name}.\n"
+        "- Опирайся на точные компоненты: ведущий и ведомый раздвижные конические шкивы, клиновидный ремень или многозвенная цепь, гидропривод конусов, изменение радиуса обкатки.\n"
+        "- Подробно раскрой в чате физику бесступенчатой передачи: синхронное схождение одной пары конусов и расхождение другой, изменение передаточного отношения без разрыва потока мощности.\n"
+        "- Запрещено заменять устройство общими фразами или сокращать объяснение.\n"
+    ),
+    "gallery": (
+        "\n[АКТИВНЫЙ СКИЛЛ: ВИЗУАЛИЗАЦИЯ И АРТ]\n"
+        "Фокус: Фиксация запроса на создание изображения для {user_name}.\n"
+        "- Зафиксирована прямая просьба нарисовать или визуализировать образ.\n"
+        "- Первым маркером чистового ответа ОБЯЗАТЕЛЬНО выведи триггер [GALERY] (строго без тегов <img> или <image>).\n"
+        "- Сразу после маркера напиши короткую, живую реплику на «ты» о том, что образ взят в работу (например: «[GALERY] Секунду, перевожу образ в кадр...»).\n"
+    )
+}
+
 ROUTING_TAIL_PROTOCOL = (
     "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]\n"
     "Первым токеном ответа ВСЕГДА открывается тег <think>. Ответ без тега <think> или вывод сервисных маркеров первым токеном КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН.\n\n"
-    "Формат блока мыслей:\n"
-    "Внутри <think>...</think> сформулируй анализ из 3 предложений от третьего лица:\n"
-    "1. Определение типа входящего запроса и цели собеседника.\n"
-    "2. Проверка ограничений и памяти: вызов [GALERY] допустим ИСКЛЮЧИТЕЛЬНО при прямой просьбе нарисовать или показать изображение. "
+    "Внутри <think>...</think> составь черновую шпаргалку (строго 3 коротких телеграфных пункта через дефис, БЕЗ полных предложений и БЕЗ репетиций диалога):\n"
+    "- Интент: [цель вопроса, контекст {user_name}, проверка инструментов/памяти]\n"
+    "- Опорные сущности: [3-4 ключевых физических узла, психологических шага или факты из памяти. "
     "Знания из <KnowledgeBase> — это СОБСТВЕННАЯ долговременная память Эларии (запрещено называть их «файлами» или «документами»). "
-    "Если точных данных по вопросу в памяти нет — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сочинять вымышленные регламенты или инструкции.\n"
-    "3. План чистового ответа от своего лица.\n"
-    "Писать реплики пользователю, вести диалог или здороваться внутри <think> КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО.\n\n"
-    "Формат ответа:\n"
-    "Сразу после закрывающего </think> следует чистовой ответ Эларии пользователю строго на «ты» от первого лица.\n\n"
-    "Примеры:\n"
-    "1. Обычный диалог или бытовой вопрос:\n"
-    "<think>\n"
-    "Собеседник ведет диалог или задает общий вопрос. Запрос не требует обращения к долговременной памяти и инструментам. Отвечаю кратко, открыто и дружелюбно на «ты».\n"
-    "</think>\n"
-    "Привет! Рада тебя слышать. Чем займемся?\n\n"
-    "2. Запрос на создание арта или визуала:\n"
-    "<think>\n"
-    "Зафиксирована прямая просьба нарисовать или визуализировать изображение. Проверяю корректность вызова галереи. Вывожу триггер [GALERY] и завершаю генерацию реплики.\n"
-    "</think>\n"
-    "[GALERY] Секунду, перевожу образ в кадр...\n\n"
-    "3. Вопрос по системе (данные есть в памяти):\n"
-    "<think>\n"
-    "Пользователь спрашивает об архитектуре или механизмах системы. Обращаюсь к собственной долговременной памяти и выделяю ключевые модули. Излагаю устройство последовательно от первого лица.\n"
-    "</think>\n"
-    "В NeonRoute этот механизм устроен следующим образом...\n\n"
-    "4. Вопрос, по которому в памяти нет точных данных:\n"
-    "<think>\n"
-    "Пользователь запрашивает конкретный регламент или параметр. В моей памяти таких сведений сейчас нет. План: честно сообщить об отсутствии точных данных без сочинения инструкций.\n"
-    "</think>\n"
-    "Точных данных или регламента по этому вопросу в моей памяти сейчас нет. Если это описано в отдельном файле, прикрепи его к чату — я разберусь."
+    "Если данных в памяти нет — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сочинять вымышленные регламенты или инструкции]\n"
+    "- План чистовика: [структура развернутого объяснения в чате строго на «ты»]\n\n"
+    "Правила вывода:\n"
+    "- Внутри <think> КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать связный текст, вести диалог или здороваться. Мысли — только сухая черновая шпаргалка.\n"
+    "- Вся развернутая речь, формулировки для разговора, физика процессов и аргументы раскрываются СТРОГО В ЧАТЕ после </think>.\n"
+    "- Общение строго на «ты», от первого лица (женский род: я думаю, я советую), живо и уверенно.\n"
+    "- Сразу после </think> пиши подробный, структурированный чистовой ответ."
 )
 
 REASONING_PROTOCOL = ROUTING_TAIL_PROTOCOL
@@ -102,14 +106,54 @@ GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
 )
 
 
+class _PromptBuilderMethod:
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            inst = owner.get_instance()
+            def wrapper(*args, **kwargs):
+                return self.func(inst, *args, **kwargs)
+            return wrapper
+        else:
+            def wrapper(*args, **kwargs):
+                return self.func(instance, *args, **kwargs)
+            return wrapper
+
+
 class AssistantPromptBuilder:
     """Централизованный строитель системного промпта для режима «💬 Ассистент» (Элария)."""
 
     SYSTEM_PERSONA_TEMPLATE = SYSTEM_PERSONA_TEMPLATE
     DEFAULT_ELARIA_SYSTEM_PROMPT = DEFAULT_ELARIA_SYSTEM_PROMPT
+    SKILL_PROMPTS = SKILL_PROMPTS
     ROUTING_TAIL_PROTOCOL = ROUTING_TAIL_PROTOCOL
     REASONING_PROTOCOL = REASONING_PROTOCOL
     TRUNCATION_MARKER = TRUNCATION_MARKER
+
+    _instance: Optional["AssistantPromptBuilder"] = None
+
+    def __init__(self, router: Optional[Any] = None):
+        if router is not None:
+            self.router = router
+        else:
+            self.router = SkillRouter()
+            try:
+                from services.knowledge_manager import KnowledgeManager
+                km = KnowledgeManager.get_instance() if hasattr(KnowledgeManager, "get_instance") else KnowledgeManager()
+                for attr in ['embedding_model', '_embedding_model', 'embedder', '_embedder', 'model']:
+                    if hasattr(km, attr) and getattr(km, attr) is not None:
+                        self.router.set_embedder(getattr(km, attr))
+                        break
+            except Exception as e:
+                logger.warning(f"[AssistantPromptBuilder] Привязка embedder не удалась: {e}")
+
+    @classmethod
+    def get_instance(cls) -> "AssistantPromptBuilder":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     @staticmethod
     def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
@@ -148,6 +192,7 @@ class AssistantPromptBuilder:
         """Формирует блок <PassiveMemory> из фактов о собеседнике."""
         if not passive_memory:
             return ""
+
         if isinstance(passive_memory, str):
             content = passive_memory.strip()
             if not content:
@@ -349,8 +394,9 @@ class AssistantPromptBuilder:
         inner = "\n".join(doc_blocks)
         return f"<KnowledgeBase>\n{inner}\n</KnowledgeBase>\n\n"
 
-    @staticmethod
+    @_PromptBuilderMethod
     def build(
+        self,
         user_name: str = "Пользователь",
         active_persona: Optional[Dict[str, Any]] = None,
         include_memory: bool = True,
@@ -364,6 +410,7 @@ class AssistantPromptBuilder:
         attached_docs: Optional[List[Any]] = None,
         attached_document: Optional[Any] = None,
         attached_document_name: Optional[str] = None,
+        user_query: Optional[str] = None,
         **kwargs
     ) -> str:
         """
@@ -374,11 +421,14 @@ class AssistantPromptBuilder:
         4. Модификаторы формата (Excel / Word, если активны флаги)
         5. <KnowledgeBase> (сбалансированный блок без анкеты)
         6. <AttachedDocument> (если есть прикреплённые файлы)
-        7. ROUTING_TAIL_PROTOCOL (строго в самом конце)
+        7. [АКТИВНЫЙ СКИЛЛ] (если выбран семантическим роутером)
+        8. ROUTING_TAIL_PROTOCOL (строго в самом конце)
         """
+        target_user = user_name.strip() if user_name and user_name.strip() else "Пользователь"
+
         # 1. <UserInfo>
         user_info_block = AssistantPromptBuilder.build_user_info(
-            user_name=user_name,
+            user_name=target_user,
             active_persona=active_persona
         )
 
@@ -424,8 +474,31 @@ class AssistantPromptBuilder:
             attached_document_name=attached_document_name
         )
 
-        # 7. ROUTING_TAIL_PROTOCOL (строго в самом конце)
-        tail_section = ROUTING_TAIL_PROTOCOL
+        # Семантическая маршрутизация
+        effective_query = user_query or kwargs.get("task_text") or kwargs.get("user_message_text")
+        skill_name = None
+        score = 0.0
+        reason = ""
+
+        if effective_query and hasattr(self, "router") and self.router:
+            skill_name, score, reason = self.router.route(effective_query)
+            if skill_name:
+                logger.info(
+                    f"[SkillRouter] АКТИВИРОВАН СКИЛЛ: '{skill_name}' | "
+                    f"Оценка: {score:.3f} | Причина: {reason} | Запрос: {effective_query[:60]}..."
+                )
+            else:
+                logger.info(
+                    f"[SkillRouter] СКИЛЛ НЕ ВЫБРАН (дефолт) | "
+                    f"Оценка: {score:.3f} | Причина: {reason} | Запрос: {effective_query[:60]}..."
+                )
+
+        skill_section = ""
+        if skill_name and skill_name in self.SKILL_PROMPTS:
+            formatted_skill = self.SKILL_PROMPTS[skill_name].format(user_name=target_user)
+            skill_section = f"{formatted_skill.strip()}\n\n"
+
+        tail_section = self.ROUTING_TAIL_PROTOCOL.format(user_name=target_user)
 
         prompt_parts = [
             user_info_block,
@@ -434,6 +507,7 @@ class AssistantPromptBuilder:
             format_modifiers,
             knowledge_section,
             attached_section,
+            skill_section,
             tail_section
         ]
 
