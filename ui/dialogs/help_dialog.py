@@ -205,3 +205,4 @@ class HelpDialog(QDialog):
 
         return card
 
+

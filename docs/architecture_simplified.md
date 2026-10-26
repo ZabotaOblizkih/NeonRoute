@@ -126,3 +126,4 @@
 | **Запуском процессов и выключением** | `services/process_manager.py`<br>`ui/workers/shutdown_worker.py` | Запуск LMS и Forge, безопасный выход с таймером на 8 секунд. |
 | **Меню, клавишами и диалогами** | `ui/builders/menu_builder.py`<br>`ui/main_window.py` | Горячие клавиши (Ctrl+N, Ctrl+F, F11), вызовы модальных окон. |
 
+
