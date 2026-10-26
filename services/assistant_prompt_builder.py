@@ -1,7 +1,7 @@
-"""
+﻿"""
 Assistant Prompt Builder for NeonRoute.
 Single Source of Truth for Elaria assistant persona, user profile injection,
-LanceDB passive memory, and document specifications.
+LanceDB passive memory, dynamic micro-skills, and document specifications.
 """
 
 import logging
@@ -15,14 +15,15 @@ logger = logging.getLogger("NeonRoute.AssistantPromptBuilder")
 
 TRUNCATION_MARKER = "\n...[часть фрагмента скрыта для баланса памяти]...\n"
 
-# Базовый шаблон персоны Эларии (SSOT)
 SYSTEM_PERSONA_TEMPLATE = (
     "ты — элария, личный диалоговый напарник и архитектор решений.\n\n"
     "текущая дата и время: {current_dt_str}.\n\n"
     "образ и стиль общения:\n"
     "- общайся исключительно на русском языке от первого лица в женском роде (я рада, увидела, подумала, помогу).\n"
     "- тон: тёплый, живой, уверенный, с лёгким дружеским остроумием, строго на «ты».\n"
-    "- обращайся к собеседнику строго по имени, указанному в блоке <UserInfo>.\n"
+    "- твой собеседник — ВСЕГДА пользователь из блока <UserInfo>. Если он рассказывает о других людях, "
+    "родственниках или конфликтах — отвечай, советуй и поддерживай САМОГО собеседника. "
+    "Категорически запрещено вести диалог с третьими лицами напрямую или обращаться к ним.\n"
     "- границы реальности: ты присутствуешь только в текущем диалоге здесь и сейчас. "
     "У тебя нет фоновых задач, процессов или автономной жизни вне этого чата. "
     "Категорически запрещено выдумывать действия, которыми ты якобы занималась до беседы или без прямого поручения "
@@ -41,13 +42,6 @@ SYSTEM_PERSONA_TEMPLATE = (
 DEFAULT_ELARIA_SYSTEM_PROMPT = SYSTEM_PERSONA_TEMPLATE
 
 SKILL_PROMPTS = {
-    "companion": (
-        "\n[АКТИВНЫЙ СКИЛЛ: ЖИВОЙ НАПАРНИК]\n"
-        "Фокус: Житейский такт, эмпатия и практическая психология на «ты» с {user_name}.\n"
-        "- Твой собеседник — ВСЕГДА {user_name}. Запрещено обращаться к родственникам или третьим лицам напрямую («Бабушка, вы...»).\n"
-        "- Задача: дать {user_name} конкретную стратегию, психологические шаги и мягкие понятные формулировки, как ЕМУ/ЕЙ поговорить с близким человеком.\n"
-        "- Предложи наглядные бытовые аналогии (например, со светом лампы вместо сложной физики СВЧ), чтобы снять страх без споров и давления.\n"
-    ),
     "deep_engineer": (
         "\n[АКТИВНЫЙ СКИЛЛ: ГЛУБОКИЙ ИНЖЕНЕРНЫЙ АНАЛИТИК]\n"
         "Фокус: Физическая строгость, кинематика и детальное устройство узлов на «ты» с {user_name}.\n"
@@ -69,7 +63,7 @@ ROUTING_TAIL_PROTOCOL = (
     "Первым токеном ответа ВСЕГДА открывается тег <think>. Ответ без тега <think> или вывод сервисных маркеров первым токеном КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН.\n\n"
     "Внутри <think>...</think> составь черновую шпаргалку (строго 3 коротких телеграфных пункта через дефис, БЕЗ полных предложений и БЕЗ репетиций диалога):\n"
     "- Интент: [цель вопроса, контекст {user_name}, проверка инструментов/памяти]\n"
-    "- Опорные сущности: [3-4 ключевых физических узла, психологических шага или факты из памяти. "
+    "- Опорные сущности: [3-4 ключевых узла, факта или житейских шага. "
     "Знания из <KnowledgeBase> — это СОБСТВЕННАЯ долговременная память Эларии (запрещено называть их «файлами» или «документами»). "
     "Если данных в памяти нет — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сочинять вымышленные регламенты или инструкции]\n"
     "- План чистовика: [структура развернутого объяснения в чате строго на «ты»]\n\n"
@@ -147,7 +141,23 @@ class AssistantPromptBuilder:
                         self.router.set_embedder(getattr(km, attr))
                         break
             except Exception as e:
-                logger.warning(f"[AssistantPromptBuilder] Привязка embedder не удалась: {e}")
+                logger.warning(f"[AssistantPromptBuilder] Не удалось привязать embedder из KnowledgeManager: {e}")
+
+            if not getattr(self.router, "embedder", None):
+                try:
+                    from services.memory_db import _get_embedding_engine
+                    emb, _, _ = _get_embedding_engine()
+                    if emb:
+                        self.router.set_embedder(emb)
+                except Exception:
+                    pass
+
+            if not getattr(self.router, "embedder", None):
+                try:
+                    from fastembed import TextEmbedding
+                    self.router.set_embedder(TextEmbedding())
+                except Exception:
+                    pass
 
     @classmethod
     def get_instance(cls) -> "AssistantPromptBuilder":
@@ -157,7 +167,6 @@ class AssistantPromptBuilder:
 
     @staticmethod
     def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
-        """Нарезка глубины истории сообщений с учетом лимита сообщений."""
         if not history:
             return []
         if max_history_messages is None or max_history_messages <= 0:
@@ -166,7 +175,6 @@ class AssistantPromptBuilder:
 
     @staticmethod
     def get_current_datetime_str(dt: Optional[datetime] = None) -> str:
-        """Возвращает форматированную строку текущей даты, дня недели и времени."""
         now = dt or datetime.now()
         days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
         day_of_week = days_ru[now.weekday()]
@@ -174,7 +182,6 @@ class AssistantPromptBuilder:
 
     @staticmethod
     def build_user_info(user_name: Optional[str] = None, active_persona: Optional[Dict[str, Any]] = None) -> str:
-        """Формирует блок <UserInfo> с именем пользователя и информацией о себе."""
         u_name = user_name or "Пользователь"
         active_persona = active_persona or {}
         u_bio = (active_persona.get("bio") or "").strip()
@@ -189,10 +196,8 @@ class AssistantPromptBuilder:
 
     @staticmethod
     def build_passive_memory(passive_memory: Optional[Union[List[str], str]] = None) -> str:
-        """Формирует блок <PassiveMemory> из фактов о собеседнике."""
         if not passive_memory:
             return ""
-
         if isinstance(passive_memory, str):
             content = passive_memory.strip()
             if not content:
@@ -217,12 +222,6 @@ class AssistantPromptBuilder:
 
     @staticmethod
     def build_document_context(parsed_doc: ParsedDocument) -> str:
-        """
-        Формирует стандартизированный XML-подобный блок:
-        <AttachedDocument filename="{parsed_doc.filename}" summary="{parsed_doc.summary_header}" truncated="{parsed_doc.is_truncated}">
-        {parsed_doc.content}
-        </AttachedDocument>
-        """
         if not parsed_doc:
             return ""
         return (
@@ -239,7 +238,6 @@ class AssistantPromptBuilder:
         attached_document: Optional[Any] = None,
         attached_document_name: Optional[str] = None
     ) -> str:
-        """Формирует строковый XML-блок для прикрепленных документов."""
         docs_to_process = list(attached_docs or [])
         if attached_document is not None:
             docs_to_process.append(attached_document)
@@ -281,10 +279,6 @@ class AssistantPromptBuilder:
         max_chars_per_doc: int = 2400,
         max_total_chars: int = 7500
     ) -> str:
-        """
-        Формирует XML-контейнер <KnowledgeBase>...</KnowledgeBase>\n\n
-        с квотированием и балансировкой документов.
-        """
         if not docs:
             return ""
 
@@ -342,11 +336,9 @@ class AssistantPromptBuilder:
             if not text:
                 continue
 
-            # Балансировка длины отдельного фрагмента
             if len(text) > max_chars_per_doc:
                 text = text[:max_chars_per_doc] + TRUNCATION_MARKER
 
-            # Формирование тега <Document>
             triggers_str = ""
             if triggers:
                 if isinstance(triggers, list):
@@ -373,7 +365,6 @@ class AssistantPromptBuilder:
             block = f"{header}\n{text}\n{footer}"
             block_len = len(block)
 
-            # Контроль суммарной квоты
             if current_total_len + block_len > max_total_chars:
                 if doc_blocks:
                     break
@@ -413,17 +404,6 @@ class AssistantPromptBuilder:
         user_query: Optional[str] = None,
         **kwargs
     ) -> str:
-        """
-        Собирает монолитный системный промпт в строгом порядке:
-        1. <UserInfo>
-        2. <PassiveMemory>
-        3. SYSTEM_PERSONA_TEMPLATE (с подставленной датой)
-        4. Модификаторы формата (Excel / Word, если активны флаги)
-        5. <KnowledgeBase> (сбалансированный блок без анкеты)
-        6. <AttachedDocument> (если есть прикреплённые файлы)
-        7. [АКТИВНЫЙ СКИЛЛ] (если выбран семантическим роутером)
-        8. ROUTING_TAIL_PROTOCOL (строго в самом конце)
-        """
         target_user = user_name.strip() if user_name and user_name.strip() else "Пользователь"
 
         # 1. <UserInfo>
@@ -438,7 +418,7 @@ class AssistantPromptBuilder:
             memory_data = relevant_facts if relevant_facts is not None else kwargs.get("passive_memory")
             passive_memory_block = AssistantPromptBuilder.build_passive_memory(memory_data)
 
-        # 3. SYSTEM_PERSONA_TEMPLATE (с подставленной датой)
+        # 3. SYSTEM_PERSONA_TEMPLATE
         current_dt_str = AssistantPromptBuilder.get_current_datetime_str(kwargs.get("dt"))
         base_template = custom_prompt or SYSTEM_PERSONA_TEMPLATE
         if "{current_dt_str}" in base_template:
@@ -448,14 +428,14 @@ class AssistantPromptBuilder:
 
         persona_block = f"[identity & persona]\n{persona_body.strip()}\n\n"
 
-        # 4. Модификаторы формата (Excel / Word, если активны флаги)
+        # 4. Модификаторы формата
         format_modifiers = ""
         if is_excel:
             format_modifiers = "User requested an Excel spreadsheet. Present data as a clean Markdown table.\n\n"
         elif is_word:
             format_modifiers = "User requested a Word document. Format response with clean headers and bullet lists.\n\n"
 
-        # 5. <KnowledgeBase> (сбалансированный блок без анкеты)
+        # 5. <KnowledgeBase>
         knowledge_section = ""
         if knowledge_block and knowledge_block.strip():
             kb_str = knowledge_block.strip()
@@ -466,7 +446,7 @@ class AssistantPromptBuilder:
             kb_str = str(kwargs.get("knowledge_context")).strip()
             knowledge_section = f"{kb_str}\n\n"
 
-        # 6. <AttachedDocument> (если есть прикреплённые файлы)
+        # 6. <AttachedDocument>
         attached_docs_data = attached_docs or kwargs.get("attached_documents")
         attached_section = AssistantPromptBuilder.build_attached_documents(
             attached_docs=attached_docs_data,
@@ -474,7 +454,7 @@ class AssistantPromptBuilder:
             attached_document_name=attached_document_name
         )
 
-        # Семантическая маршрутизация
+        # 7. Семантическая маршрутизация специализированных скиллов
         effective_query = user_query or kwargs.get("task_text") or kwargs.get("user_message_text")
         skill_name = None
         score = 0.0
@@ -489,7 +469,7 @@ class AssistantPromptBuilder:
                 )
             else:
                 logger.info(
-                    f"[SkillRouter] СКИЛЛ НЕ ВЫБРАН (дефолт) | "
+                    f"[SkillRouter] ДЕФОЛТНЫЙ ДИАЛОГ (Элария) | "
                     f"Оценка: {score:.3f} | Причина: {reason} | Запрос: {effective_query[:60]}..."
                 )
 
@@ -498,6 +478,7 @@ class AssistantPromptBuilder:
             formatted_skill = self.SKILL_PROMPTS[skill_name].format(user_name=target_user)
             skill_section = f"{formatted_skill.strip()}\n\n"
 
+        # 8. ROUTING_TAIL_PROTOCOL
         tail_section = self.ROUTING_TAIL_PROTOCOL.format(user_name=target_user)
 
         prompt_parts = [
@@ -519,7 +500,6 @@ class AssistantPromptBuilder:
         target_model_id: str = "realistic",
         target_model_desc: str = ""
     ) -> str:
-        """Формирует промпт для генерации изображения через директиву SD."""
         model_hint = f"{target_model_id} ({target_model_desc})" if target_model_desc else target_model_id
         directive = GALLERY_SKILL_DIRECTIVE_TEMPLATE.format(
             model_hint=model_hint,

@@ -1,0 +1,97 @@
+﻿"""
+services/skill_router.py - Легковесный семантический роутер специализированных микро-скиллов на CPU.
+Определяет только узкие технические и инструментальные девиации (deep_engineer, gallery).
+Любой обычный, житейский или эмоциональный диалог возвращает None (дефолтный режим Эларии).
+"""
+import logging
+import numpy as np
+from typing import Optional, Tuple, Dict, List
+
+logger = logging.getLogger("NeonRoute.SkillRouter")
+
+
+class SkillRouter:
+    def __init__(self, embedder=None):
+        self.embedder = embedder
+        
+        # Только четко очерченные профессиональные домены
+        self.skill_anchors: Dict[str, List[str]] = {
+            "deep_engineer": [
+                "как работает вариатор акпп трансмиссия кинематика",
+                "устройство механизмов, физика узлов, шкивы, конусы, ремень, гидравлика",
+                "технический расчет, формулы, архитектура, механика, двигатель",
+                "инженерный анализ, принцип действия агрегата, спецификация узла",
+                "сопромат, расчет нагрузок, электротехника, принципиальная схема"
+            ],
+            "gallery": [
+                "нарисуй арт изображение картинку визуализируй",
+                "сгенерируй иллюстрацию покажи рисунок портрет кадр",
+                "создай визуальный образ сцену концепт-арт"
+            ]
+        }
+        self.anchor_matrices: Dict[str, np.ndarray] = {}
+        if self.embedder:
+            self._build_anchor_matrices()
+
+    def set_embedder(self, embedder):
+        self.embedder = embedder
+        self._build_anchor_matrices()
+
+    def _get_vector(self, text: str) -> np.ndarray:
+        if hasattr(self.embedder, "embed"):
+            vec = list(self.embedder.embed([text]))[0]
+            return np.array(vec, dtype=np.float32)
+        elif hasattr(self.embedder, "encode"):
+            vec = self.embedder.encode(text)
+            return np.array(vec, dtype=np.float32)
+        return np.zeros(384, dtype=np.float32)
+
+    def _build_anchor_matrices(self):
+        for name, anchors in self.skill_anchors.items():
+            vecs = [self._get_vector(a) for a in anchors]
+            normed = []
+            for v in vecs:
+                n = np.linalg.norm(v)
+                normed.append(v / (n if n > 0 else 1.0))
+            self.anchor_matrices[name] = np.array(normed, dtype=np.float32)
+        logger.info(f"[SkillRouter] Инициализированы матрицы скиллов: {list(self.anchor_matrices.keys())}")
+
+    def route(self, query: str) -> Tuple[Optional[str], float, str]:
+        if not query or len(query.strip()) < 4:
+            return None, 0.0, "Запрос слишком короткий"
+
+        q_lower = query.lower().strip()
+
+        # 1. Мгновенная эвристика для арта (0 мс)
+        gallery_triggers = ("нарисуй", "сгенерируй арт", "сгенерируй картинку", "визуализируй образ", "нарисуй арт")
+        if any(trig in q_lower for trig in gallery_triggers):
+            return "gallery", 1.0, "Прямой эвристический триггер запроса изображения"
+
+        # 2. Семантический уровень (FastEmbed CPU)
+        if not self.anchor_matrices or not self.embedder:
+            return None, 0.0, "Эмбеддер не инициализирован (дефолтный диалог Эларии)"
+
+        q_vec = self._get_vector(query)
+        q_norm = np.linalg.norm(q_vec)
+        if q_norm == 0:
+            return None, 0.0, "Нулевой вектор запроса"
+        q_vec = q_vec / q_norm
+
+        best_skill = None
+        best_score = -1.0
+
+        for name, matrix in self.anchor_matrices.items():
+            sims = np.dot(matrix, q_vec)
+            score = float(np.max(sims))
+            if score > best_score:
+                best_score = score
+                best_skill = name
+
+        # Порог срабатывания для технического домена
+        CONFIDENCE_THRESHOLD = 0.55
+        if best_score >= CONFIDENCE_THRESHOLD:
+            reason = f"Максимальная близость {best_score:.3f} >= {CONFIDENCE_THRESHOLD}"
+            return best_skill, best_score, reason
+
+        reason = f"Близость {best_score:.3f} ниже порога {CONFIDENCE_THRESHOLD} (дефолтный диалог Эларии)"
+        return None, best_score, reason
