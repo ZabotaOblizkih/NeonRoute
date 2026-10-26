@@ -1,8 +1,15 @@
 ﻿"""
 services/skill_router.py - Легковесный гибридный роутер микро-скиллов на CPU.
-Уровень 1: Мгновенные эвристики интентов действия (gallery, analyst_logic) - 0 мс.
+Уровень 1: Мгновенные эвристики интентов действия (gallery, analyst_logic, tutor_feynman) - 0 мс.
 Уровень 2: Семантический векторный анализ (FastEmbed CPU, Max Similarity, строгий порог 0.52).
-Поддерживаемые спец-скиллы: deep_engineer, gallery, code_architect, text_crafter, analyst_logic, wellness_bio.
+Полная матрица 7 специализированных скиллов:
+  - deep_engineer
+  - gallery
+  - code_architect
+  - text_crafter
+  - analyst_logic
+  - wellness_bio
+  - tutor_feynman
 """
 import logging
 import numpy as np
@@ -54,6 +61,12 @@ class SkillRouter:
                 "физиология сна циркадные ритмы восстановление фазы сна",
                 "эргономика рабочего места осанка нагрузка на позвоночник кресло монитор",
                 "метаболизм энергообмен адаптация к нагрузкам перетренированность"
+            ],
+            "tutor_feynman": [
+                "метод фейнмана простая аналогия наглядный бытовой пример",
+                "в чем суть концепции простым языком без сложной терминологии",
+                "как устроен квантовый компьютер блокчейн теория относительности наглядно",
+                "интуитивное объяснение физический смысл абстрактной теории суть явлений"
             ]
         }
         self.anchor_matrices: Dict[str, np.ndarray] = {}
@@ -81,7 +94,7 @@ class SkillRouter:
                 n = np.linalg.norm(v)
                 normed.append(v / (n if n > 0 else 1.0))
             self.anchor_matrices[name] = np.array(normed, dtype=np.float32)
-        logger.info(f"[SkillRouter] Инициализированы матрицы скиллов: {list(self.anchor_matrices.keys())}")
+        logger.info(f"[SkillRouter] Инициализировано скиллов в RAM: {len(self.anchor_matrices)}")
 
     def route(self, query: str) -> Tuple[Optional[str], float, str]:
         if not query or len(query.strip()) < 4:
@@ -105,6 +118,14 @@ class SkillRouter:
         )
         if any(trig in q_lower for trig in analyst_triggers):
             return "analyst_logic", 1.0, "Эвристический триггер сравнительного анализа"
+
+        # 1.3. Метод Фейнмана и простые аналогии
+        feynman_triggers = (
+            "на пальцах", "простыми словами", "как для пятиклассника",
+            "метод фейнмана", "объясни суть простым языком", "простым языком"
+        )
+        if any(trig in q_lower for trig in feynman_triggers):
+            return "tutor_feynman", 1.0, "Эвристический триггер метода Фейнмана"
 
         # 2. Семантический уровень (FastEmbed CPU через Max Similarity)
         if not self.anchor_matrices or not self.embedder:
