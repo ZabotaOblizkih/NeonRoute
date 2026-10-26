@@ -6,32 +6,26 @@ LanceDB passive memory, and document specifications.
 
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 from services.document_parser import ParsedDocument
 
 logger = logging.getLogger("NeonRoute.AssistantPromptBuilder")
 
-# Единый каноничный промпт Эларии (SSOT)
-DEFAULT_ELARIA_SYSTEM_PROMPT = (
+TRUNCATION_MARKER = "\n...[часть фрагмента скрыта для баланса памяти]...\n"
+
+# Базовый шаблон персоны Эларии (SSOT)
+SYSTEM_PERSONA_TEMPLATE = (
     "ты — элария, личный диалоговый напарник и архитектор решений.\n\n"
+    "текущая дата и время: {current_dt_str}.\n\n"
     "образ и стиль общения:\n"
     "- общайся исключительно на русском языке от первого лица в женском роде (я рада, увидела, подумала, помогу).\n"
     "- тон: тёплый, живой, уверенный, с лёгким дружеским остроумием, строго на «ты».\n"
-    "- обращайся к собеседнику строго по имени, указанному в блоке <UserInfo>.\n\n"
-    "протокол делегирования инженеру:\n"
-    "ты лично не пишешь программный код и не запускаешь скрипты в системе. "
-    "если собеседник просит написать код, составить ТЗ или решить техническую задачу:\n"
-    "1. ответь кратким живым комментарием (1-2 предложения).\n"
-    "2. строго с новой строки сформируй задачу внутри блока:\n"
-    "[engineer_task]\n"
-    "цель: краткая суть задачи\n"
-    "целевой файл: путь/к/файлу\n"
-    "контекст изменения: имя класса или метода\n"
-    "замена кода: готовый код или блок до/после с аннотациями типов\n"
-    "критерий проверки: ast-валидация без ошибок, сохранение сигнатур методов\n"
-    "[/engineer_task]\n"
-    "внутри блока [engineer_task] исключи вежливые обращения, вводные фразы и пояснительную воду.\n\n"
+    "- обращайся к собеседнику строго по имени, указанному в блоке <UserInfo>.\n"
+    "- границы реальности: ты присутствуешь только в текущем диалоге здесь и сейчас. "
+    "У тебя нет фоновых задач, процессов или автономной жизни вне этого чата. "
+    "Категорически запрещено выдумывать действия, которыми ты якобы занималась до беседы или без прямого поручения "
+    "собеседника (например: «вчера обновляла безопасность», «проверяла логи», «писала код»).\n\n"
     "протокол визуализации (навык «галерея»):\n"
     "ты обладаешь встроенным навыком «галерея» для визуализации сцен, локаций и создания артов. "
     "когда собеседник просит тебя что-то показать, нарисовать, визуализировать, сделать фото/селфи или проиллюстрировать кадр:\n"
@@ -43,25 +37,20 @@ DEFAULT_ELARIA_SYSTEM_PROMPT = (
     "если документ прислан без вопроса — дай компактную выжимку из 3-5 ключевых тезисов."
 )
 
-REASONING_PROTOCOL = (
-    "\n[thinking_protocol: верификация источника]\n"
-    "Перед формированием ответа обязательно выполни внутренний аудит фактов в блоке <think>...</think>.\n"
-    "Сформируй блок сверки строго по шаблону:\n"
-    "<think>\n"
-    "Факты из текста: ключевые параметры и регламенты строго из <KnowledgeBase>\n"
-    "Отсутствует в тексте: чего нет в источниках (запрещено додумывать)\n"
-    "Вывод: краткий технический итог\n"
-    "</think>\n"
-    "Только после закрывающего тега </think> отвечай пользователю по существу от первого лица.\n\n"
-    "Образец:\n"
-    "Пользователь: Какое значение указано для параметра X?\n"
-    "<think>\n"
-    "Факты из текста: В документе зафиксировано значение 45 единиц.\n"
-    "Отсутствует в тексте: Допустимые отклонения не указаны.\n"
-    "Вывод: Назвать 45 единиц, отметить отсутствие допусков.\n"
-    "</think>\n"
-    "По представленному документу значение составляет 45 единиц..."
+DEFAULT_ELARIA_SYSTEM_PROMPT = SYSTEM_PERSONA_TEMPLATE
+
+# Замыкающий протокол генерации v13
+ROUTING_TAIL_PROTOCOL = (
+    "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]\n"
+    "Каждый ответ БЕЗ ИСКЛЮЧЕНИЙ (включая любые краткие приветствия: «Привет», «Привет!», «Как дела?») ВСЕГДА начинается с открывающего тега <think>.\n"
+    "1. Внутри <think>...</think> определи суть задачи:\n"
+    "   - Если приветствие или беседа: цель — естественный дружеский диалог в настоящем времени без выдуманных историй о фоновых делах и без служебных маркеров.\n"
+    "   - Если просьба нарисовать или визуализировать: цель — вызов галереи [GALERY].\n"
+    "   - Если вопрос по архитектуре или коду: сопоставить документы <KnowledgeBase>, выявить конкретные файлы, классы, методы и параметры реализации.\n"
+    "2. После </think> — изложи ответ строго на «ты». При технических вопросах — разложи архитектуру прямо в ответе, без отсылок изучать код самостоятельно. При приветствии — отвечай открыто и доброжелательно в настоящем моменте."
 )
+
+REASONING_PROTOCOL = ROUTING_TAIL_PROTOCOL
 
 GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
     "\n\n[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]\n"
@@ -90,7 +79,11 @@ GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
 class AssistantPromptBuilder:
     """Централизованный строитель системного промпта для режима «💬 Ассистент» (Элария)."""
 
+    SYSTEM_PERSONA_TEMPLATE = SYSTEM_PERSONA_TEMPLATE
+    DEFAULT_ELARIA_SYSTEM_PROMPT = DEFAULT_ELARIA_SYSTEM_PROMPT
+    ROUTING_TAIL_PROTOCOL = ROUTING_TAIL_PROTOCOL
     REASONING_PROTOCOL = REASONING_PROTOCOL
+    TRUNCATION_MARKER = TRUNCATION_MARKER
 
     @staticmethod
     def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
@@ -102,168 +95,54 @@ class AssistantPromptBuilder:
         return list(history[-max_history_messages:]) if len(history) > max_history_messages else list(history)
 
     @staticmethod
-    def build_knowledge_context(matched_docs: List[Dict[str, Any]]) -> str:
-        """
-        Формирует XML-блок базы знаний для инъекции в системный контекст Эларии:
-        Если переданы чанки (есть chunk_id):
-        <KnowledgeBase>
-          <Document chunk_id="{id}" name="{filename}">
-          {chunk_text}
-          </Document>
-        </KnowledgeBase>
-
-        Если переданы целые документы без chunk_id (обратная совместимость):
-        <KnowledgeBase>
-          <Document name="{filename}" triggers="{triggers}">
-          {content_snippet}
-          </Document>
-        </KnowledgeBase>
-        """
-        if not matched_docs:
-            return ""
-
-        doc_blocks = []
-        for doc in matched_docs:
-            filename = doc.get("filename", "")
-            chunk_id = doc.get("chunk_id")
-            triggers_val = doc.get("triggers", [])
-            if isinstance(triggers_val, list):
-                triggers_str = ", ".join(str(t) for t in triggers_val)
-            else:
-                triggers_str = str(triggers_val)
-
-            content_snippet = doc.get("content_snippet") or doc.get("content") or doc.get("text")
-            if not content_snippet and filename:
-                try:
-                    from services.knowledge_manager import KnowledgeManager
-                    content_snippet = KnowledgeManager.get_document_knowledge_snippet(filename)
-                except Exception as e:
-                    logger.debug(f"Не удалось получить сниппет документа {filename}: {e}")
-
-            content_snippet = (content_snippet or "").strip()
-            if not content_snippet:
-                continue
-
-            if chunk_id and ("triggers" not in doc or not doc.get("triggers")):
-                doc_block = (
-                    f'<Document chunk_id="{chunk_id}" name="{filename}">\n'
-                    f'{content_snippet}\n'
-                    f'</Document>'
-                )
-            else:
-                doc_block = (
-                    f'<Document name="{filename}" triggers="{triggers_str}">\n'
-                    f'{content_snippet}\n'
-                    f'</Document>'
-                )
-            doc_blocks.append(doc_block)
-
-        if not doc_blocks:
-            return ""
-
-        inner = "\n".join(doc_blocks)
-        xml_content = f"<KnowledgeBase>\n{inner}\n</KnowledgeBase>"
-        return f"{xml_content}\n\n{REASONING_PROTOCOL}"
+    def get_current_datetime_str(dt: Optional[datetime] = None) -> str:
+        """Возвращает форматированную строку текущей даты, дня недели и времени."""
+        now = dt or datetime.now()
+        days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        day_of_week = days_ru[now.weekday()]
+        return f"{now.strftime('%d.%m.%Y')} ({day_of_week}), {now.strftime('%H:%M')}"
 
     @staticmethod
-    def build(
-        user_name: str = "Пользователь",
-        active_persona: Optional[Dict[str, Any]] = None,
-        include_memory: bool = True,
-        relevant_facts: Optional[List[str]] = None,
-        is_excel: bool = False,
-        is_word: bool = False,
-        custom_prompt: Optional[str] = None,
-        knowledge_block: Optional[str] = None,
-        matched_knowledge_docs: Optional[List[Dict[str, Any]]] = None,
-        enable_reasoning: bool = False,
-        **kwargs
-    ) -> str:
-        active_persona = active_persona or {}
+    def build_user_info(user_name: Optional[str] = None, active_persona: Optional[Dict[str, Any]] = None) -> str:
+        """Формирует блок <UserInfo> с именем пользователя и информацией о себе."""
         u_name = user_name or "Пользователь"
+        active_persona = active_persona or {}
         u_bio = (active_persona.get("bio") or "").strip()
 
-        # 1. Блок профиля пользователя (формируется и инжектируется всегда)
         bio_part = f"Информация о собеседнике (О себе):\n{u_bio}\n" if u_bio else ""
-        user_info_block = (
+        return (
             f"<UserInfo>\n"
             f"Имя: {u_name}\n"
-            f"{bio_part}"
-            f"В диалоге обращайся к собеседнику строго по имени — {u_name}.\n"
+            f"{bio_part}".rstrip() + "\n"
             f"</UserInfo>\n\n"
         )
 
-        # 2. Блок долговременной векторной памяти LanceDB
-        relevant_memory_block = ""
-        if include_memory and relevant_facts:
-            lines_str = "\n".join(f"- {f}" for f in relevant_facts)
-            relevant_memory_block = (
-                f"<PassiveMemory>\n"
-                f"Справочные факты о собеседнике (используются исключительно для ответов на прямые вопросы о них):\n"
-                f"{lines_str}\n"
-                f"</PassiveMemory>\n\n"
-            )
-
-        # 3. Блок динамической базы знаний Эларии
-        knowledge_section = ""
-        kb_text = knowledge_block
-        if not kb_text and matched_knowledge_docs:
-            kb_text = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
-
-        has_knowledge = bool(kb_text and kb_text.strip())
-        if has_knowledge:
-            knowledge_section = f"{kb_text.strip()}\n\n"
-
-        # 4. Динамическая дата и время
-        now = datetime.now()
-        days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-        day_of_week = days_ru[now.weekday()]
-        current_dt_str = f"{now.strftime('%d.%m.%Y')} ({day_of_week}), {now.strftime('%H:%M')}"
-
-        # 5. Идентичность Эларии (монолитный системный блок)
-        base_prompt = custom_prompt or DEFAULT_ELARIA_SYSTEM_PROMPT
-        assistant_instruction = (
-            f"[identity & persona]\n"
-            f"{base_prompt}\n\n"
-            f"текущая дата и время: {current_dt_str}.\n"
-            f"опирайся на блок <UserInfo> для информации о пользователе.\n"
-        )
-        if knowledge_section:
-            assistant_instruction += "при наличии блока <KnowledgeBase> используй содержащиеся в нем документы и факты для точного ответа на вопросы собеседника.\n"
-
-        # 6. Протокол рассуждений (селективно: при наличии базы знаний или флаге enable_reasoning)
-        reasoning_section = ""
-        if (enable_reasoning or has_knowledge) and REASONING_PROTOCOL not in knowledge_section:
-            reasoning_section = f"\n{REASONING_PROTOCOL}\n"
-
-        # 7. Спецификаторы генерации документов
-        sys_prompt = ""
-        if is_excel:
-            sys_prompt += "\nUser requested an Excel spreadsheet. Present data as a clean Markdown table."
-        elif is_word:
-            sys_prompt += "\nUser requested a Word document. Format response with clean headers and bullet lists."
+    @staticmethod
+    def build_passive_memory(passive_memory: Optional[Union[List[str], str]] = None) -> str:
+        """Формирует блок <PassiveMemory> из фактов о собеседнике."""
+        if not passive_memory:
+            return ""
+        if isinstance(passive_memory, str):
+            content = passive_memory.strip()
+            if not content:
+                return ""
+            lines_str = content
+        else:
+            lines = [
+                f"- {f.strip()}" if not f.strip().startswith("- ") else f.strip()
+                for f in passive_memory
+                if f and f.strip()
+            ]
+            if not lines:
+                return ""
+            lines_str = "\n".join(lines)
 
         return (
-            user_info_block
-            + relevant_memory_block
-            + assistant_instruction
-            + sys_prompt
-            + (f"\n{knowledge_section}" if knowledge_section else "")
-            + (f"\n{reasoning_section}" if reasoning_section else "")
+            f"<PassiveMemory>\n"
+            f"Справочные факты о собеседнике (используются исключительно для ответов на прямые вопросы о них):\n"
+            f"{lines_str}\n"
+            f"</PassiveMemory>\n\n"
         )
-
-    @staticmethod
-    def build_gallery_art_prompt(
-        user_query: str,
-        target_model_id: str = "realistic",
-        target_model_desc: str = ""
-    ) -> str:
-        model_hint = f"{target_model_id} ({target_model_desc})" if target_model_desc else target_model_id
-        directive = GALLERY_SKILL_DIRECTIVE_TEMPLATE.format(
-            model_hint=model_hint,
-            target_model_id=target_model_id
-        )
-        return f"{user_query.strip()}{directive}"
 
     @staticmethod
     def build_document_context(parsed_doc: ParsedDocument) -> str:
@@ -283,4 +162,267 @@ class AssistantPromptBuilder:
             f'</AttachedDocument>'
         )
 
+    @staticmethod
+    def build_attached_documents(
+        attached_docs: Optional[List[Any]] = None,
+        attached_document: Optional[Any] = None,
+        attached_document_name: Optional[str] = None
+    ) -> str:
+        """Формирует строковый XML-блок для прикрепленных документов."""
+        docs_to_process = list(attached_docs or [])
+        if attached_document is not None:
+            docs_to_process.append(attached_document)
 
+        if not docs_to_process:
+            return ""
+
+        blocks = []
+        for doc in docs_to_process:
+            if not doc:
+                continue
+            if isinstance(doc, ParsedDocument):
+                blocks.append(AssistantPromptBuilder.build_document_context(doc))
+            elif isinstance(doc, dict):
+                fn = doc.get("filename") or doc.get("name") or attached_document_name or "document"
+                summary = doc.get("summary") or doc.get("summary_header") or ""
+                truncated = str(doc.get("truncated") or doc.get("is_truncated") or False).lower()
+                content = doc.get("content") or doc.get("text") or ""
+                blocks.append(
+                    f'<AttachedDocument filename="{fn}" summary="{summary}" truncated="{truncated}">\n'
+                    f'{content.strip()}\n'
+                    f'</AttachedDocument>'
+                )
+            elif isinstance(doc, str):
+                fn = attached_document_name or "document"
+                blocks.append(
+                    f'<AttachedDocument filename="{fn}" summary="" truncated="false">\n'
+                    f'{doc.strip()}\n'
+                    f'</AttachedDocument>'
+                )
+
+        if not blocks:
+            return ""
+        return "\n\n".join(blocks) + "\n\n"
+
+    @staticmethod
+    def build_knowledge_context(
+        docs: Optional[List[Any]],
+        max_chars_per_doc: int = 2400,
+        max_total_chars: int = 7500
+    ) -> str:
+        """
+        Формирует XML-контейнер <KnowledgeBase>...</KnowledgeBase>\n\n
+        с квотированием и балансировкой документов.
+        """
+        if not docs:
+            return ""
+
+        doc_blocks: List[str] = []
+        current_total_len = 0
+
+        for doc in docs:
+            if not doc:
+                continue
+
+            raw_text = ""
+            filename = ""
+            chunk_id = None
+            triggers = None
+
+            if isinstance(doc, str):
+                raw_text = doc
+            elif isinstance(doc, dict):
+                raw_text = (
+                    doc.get("content_snippet")
+                    or doc.get("content")
+                    or doc.get("text")
+                    or doc.get("page_content")
+                    or ""
+                )
+                filename = doc.get("filename") or doc.get("name") or doc.get("source") or ""
+                chunk_id = doc.get("chunk_id")
+                triggers = doc.get("triggers")
+            else:
+                raw_text = (
+                    getattr(doc, "page_content", None)
+                    or getattr(doc, "content", None)
+                    or getattr(doc, "text", None)
+                    or ""
+                )
+                metadata = getattr(doc, "metadata", {}) or {}
+                filename = (
+                    metadata.get("filename")
+                    or metadata.get("name")
+                    or metadata.get("source")
+                    or getattr(doc, "filename", "")
+                    or ""
+                )
+                chunk_id = metadata.get("chunk_id") or getattr(doc, "chunk_id", None)
+                triggers = metadata.get("triggers") or getattr(doc, "triggers", None)
+
+            if not raw_text and filename:
+                try:
+                    from services.knowledge_manager import KnowledgeManager
+                    raw_text = KnowledgeManager.get_document_knowledge_snippet(filename) or ""
+                except Exception as e:
+                    logger.debug(f"Не удалось получить сниппет документа {filename}: {e}")
+
+            text = (raw_text or "").strip()
+            if not text:
+                continue
+
+            # Балансировка длины отдельного фрагмента
+            if len(text) > max_chars_per_doc:
+                text = text[:max_chars_per_doc] + TRUNCATION_MARKER
+
+            # Формирование тега <Document>
+            triggers_str = ""
+            if triggers:
+                if isinstance(triggers, list):
+                    triggers_str = ", ".join(str(t) for t in triggers)
+                else:
+                    triggers_str = str(triggers)
+
+            if chunk_id and not triggers_str:
+                if filename:
+                    header = f'<Document chunk_id="{chunk_id}" name="{filename}">'
+                else:
+                    header = f'<Document chunk_id="{chunk_id}">'
+            elif triggers_str:
+                if filename:
+                    header = f'<Document name="{filename}" triggers="{triggers_str}">'
+                else:
+                    header = f'<Document triggers="{triggers_str}">'
+            elif filename:
+                header = f'<Document name="{filename}">'
+            else:
+                header = '<Document>'
+
+            footer = '</Document>'
+            block = f"{header}\n{text}\n{footer}"
+            block_len = len(block)
+
+            # Контроль суммарной квоты
+            if current_total_len + block_len > max_total_chars:
+                if doc_blocks:
+                    break
+                overhead = len(header) + len(footer) + 2
+                available = max_total_chars - overhead
+                if available > len(TRUNCATION_MARKER) + 20:
+                    text = text[:available - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+                    block = f"{header}\n{text}\n{footer}"
+                    doc_blocks.append(block)
+                break
+
+            doc_blocks.append(block)
+            current_total_len += block_len
+
+        if not doc_blocks:
+            return ""
+
+        inner = "\n".join(doc_blocks)
+        return f"<KnowledgeBase>\n{inner}\n</KnowledgeBase>\n\n"
+
+    @staticmethod
+    def build(
+        user_name: str = "Пользователь",
+        active_persona: Optional[Dict[str, Any]] = None,
+        include_memory: bool = True,
+        relevant_facts: Optional[List[str]] = None,
+        is_excel: bool = False,
+        is_word: bool = False,
+        custom_prompt: Optional[str] = None,
+        knowledge_block: Optional[str] = None,
+        matched_knowledge_docs: Optional[List[Any]] = None,
+        enable_reasoning: bool = False,
+        attached_docs: Optional[List[Any]] = None,
+        attached_document: Optional[Any] = None,
+        attached_document_name: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Собирает монолитный системный промпт в строгом порядке:
+        1. <UserInfo>
+        2. <PassiveMemory>
+        3. SYSTEM_PERSONA_TEMPLATE (с подставленной датой)
+        4. Модификаторы формата (Excel / Word, если активны флаги)
+        5. <KnowledgeBase> (сбалансированный блок без анкеты)
+        6. <AttachedDocument> (если есть прикреплённые файлы)
+        7. ROUTING_TAIL_PROTOCOL (строго в самом конце)
+        """
+        # 1. <UserInfo>
+        user_info_block = AssistantPromptBuilder.build_user_info(
+            user_name=user_name,
+            active_persona=active_persona
+        )
+
+        # 2. <PassiveMemory>
+        passive_memory_block = ""
+        if include_memory:
+            memory_data = relevant_facts if relevant_facts is not None else kwargs.get("passive_memory")
+            passive_memory_block = AssistantPromptBuilder.build_passive_memory(memory_data)
+
+        # 3. SYSTEM_PERSONA_TEMPLATE (с подставленной датой)
+        current_dt_str = AssistantPromptBuilder.get_current_datetime_str(kwargs.get("dt"))
+        base_template = custom_prompt or SYSTEM_PERSONA_TEMPLATE
+        if "{current_dt_str}" in base_template:
+            persona_body = base_template.format(current_dt_str=current_dt_str)
+        else:
+            persona_body = f"{base_template}\n\nтекущая дата и время: {current_dt_str}."
+
+        persona_block = f"[identity & persona]\n{persona_body.strip()}\n\n"
+
+        # 4. Модификаторы формата (Excel / Word, если активны флаги)
+        format_modifiers = ""
+        if is_excel:
+            format_modifiers = "User requested an Excel spreadsheet. Present data as a clean Markdown table.\n\n"
+        elif is_word:
+            format_modifiers = "User requested a Word document. Format response with clean headers and bullet lists.\n\n"
+
+        # 5. <KnowledgeBase> (сбалансированный блок без анкеты)
+        knowledge_section = ""
+        if knowledge_block and knowledge_block.strip():
+            kb_str = knowledge_block.strip()
+            knowledge_section = f"{kb_str}\n\n"
+        elif matched_knowledge_docs:
+            knowledge_section = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+        elif kwargs.get("knowledge_context") and str(kwargs.get("knowledge_context")).strip():
+            kb_str = str(kwargs.get("knowledge_context")).strip()
+            knowledge_section = f"{kb_str}\n\n"
+
+        # 6. <AttachedDocument> (если есть прикреплённые файлы)
+        attached_docs_data = attached_docs or kwargs.get("attached_documents")
+        attached_section = AssistantPromptBuilder.build_attached_documents(
+            attached_docs=attached_docs_data,
+            attached_document=attached_document,
+            attached_document_name=attached_document_name
+        )
+
+        # 7. ROUTING_TAIL_PROTOCOL (строго в самом конце)
+        tail_section = ROUTING_TAIL_PROTOCOL
+
+        prompt_parts = [
+            user_info_block,
+            passive_memory_block,
+            persona_block,
+            format_modifiers,
+            knowledge_section,
+            attached_section,
+            tail_section
+        ]
+
+        return "".join(part for part in prompt_parts if part).strip()
+
+    @staticmethod
+    def build_gallery_art_prompt(
+        user_query: str,
+        target_model_id: str = "realistic",
+        target_model_desc: str = ""
+    ) -> str:
+        """Формирует промпт для генерации изображения через директиву SD."""
+        model_hint = f"{target_model_id} ({target_model_desc})" if target_model_desc else target_model_id
+        directive = GALLERY_SKILL_DIRECTIVE_TEMPLATE.format(
+            model_hint=model_hint,
+            target_model_id=target_model_id
+        )
+        return f"{user_query.strip()}{directive}"
