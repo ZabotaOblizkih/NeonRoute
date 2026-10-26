@@ -1,6 +1,6 @@
 ﻿"""
 services/skill_router.py - Легковесный семантический роутер специализированных микро-скиллов на CPU.
-Определяет только узкие технические и инструментальные девиации (deep_engineer, gallery).
+Определяет узкие технические, программные и инструментальные девиации (deep_engineer, gallery, code_architect).
 Любой обычный, житейский или эмоциональный диалог возвращает None (дефолтный режим Эларии).
 """
 import logging
@@ -14,7 +14,6 @@ class SkillRouter:
     def __init__(self, embedder=None):
         self.embedder = embedder
         
-        # Только четко очерченные профессиональные домены
         self.skill_anchors: Dict[str, List[str]] = {
             "deep_engineer": [
                 "как работает вариатор акпп трансмиссия кинематика",
@@ -27,6 +26,13 @@ class SkillRouter:
                 "нарисуй арт изображение картинку визуализируй",
                 "сгенерируй иллюстрацию покажи рисунок портрет кадр",
                 "создай визуальный образ сцену концепт-арт"
+            ],
+            "code_architect": [
+                "напиши скрипт код функция python powershell bash",
+                "исправь ошибку баг исключение trace exception traceback",
+                "архитектура программного обеспечения рефакторинг паттерн проектирования",
+                "база данных sql запрос fastapi pydantic асинхронный код asyncio",
+                "реализуй алгоритм типизация type hints модульные тесты pytest"
             ]
         }
         self.anchor_matrices: Dict[str, np.ndarray] = {}
@@ -62,12 +68,12 @@ class SkillRouter:
 
         q_lower = query.lower().strip()
 
-        # 1. Мгновенная эвристика для арта (0 мс)
+        # 1. Быстрая эвристика для арта (0 мс)
         gallery_triggers = ("нарисуй", "сгенерируй арт", "сгенерируй картинку", "визуализируй образ", "нарисуй арт")
         if any(trig in q_lower for trig in gallery_triggers):
             return "gallery", 1.0, "Прямой эвристический триггер запроса изображения"
 
-        # 2. Семантический уровень (FastEmbed CPU)
+        # 2. Семантический уровень (FastEmbed CPU через Max Similarity)
         if not self.anchor_matrices or not self.embedder:
             return None, 0.0, "Эмбеддер не инициализирован (дефолтный диалог Эларии)"
 
@@ -87,8 +93,7 @@ class SkillRouter:
                 best_score = score
                 best_skill = name
 
-        # Порог срабатывания для технического домена
-        CONFIDENCE_THRESHOLD = 0.55
+        CONFIDENCE_THRESHOLD = 0.53
         if best_score >= CONFIDENCE_THRESHOLD:
             reason = f"Максимальная близость {best_score:.3f} >= {CONFIDENCE_THRESHOLD}"
             return best_skill, best_score, reason
