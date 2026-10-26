@@ -277,17 +277,7 @@ class ChatMessageWidget(QWidget):
         if self.knowledge_sources:
             self.knowledge_hud.set_sources(self.knowledge_sources)
 
-        from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
-        self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
-        bubble_layout.addWidget(self.thought_spoiler)
-        self.thought_spoiler.setVisible(False)
-        self.thought_spoiler.hide()
-        if self.thought_data and isinstance(self.thought_data, dict):
-            self.set_thought_data(
-                text=self.thought_data.get("content", ""),
-                duration=float(self.thought_data.get("duration", 0.0)),
-                token_count=int(self.thought_data.get("token_count", 0))
-            )
+
 
         is_art_caption = bool(
             self.image_path and self.raw_text and (
@@ -338,6 +328,18 @@ class ChatMessageWidget(QWidget):
             self.text_browser.setHtml(html_content)
             bubble_layout.addWidget(self.text_browser)
             self._adjust_text_height()
+
+        from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
+        self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+        bubble_layout.addWidget(self.thought_spoiler)
+        self.thought_spoiler.setVisible(False)
+        self.thought_spoiler.hide()
+        if self.thought_data and isinstance(self.thought_data, dict):
+            self.set_thought_data(
+                text=self.thought_data.get("content", ""),
+                duration=float(self.thought_data.get("duration", 0.0)),
+                token_count=int(self.thought_data.get("token_count", 0))
+            )
 
         self.image_preview_lbl = QLabel(self.bubble_container)
         self.image_preview_lbl.setObjectName("MessageImagePreview")
@@ -581,10 +583,14 @@ class ChatMessageWidget(QWidget):
                     selection-color: #000000;
                 }}
             """)
-            if hasattr(self, "bubble_layout") and self.bubble_layout:
-                self.bubble_layout.insertWidget(1, self.text_browser)
-            elif self.bubble_container and self.bubble_container.layout():
-                self.bubble_container.layout().insertWidget(1, self.text_browser)
+            layout_ref = getattr(self, "bubble_layout", None) or (self.bubble_container.layout() if self.bubble_container else None)
+            if layout_ref:
+                target_idx = 1
+                if getattr(self, "thought_spoiler", None):
+                    sp_idx = layout_ref.indexOf(self.thought_spoiler)
+                    if sp_idx >= 0:
+                        target_idx = sp_idx
+                layout_ref.insertWidget(target_idx, self.text_browser)
 
         if self.text_browser:
             self.text_browser.setHtml(self._markdown_to_html(self.raw_text))
@@ -841,10 +847,7 @@ class ChatMessageWidget(QWidget):
             target_layout.addWidget(accordion)
         elif self.bubble_container and self.bubble_container.layout():
             layout = self.bubble_container.layout()
-            if layout.count() > 1:
-                layout.insertWidget(layout.count() - 1, accordion)
-            else:
-                layout.addWidget(accordion)
+            layout.addWidget(accordion)
 
     def set_generation_params(self, params: dict):
         self.generation_params = params
@@ -1052,10 +1055,7 @@ class ChatMessageWidget(QWidget):
         if not self.audio_widget and audio_path.exists() and self.bubble_container:
             self.audio_widget = AudioPlayerWidget(audio_path, self.bubble_container)
             layout = self.bubble_container.layout()
-            if layout.count() > 1:
-                layout.insertWidget(layout.count() - 1, self.audio_widget)
-            else:
-                layout.addWidget(self.audio_widget)
+            layout.addWidget(self.audio_widget)
 
     def add_art_proposal_chip(self, prompt_text: str, on_confirm_callback):
         if getattr(self, "art_proposal_chip", None) is not None:
@@ -1086,7 +1086,7 @@ class ChatMessageWidget(QWidget):
             
         self.art_proposal_chip.clicked.connect(_on_click)
         layout = self.bubble_container.layout()
-        layout.insertWidget(layout.count() - 1, self.art_proposal_chip)
+        layout.addWidget(self.art_proposal_chip)
 
     def set_image(self, img_path: Union[str, Path]):
         p = Path(img_path)
@@ -1125,10 +1125,7 @@ class ChatMessageWidget(QWidget):
             card = FileCardWidget(file_path, self.bubble_container)
             target_w = card
 
-        if layout.count() > 1:
-            layout.insertWidget(layout.count() - 1, target_w)
-        else:
-            layout.addWidget(target_w)
+        layout.addWidget(target_w)
             
         # АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Пересчет ширины при вставке медиа
         self._refresh_layout()
@@ -1316,10 +1313,7 @@ class ChatMessageWidget(QWidget):
             card.run_script_requested.connect(self.run_script_requested.emit)
         if self.bubble_container and self.bubble_container.layout():
             layout = self.bubble_container.layout()
-            if layout.count() > 1:
-                layout.insertWidget(layout.count() - 1, card)
-            else:
-                layout.addWidget(card)
+            layout.addWidget(card)
         return card
 
     def add_console_spoiler(
@@ -1348,10 +1342,7 @@ class ChatMessageWidget(QWidget):
         )
         if self.bubble_container and self.bubble_container.layout():
             layout = self.bubble_container.layout()
-            if layout.count() > 1:
-                layout.insertWidget(layout.count() - 1, spoiler)
-            else:
-                layout.addWidget(spoiler)
+            layout.addWidget(spoiler)
         return spoiler
 
     def _markdown_to_html(self, text: str) -> str:
