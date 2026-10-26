@@ -598,6 +598,14 @@ class MainWindow(
         except Exception as e:
             logger.warning(f"[NeonRoute] Не удалось запустить фоновую синхронизацию знаний: {e}")
 
+        # Инвалидация базы знаний на лету (KnowledgeWatcher)
+        try:
+            from services.knowledge_watcher import KnowledgeWatcher
+            self.knowledge_watcher = KnowledgeWatcher(parent=self)
+            self.knowledge_watcher.start()
+        except Exception as e:
+            logger.warning(f"[NeonRoute] Не удалось запустить KnowledgeWatcher: {e}")
+
     def _on_knowledge_sync_finished(self, registry_data: dict):
         total = registry_data.get("total_documents", len(registry_data.get("documents", {})))
         logger.info(f"[NeonRoute] Фоновая синхронизация базы знаний завершена: {total} документов.")
@@ -1542,6 +1550,12 @@ class MainWindow(
             try:
                 if self._knowledge_sync_worker.isRunning():
                     self._knowledge_sync_worker.wait(400)
+            except Exception:
+                pass
+
+        if hasattr(self, "knowledge_watcher") and self.knowledge_watcher:
+            try:
+                self.knowledge_watcher.stop()
             except Exception:
                 pass
 

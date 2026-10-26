@@ -1,7 +1,7 @@
-# architecture.md
+﻿# architecture.md
 # Техническая спецификация архитектуры NeonRoute
 
-> **Версия системы**: NeonRoute v0.8.0-beta  
+> **Версия системы**: NeonRoute v0.9.0-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 5050 Laptop GPU / 16 ГБ RAM)  
 > **Статус тестирования**: 487 тестов пройдено (100% Pass Rate)
@@ -27,7 +27,7 @@
 
 ## 2. Полное дерево файлов кодовой базы (Actual File Tree)
 
-Ниже приведена актуальная топология файлов проекта, сопоставленная с кодовой базой v0.8.0-beta:
+Ниже приведена актуальная топология файлов проекта, сопоставленная с кодовой базой v0.9.0-beta:
 
 ```
 NeonRoute/
@@ -941,3 +941,4 @@ DEFAULT_SD_SETTINGS = {
     "negative_prompt": "bad anatomy, poorly drawn, deformed, extra limbs, missing limbs, bad hands, blurry"
 }
 ```
+

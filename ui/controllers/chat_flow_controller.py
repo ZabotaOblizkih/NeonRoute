@@ -334,6 +334,10 @@ class ChatFlowControllerMixin:
                         msg_entry["thought"] = dict(t_data)
                 messages.append(msg_entry)
 
+            # Гарантируем персистентность структуры OpenAI-истории для LLM
+            if hasattr(self, "chat_history") and isinstance(self.chat_history, list):
+                self.current_session["chat_history"] = list(self.chat_history)
+
             # 3. Детерминированное сохранение на диск
             SessionManager.save_session(self.current_session, trigger_memory=trigger_memory)
 
@@ -840,7 +844,9 @@ class ChatFlowControllerMixin:
             active_cast_block="",
             recalled_lore_block="",
             meta_context_block="",
-            is_dm_mode=is_dm
+            is_dm_mode=is_dm,
+            user_query=_req,
+            task_text=_req
         )
 
         current_session = self.current_session if getattr(self, "current_session", None) else {}

@@ -12,3 +12,5 @@ workspace/
 workspace/*
 
 PyQt-Fluent-Widgets/
+
+scripts/test_*.py

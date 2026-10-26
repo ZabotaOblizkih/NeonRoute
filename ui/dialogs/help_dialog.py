@@ -1,5 +1,5 @@
-"""
-Help Dialog for NeonRoute (v0.8.0-beta).
+﻿"""
+Help Dialog for NeonRoute (v0.9.0-beta).
 Provides user guide and instructions regarding VRAM management, operational modes,
 workspace sandbox, art generation, reminders, shortcuts, and long-term memory.
 """
@@ -204,3 +204,4 @@ class HelpDialog(QDialog):
         card_layout.addWidget(desc_lbl)
 
         return card
+

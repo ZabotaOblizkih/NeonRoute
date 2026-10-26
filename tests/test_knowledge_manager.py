@@ -254,7 +254,7 @@ def test_menu_builder_has_knowledge_action(qapp):
     assert found is True
 
 
-def test_find_relevant_documents_top_3_chunks(tmp_path: Path, monkeypatch):
+def test_find_relevant_documents_adaptive_chunks(tmp_path: Path, monkeypatch):
     kb_dir = tmp_path / "knowledge_base"
     kb_dir.mkdir()
     reg_file = kb_dir / "registry.json"
@@ -270,7 +270,10 @@ def test_find_relevant_documents_top_3_chunks(tmp_path: Path, monkeypatch):
                 {"chunk_id": "c1", "filename": "telemetry_guide.txt", "text": "Чанк 1: телеметрия", "score": 0.95},
                 {"chunk_id": "c2", "filename": "telemetry_guide.txt", "text": "Чанк 2: метрики", "score": 0.85},
                 {"chunk_id": "c3", "filename": "telemetry_guide.txt", "text": "Чанк 3: алерты", "score": 0.75},
-                {"chunk_id": "c4", "filename": "telemetry_guide.txt", "text": "Чанк 4: лишний", "score": 0.65},
+                {"chunk_id": "c4", "filename": "telemetry_guide.txt", "text": "Чанк 4: конфиг", "score": 0.65},
+                {"chunk_id": "c5", "filename": "telemetry_guide.txt", "text": "Чанк 5: логи", "score": 0.55},
+                {"chunk_id": "c6", "filename": "telemetry_guide.txt", "text": "Чанк 6: трейсинг", "score": 0.45},
+                {"chunk_id": "c7", "filename": "telemetry_guide.txt", "text": "Чанк 7: лишний", "score": 0.35},
             ]
 
     monkeypatch.setattr(KnowledgeManager, "get_search_engine", lambda custom_dir=None, custom_index_path=None: MockSearchEngine())
@@ -286,11 +289,11 @@ def test_find_relevant_documents_top_3_chunks(tmp_path: Path, monkeypatch):
     doc = results[0]
     assert doc["filename"] == "telemetry_guide.txt"
     assert doc["chunk_id"] == "c1"
-    assert len(doc["matched_chunks"]) == 3
+    assert len(doc["matched_chunks"]) == 6
     assert doc["matched_chunks"][0]["chunk_id"] == "c1"
-    assert doc["matched_chunks"][1]["chunk_id"] == "c2"
-    assert doc["matched_chunks"][2]["chunk_id"] == "c3"
-    assert doc["content_snippet"] == "Чанк 1: телеметрия\n\n---\n\nЧанк 2: метрики\n\n---\n\nЧанк 3: алерты"
+    assert doc["matched_chunks"][5]["chunk_id"] == "c6"
+    assert "Чанк 6: трейсинг" in doc["content_snippet"]
+    assert "Чанк 7: лишний" not in doc["content_snippet"]
 
 
 def test_fuse_contextual_query():

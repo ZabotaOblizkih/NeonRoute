@@ -358,8 +358,9 @@ class AssistantFlowControllerMixin:
 
             history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
 
-        curr_sess_id = self.current_session.get("id") if self.current_session else None
-        sess_persona_id = self.current_session.get("user_persona_id") if self.current_session else None
+        curr_sess = getattr(self, "current_session", None) or {}
+        curr_sess_id = curr_sess.get("id") if isinstance(curr_sess, dict) else (self.current_session.get("id") if self.current_session else None)
+        sess_persona_id = curr_sess.get("user_persona_id") if isinstance(curr_sess, dict) else (self.current_session.get("user_persona_id") if self.current_session else None)
         active_p = SessionManager.get_active_user_persona(is_roleplay=False, session_persona_id=sess_persona_id)
         effective_user_name = active_p.get("name") or "Пользователь"
 
@@ -381,19 +382,28 @@ class AssistantFlowControllerMixin:
                     matched_names = [d.get("filename") for d in matched_knowledge_docs]
                     logger.info(f"[AssistantFlow] База знаний: найдено {len(matched_knowledge_docs)} релевантных документов для запроса: {matched_names}")
 
-                    # Формируем краткие метаданные источников для визуального HUD-индикатора
-                    knowledge_sources = [
-                        {
-                            "filename": d.get("filename"),
-                            "chunk_id": d.get("chunk_id", d.get("best_chunk_id", 0)),
-                            "snippet": (d.get("snippet") or d.get("content_snippet") or d.get("content") or "")[:300],
-                            "score": float(d.get("score", d.get("relevance_score", 0.0)))
-                        }
-                        for d in matched_knowledge_docs
-                    ]
-                    self._pending_knowledge_sources = knowledge_sources
+                    if curr_sess and isinstance(curr_sess, dict):
+                        curr_sess["active_knowledge_docs"] = matched_knowledge_docs
             except Exception as e_km:
                 logger.warning(f"[AssistantFlow] Ошибка поиска по базе знаний: {e_km}")
+
+        if not matched_knowledge_docs and curr_sess.get("active_knowledge_docs"):
+            matched_knowledge_docs = curr_sess["active_knowledge_docs"]
+            knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+            logger.info(f"[AssistantFlow] Использован сессионный контекст знаний: {len(matched_knowledge_docs)} док.")
+
+        if matched_knowledge_docs:
+            self._pending_knowledge_sources = [
+                {
+                    "filename": doc.get("filename", ""),
+                    "chunk_id": doc.get("chunk_id", doc.get("best_chunk_id", 0)),
+                    "snippet": (doc.get("snippet") or doc.get("content_snippet") or doc.get("content") or "")[:300],
+                    "score": float(doc.get("score", doc.get("relevance_score", 0.0)))
+                }
+                for doc in matched_knowledge_docs
+            ]
+        else:
+            self._pending_knowledge_sources = None
 
         if enable_reasoning is None:
             enable_reasoning = bool(matched_knowledge_docs)
@@ -425,7 +435,9 @@ class AssistantFlowControllerMixin:
             is_dm_mode=False,
             knowledge_block=knowledge_block,
             matched_knowledge_docs=matched_knowledge_docs,
-            enable_reasoning=enable_reasoning
+            enable_reasoning=enable_reasoning,
+            user_query=_req,
+            task_text=_req
         )
 
         # Дополнительная страховка наличия KnowledgeBase и REASONING_PROTOCOL в системном промпте
@@ -833,7 +845,9 @@ class AssistantFlowControllerMixin:
 
         # 1. Финализация потокового парсера мыслей <think>...</think>
         thought_data = None
+        parser_normal_text = ""
         if getattr(self, "_thought_stream_parser", None) is not None:
+            parser_normal_text = getattr(self._thought_stream_parser, "normal_text", "").strip()
             rem_events = self._thought_stream_parser.finalize()
             if hasattr(self, "_turn_bubble") and self._turn_bubble:
                 for ev_type, ev_data in rem_events:
@@ -844,7 +858,11 @@ class AssistantFlowControllerMixin:
                             self._thought_stream_parser.duration,
                             self._thought_stream_parser.token_count
                         )
+                    elif ev_type == "normal_chunk" and ev_data:
+                        parser_normal_text += ev_data
             thought_data = self._thought_stream_parser.get_thought_data()
+            # Финально обновляем накопленный normal_text после finalize()
+            parser_normal_text = getattr(self._thought_stream_parser, "normal_text", "").strip() or parser_normal_text
             self._thought_stream_parser = None
 
         # Фоллбэк: если в ответе присутствуют теги <think>...</think>
@@ -861,6 +879,21 @@ class AssistantFlowControllerMixin:
 
         # Очищаем теги <think>...</think> из итогового текста ответа
         text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+
+        # Если внешний text оказался пустым, но потоковый парсер собрал ответ — берем ответ из парсера
+        if not text and parser_normal_text:
+            text = parser_normal_text
+
+        # Если текст всё еще пуст, проверяем, не был ли он уже отрисован в бабле текущего хода
+        if not text and hasattr(self, "_turn_bubble") and self._turn_bubble:
+            existing_bubble_text = ""
+            if hasattr(self._turn_bubble, "get_text"):
+                existing_bubble_text = self._turn_bubble.get_text().strip()
+            elif hasattr(self._turn_bubble, "text"):
+                t_val = self._turn_bubble.text
+                existing_bubble_text = t_val().strip() if callable(t_val) else str(t_val).strip()
+            if existing_bubble_text and existing_bubble_text != "Связь с моделью обновлена. Я готова, о чём поговорим?":
+                text = existing_bubble_text
 
         if getattr(self, "_is_running_gallery_art_pass", False):
             self._is_running_gallery_art_pass = False
@@ -908,15 +941,6 @@ class AssistantFlowControllerMixin:
         text = re.sub(r'(?:\s*--(?:model|style|ar|neg|negative)\s+[^\n]+)+$', '', text, flags=re.I).strip()
         text = re.sub(r'(?:\*\*|__)?(?:Positive\s+Prompt|Позитивный\s+промпт)[:\s*]*', '', text, flags=re.IGNORECASE).strip()
 
-        if not text:
-            if not has_gallery:
-                text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
-            else:
-                text = "Секунду, перевожу образ в кадр..."
-
-        sender_name = "Элария"
-        avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
-
         msg_widget = getattr(self, "_turn_bubble", None)
         if msg_widget is None:
             msg_widget = getattr(self, "_current_streaming_widget", None)
@@ -929,9 +953,33 @@ class AssistantFlowControllerMixin:
                     msg_widget = w
                     break
 
+        widget_existing_text = ""
+        if msg_widget is not None:
+            if hasattr(msg_widget, "get_text"):
+                widget_existing_text = msg_widget.get_text().strip()
+            elif hasattr(msg_widget, "text"):
+                t_val = msg_widget.text
+                widget_existing_text = t_val().strip() if callable(t_val) else str(t_val).strip()
+
+        # Если text пуст, но в виджете уже отрисован ответ (не заглушка) — сохраняем его
+        if not text and widget_existing_text and widget_existing_text != "Связь с моделью обновлена. Я готова, о чём поговорим?":
+            text = widget_existing_text
+
+        # Подставлять дефолтную заглушку ТОЛЬКО если и text, и содержимое виджета действительно абсолютно пустые, и не было вызова галереи has_gallery
+        if not text:
+            if not has_gallery:
+                if not widget_existing_text:
+                    text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
+            else:
+                text = "Секунду, перевожу образ в кадр..."
+
+        sender_name = "Элария"
+        avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
+
         if msg_widget is not None:
             try:
-                msg_widget.set_text(text)
+                if text or not widget_existing_text:
+                    msg_widget.set_text(text)
                 if thought_data and hasattr(msg_widget, "set_thought_data"):
                     msg_widget.set_thought_data(
                         thought_data.get("content", ""),

@@ -1,4 +1,4 @@
-"""
+﻿"""
 NeonRoute - Central Configuration & Environment Settings
 Optimized for 8 GB VRAM (RTX 5050 / MSI Cyborg 15)
 """
@@ -120,7 +120,7 @@ DEFAULT_SD_SETTINGS = {
 
 # Application UI Strings & Metadata
 APP_NAME = "NeonRoute"
-APP_VERSION = "0.8.0-beta"
+APP_VERSION = "0.9.0-beta"
 APP_TAGLINE = "Local AI Orchestrator • 8GB VRAM Optimized"
 
 # Базовый промпт ролевого режима (по умолчанию, если не задана карточка)
@@ -168,3 +168,4 @@ MODE_PROFILES = {
         }
     }
 }
+

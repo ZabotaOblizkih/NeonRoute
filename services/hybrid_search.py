@@ -14,6 +14,9 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional, Set
 import numpy as np
 
+from services.search_tokenizer import SearchTokenizer
+from services.markdown_chunker import MarkdownChunker
+
 # Базовый набор стоп-слов для фильтрации шума в BM25 и Dense векторизаторе
 COMMON_STOPWORDS: Set[str] = {
     "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то", "все", "она", "так",
@@ -41,36 +44,51 @@ CONVERSATIONAL_PHRASES: Set[str] = {
 }
 
 
-def is_conversational_query(query: str) -> bool:
+def is_conversational_query(query: str, bm25_index: Optional["BM25Index"] = None) -> bool:
     """
-    Проверяет, является ли запрос разговорной / приветственной фразой (small talk).
-    Для таких запросов поиск по базе знаний отключается, чтобы предотвратить ложные срабатывания (Gatekeeper).
+    Универсальный Gatekeeper без захардкоженных предметных словарей:
+    1. Если передан bm25_index и его inverted_index заполнен:
+       Выполняет SearchTokenizer.tokenize(query).
+       Если хотя бы один токен запроса присутствует в словаре inverted_index (термины загруженной базы знаний) ->
+       немедленно возвращает False (запрос предметный, поиск обязателен).
+    2. Возвращает True (отсекает поиск) только если совпадений со словарём базы нет,
+       длина запроса <= 3 слов и фраза входит в CONVERSATIONAL_PHRASES ("привет", "спасибо", "ок").
     """
     if not query or not query.strip():
         return False
+
+    # 1. Проверка по словарю базы знаний (BM25 inverted_index)
+    if bm25_index is not None and getattr(bm25_index, "inverted_index", None):
+        inv_idx = bm25_index.inverted_index
+        tokens = SearchTokenizer.tokenize(query)
+        if any(token in inv_idx for token in tokens):
+            return False
+
     clean = re.sub(r"[^\w\s]", " ", query.lower())
     clean = re.sub(r"\s+", " ", clean).strip()
     if not clean:
         return False
 
+    words = clean.split()
+    if len(words) > 3:
+        return False
+
     if clean in CONVERSATIONAL_PHRASES:
         return True
 
-    words = clean.split()
-    if len(words) <= 4:
-        filtered_words = [w for w in words if w not in ("элария", "elaria", "тебе", "вам", "же", "ли", "друг", "bot", "пожалуйста", "пж", "большое", "огромное")]
-        filtered_str = " ".join(filtered_words)
-        if filtered_str in CONVERSATIONAL_PHRASES:
-            return True
+    filtered_words = [w for w in words if w not in ("элария", "elaria", "тебе", "вам", "же", "ли", "друг", "bot", "пожалуйста", "пж", "большое", "огромное")]
+    filtered_str = " ".join(filtered_words)
+    if filtered_str and filtered_str in CONVERSATIONAL_PHRASES:
+        return True
 
-        remainder = " " + filtered_str + " "
-        for phrase in sorted(CONVERSATIONAL_PHRASES, key=len, reverse=True):
-            pattern = r"\b" + re.escape(phrase) + r"\b"
-            remainder = re.sub(pattern, " ", remainder)
+    remainder = " " + (filtered_str or clean) + " "
+    for phrase in sorted(CONVERSATIONAL_PHRASES, key=len, reverse=True):
+        pattern = r"\b" + re.escape(phrase) + r"\b"
+        remainder = re.sub(pattern, " ", remainder)
 
-        remainder_clean = re.sub(r"\s+", " ", remainder).strip()
-        if not remainder_clean or len(remainder_clean) <= 2:
-            return True
+    remainder_clean = re.sub(r"\s+", " ", remainder).strip()
+    if not remainder_clean:
+        return True
 
     return False
 
@@ -166,42 +184,8 @@ class BM25Index:
 
     @classmethod
     def tokenize(cls, text: str) -> List[str]:
-        """
-        Токенизация с сохранением точных кодов ошибок, артикулов, номеров деталей и слов.
-        """
-        if not text:
-            return []
-
-        text_lower = text.lower()
-        # Заменяем управляющие символы на пробелы
-        text_clean = re.sub(r"[\r\n\t]+", " ", text_lower)
-
-        tokens: List[str] = []
-
-        # 1. Шестнадцатеричные коды (например, 0xc0000005, 0x7ffe, 0x1a)
-        hex_codes = re.findall(r"0x[0-9a-f]+", text_clean)
-        tokens.extend(hex_codes)
-
-        # 2. Идентификаторы с дефисами/подчеркиваниями (ERR_CONNECTION_RESET, A123-456, etc.)
-        delimited_codes = re.findall(r"[a-z0-9]+(?:[-_][a-z0-9]+)+", text_clean)
-        tokens.extend(delimited_codes)
-        for dc in delimited_codes:
-            sub = re.split(r"[-_]", dc)
-            tokens.extend([s for s in sub if len(s) >= 2])
-
-        # 3. Составные артикулы и номера деталей с пробелами (например, '02t 311 239 b', 'vag 02t 311')
-        part_patterns = re.findall(r"\b[a-z0-9]{1,5}(?:\s+[a-z0-9]{1,5}){2,4}\b", text_clean)
-        for pp in part_patterns:
-            joined_code = re.sub(r"\s+", "_", pp)
-            tokens.append(joined_code)
-
-        # 4. Стандартные слова (русский, английский, цифры)
-        words = re.findall(r"[a-zа-яё0-9]+", text_clean)
-        for w in words:
-            if w not in COMMON_STOPWORDS and (len(w) >= 2 or w in "0123456789abcdef"):
-                tokens.append(w)
-
-        return tokens
+        """Токенизация через выделенный морфологический сателлит SearchTokenizer."""
+        return SearchTokenizer.tokenize(text)
 
     def index(self, corpus: List[str]) -> None:
         """
@@ -439,126 +423,18 @@ class HybridSearchEngine:
         cls,
         text: str,
         filename: str = "document",
-        min_chunk: int = 600,
-        max_chunk: int = 900,
-        overlap: int = 100
+        min_chunk: int = 500,
+        max_chunk: int = 1400,
+        overlap: int = 150
     ) -> List[Dict[str, Any]]:
-        """
-        Нарезка документа на семантические чанки (размер 600–900 символов с перекрытием 100 символов).
-        Сохраняет целостность параграфов, предложений, строк и таблиц:
-        - Для Markdown/CSV/TSV/XLSX таблиц гарантирует сохранение заголовков колонок во всех чанках.
-        - Нарезает строки таблиц строго по границам строк (\\n).
-        """
-        if not text or not text.strip():
-            return []
-
-        clean_text = text.strip()
-
-        # Если текст уже меньше или равен max_chunk, возвращаем один чанк целиком
-        if len(clean_text) <= max_chunk:
-            return [{
-                "chunk_id": f"{filename}#c0",
-                "filename": filename,
-                "chunk_index": 0,
-                "text": clean_text,
-                "char_count": len(clean_text)
-            }]
-
-        lines = clean_text.splitlines()
-        blocks: List[Tuple[str, Any]] = []
-        current_text_lines: List[str] = []
-
-        idx = 0
-        while idx < len(lines):
-            line = lines[idx]
-            # Обнаружение таблицы по строке заголовка и последующему разделителю |---|
-            if is_table_row(line) and idx + 1 < len(lines) and is_table_separator(lines[idx + 1]):
-                if current_text_lines:
-                    blocks.append(("text", "\n".join(current_text_lines)))
-                    current_text_lines = []
-                table_lines = [line, lines[idx + 1]]
-                idx += 2
-                while idx < len(lines) and is_table_row(lines[idx]):
-                    table_lines.append(lines[idx])
-                    idx += 1
-                blocks.append(("table", table_lines))
-            else:
-                current_text_lines.append(line)
-                idx += 1
-
-        if current_text_lines:
-            blocks.append(("text", "\n".join(current_text_lines)))
-
-        raw_chunks: List[str] = []
-
-        for b_type, b_content in blocks:
-            if b_type == "table":
-                # Сквозное сохранение структуры таблицы и шапок
-                t_chunks = chunk_table(b_content, max_chunk=max_chunk, overlap_rows=1)
-                raw_chunks.extend(t_chunks)
-            else:
-                # Стандартная нарезка текстовых блоков
-                paragraphs = b_content.split("\n\n")
-                current_chunk = ""
-
-                for p in paragraphs:
-                    p_strip = p.strip()
-                    if not p_strip:
-                        continue
-
-                    if not current_chunk:
-                        current_chunk = p_strip
-                    elif len(current_chunk) + 2 + len(p_strip) <= max_chunk:
-                        current_chunk += "\n\n" + p_strip
-                    else:
-                        if len(current_chunk) >= min_chunk:
-                            raw_chunks.append(current_chunk)
-                            overlap_slice = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
-                            sp_idx = overlap_slice.find(" ")
-                            if sp_idx != -1 and sp_idx < len(overlap_slice) - 10:
-                                overlap_slice = overlap_slice[sp_idx + 1:]
-                            current_chunk = (overlap_slice + "\n\n" + p_strip).strip()
-                        else:
-                            current_chunk += "\n\n" + p_strip
-
-                    while len(current_chunk) > max_chunk:
-                        split_pos = current_chunk.rfind(". ", min_chunk, max_chunk)
-                        if split_pos == -1:
-                            split_pos = current_chunk.rfind("\n", min_chunk, max_chunk)
-                        if split_pos == -1:
-                            split_pos = current_chunk.rfind(" ", min_chunk, max_chunk)
-                        if split_pos == -1:
-                            split_pos = max_chunk
-                        else:
-                            split_pos += 1
-
-                        chunk_slice = current_chunk[:split_pos].strip()
-                        raw_chunks.append(chunk_slice)
-
-                        overlap_slice = chunk_slice[-overlap:] if len(chunk_slice) > overlap else chunk_slice
-                        sp_idx = overlap_slice.find(" ")
-                        if sp_idx != -1 and sp_idx < len(overlap_slice) - 10:
-                            overlap_slice = overlap_slice[sp_idx + 1:]
-                        current_chunk = (overlap_slice + " " + current_chunk[split_pos:]).strip()
-
-                if current_chunk:
-                    if raw_chunks and len(current_chunk) < 300 and len(raw_chunks[-1]) + len(current_chunk) + 2 <= max_chunk + 150:
-                        raw_chunks[-1] = (raw_chunks[-1] + "\n\n" + current_chunk).strip()
-                    else:
-                        raw_chunks.append(current_chunk)
-
-        # Формируем финальный список чанков
-        result: List[Dict[str, Any]] = []
-        for i, c_text in enumerate(raw_chunks):
-            result.append({
-                "chunk_id": f"{filename}#c{i}",
-                "filename": filename,
-                "chunk_index": i,
-                "text": c_text,
-                "char_count": len(c_text)
-            })
-
-        return result
+        """Делегирование структурной нарезки MarkdownChunker."""
+        return MarkdownChunker.chunk_document(
+            text=text,
+            filename=filename,
+            min_chunk=min_chunk,
+            max_chunk=max_chunk,
+            overlap=overlap
+        )
 
     def index_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         """
@@ -610,7 +486,7 @@ class HybridSearchEngine:
             return []
 
         # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
-        if is_conversational_query(query):
+        if is_conversational_query(query, bm25_index=self.bm25):
             return []
 
         use_alpha = self.alpha if alpha is None else alpha

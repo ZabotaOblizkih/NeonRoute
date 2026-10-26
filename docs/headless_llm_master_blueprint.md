@@ -1,6 +1,6 @@
-# МАСТЕР-ДОКУМЕНТ: Архитектура и пошаговый план миграции NeonRoute на автономный сервер llama-server.exe
+﻿# МАСТЕР-ДОКУМЕНТ: Архитектура и пошаговый план миграции NeonRoute на автономный сервер llama-server.exe
 
-> **Проект**: NeonRoute v0.8.0-beta -> v1.0.0-headless  
+> **Проект**: NeonRoute v0.9.0-beta -> v1.0.0-headless  
 > **Назначение документа**: Исчерпывающее техническое задание для агента-программиста (Antigravity)  
 > **Стек**: Python 3.10+, PyQt6, Headless `llama-server.exe` (llama.cpp), SD WebUI Forge  
 > **Целевое оборудование**: NVIDIA GeForce RTX 5050 Laptop GPU (Строгий бюджет **8192 МБ VRAM** / 16 ГБ RAM)
@@ -781,3 +781,4 @@ exit /b %ERRORLEVEL%
 #### 4. Критерии приемки (Checklist):
 - [ ] При старте приложения `MainWindow` автоматически запускает `llama-server.exe` в фоне, заполняет `lm_combo` найденными `.gguf` моделями и переводит индикатор порта 1234 в `Online`.
 - [ ] Все существующие тесты проекта (`pytest`) проходят со статусом 100% Pass.
+

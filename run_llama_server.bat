@@ -1,7 +1,7 @@
-@echo off
+﻿@echo off
 setlocal EnableDelayedExpansion
 chcp 65001 > nul
-title NeonRoute Local LLM Server (Universal Portable & Config Driven)
+title NeonRoute Local LLM Server (Universal Portable and Config Driven)
 
 :: =====================================================================
 :: 0. ИНИЦИАЛИЗАЦИЯ И ЧТЕНИЕ SERVER_CONFIG.INI (ЗАЩИТА ОТ ПРОБЕЛОВ И КАВЫЧЕК)
@@ -30,11 +30,11 @@ if exist "%CONFIG_FILE%" (
         if not "!RAW_KEY!"=="" (
             set "FIRST_CHAR=!RAW_KEY:~0,1!"
             if not "!FIRST_CHAR!"==";" if not "!FIRST_CHAR!"=="#" if not "!FIRST_CHAR!"=="[" (
-                :: Очистка ключа от пробелов и табуляций
+                rem Очистка ключа от пробелов и табуляций
                 for /f "tokens=* delims= 	" %%K in ("!RAW_KEY!") do set "CLEAN_KEY=%%K"
                 for /l %%i in (1,1,32) do if "!CLEAN_KEY:~-1!"==" " set "CLEAN_KEY=!CLEAN_KEY:~0,-1!"
 
-                :: Очистка значения от ведущих/концевых пробелов и кавычек
+                rem Очистка значения от ведущих/концевых пробелов и кавычек
                 set "CLEAN_VAL=!RAW_VAL!"
                 if defined CLEAN_VAL (
                     for /f "tokens=* delims= 	" %%V in ("!CLEAN_VAL!") do set "CLEAN_VAL=%%V"
@@ -189,7 +189,7 @@ if not defined MODEL_PATH (
 
 :check_model
 if not defined MODEL_PATH (
-    echo [ОШИБКА] Файлы моделей (.gguf) не найдены!
+    echo [ОШИБКА] Файлы моделей .gguf не найдены!
     exit /b 1
 )
 

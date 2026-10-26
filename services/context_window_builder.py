@@ -196,6 +196,15 @@ class ContextWindowBuilder:
         )
         effective_user_name = active_persona.get("name") if user_name in ("User", "Пользователь", "", None) else user_name
 
+        effective_query = (
+            kwargs.get("user_query")
+            or kwargs.get("task_text")
+            or kwargs.get("user_message_text")
+            or kwargs.get("task_prompt")
+            or kwargs.get("user_message")
+            or ""
+        )
+
         return AssistantPromptBuilder.build(
             user_name=effective_user_name or "Пользователь",
             active_persona=active_persona,
@@ -205,23 +214,54 @@ class ContextWindowBuilder:
             is_word=is_word,
             knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
             matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
-            enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
+            enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False),
+            user_query=effective_query
         )
 
     @staticmethod
     def prepare_history_for_llm(
         history: List[Dict[str, Any]],
-        vision_content: Optional[List[Dict[str, Any]]] = None
+        vision_content: Optional[List[Dict[str, Any]]] = None,
+        enable_reasoning: bool = False,
+        keep_last_cot: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Нормализует историю диалога для инференса LLM:
         - Преобразует сообщения в OpenAI-совместимый список [{"role": ..., "content": ...}]
-        - Санитизирует реплики ассистента (role: assistant), вырезая блоки рассуждений <think>...</think>
-        - Исключает словарь 'thought' и метаданные размышлений, не подмешивая их в текст модели
-        - Обеспечивает экономию контекстного окна на последующих ходах
+        - Реализует скользящее сохранение CoT (Sliding CoT Preservation): при enable_reasoning=True и keep_last_cot=True
+          сохраняет ровно одно последнее рассуждение <think> ассистента (с защитой от промежуточных ходов галереи [GALERY])
+        - Все более ранние рассуждения ассистента санитизирует (<think>.*?</think>), экономя контекстное окно 14K
+        - Исключает словарь 'thought' и метаданные размышлений, не подмешивая их в текст модели, кроме целевого CoT
         """
         if not history:
             return []
+
+        # Поиск целевого индекса сообщения ассистента для сохранения CoT
+        target_cot_idx = None
+        if enable_reasoning and keep_last_cot:
+            for idx in range(len(history) - 1, -1, -1):
+                raw_m = history[idx]
+                role = raw_m.get("role") or ("user" if raw_m.get("is_user") else "assistant")
+                if role == "assistant":
+                    th = raw_m.get("thought")
+                    th_content = ""
+                    if isinstance(th, dict):
+                        th_content = th.get("content", "")
+                    elif isinstance(th, str):
+                        th_content = th
+
+                    raw_content = raw_m.get("content") if raw_m.get("content") is not None else raw_m.get("text", "")
+                    raw_text_str = ""
+                    if isinstance(raw_content, str):
+                        raw_text_str = raw_content
+                    elif isinstance(raw_content, list):
+                        raw_text_str = " ".join(str(p.get("text", "")) for p in raw_content if isinstance(p, dict) and p.get("type") == "text")
+
+                    has_thought = bool(th_content and str(th_content).strip())
+                    has_think_tag = "<think>" in raw_text_str
+                    if has_thought or has_think_tag:
+                        target_cot_idx = idx
+                        break
 
         normalized_history: List[Dict[str, Any]] = []
         for idx, raw_m in enumerate(history):
@@ -240,24 +280,56 @@ class ContextWindowBuilder:
                 content_val = str(text or "").strip()
 
             if role == "assistant":
-                if isinstance(content_val, str):
-                    # Вырезаем теги рассуждений из прошлых ходов ассистента
-                    content_val = re.sub(r'<think>.*?</think>', '', content_val, flags=re.DOTALL).strip()
-                    if "🔔" in content_val:
-                        content_val = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', content_val).strip()
-                elif isinstance(content_val, list):
-                    clean_parts = []
-                    for part in content_val:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            p_txt = str(part.get("text", ""))
-                            p_clean = re.sub(r'<think>.*?</think>', '', p_txt, flags=re.DOTALL).strip()
-                            if p_clean:
-                                part_copy = dict(part)
-                                part_copy["text"] = p_clean
-                                clean_parts.append(part_copy)
+                if idx == target_cot_idx:
+                    # Целевой последний CoT ассистента
+                    th = m.get("thought")
+                    th_content = ""
+                    if isinstance(th, dict):
+                        th_content = th.get("content", "")
+                    elif isinstance(th, str):
+                        th_content = th
+                    thought_content = str(th_content or "").strip()
+
+                    if isinstance(content_val, str):
+                        if "<think>" in content_val:
+                            # Тег уже есть в тексте — сохраняем его
+                            if "🔔" in content_val:
+                                content_val = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', content_val).strip()
                         else:
-                            clean_parts.append(part)
-                    content_val = clean_parts
+                            # Тег был вырезан или отсутствовал в text, но есть thought_content — восстанавливаем
+                            clean_text = content_val
+                            if "🔔" in clean_text:
+                                clean_text = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', clean_text).strip()
+                            if thought_content:
+                                if clean_text:
+                                    content_val = f"<think>\n{thought_content}\n</think>\n\n{clean_text}"
+                                else:
+                                    content_val = f"<think>\n{thought_content}\n</think>"
+                            else:
+                                content_val = clean_text
+                    elif isinstance(content_val, list):
+                        has_think_in_list = any("<think>" in str(p.get("text", "")) for p in content_val if isinstance(p, dict) and p.get("type") == "text")
+                        if not has_think_in_list and thought_content:
+                            content_val = [{"type": "text", "text": f"<think>\n{thought_content}\n</think>\n\n"}] + list(content_val)
+                else:
+                    # Все остальные сообщения ассистента: безусловно вырезаем <think>.*?</think> ради экономии контекста 14K
+                    if isinstance(content_val, str):
+                        content_val = re.sub(r'<think>.*?</think>', '', content_val, flags=re.DOTALL).strip()
+                        if "🔔" in content_val:
+                            content_val = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', content_val).strip()
+                    elif isinstance(content_val, list):
+                        clean_parts = []
+                        for part in content_val:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                p_txt = str(part.get("text", ""))
+                                p_clean = re.sub(r'<think>.*?</think>', '', p_txt, flags=re.DOTALL).strip()
+                                if p_clean:
+                                    part_copy = dict(part)
+                                    part_copy["text"] = p_clean
+                                    clean_parts.append(part_copy)
+                            else:
+                                clean_parts.append(part)
+                        content_val = clean_parts
 
             if isinstance(content_val, str) and not content_val and role == "assistant":
                 continue
@@ -306,7 +378,12 @@ class ContextWindowBuilder:
         enable_reasoning: bool = False,
         **kwargs
     ) -> List[Dict[str, Any]]:
-        history = ContextWindowBuilder.prepare_history_for_llm(history, vision_content=vision_content)
+        history = ContextWindowBuilder.prepare_history_for_llm(
+            history=history,
+            vision_content=vision_content,
+            enable_reasoning=enable_reasoning,
+            keep_last_cot=True
+        )
 
         relevant_facts = []
         last_query = ""
@@ -463,6 +540,7 @@ class ContextWindowBuilder:
                 session_id=session_id,
                 is_dm_mode=is_dm_mode,
                 task_text=last_query,
+                user_query=kwargs.get("user_query") or last_query,
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
                 matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
                 enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
@@ -662,6 +740,7 @@ class ContextWindowBuilder:
                 session_id=session_id,
                 is_dm_mode=is_dm_mode,
                 task_text=last_query,
+                user_query=kwargs.get("user_query") or last_query,
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
                 matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
                 enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)

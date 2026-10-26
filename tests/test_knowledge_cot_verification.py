@@ -1,18 +1,19 @@
 """
 Unit tests for Knowledge CoT (Chain-of-Thought) verification and ThoughtStreamParser tag flexibility.
-1. build_knowledge_context() contains <KnowledgeBase>, REASONING_PROTOCOL and <think> tags for non-empty docs.
+1. build_knowledge_context() contains <KnowledgeBase> XML and doc contents for non-empty docs, without reasoning protocols.
 2. build_knowledge_context() returns empty string for empty doc lists.
-3. ThoughtStreamParser supports both <think>...</think> and <thought>...</thought> (case-insensitive)
+3. AssistantPromptBuilder.build() injects ROUTING_TAIL_PROTOCOL with <think> when assembling the prompt.
+4. ThoughtStreamParser supports both <think>...</think> and <thought>...</thought> (case-insensitive)
    with boundary chunk stitching, emitting start_think, thought_chunk, end_think, normal_chunk.
 """
 
 import pytest
-from services.assistant_prompt_builder import AssistantPromptBuilder, REASONING_PROTOCOL
+from services.assistant_prompt_builder import AssistantPromptBuilder, ROUTING_TAIL_PROTOCOL, REASONING_PROTOCOL
 from services.thought_stream_parser import ThoughtStreamParser, ThinkParserState
 
 
 def test_build_knowledge_context_non_empty():
-    """Проверка, что build_knowledge_context(docs) при непустом списке содержит <KnowledgeBase> и REASONING_PROTOCOL."""
+    """Проверка, что build_knowledge_context(docs) при непустом списке содержит исключительно XML-блок <KnowledgeBase>."""
     docs = [
         {
             "filename": "specs.txt",
@@ -28,7 +29,7 @@ def test_build_knowledge_context_non_empty():
 
     result = AssistantPromptBuilder.build_knowledge_context(docs)
 
-    # 1. Наличие XML-блока базы знаний
+    # 1. Наличие XML-блока базы знаний и содержимого
     assert "<KnowledgeBase>" in result
     assert "</KnowledgeBase>" in result
     assert 'name="specs.txt"' in result
@@ -36,14 +37,15 @@ def test_build_knowledge_context_non_empty():
     assert 'name="manual.pdf"' in result
     assert "Инструкция по монтажу" in result
 
-    # 2. Наличие REASONING_PROTOCOL и тегов <think>
-    assert REASONING_PROTOCOL in result
-    assert "<think>" in result
-    assert "</think>" in result
-    assert "[thinking_protocol: верификация источника]" in result
-    assert "Факты из текста:" in result
-    assert "Отсутствует в тексте:" in result
-    assert "Вывод:" in result
+    # 2. build_knowledge_context не содержит протокол рассуждений (он добавляется в AssistantPromptBuilder.build)
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" not in result
+    assert "<think>" not in result
+
+    # 3. При общей сборке через AssistantPromptBuilder.build протокол генерации инжектируется
+    full_prompt = AssistantPromptBuilder.build(matched_knowledge_docs=docs)
+    assert "<KnowledgeBase>" in full_prompt
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in full_prompt
+    assert "<think>" in full_prompt
 
 
 def test_build_knowledge_context_empty():

@@ -1,32 +1,39 @@
 """
-Тесты протокола рассуждений (Шаг 3):
-- Селективный протокол рассуждений [reasoning_protocol] в AssistantPromptBuilder
+Тесты протокола генерации и рассуждений:
+- Протокол генерации [СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ] (v13) в AssistantPromptBuilder
 - Санитизация истории диалога от тегов <think> в ContextWindowBuilder
 - Сохранение токенов контекстного окна LLM
 """
 
 import pytest
-from services.assistant_prompt_builder import AssistantPromptBuilder, REASONING_PROTOCOL
+from services.assistant_prompt_builder import (
+    AssistantPromptBuilder,
+    ROUTING_TAIL_PROTOCOL,
+    REASONING_PROTOCOL
+)
 from services.context_window_builder import ContextWindowBuilder
 from services.token_budget_manager import TokenBudgetManager
 from services.session_manager import SessionManager
 
 
 def test_reasoning_protocol_injected_with_knowledge_block():
-    """Проверка появления [reasoning_protocol] в системном промпте при наличии базы знаний."""
+    """Проверка появления протокола генерации в системном промпте при наличии базы знаний."""
     kb_block = "<KnowledgeBase>\n<Document name=\"spec.txt\">\nДанные о товаре\n</Document>\n</KnowledgeBase>"
     prompt = AssistantPromptBuilder.build(
         user_name="Алексей",
         knowledge_block=kb_block
     )
-    assert "[thinking_protocol" in prompt
-    assert "<think>...</think>" in prompt
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in prompt
+    assert "<think>" in prompt
+    assert "</think>" in prompt
     assert "<KnowledgeBase>" in prompt
-    assert "Перед формированием ответа обязательно выполни внутренний аудит фактов" in prompt
+    assert "Внутри <think>...</think> составь черновую шпаргалку" in prompt
+    assert "- Интент: [цель вопроса, контекст Алексей" in prompt
+    assert prompt.endswith(ROUTING_TAIL_PROTOCOL.format(user_name="Алексей"))
 
 
 def test_reasoning_protocol_injected_with_matched_knowledge_docs():
-    """Проверка появления [reasoning_protocol] при передаче matched_knowledge_docs."""
+    """Проверка появления протокола генерации при передаче matched_knowledge_docs."""
     docs = [
         {"filename": "manual.pdf", "content_snippet": "Инструкция по настройке протокола"}
     ]
@@ -34,50 +41,60 @@ def test_reasoning_protocol_injected_with_matched_knowledge_docs():
         user_name="Алексей",
         matched_knowledge_docs=docs
     )
-    assert "[thinking_protocol" in prompt
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in prompt
+    assert "<think>" in prompt
     assert "<KnowledgeBase>" in prompt
+    assert "Внутри <think>...</think> составь черновую шпаргалку" in prompt
+    assert "- Интент: [цель вопроса, контекст Алексей" in prompt
+    assert prompt.endswith(ROUTING_TAIL_PROTOCOL.format(user_name="Алексей"))
 
 
 def test_reasoning_protocol_injected_with_enable_flag():
-    """Проверка появления [reasoning_protocol] при явном флаге enable_reasoning=True без базы знаний."""
+    """Проверка протокола генерации при флаге enable_reasoning=True."""
     prompt = AssistantPromptBuilder.build(
         user_name="Алексей",
         enable_reasoning=True
     )
-    assert "[thinking_protocol" in prompt
-    assert "<think>...</think>" in prompt
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in prompt
+    assert "<think>" in prompt
+    assert "</think>" in prompt
+    assert "Внутри <think>...</think> составь черновую шпаргалку" in prompt
+    assert "- Интент: [цель вопроса, контекст Алексей" in prompt
+    assert prompt.endswith(ROUTING_TAIL_PROTOCOL.format(user_name="Алексей"))
 
 
-def test_reasoning_protocol_absent_in_standard_dialogue():
-    """Проверка отсутствия [reasoning_protocol] при стандартном диалоге (чистый промпт)."""
+def test_protocol_structure_in_standard_dialogue():
+    """Проверка структуры промпта в стандартном диалоге без базы знаний."""
     prompt = AssistantPromptBuilder.build(
         user_name="Алексей",
         enable_reasoning=False,
         knowledge_block=None,
         matched_knowledge_docs=None
     )
-    assert "[thinking_protocol" not in prompt
-    assert "<think>" not in prompt
-    assert "</think>" not in prompt
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in prompt
+    assert "<think>" in prompt
+    assert "</think>" in prompt
+    assert "</KnowledgeBase>" not in prompt
+    assert prompt.endswith(ROUTING_TAIL_PROTOCOL.format(user_name="Алексей"))
 
 
 def test_context_window_builder_system_prompt_reasoning_flag():
-    """Проверка поддержки enable_reasoning в ContextWindowBuilder.build_system_prompt."""
-    # Без рассуждений
+    """Проверка протокола генерации в ContextWindowBuilder.build_system_prompt."""
     prompt_std = ContextWindowBuilder.build_system_prompt(
         is_roleplay=False,
         user_name="Алексей",
         enable_reasoning=False
     )
-    assert "[thinking_protocol" not in prompt_std
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in prompt_std
+    assert "<think>" in prompt_std
 
-    # С рассуждениями
     prompt_reasoning = ContextWindowBuilder.build_system_prompt(
         is_roleplay=False,
         user_name="Алексей",
         enable_reasoning=True
     )
-    assert "[thinking_protocol" in prompt_reasoning
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in prompt_reasoning
+    assert "<think>" in prompt_reasoning
 
 
 def test_prepare_history_for_llm_cleans_think_tags():
@@ -160,7 +177,7 @@ def test_token_savings_from_think_sanitization():
 
 
 def test_get_lm_studio_messages_end_to_end_sanitization():
-    """Проверка полного цикла get_lm_studio_messages с санитизацией мыслей и передачей enable_reasoning."""
+    """Проверка полного цикла get_lm_studio_messages с санитизацией мыслей и протоколом генерации."""
     history = [
         {"role": "user", "content": "Первый вопрос"},
         {"role": "assistant", "content": "<think>думаем над ответом 1</think>Ответ 1"},
@@ -179,11 +196,10 @@ def test_get_lm_studio_messages_end_to_end_sanitization():
     # Проверяем системный промпт
     sys_msg = messages[0]
     assert sys_msg["role"] == "system"
-    assert "[thinking_protocol" in sys_msg["content"]
+    assert "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]" in sys_msg["content"]
     assert "<KnowledgeBase>" in sys_msg["content"]
 
-    # Проверяем историю: предыдущий ответ ассистента очищен
+    # Проверяем историю: предыдущий ответ ассистента содержит актуальный CoT и ответ
     assistant_hist = [m for m in messages if m.get("role") == "assistant"]
     assert len(assistant_hist) == 1
-    assert assistant_hist[0]["content"] == "Ответ 1"
-    assert "<think>" not in assistant_hist[0]["content"]
+    assert "Ответ 1" in assistant_hist[0]["content"]

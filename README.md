@@ -1,9 +1,9 @@
-# README.md
+﻿# README.md
 # NeonRoute — Local AI Orchestrator
 
 <div align="center">
 
-![NeonRoute Banner](https://img.shields.io/badge/NeonRoute-v0.8.0--beta-00F0FF?style=for-the-badge&logo=python&logoColor=white)
+![NeonRoute Banner](https://img.shields.io/badge/NeonRoute-v0.9.0-beta--beta-00F0FF?style=for-the-badge&logo=python&logoColor=white)
 ![PyQt6](https://img.shields.io/badge/GUI-PyQt6_Decomposed_Mixins-6366F1?style=for-the-badge&logo=qt&logoColor=white)
 ![Hardware](https://img.shields.io/badge/VRAM_Budget-8GB_RTX_5050_Laptop-10B981?style=for-the-badge&logo=nvidia&logoColor=white)
 ![Tests](https://img.shields.io/badge/Tests-487_Passed_100%25-00FF66?style=for-the-badge&logo=pytest&logoColor=white)
@@ -18,7 +18,7 @@
 
 ## 📌 Оглавление
 1. [О проекте](#-о-проекте)
-2. [Ключевые архитектурные изменения v0.8.0-beta](#-ключевые-архитектурные-изменения-v080-beta)
+2. [Ключевые архитектурные изменения v0.9.0-beta](#-ключевые-архитектурные-изменения-v080-beta)
 3. [Режимы работы (ModeCoordinator)](#-режимы-работы-modecoordinator)
 4. [Аппаратный арбитраж VRAM (8 ГБ VRAM Safety)](#-аппаратный-арбитраж-vram-8-гб-vram-safety)
 5. [Управление жизненным циклом и выключение (Graceful Shutdown)](#-управление-жизненным-циклом-и-выключение-graceful-shutdown)
@@ -40,9 +40,9 @@
 
 ---
 
-## ⚡ Ключевые архитектурные изменения v0.8.0-beta
+## ⚡ Ключевые архитектурные изменения v0.9.0-beta
 
-Версия **v0.8.0-beta** представляет собой фундаментальный рефакторинг ядра и интерфейса:
+Версия **v0.9.0-beta** представляет собой фундаментальный рефакторинг ядра и интерфейса:
 - **Декомпозиция главного окна (`ui/main_window.py`)**: Устранен устаревший монолит. Окно собрано из 12 независимых Python-миксинов (`DialogControllerMixin`, `TaskLifecycleMixin`, `WindowStateMixin`, `ChatSearchMixin`, `AvatarControllerMixin`, `SessionControllerMixin`, `ChatBubbleBuilderMixin`, `ChatFlowControllerMixin`, `AssistantFlowControllerMixin`, `RoleplayControllerMixin`, `RoleplayFlowControllerMixin`, `HardwareEngineMixin`, `EngineerControllerMixin`) и выделенного контроллера состояния шапки `HeaderStateController` без конфликтов метаклассов PyQt6.
 - **Двухступенчатый гарантированный Shutdown (`ShutdownWorker` + `ProcessManager`)**:
   - Приоритетное рекурсивное завершение дерева процессов SD Forge (`taskkill /F /T /PID`) строго перед выгрузкой моделей LM Studio.
@@ -303,5 +303,6 @@ pip install -r requirements.txt
 
 - **Проект**: NeonRoute Open Source Desktop AI Orchestrator.
 - **Автор и ведущий разработчик**: ZabotaOblizkih.
-- **Версия**: `v0.8.0-beta`.
+- **Версия**: `v0.9.0-beta`.
 - **Лицензия**: Apache License 2.0.
+

@@ -105,6 +105,34 @@ class KnowledgeManager:
 
     SUPPORTED_EXTENSIONS = DocumentParser.SUPPORTED_EXTENSIONS
 
+    _instance: Optional["KnowledgeManager"] = None
+    _embedding_model: Optional[Any] = None
+
+    @classmethod
+    def get_instance(cls) -> "KnowledgeManager":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def get_embedding_model(cls) -> Any:
+        if cls._embedding_model is None:
+            try:
+                from services import memory_db
+                if getattr(memory_db, "_EMBED_MODEL", None) is not None:
+                    cls._embedding_model = memory_db._EMBED_MODEL
+                else:
+                    from fastembed import TextEmbedding
+                    cls._embedding_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+                    memory_db._EMBED_MODEL = cls._embedding_model
+            except Exception as e:
+                logger.warning(f"[KnowledgeManager] Не удалось инициализировать FastEmbed: {e}")
+        return cls._embedding_model
+
+    @property
+    def embedding_model(self) -> Any:
+        return self.get_embedding_model()
+
     @classmethod
     def get_knowledge_dir(cls, custom_dir: Optional[Path] = None) -> Path:
         """Возвращает путь к директории базы знаний knowledge_base/."""
@@ -662,8 +690,11 @@ class KnowledgeManager:
         if not query or not query.strip():
             return []
 
+        engine = cls.get_search_engine(custom_dir, custom_index_path)
+
         # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
-        if is_conversational_query(query):
+        bm25_idx = getattr(engine, "bm25", None) if engine else None
+        if is_conversational_query(query, bm25_index=bm25_idx):
             return []
 
         # 1. Гибридный поиск по чанкам (BM25 + Dense + RRF) с поддержкой Query Fusion и exclude_chunk_ids
@@ -672,7 +703,6 @@ class KnowledgeManager:
 
         chunks_by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         try:
-            engine = cls.get_search_engine(custom_dir, custom_index_path)
             # Динамический оверсэмплинг против голодания после фильтрации exclude_set
             oversample_k = min(50, 15 + len(exclude_set) * 2)
             raw_chunk_hits = engine.search(search_query, top_k=oversample_k, threshold=0.05)
@@ -762,11 +792,23 @@ class KnowledgeManager:
                 doc_entry["relevance_score"] = min(1.0, round(combined_score, 3))
                 doc_entry["matched_triggers"] = list(dict.fromkeys(matched_trigs))
                 if best_chunk:
-                    doc_entry["chunk_id"] = best_chunk.get("chunk_id")
-                    top_k_chunks = file_chunks[:3]
-                    snippets = [c.get("text", "").strip() for c in top_k_chunks if c.get("text")]
+                    MAX_SNIPPET_BUDGET = 8500
+                    MAX_CHUNKS_PER_FILE = 6
+                    selected_chunks = []
+                    accumulated_chars = 0
+                    for ch in file_chunks[:MAX_CHUNKS_PER_FILE]:
+                        txt = ch.get("text", "").strip()
+                        if not txt:
+                            continue
+                        if accumulated_chars + len(txt) > MAX_SNIPPET_BUDGET and selected_chunks:
+                            break
+                        selected_chunks.append(ch)
+                        accumulated_chars += len(txt)
+
+                    snippets = [c.get("text", "").strip() for c in selected_chunks]
                     doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_chunk.get("text")
-                    doc_entry["matched_chunks"] = top_k_chunks
+                    doc_entry["matched_chunks"] = selected_chunks
+                    doc_entry["chunk_id"] = selected_chunks[0].get("chunk_id") if selected_chunks else best_chunk.get("chunk_id")
                 matched_results.append(doc_entry)
                 processed_files.add(filename)
 
@@ -779,10 +821,23 @@ class KnowledgeManager:
                 doc_entry["relevance_score"] = min(1.0, round(best_ch.get("score", 0.0), 3))
                 doc_entry["matched_triggers"] = []
                 doc_entry["chunk_id"] = best_ch.get("chunk_id")
-                top_k_chunks = f_chunks[:3]
-                snippets = [c.get("text", "").strip() for c in top_k_chunks if c.get("text")]
+                MAX_SNIPPET_BUDGET = 8500
+                MAX_CHUNKS_PER_FILE = 6
+                selected_chunks = []
+                accumulated_chars = 0
+                for ch in f_chunks[:MAX_CHUNKS_PER_FILE]:
+                    txt = ch.get("text", "").strip()
+                    if not txt:
+                        continue
+                    if accumulated_chars + len(txt) > MAX_SNIPPET_BUDGET and selected_chunks:
+                        break
+                    selected_chunks.append(ch)
+                    accumulated_chars += len(txt)
+
+                snippets = [c.get("text", "").strip() for c in selected_chunks]
                 doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_ch.get("text")
-                doc_entry["matched_chunks"] = top_k_chunks
+                doc_entry["matched_chunks"] = selected_chunks
+                doc_entry["chunk_id"] = selected_chunks[0].get("chunk_id") if selected_chunks else best_ch.get("chunk_id")
                 matched_results.append(doc_entry)
                 processed_files.add(fn)
 
@@ -896,10 +951,11 @@ class KnowledgeManager:
         if not query or not query.strip():
             return []
 
-        # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
-        if is_conversational_query(query):
-            return []
         engine = cls.get_search_engine(custom_dir, custom_index_path)
+        # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
+        bm25_idx = getattr(engine, "bm25", None) if engine else None
+        if is_conversational_query(query, bm25_index=bm25_idx):
+            return []
         return engine.search(query, top_k=top_k, threshold=threshold)
 
 

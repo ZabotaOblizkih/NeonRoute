@@ -1,3 +1,4 @@
+import re
 """
 Asynchronous User Fact Extractor for NeonRoute.
 Periodically scans assistant conversations to persist long-term user facts into MemoryDB.

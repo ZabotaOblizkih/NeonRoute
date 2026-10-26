@@ -499,3 +499,52 @@ class TestTwoCircuitAssistantFlowControllerIntegration:
         task = host.task_queue.enqueue.call_args[0][0]
         # Аварийный режим: независимо от ratio выставляется Ступень 3 (512 токенов)
         assert task.kwargs["max_tokens"] == 512
+
+
+class TestThoughtResponseHandling:
+    """Проверка корректной обработки чистового текста при наличии размышлений <think>."""
+
+    @pytest.fixture
+    def host(self):
+        h = DummyAssistantHost()
+        return h
+
+    def test_parser_normal_text_prevents_fallback_stub(self, host):
+        """Если стриминг накопил normal_text в парсере, ответ не заменяется аварийной заглушкой."""
+        from services.thought_stream_parser import ThoughtStreamParser
+
+        bubble = FakeBubble()
+        host._turn_bubble = bubble
+
+        parser = ThoughtStreamParser()
+        parser.feed("<think>Анализирую архитектуру</think>Вот реальный ответ Эларии.")
+        host._thought_stream_parser = parser
+
+        # Модель передает в финал только блок think или пустой остаток
+        host._handle_assistant_llm_response("<think>Анализирую архитектуру</think>")
+
+        assert bubble.text == "Вот реальный ответ Эларии."
+        assert "Связь с моделью обновлена" not in bubble.text
+
+    def test_existing_bubble_text_prevents_fallback_stub(self, host):
+        """Если в бабле уже есть отрисованный текст, пустой text его не перезаписывает заглушкой."""
+        bubble = FakeBubble()
+        bubble.set_text("Отрисованный потоковый текст")
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        host._handle_assistant_llm_response("")
+
+        assert bubble.text == "Отрисованный потоковый текст"
+        assert "Связь с моделью обновлена" not in bubble.text
+
+    def test_empty_response_without_parser_triggers_fallback_stub(self, host):
+        """Если и text, и бабл пусты, подставляется заглушка связи с моделью."""
+        bubble = FakeBubble()
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        host._handle_assistant_llm_response("")
+
+        assert bubble.text == "Связь с моделью обновлена. Я готова, о чём поговорим?"
+
