@@ -1,4 +1,4 @@
-"""
+﻿"""
 Assistant Flow & Turn Generation Controller (Mixin) for NeonRoute MainWindow.
 Handles Elaria dialogue dispatch, 14K context management, VRAM headroom adaptation,
 LanceDB passive memory extraction, and Visual Engine protocol callbacks.
@@ -735,6 +735,18 @@ class AssistantFlowControllerMixin:
                 if hasattr(widget_to_update, "set_scene_art_busy"):
                     widget_to_update.set_scene_art_busy(False)
 
+                # Защита от сервисной заглушки связи над готовым артом
+                current_bubble_text = ""
+                if hasattr(widget_to_update, "get_text"):
+                    current_bubble_text = widget_to_update.get_text().strip()
+                elif hasattr(widget_to_update, "text"):
+                    t_val = widget_to_update.text
+                    current_bubble_text = t_val().strip() if callable(t_val) else str(t_val).strip()
+
+                if current_bubble_text == "Связь с моделью обновлена. Я готова, о чём поговорим?":
+                    if hasattr(widget_to_update, "set_text"):
+                        widget_to_update.set_text("")
+
                 # 2. Монтаж картинки в контейнер бабла
                 if hasattr(widget_to_update, "set_image"):
                     widget_to_update.set_image(str(img_path))
@@ -775,6 +787,8 @@ class AssistantFlowControllerMixin:
                 for m in reversed(messages):
                     if not m.get("is_user") and m.get("role") in ("assistant", None):
                         m["image_path"] = str(img_path)
+                        if m.get("content") == "Связь с моделью обновлена. Я готова, о чём поговорим?":
+                            m["content"] = ""
                         break
             if hasattr(self, "_save_current_session"):
                 self._save_current_session()
@@ -961,13 +975,19 @@ class AssistantFlowControllerMixin:
                 t_val = msg_widget.text
                 widget_existing_text = t_val().strip() if callable(t_val) else str(t_val).strip()
 
-        # Если text пуст, но в виджете уже отрисован ответ (не заглушка) — сохраняем его
-        if not text and widget_existing_text and widget_existing_text != "Связь с моделью обновлена. Я готова, о чём поговорим?":
-            text = widget_existing_text
+        # Очищаем widget_existing_text от служебных арт-тегов, чтобы они не возвращались обратно в text
+        clean_existing = RE_GALLERY_TRIGGER.sub('', widget_existing_text).strip()
+        clean_existing = RE_IMAGE_TAG.sub('', clean_existing).strip()
+        if not text and clean_existing and clean_existing != "Связь с моделью обновлена. Я готова, о чём поговорим?":
+            text = clean_existing
 
-        # Подставлять дефолтную заглушку ТОЛЬКО если и text, и содержимое виджета действительно абсолютно пустые, и не было вызова галереи has_gallery
+        # Комплексный флаг арт-интента: тег галереи, прямой тег промпта или второй проход
+        is_art_turn = bool(has_gallery or extracted_image_prompt or getattr(self, "_is_running_gallery_art_pass", False))
+
+        # Подставлять дефолтную заглушку ТОЛЬКО если и text, и содержимое виджета действительно абсолютно пустые,
+        # и при этом ход НЕ связан с генерацией изображения (не is_art_turn)
         if not text:
-            if not has_gallery:
+            if not is_art_turn:
                 if not widget_existing_text:
                     text = "Связь с моделью обновлена. Я готова, о чём поговорим?"
             else:
@@ -1069,3 +1089,4 @@ class AssistantFlowControllerMixin:
                 MemoryExtractor.extract_facts_async(clean_messages, context=self)
         except Exception as e:
             logger.warning(f"[AssistantFlow] Ошибка вызова экстракции памяти: {e}")
+

@@ -1,19 +1,19 @@
 {
   "version": 1,
-  "last_synced_at": "2026-10-26T23:28:48.613856",
+  "last_synced_at": "2026-10-26T23:37:04.715156",
   "total_documents": 1,
   "documents": {
     "architecture.md": {
       "filename": "architecture.md",
       "relative_path": "architecture.md",
       "path": "C:\\NeonRoute\\knowledge_base\\architecture.md",
-      "mtime": 1792798197.6717322,
-      "hash": "0060dd455c4e9fe67c5616dd45d5d3966f1e0e6a4c94ade5f4faa0cb325ca491",
-      "size_bytes": 76511,
+      "mtime": 1793046880.6952977,
+      "hash": "6c777e8f6da799a56788f69634b6244aec3e7cfb8a2e046ca77457261dbe4f9c",
+      "size_bytes": 76518,
       "size_kb": 74.72,
       "line_count": 943,
       "page_count": null,
-      "updated_at": "2026-10-25T14:17:32.506113",
+      "updated_at": "2026-10-26T23:37:04.715156",
       "triggers": [
         "NeonRoute",
         "VRAM",

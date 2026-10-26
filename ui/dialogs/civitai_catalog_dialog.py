@@ -29,6 +29,7 @@ CIVITAI_CACHE_DIR = DATA_DIR / "cache" / "civitai_thumbs"
 CIVITAI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 CIVITAI_API_BASE = "https://civitai.com/api/v1"
+_CIVITAI_ORPHANED_WORKERS: List[QThread] = []
 
 
 def render_civitai_poster(
@@ -87,8 +88,8 @@ class CivitaiSearchWorker(QThread):
     results_ready = pyqtSignal(list, int, int, object)  # cards, total_pages, total_items, next_cursor
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, query: str, model_type: Optional[str], base_model: Optional[str], sort: str, nsfw: bool, page: int, cursor: Optional[Any] = None):
-        super().__init__()
+    def __init__(self, query: str, model_type: Optional[str], base_model: Optional[str], sort: str, nsfw: bool, page: int, cursor: Optional[Any] = None, parent=None):
+        super().__init__(parent)
         self.query = query.strip()
         self.model_type = model_type
         self.base_model = base_model
@@ -97,10 +98,16 @@ class CivitaiSearchWorker(QThread):
         self.page = max(1, page)
         self.cursor = cursor
         self._is_aborted = False
+        self._session: Optional[requests.Session] = None
 
     def abort(self):
         self._is_aborted = True
         self.requestInterruption()
+        if self._session:
+            try:
+                self._session.close()
+            except Exception:
+                pass
 
     def run(self):
         if self._is_aborted or self.isInterruptionRequested():
@@ -136,8 +143,9 @@ class CivitaiSearchWorker(QThread):
         if self._is_aborted or self.isInterruptionRequested():
             return
 
+        self._session = requests.Session()
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=14.0)
+            resp = self._session.get(url, params=params, headers=headers, timeout=14.0)
             if self._is_aborted or self.isInterruptionRequested():
                 return
             if resp.status_code != 200:
@@ -157,6 +165,13 @@ class CivitaiSearchWorker(QThread):
             if not (self._is_aborted or self.isInterruptionRequested()):
                 self.error_occurred.emit(f"Ошибка API Civitai: {e}")
             return
+        finally:
+            if self._session:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                self._session = None
 
         if self._is_aborted or self.isInterruptionRequested():
             return
@@ -219,15 +234,21 @@ class CivitaiSearchWorker(QThread):
 class CivitaiThumbnailsBatchWorker(QThread):
     thumb_loaded = pyqtSignal(int, str)
 
-    def __init__(self, cards: List[Dict[str, Any]]):
-        super().__init__()
+    def __init__(self, cards: List[Dict[str, Any]], parent=None):
+        super().__init__(parent)
         self.cards = list(cards)
         self._is_aborted = False
         self._executor: Optional[ThreadPoolExecutor] = None
+        self._session: Optional[requests.Session] = None
 
     def abort(self):
         self._is_aborted = True
         self.requestInterruption()
+        if self._session:
+            try:
+                self._session.close()
+            except Exception:
+                pass
         if self._executor:
             try:
                 self._executor.shutdown(wait=False, cancel_futures=True)
@@ -243,7 +264,12 @@ class CivitaiThumbnailsBatchWorker(QThread):
         if not cache_path.exists():
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
-                resp = requests.get(url, headers=headers, timeout=6.0)
+                if self._session:
+                    resp = self._session.get(url, headers=headers, timeout=6.0)
+                else:
+                    resp = requests.get(url, headers=headers, timeout=6.0)
+                if self._is_aborted or self.isInterruptionRequested():
+                    return
                 if resp.status_code == 200 and len(resp.content) > 300:
                     img = Image.open(io.BytesIO(resp.content))
                     img.save(cache_path, format="PNG")
@@ -254,16 +280,19 @@ class CivitaiThumbnailsBatchWorker(QThread):
             self.thumb_loaded.emit(idx, str(cache_path))
 
     def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+        self._session = requests.Session()
         try:
             self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="CivitaiThumb")
             futures = []
             for idx, c in enumerate(self.cards):
-                if self._is_aborted:
+                if self._is_aborted or self.isInterruptionRequested():
                     break
                 futures.append(self._executor.submit(self._fetch_single, idx, c.get("preview_url")))
 
             for f in futures:
-                if self._is_aborted:
+                if self._is_aborted or self.isInterruptionRequested():
                     break
                 try:
                     f.result()
@@ -274,9 +303,16 @@ class CivitaiThumbnailsBatchWorker(QThread):
         finally:
             if self._executor:
                 try:
-                    self._executor.shutdown(wait=False)
+                    self._executor.shutdown(wait=False, cancel_futures=True)
                 except Exception:
                     pass
+                self._executor = None
+            if self._session:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                self._session = None
 
 
 
@@ -285,19 +321,28 @@ class CivitaiDownloadWorker(QThread):
     finished_successfully = pyqtSignal(Path)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, download_url: str, dest_path: Path, api_token: Optional[str] = None, expected_sha256: Optional[str] = None):
-        super().__init__()
+    def __init__(self, download_url: str, dest_path: Path, api_token: Optional[str] = None, expected_sha256: Optional[str] = None, parent=None):
+        super().__init__(parent)
         self.download_url = download_url
         self.dest_path = dest_path
         self.api_token = api_token.strip() if api_token else None
         self.expected_sha256 = expected_sha256.strip().lower() if expected_sha256 else None
         self._is_aborted = False
+        self._session: Optional[requests.Session] = None
 
     def abort(self):
         self._is_aborted = True
         self.requestInterruption()
+        if self._session:
+            try:
+                self._session.close()
+            except Exception:
+                pass
 
     def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+
         url = self.download_url
         if self.api_token:
             delim = "&" if "?" in url else "?"
@@ -309,6 +354,7 @@ class CivitaiDownloadWorker(QThread):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
 
+        self._session = requests.Session()
         try:
             # 1. Проверка расширения файла (строго .safetensors)
             if self.dest_path.suffix.lower() != ".safetensors":
@@ -324,7 +370,9 @@ class CivitaiDownloadWorker(QThread):
                 raise ValueError(f"SSRF защита: домен '{hostname}' не входит в белый список разрешенных хостов (*.civitai.com).")
 
             self.dest_path.parent.mkdir(parents=True, exist_ok=True)
-            with requests.get(url, headers=headers, stream=True, timeout=20.0, allow_redirects=True) as resp:
+            with self._session.get(url, headers=headers, stream=True, timeout=20.0, allow_redirects=True) as resp:
+                if self._is_aborted or self.isInterruptionRequested():
+                    return
                 if resp.status_code in (401, 403):
                     raise RuntimeError("Требуется авторизация Civitai. Укажите API-токен.")
                 resp.raise_for_status()
@@ -346,10 +394,9 @@ class CivitaiDownloadWorker(QThread):
 
                 with open(temp_part, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=chunk_size):
-                        if self._is_aborted:
+                        if self._is_aborted or self.isInterruptionRequested():
                             f.close()
                             temp_part.unlink(missing_ok=True)
-                            self.error_occurred.emit("Загрузка отменена пользователем.")
                             return
 
                         if chunk:
@@ -362,31 +409,38 @@ class CivitaiDownloadWorker(QThread):
                                 duration = now - last_time
                                 speed_mbps = ((downloaded - last_downloaded) / (1024 * 1024)) / max(0.01, duration)
                                 percent = int((downloaded / total_size) * 100) if total_size > 0 else 0
-                                self.progress_updated.emit(percent, downloaded / (1024 * 1024), speed_mbps)
+                                if not (self._is_aborted or self.isInterruptionRequested()):
+                                    self.progress_updated.emit(percent, downloaded / (1024 * 1024), speed_mbps)
                                 last_time = now
                                 last_downloaded = downloaded
 
+            if self._is_aborted or self.isInterruptionRequested():
+                temp_part.unlink(missing_ok=True)
+                return
+
             # 3. Верификация SHA-256 хеша при наличии ожидаемого значения
             if self.expected_sha256:
-                calc_hash = hasher.hexdigest().lower()
-                if calc_hash != self.expected_sha256:
-                    if temp_part.exists():
-                        temp_part.unlink(missing_ok=True)
-                    raise ValueError(
-                        f"Ошибка целостности: не совпадает контрольная сумма SHA-256.\n"
-                        f"Ожидалось: {self.expected_sha256}\nПолучено: {calc_hash}"
-                    )
+                actual_hash = hasher.hexdigest().lower()
+                if actual_hash != self.expected_sha256:
+                    temp_part.unlink(missing_ok=True)
+                    raise ValueError(f"Контрольная сумма SHA-256 повреждена!\nОжидалось: {self.expected_sha256}\nПолучено: {actual_hash}")
 
-            if temp_part.exists():
-                if self.dest_path.exists():
-                    self.dest_path.unlink()
-                temp_part.rename(self.dest_path)
+            # 4. Атомарное переименование .part -> целевое имя
+            temp_part.replace(self.dest_path)
+            if not (self._is_aborted or self.isInterruptionRequested()):
                 self.finished_successfully.emit(self.dest_path)
 
         except Exception as e:
-            if temp_part.exists():
-                temp_part.unlink(missing_ok=True)
-            self.error_occurred.emit(str(e))
+            temp_part.unlink(missing_ok=True)
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                self.error_occurred.emit(str(e))
+        finally:
+            if self._session:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                self._session = None
 
 
 class CivitaiCatalogDialog(QDialog):
@@ -658,10 +712,14 @@ class CivitaiCatalogDialog(QDialog):
                 pass
             self._search_worker.abort()
             self._search_worker.quit()
-            self._search_worker.wait(200)
+            self._search_worker.wait(300)
             if self._search_worker.isRunning():
                 try:
                     self._search_worker.setParent(None)
+                    _CIVITAI_ORPHANED_WORKERS.append(self._search_worker)
+                    self._search_worker.finished.connect(
+                        lambda w=self._search_worker: _CIVITAI_ORPHANED_WORKERS.remove(w) if w in _CIVITAI_ORPHANED_WORKERS else None
+                    )
                 except Exception:
                     pass
 
@@ -672,7 +730,8 @@ class CivitaiCatalogDialog(QDialog):
             sort=sort,
             nsfw=nsfw,
             page=self.current_page,
-            cursor=self.current_cursor
+            cursor=self.current_cursor,
+            parent=self
         )
         self._search_worker.results_ready.connect(self._on_results_ready)
         self._search_worker.error_occurred.connect(self._on_search_error)
@@ -724,8 +783,22 @@ class CivitaiCatalogDialog(QDialog):
             self.btn_next_page.setEnabled(self.current_page < self.total_pages or bool(self.next_cursor))
 
         if self._thumb_worker and self._thumb_worker.isRunning():
+            try:
+                self._thumb_worker.thumb_loaded.disconnect()
+            except Exception:
+                pass
             self._thumb_worker.abort()
-            self._thumb_worker.wait(150)
+            self._thumb_worker.quit()
+            self._thumb_worker.wait(300)
+            if self._thumb_worker.isRunning():
+                try:
+                    self._thumb_worker.setParent(None)
+                    _CIVITAI_ORPHANED_WORKERS.append(self._thumb_worker)
+                    self._thumb_worker.finished.connect(
+                        lambda w=self._thumb_worker: _CIVITAI_ORPHANED_WORKERS.remove(w) if w in _CIVITAI_ORPHANED_WORKERS else None
+                    )
+                except Exception:
+                    pass
 
         for c in cards:
             c_name = c["name"]
@@ -739,7 +812,7 @@ class CivitaiCatalogDialog(QDialog):
             self.list_results.addItem(item)
 
         if cards:
-            self._thumb_worker = CivitaiThumbnailsBatchWorker(cards)
+            self._thumb_worker = CivitaiThumbnailsBatchWorker(cards, parent=self)
             self._thumb_worker.thumb_loaded.connect(self._on_thumb_loaded)
             self._thumb_worker.start()
 
@@ -848,7 +921,8 @@ class CivitaiCatalogDialog(QDialog):
         self._download_worker = CivitaiDownloadWorker(
             download_url=c["download_url"],
             dest_path=dest_file,
-            expected_sha256=c.get("sha256")
+            expected_sha256=c.get("sha256"),
+            parent=self
         )
         self._download_worker.progress_updated.connect(self._on_download_progress)
         self._download_worker.finished_successfully.connect(self._on_download_success)
@@ -861,8 +935,25 @@ class CivitaiCatalogDialog(QDialog):
 
     def _on_cancel_download_clicked(self):
         if self._download_worker and self._download_worker.isRunning():
+            try:
+                self._download_worker.progress_updated.disconnect()
+                self._download_worker.finished_successfully.disconnect()
+                self._download_worker.error_occurred.disconnect()
+            except Exception:
+                pass
             self._download_worker.abort()
+            self._download_worker.quit()
             self._download_worker.wait(300)
+            if self._download_worker.isRunning():
+                try:
+                    self._download_worker.setParent(None)
+                    _CIVITAI_ORPHANED_WORKERS.append(self._download_worker)
+                    self._download_worker.finished.connect(
+                        lambda w=self._download_worker: _CIVITAI_ORPHANED_WORKERS.remove(w) if w in _CIVITAI_ORPHANED_WORKERS else None
+                    )
+                except Exception:
+                    pass
+            self._download_worker = None
             self._reset_dl_ui()
 
     def _on_download_success(self, saved_path: Path):
@@ -951,6 +1042,10 @@ class CivitaiCatalogDialog(QDialog):
             try:
                 if worker.isRunning():
                     worker.setParent(None)
+                    _CIVITAI_ORPHANED_WORKERS.append(worker)
+                    worker.finished.connect(
+                        lambda w=worker: _CIVITAI_ORPHANED_WORKERS.remove(w) if w in _CIVITAI_ORPHANED_WORKERS else None
+                    )
             except Exception:
                 pass
 

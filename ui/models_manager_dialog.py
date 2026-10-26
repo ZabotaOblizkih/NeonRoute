@@ -443,6 +443,9 @@ class CivitaiParamsWorker(QThread):
                 self.error_occurred.emit(str(e))
 
 
+_MODELS_MANAGER_ORPHANED_WORKERS: List[QThread] = []
+
+
 class ModelsManagerDialog(QDialog):
     """
     Центральный пульт управления чекпоинтами SD Forge, пайплайном рендера
@@ -1299,6 +1302,7 @@ class ModelsManagerDialog(QDialog):
             logger.error(f"[ModelsManagerDialog] Сбой автонастройки: {e}")
             QMessageBox.warning(self, "Ошибка", f"Произошла ошибка: {e}\nПрименены стандартные параметры.")
         finally:
+            self._civitai_worker = None
             QApplication.restoreOverrideCursor()
             self.btn_autofill_params.setEnabled(True)
             self.btn_autofill_params.setText("Автонастройка (Civitai)")
@@ -1309,6 +1313,7 @@ class ModelsManagerDialog(QDialog):
             logger.error(f"[ModelsManagerDialog] Сбой автонастройки: {err_msg}")
             QMessageBox.warning(self, "Ошибка", f"Произошла ошибка: {err_msg}\nПрименены стандартные параметры.")
         finally:
+            self._civitai_worker = None
             QApplication.restoreOverrideCursor()
             self.btn_autofill_params.setEnabled(True)
             self.btn_autofill_params.setText("Автонастройка (Civitai)")
@@ -1436,7 +1441,13 @@ class ModelsManagerDialog(QDialog):
                 target_dir = Path(installed_list[0]).parent
         dlg = CivitaiCatalogDialog(target_dir=target_dir, parent=self)
         dlg.model_installed.connect(self._on_civitai_model_installed)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            try:
+                dlg.model_installed.disconnect(self._on_civitai_model_installed)
+            except Exception:
+                pass
 
     def _on_civitai_model_installed(self, model_info: dict):
         """Автоматически регистрирует скачанную с Civitai модель в списке роутера."""
@@ -1843,10 +1854,14 @@ class ModelsManagerDialog(QDialog):
             except Exception:
                 pass
 
-            # 5) Если thread.isRunning() — setParent(None) для защиты от каскадного abort Qt
+            # 5) Если thread.isRunning() — сделай thread.setParent(None), чтобы сборщик мусора окна не триггерил abort Qt
             try:
                 if worker.isRunning():
                     worker.setParent(None)
+                    _MODELS_MANAGER_ORPHANED_WORKERS.append(worker)
+                    worker.finished.connect(
+                        lambda w=worker: _MODELS_MANAGER_ORPHANED_WORKERS.remove(w) if w in _MODELS_MANAGER_ORPHANED_WORKERS else None
+                    )
             except Exception:
                 pass
 
