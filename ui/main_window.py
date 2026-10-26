@@ -478,10 +478,10 @@ class MainWindow(
         self.chat_container = self.chat_stream.chat_container
         self.chat_layout = self.chat_stream.chat_layout
 
-        # Нативный детерминированный автоскролл без QTimer.singleShot:
+        # Нативный умный автоскролл (активен ТОЛЬКО при живом стриминге модели)
         if hasattr(self, "scroll_area") and self.scroll_area:
             v_bar = self.scroll_area.verticalScrollBar()
-            v_bar.rangeChanged.connect(lambda min_val, max_val: v_bar.setValue(max_val) if getattr(self, "_auto_scroll_enabled", True) else None)
+            v_bar.rangeChanged.connect(self._on_chat_scroll_range_changed)
 
         # Bottom Input Capsule Component
         self.input_panel = ChatInputPanel(window=self)
@@ -1401,6 +1401,18 @@ class MainWindow(
         logger.error(f"LM Studio reported error: {error}")
 
 
+
+    def _on_chat_scroll_range_changed(self, min_val: int, max_val: int):
+        # Автоскролл срабатывает ИСКЛЮЧИТЕЛЬНО во время живой генерации ответа
+        if not getattr(self, "is_busy", False):
+            return
+        if not getattr(self, "_auto_scroll_enabled", True):
+            return
+        if hasattr(self, "scroll_area") and self.scroll_area:
+            v_bar = self.scroll_area.verticalScrollBar()
+            # Прижимаем ко дну, только если пользователь уже находится внизу чата (допуск 120px)
+            if max_val - v_bar.value() <= 120:
+                v_bar.setValue(max_val)
 
     def _scroll_to_bottom(self):
         if hasattr(self, "scroll_area") and self.scroll_area:

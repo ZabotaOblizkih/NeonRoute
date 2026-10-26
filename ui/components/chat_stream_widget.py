@@ -94,10 +94,8 @@ class ChatStreamWidget(QWidget):
 
         self.scroll_area.setWidget(self.chat_container)
 
-        # 4. Auto bottom-stickiness
-        self.scroll_area.verticalScrollBar().rangeChanged.connect(
-            lambda min_v, max_v: self.scroll_area.verticalScrollBar().setValue(max_v)
-        )
+        # 4. Auto bottom-stickiness управляется контроллером окна MainWindow
+        pass
 
         # Install event filters for Ctrl+Wheel zoom
         self.scroll_area.installEventFilter(self)

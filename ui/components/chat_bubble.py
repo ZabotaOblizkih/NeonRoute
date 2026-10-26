@@ -270,12 +270,7 @@ class ChatMessageWidget(QWidget):
 
         bubble_layout.addLayout(header_layout)
 
-        from ui.components.chat_message_widget import KnowledgeHUDWidget
-        self.knowledge_hud = KnowledgeHUDWidget(self.bubble_container)
-        self.knowledge_hud_container = self.knowledge_hud
-        bubble_layout.addWidget(self.knowledge_hud)
-        if self.knowledge_sources:
-            self.knowledge_hud.set_sources(self.knowledge_sources)
+
 
 
 
@@ -328,6 +323,15 @@ class ChatMessageWidget(QWidget):
             self.text_browser.setHtml(html_content)
             bubble_layout.addWidget(self.text_browser)
             self._adjust_text_height()
+
+
+
+        from ui.components.chat_message_widget import KnowledgeHUDWidget
+        self.knowledge_hud = KnowledgeHUDWidget(self.bubble_container)
+        self.knowledge_hud_container = self.knowledge_hud
+        bubble_layout.addWidget(self.knowledge_hud)
+        if self.knowledge_sources:
+            self.knowledge_hud.set_sources(self.knowledge_sources)
 
         from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
         self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
@@ -585,12 +589,8 @@ class ChatMessageWidget(QWidget):
             """)
             layout_ref = getattr(self, "bubble_layout", None) or (self.bubble_container.layout() if self.bubble_container else None)
             if layout_ref:
-                target_idx = 1
-                if getattr(self, "thought_spoiler", None):
-                    sp_idx = layout_ref.indexOf(self.thought_spoiler)
-                    if sp_idx >= 0:
-                        target_idx = sp_idx
-                layout_ref.insertWidget(target_idx, self.text_browser)
+                # Текст ответа всегда монтируется на первую позицию под заголовок (индекс 1)
+                layout_ref.insertWidget(1, self.text_browser)
 
         if self.text_browser:
             self.text_browser.setHtml(self._markdown_to_html(self.raw_text))
