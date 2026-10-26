@@ -1,4 +1,4 @@
-﻿"""
+"""
 Assistant Flow & Turn Generation Controller (Mixin) for NeonRoute MainWindow.
 Handles Elaria dialogue dispatch, 14K context management, VRAM headroom adaptation,
 LanceDB passive memory extraction, and Visual Engine protocol callbacks.
@@ -967,19 +967,25 @@ class AssistantFlowControllerMixin:
                     msg_widget = w
                     break
 
-        widget_existing_text = ""
-        if msg_widget is not None:
-            if hasattr(msg_widget, "get_text"):
-                widget_existing_text = msg_widget.get_text().strip()
-            elif hasattr(msg_widget, "text"):
-                t_val = msg_widget.text
-                widget_existing_text = t_val().strip() if callable(t_val) else str(t_val).strip()
+        # Фоллбэк: достаем текст из виджета только если основной text пуст
+        if not text:
+            widget_existing_text = ""
+            if msg_widget is not None:
+                if hasattr(msg_widget, "get_text"):
+                    raw_val = msg_widget.get_text()
+                    if isinstance(raw_val, str):
+                        widget_existing_text = raw_val.strip()
+                elif hasattr(msg_widget, "text"):
+                    t_val = msg_widget.text
+                    raw_val = t_val() if callable(t_val) else t_val
+                    if isinstance(raw_val, str):
+                        widget_existing_text = raw_val.strip()
 
-        # Очищаем widget_existing_text от служебных арт-тегов, чтобы они не возвращались обратно в text
-        clean_existing = RE_GALLERY_TRIGGER.sub('', widget_existing_text).strip()
-        clean_existing = RE_IMAGE_TAG.sub('', clean_existing).strip()
-        if not text and clean_existing and clean_existing != "Связь с моделью обновлена. Я готова, о чём поговорим?":
-            text = clean_existing
+            if widget_existing_text:
+                clean_existing = RE_GALLERY_TRIGGER.sub('', widget_existing_text).strip()
+                clean_existing = RE_IMAGE_TAG.sub('', clean_existing).strip()
+                if clean_existing and clean_existing != "Связь с моделью обновлена. Я готова, о чём поговорим?":
+                    text = clean_existing
 
         # Комплексный флаг арт-интента: тег галереи, прямой тег промпта или второй проход
         is_art_turn = bool(has_gallery or extracted_image_prompt or getattr(self, "_is_running_gallery_art_pass", False))
