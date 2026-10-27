@@ -1,4 +1,4 @@
-﻿"""
+"""
 NeonRoute - Central Configuration & Environment Settings
 Optimized for 8 GB VRAM (RTX 5050 / MSI Cyborg 15)
 """
@@ -140,6 +140,7 @@ MODE_PROFILES = {
             "temperature": 0.70,
             "min_p": 0.05,
             "repeat_penalty": 1.05,
+            "dry_multiplier": 0.80,
             "max_tokens": 1024,
         }
     },
@@ -152,6 +153,7 @@ MODE_PROFILES = {
             "min_p": 0.05,
             "top_p": 0.95,
             "repeat_penalty": 1.02,
+            "dry_multiplier": 0.80,
             "max_tokens": 4096,         # Полные 4K на литературный пост
             "is_dm_mode": False
         }
@@ -164,6 +166,7 @@ MODE_PROFILES = {
             "temperature": 0.15,
             "min_p": 0.00,
             "repeat_penalty": 1.00,
+            "dry_multiplier": 0.00,
             "max_tokens": 4096,         # До 4K под генерацию скриптов
         }
     }

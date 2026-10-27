@@ -488,18 +488,21 @@ class AssistantFlowControllerMixin:
         default_min_p = cfg_defaults.get("min_p", prof_sampling.get("min_p", 0.05))
         default_rep_pen = cfg_defaults.get("repeat_penalty", prof_sampling.get("repeat_penalty", 1.05))
         default_max_tok = cfg_defaults.get("max_tokens", prof_sampling.get("max_tokens", 1024))
+        default_dry = cfg_defaults.get("dry_multiplier", prof_sampling.get("dry_multiplier", 0.80))
 
         if is_custom and "temperature" in sampling:
             temp = float(sampling.get("temperature", default_temp))
             min_p = float(sampling.get("min_p", default_min_p))
             rep_pen = float(sampling.get("repeat_penalty", default_rep_pen))
             user_max_tokens = sampling.get("max_tokens", default_max_tok)
+            dry_mult = float(sampling.get("dry_multiplier", default_dry))
             source_tag = f"Кастомный чат (PKM) [ID: {curr_sess_id}]"
         else:
             temp = float(default_temp)
             min_p = float(default_min_p)
             rep_pen = float(default_rep_pen)
             user_max_tokens = default_max_tok
+            dry_mult = float(default_dry)
             source_tag = "Глобальный дефолт config.json (или профиль режима)"
 
         if _should_art:
@@ -514,7 +517,7 @@ class AssistantFlowControllerMixin:
 
         logger.info(
             f"[SamplingResolve] Режим 'assistant' | Сессия: {curr_sess_id} | "
-            f"Источник: {source_tag} -> temp={temp}, min_p={min_p}, ctx={target_ctx_len}, max_tokens={target_max_tokens}"
+            f"Источник: {source_tag} -> temp={temp}, min_p={min_p}, dry_multiplier={dry_mult}, ctx={target_ctx_len}, max_tokens={target_max_tokens}"
         )
 
         llm_kwargs = {
@@ -529,6 +532,10 @@ class AssistantFlowControllerMixin:
             "min_p": min_p,
             "repetition_penalty": rep_pen,
             "repeat_penalty": rep_pen,
+            "dry_multiplier": dry_mult,
+            "dry_base": 1.75,
+            "dry_allowed_length": 2,
+            "dry_penalty_last_n": 0,
             "stream": True
         }
 

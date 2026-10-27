@@ -156,6 +156,7 @@ class ModelSamplingDialog(QDialog):
     - Temperature (0.10 - 2.00, step 0.05)
     - Min-P Sampling (0.00 - 0.20, step 0.01)
     - Repetition Penalty (1.00 - 1.30, step 0.01)
+    - DRY Multiplier (0.00 - 1.50, step 0.05)
     - Max Tokens (256 - 4096, step 64)
     Provides default reset according to active session mode (roleplay vs assistant).
     """
@@ -329,7 +330,35 @@ class ModelSamplingDialog(QDialog):
         rep_row.addWidget(self.slider_rep_pen)
         params_box.addLayout(rep_row)
 
-        # 4. Max Tokens (Ограничено мастер-предохранителем 4096)
+        # 4. DRY Multiplier (Don't Repeat Yourself)
+        dry_row = QVBoxLayout()
+        dry_row.setSpacing(4)
+        dry_header = QHBoxLayout()
+        self.lbl_dry = QLabel("Штраф шаблонов DRY (Don't Repeat Yourself):", self)
+        self.lbl_dry.setProperty("class", "param_label")
+        dry_tip = "Подавляет зацикливание фраз, паразитных оборотов и повторяющихся шаблонов предложений без деградации словарного запаса. 0.0 — выключен."
+        self.lbl_dry.setToolTip(dry_tip)
+
+        self.spin_dry = SamplingDoubleSpinBox(self)
+        self.spin_dry.setRange(0.00, 1.50)
+        self.spin_dry.setSingleStep(0.05)
+        self.spin_dry.setDecimals(2)
+        self.spin_dry.setToolTip(dry_tip)
+
+        dry_header.addWidget(self.lbl_dry)
+        dry_header.addStretch()
+        dry_header.addWidget(self.spin_dry)
+        dry_row.addLayout(dry_header)
+
+        self.slider_dry = SamplingSlider(Qt.Orientation.Horizontal, self)
+        self.slider_dry.setRange(0, 150)
+        self.slider_dry.setSingleStep(5)
+        self.slider_dry.setPageStep(10)
+        self.slider_dry.setToolTip(dry_tip)
+        dry_row.addWidget(self.slider_dry)
+        params_box.addLayout(dry_row)
+
+        # 5. Max Tokens (Ограничено мастер-предохранителем 4096)
         tokens_row = QVBoxLayout()
         tokens_row.setSpacing(4)
         tok_header = QHBoxLayout()
@@ -350,7 +379,7 @@ class ModelSamplingDialog(QDialog):
         tokens_row.addWidget(self.slider_max_tokens)
         params_box.addLayout(tokens_row)
 
-        # 5. Checkbox DM Mode (Roleplay only)
+        # 6. Checkbox DM Mode (Roleplay only)
         self.chk_dm_mode = CheckBox("🎲 Режим Гейммастера (DM / Ведущий игры)", self)
         self.chk_dm_mode.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: 600; margin-top: 4px;")
         self.chk_dm_mode.setChecked(bool(current_params.get("is_dm_mode", False)))
@@ -372,6 +401,10 @@ class ModelSamplingDialog(QDialog):
         self.slider_rep_pen.sliderMoved.connect(self._on_rep_pen_slider_changed)
         self.spin_rep_pen.valueChanged.connect(self._on_rep_pen_spin_changed)
 
+        self.slider_dry.valueChanged.connect(self._on_dry_slider_changed)
+        self.slider_dry.sliderMoved.connect(self._on_dry_slider_changed)
+        self.spin_dry.valueChanged.connect(self._on_dry_spin_changed)
+
         self.slider_max_tokens.valueChanged.connect(self._on_max_tokens_slider_changed)
         self.slider_max_tokens.sliderMoved.connect(self._on_max_tokens_slider_changed)
         self.spin_max_tokens.valueChanged.connect(self._on_max_tokens_spin_changed)
@@ -382,11 +415,13 @@ class ModelSamplingDialog(QDialog):
         ref_temp = ref_params["temperature"]
         ref_min_p = ref_params["min_p"]
         ref_rep_pen = ref_params["repeat_penalty"]
+        ref_dry = ref_params.get("dry_multiplier", 0.00 if self.is_engineer_mode else 0.80)
         ref_max_tok = ref_params["max_tokens"]
 
         init_temp = float(current_params.get("temperature", ref_temp))
         init_min_p = float(current_params.get("min_p", ref_min_p))
         init_rep_pen = float(current_params.get("repeat_penalty", ref_rep_pen))
+        init_dry = float(current_params.get("dry_multiplier", ref_params.get("dry_multiplier", 0.80 if not self.is_engineer_mode else 0.00)))
         init_max_tokens = int(current_params.get("max_tokens", ref_max_tok))
 
         if self.is_engineer_mode:
@@ -399,9 +434,22 @@ class ModelSamplingDialog(QDialog):
             tip = "В режиме «⚡ Инженер» температура зафиксирована на 0.15 для стабильности синтаксиса и аргументов API."
             self.spin_temp.setToolTip(tip)
             self.slider_temp.setToolTip(tip)
+
+            self.spin_dry.setValue(0.00)
+            self._on_dry_spin_changed(0.00)
+            self.spin_dry.setEnabled(False)
+            self.slider_dry.setEnabled(False)
+            self.lbl_dry.setText("Штраф шаблонов DRY: 🔒 0.00 (Режим «⚡ Инженер»)")
+            self.lbl_dry.setStyleSheet("color: #00F0FF; font-weight: bold;")
+            dry_eng_tip = "В режиме «⚡ Инженер» сэмплер DRY зафиксирован на 0.00 (выключен) во избежание поломки повторяющихся синтаксических конструкций кода."
+            self.spin_dry.setToolTip(dry_eng_tip)
+            self.slider_dry.setToolTip(dry_eng_tip)
+            self.lbl_dry.setToolTip(dry_eng_tip)
         else:
             self.spin_temp.setValue(init_temp)
             self._on_temp_spin_changed(init_temp)
+            self.spin_dry.setValue(init_dry)
+            self._on_dry_spin_changed(init_dry)
 
         self.spin_min_p.setValue(init_min_p)
         self._on_min_p_spin_changed(init_min_p)
@@ -487,6 +535,22 @@ class ModelSamplingDialog(QDialog):
             self.slider_rep_pen.setValue(target)
             self.slider_rep_pen.blockSignals(False)
 
+    def _on_dry_slider_changed(self, val: int):
+        self._on_user_input_changed()
+        target = round(val / 100.0, 2)
+        if abs(self.spin_dry.value() - target) > 0.001:
+            self.spin_dry.blockSignals(True)
+            self.spin_dry.setValue(target)
+            self.spin_dry.blockSignals(False)
+
+    def _on_dry_spin_changed(self, val: float):
+        self._on_user_input_changed()
+        target = int(round(val * 100))
+        if self.slider_dry.value() != target:
+            self.slider_dry.blockSignals(True)
+            self.slider_dry.setValue(target)
+            self.slider_dry.blockSignals(False)
+
     def _on_max_tokens_slider_changed(self, val: int):
         self._on_user_input_changed()
         snapped = round(val / 64) * 64
@@ -513,9 +577,14 @@ class ModelSamplingDialog(QDialog):
             if self.is_engineer_mode:
                 self.spin_temp.setValue(0.15)
                 self.slider_temp.setValue(15)
+                self.spin_dry.setValue(0.00)
+                self.slider_dry.setValue(0)
             else:
                 self.spin_temp.setValue(defaults["temperature"])
                 self.slider_temp.setValue(int(round(defaults["temperature"] * 100)))
+                dry_val = float(defaults.get("dry_multiplier", 0.80 if not self.is_engineer_mode else 0.00))
+                self.spin_dry.setValue(dry_val)
+                self.slider_dry.setValue(int(round(dry_val * 100)))
             self.spin_min_p.setValue(defaults["min_p"])
             self.slider_min_p.setValue(int(round(defaults["min_p"] * 100)))
             self.spin_rep_pen.setValue(defaults["repeat_penalty"])
@@ -537,12 +606,14 @@ class ModelSamplingDialog(QDialog):
             "temperature": round(self.spin_temp.value(), 2),
             "min_p": round(self.spin_min_p.value(), 2),
             "repeat_penalty": round(self.spin_rep_pen.value(), 2),
+            "dry_multiplier": round(self.spin_dry.value(), 2),
             "max_tokens": int(self.spin_max_tokens.value())
         }
         if "top_p" in getattr(self, "current_params", {}):
             params["top_p"] = self.current_params["top_p"]
         if self.is_engineer_mode:
             params["temperature"] = 0.15
+            params["dry_multiplier"] = 0.00
         if hasattr(self, "chk_dm_mode") and self.mode == "roleplay":
             params["is_dm_mode"] = self.chk_dm_mode.isChecked()
         return params

@@ -863,8 +863,10 @@ class ChatFlowControllerMixin:
         # 3. Итоговый рабочий словарь (сессия приоритетнее глобальных)
         effective_sampling = {**global_sampling, **session_sampling}
 
-        cfg_key = "default_sampling_engineering" if is_eng else f"default_sampling_{self.current_mode}"
+        cfg_key = "default_sampling_engineer" if is_eng else f"default_sampling_{self.current_mode}"
         cfg_defaults = getattr(self, "app_config", {}).get(cfg_key, {})
+        if is_eng and not cfg_defaults:
+            cfg_defaults = getattr(self, "app_config", {}).get("default_sampling_engineering", {})
 
         prof_sampling = mode_profile.get("sampling", {})
         default_temp = cfg_defaults.get("temperature", prof_sampling.get("temperature", 0.70))
@@ -872,12 +874,14 @@ class ChatFlowControllerMixin:
         default_rep_pen = cfg_defaults.get("repeat_penalty", prof_sampling.get("repeat_penalty", 1.05))
         default_max_tok = cfg_defaults.get("max_tokens", prof_sampling.get("max_tokens", 1024))
         default_top_p = cfg_defaults.get("top_p", prof_sampling.get("top_p", 0.95))
+        default_dry = 0.00 if is_eng else cfg_defaults.get("dry_multiplier", prof_sampling.get("dry_multiplier", 0.80))
 
         temp = float(effective_sampling.get("temperature", default_temp))
         min_p = float(effective_sampling.get("min_p", default_min_p))
         rep_pen = float(effective_sampling.get("repeat_penalty", effective_sampling.get("repetition_penalty", default_rep_pen)))
         top_p_val = effective_sampling.get("top_p", default_top_p)
         top_p = float(top_p_val) if top_p_val is not None else 0.95
+        dry_mult = 0.00 if is_eng else float(effective_sampling.get("dry_multiplier", default_dry))
 
         has_custom_max_tok = ("max_tokens" in effective_sampling)
         user_max_tokens = effective_sampling.get("max_tokens")
@@ -911,6 +915,10 @@ class ChatFlowControllerMixin:
             "top_p": top_p,
             "repetition_penalty": rep_pen,
             "repeat_penalty": rep_pen,
+            "dry_multiplier": dry_mult,
+            "dry_base": 1.75,
+            "dry_allowed_length": 2,
+            "dry_penalty_last_n": 0,
             "stream": True
         }
 

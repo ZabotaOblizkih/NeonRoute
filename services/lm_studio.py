@@ -115,6 +115,19 @@ class LMStudioClient(QObject):
 
         target = model_name or getattr(self, "_last_loaded_model_id", None)
         last_id = getattr(self, "_last_loaded_model_id", None)
+
+        # Если локальный last_id пуст (новый инстанс), опрашиваем живой сервер /models
+        if not last_id:
+            try:
+                active = self.get_models()
+                if active:
+                    last_id = active[0]
+                    self._last_loaded_model_id = last_id
+                    if not getattr(self, "_current_loaded_ctx", 0):
+                        self._current_loaded_ctx = 14336
+            except Exception:
+                pass
+
         if not target or not last_id:
             return False
 
@@ -123,32 +136,20 @@ class LMStudioClient(QObject):
         if t_clean == l_clean:
             return True
 
-        # Сравнение по Path(..).stem.lower()
         if Path(t_clean).stem.lower() == Path(l_clean).stem.lower():
             return True
 
-        # Сравнение по нормализованному имени без .gguf / -gguf
         def _clean_stem(s: str) -> str:
-            name = s.replace("\\", "/").rsplit("/", 1)[-1]
-            if name.endswith(".gguf"):
-                name = name[:-5]
-            if name.endswith("-gguf"):
-                name = name[:-5]
+            name = s.replace(chr(92), "/").rsplit("/", 1)[-1]
+            for ext in (".gguf", "-gguf", "_gguf"):
+                if name.endswith(ext):
+                    name = name[:-len(ext)]
             return name
 
-        if _clean_stem(t_clean) == _clean_stem(l_clean):
+        c1 = _clean_stem(t_clean)
+        c2 = _clean_stem(l_clean)
+        if c1 == c2 or c1 in c2 or c2 in c1:
             return True
-
-        # Если доступен ServerConfigResolver в связке с ProcessManager, сверяем резолв
-        if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
-            try:
-                from services.server_config import ServerConfigResolver
-                p1 = ServerConfigResolver.resolve_model_path(t_clean)
-                p2 = ServerConfigResolver.resolve_model_path(l_clean)
-                if p1 and p2 and p1 == p2:
-                    return True
-            except Exception:
-                pass
 
         return False
 
@@ -325,16 +326,18 @@ class LMStudioClient(QObject):
             current_gpu = getattr(self, "_current_loaded_gpu", "1.0")
 
             # Защита от частых перезагрузок (Reload Loop):
-            # Перезагрузка не требуется, если модель активна, текущей ёмкости контекста достаточно и сервер доступен
-            if (
-                not getattr(self, "_is_model_unloaded", False)
-                and self.is_model_loaded(model_name)
-                and current_ctx >= target_ctx
-                and current_gpu == target_gpu
-                and self.check_health()[0]
-            ):
-                self._last_loaded_model_id = model_name
-                return True
+            # Если модель уже активна на сервере и доступна
+            is_healthy, _ = self.check_health()
+            if is_healthy and self.is_model_loaded(model_name):
+                # Для автономного сервера без process_manager или при достаточном контексте
+                has_pm_headless = bool(self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server())
+                current_ctx = getattr(self, "_current_loaded_ctx", 0) or target_ctx
+                if not has_pm_headless or current_ctx >= target_ctx:
+                    self._is_model_unloaded = False
+                    self._last_loaded_model_id = model_name
+                    self._current_loaded_ctx = current_ctx
+                    self._current_loaded_gpu = target_gpu
+                    return True
 
             # Headless server путь через ProcessManager
             if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
@@ -537,10 +540,20 @@ class LMStudioClient(QObject):
             if extra_k in kwargs and kwargs[extra_k] is not None:
                 payload[extra_k] = kwargs[extra_k]
 
+        # Нативный сэмплер повторов DRY (Don't Repeat Yourself) для llama-server
+        if "dry_multiplier" in kwargs and kwargs["dry_multiplier"] is not None:
+            payload["dry_multiplier"] = float(kwargs["dry_multiplier"])
+        if "dry_base" in kwargs and kwargs["dry_base"] is not None:
+            payload["dry_base"] = float(kwargs["dry_base"])
+        if "dry_allowed_length" in kwargs and kwargs["dry_allowed_length"] is not None:
+            payload["dry_allowed_length"] = int(kwargs["dry_allowed_length"])
+        if "dry_penalty_last_n" in kwargs and kwargs["dry_penalty_last_n"] is not None:
+            payload["dry_penalty_last_n"] = int(kwargs["dry_penalty_last_n"])
+
         logger.info(
             f"[LMS-PARAMS] model='{active_model_id}', temp={payload.get('temperature')}, "
             f"top_p={payload.get('top_p')}, min_p={payload.get('min_p')}, "
-            f"rep_pen={payload.get('repetition_penalty')}, "
+            f"rep_pen={payload.get('repetition_penalty')}, dry_mult={payload.get('dry_multiplier')}, "
             f"max_tokens={payload.get('max_tokens')} (context_limit={context_limit})"
         )
 
