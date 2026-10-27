@@ -140,8 +140,11 @@ class ChatStreamWidget(QWidget):
                 item.widget().set_font_size(size)
 
     def scroll_to_bottom(self):
-        sb = self.scroll_area.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        if hasattr(self.window, "_scroll_to_bottom"):
+            self.window._scroll_to_bottom()
+        else:
+            sb = self.scroll_area.verticalScrollBar()
+            sb.setValue(sb.maximum())
 
     def create_load_more_button(self, remaining: int, on_click_callback) -> Optional[QPushButton]:
         if self._btn_load_more is not None:
