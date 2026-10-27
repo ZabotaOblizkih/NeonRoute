@@ -490,6 +490,8 @@ class AssistantFlowControllerMixin:
         default_rep_pen = cfg_defaults.get("repeat_penalty", prof_sampling.get("repeat_penalty", 1.05))
         default_max_tok = cfg_defaults.get("max_tokens", prof_sampling.get("max_tokens", 1024))
         default_dry = cfg_defaults.get("dry_multiplier", prof_sampling.get("dry_multiplier", 0.80))
+        default_xtc_prob = cfg_defaults.get("xtc_probability", prof_sampling.get("xtc_probability", 0.20))
+        default_xtc_thresh = cfg_defaults.get("xtc_threshold", prof_sampling.get("xtc_threshold", 0.10))
 
         if is_custom and "temperature" in sampling:
             temp = float(sampling.get("temperature", default_temp))
@@ -498,6 +500,8 @@ class AssistantFlowControllerMixin:
             rep_pen = float(sampling.get("repeat_penalty", default_rep_pen))
             user_max_tokens = sampling.get("max_tokens", default_max_tok)
             dry_mult = float(sampling.get("dry_multiplier", default_dry))
+            xtc_prob = float(sampling.get("xtc_probability", default_xtc_prob))
+            xtc_thresh = float(sampling.get("xtc_threshold", default_xtc_thresh))
             source_tag = f"Кастомный чат (PKM) [ID: {curr_sess_id}]"
         else:
             temp = float(default_temp)
@@ -506,6 +510,8 @@ class AssistantFlowControllerMixin:
             rep_pen = float(default_rep_pen)
             user_max_tokens = default_max_tok
             dry_mult = float(default_dry)
+            xtc_prob = float(default_xtc_prob)
+            xtc_thresh = float(default_xtc_thresh)
             source_tag = "Глобальный дефолт config.json (или профиль режима)"
 
         if _should_art:
@@ -520,7 +526,7 @@ class AssistantFlowControllerMixin:
 
         logger.info(
             f"[SamplingResolve] Режим 'assistant' | Сессия: {curr_sess_id} | "
-            f"Источник: {source_tag} -> temp={temp}, min_p={min_p}, top_p={top_p}, dry_multiplier={dry_mult}, ctx={target_ctx_len}, max_tokens={target_max_tokens}"
+            f"Источник: {source_tag} -> temp={temp}, min_p={min_p}, top_p={top_p}, dry_multiplier={dry_mult}, xtc_prob={xtc_prob}, xtc_thresh={xtc_thresh}, ctx={target_ctx_len}, max_tokens={target_max_tokens}"
         )
 
         llm_kwargs = {
@@ -540,6 +546,8 @@ class AssistantFlowControllerMixin:
             "dry_base": 1.75,
             "dry_allowed_length": 2,
             "dry_penalty_last_n": 0,
+            "xtc_probability": xtc_prob,
+            "xtc_threshold": xtc_thresh,
             "stream": True
         }
 

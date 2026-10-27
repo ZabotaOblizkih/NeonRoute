@@ -158,6 +158,8 @@ class ModelSamplingDialog(QDialog):
     - Top-P Nucleus Sampling (0.10 - 1.00, step 0.01)
     - Repetition Penalty (1.00 - 1.30, step 0.01)
     - DRY Multiplier (0.00 - 1.50, step 0.05)
+    - XTC Probability (0.00 - 1.00, step 0.05)
+    - XTC Threshold (0.00 - 0.50, step 0.01)
     - Max Tokens (256 - 4096, step 64)
     Provides default reset according to active session mode (roleplay vs assistant).
     """
@@ -387,7 +389,63 @@ class ModelSamplingDialog(QDialog):
         dry_row.addWidget(self.slider_dry)
         params_box.addLayout(dry_row)
 
-        # 6. Max Tokens (Ограничено мастер-предохранителем 4096)
+        # 6. XTC Probability (Exclude Top Choices)
+        xtc_prob_row = QVBoxLayout()
+        xtc_prob_row.setSpacing(4)
+        xtc_prob_header = QHBoxLayout()
+        self.lbl_xtc_prob = QLabel("Срез клише XTC (Вероятность):", self)
+        self.lbl_xtc_prob.setProperty("class", "param_label")
+        xtc_prob_tip = "Вероятность исключения самого очевидного шаблонного токена, если он не доминирует абсолютно. 0.00 — выключен, 0.20-0.30 — живая речь."
+        self.lbl_xtc_prob.setToolTip(xtc_prob_tip)
+
+        self.spin_xtc_prob = SamplingDoubleSpinBox(self)
+        self.spin_xtc_prob.setRange(0.00, 1.00)
+        self.spin_xtc_prob.setSingleStep(0.05)
+        self.spin_xtc_prob.setDecimals(2)
+        self.spin_xtc_prob.setToolTip(xtc_prob_tip)
+
+        xtc_prob_header.addWidget(self.lbl_xtc_prob)
+        xtc_prob_header.addStretch()
+        xtc_prob_header.addWidget(self.spin_xtc_prob)
+        xtc_prob_row.addLayout(xtc_prob_header)
+
+        self.slider_xtc_prob = SamplingSlider(Qt.Orientation.Horizontal, self)
+        self.slider_xtc_prob.setRange(0, 100)
+        self.slider_xtc_prob.setSingleStep(5)
+        self.slider_xtc_prob.setPageStep(10)
+        self.slider_xtc_prob.setToolTip(xtc_prob_tip)
+        xtc_prob_row.addWidget(self.slider_xtc_prob)
+        params_box.addLayout(xtc_prob_row)
+
+        # 7. XTC Threshold (Порог уверенности)
+        xtc_thresh_row = QVBoxLayout()
+        xtc_thresh_row.setSpacing(4)
+        xtc_thresh_header = QHBoxLayout()
+        self.lbl_xtc_thresh = QLabel("Порог уверенности XTC:", self)
+        self.lbl_xtc_thresh.setProperty("class", "param_label")
+        xtc_thresh_tip = "Порог отсечения: если токен увереннее (1.0 - порог), XTC его сохраняет. Дефолт 0.10 (порог 90%)."
+        self.lbl_xtc_thresh.setToolTip(xtc_thresh_tip)
+
+        self.spin_xtc_thresh = SamplingDoubleSpinBox(self)
+        self.spin_xtc_thresh.setRange(0.00, 0.50)
+        self.spin_xtc_thresh.setSingleStep(0.01)
+        self.spin_xtc_thresh.setDecimals(2)
+        self.spin_xtc_thresh.setToolTip(xtc_thresh_tip)
+
+        xtc_thresh_header.addWidget(self.lbl_xtc_thresh)
+        xtc_thresh_header.addStretch()
+        xtc_thresh_header.addWidget(self.spin_xtc_thresh)
+        xtc_thresh_row.addLayout(xtc_thresh_header)
+
+        self.slider_xtc_thresh = SamplingSlider(Qt.Orientation.Horizontal, self)
+        self.slider_xtc_thresh.setRange(0, 50)
+        self.slider_xtc_thresh.setSingleStep(1)
+        self.slider_xtc_thresh.setPageStep(5)
+        self.slider_xtc_thresh.setToolTip(xtc_thresh_tip)
+        xtc_thresh_row.addWidget(self.slider_xtc_thresh)
+        params_box.addLayout(xtc_thresh_row)
+
+        # 8. Max Tokens (Ограничено мастер-предохранителем 4096)
         tokens_row = QVBoxLayout()
         tokens_row.setSpacing(4)
         tok_header = QHBoxLayout()
@@ -408,7 +466,7 @@ class ModelSamplingDialog(QDialog):
         tokens_row.addWidget(self.slider_max_tokens)
         params_box.addLayout(tokens_row)
 
-        # 7. Checkbox DM Mode (Roleplay only)
+        # 9. Checkbox DM Mode (Roleplay only)
         self.chk_dm_mode = CheckBox("🎲 Режим Гейммастера (DM / Ведущий игры)", self)
         self.chk_dm_mode.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: 600; margin-top: 4px;")
         self.chk_dm_mode.setChecked(bool(current_params.get("is_dm_mode", False)))
@@ -438,6 +496,14 @@ class ModelSamplingDialog(QDialog):
         self.slider_dry.sliderMoved.connect(self._on_dry_slider_changed)
         self.spin_dry.valueChanged.connect(self._on_dry_spin_changed)
 
+        self.slider_xtc_prob.valueChanged.connect(self._on_xtc_prob_slider_changed)
+        self.slider_xtc_prob.sliderMoved.connect(self._on_xtc_prob_slider_changed)
+        self.spin_xtc_prob.valueChanged.connect(self._on_xtc_prob_spin_changed)
+
+        self.slider_xtc_thresh.valueChanged.connect(self._on_xtc_thresh_slider_changed)
+        self.slider_xtc_thresh.sliderMoved.connect(self._on_xtc_thresh_slider_changed)
+        self.spin_xtc_thresh.valueChanged.connect(self._on_xtc_thresh_spin_changed)
+
         self.slider_max_tokens.valueChanged.connect(self._on_max_tokens_slider_changed)
         self.slider_max_tokens.sliderMoved.connect(self._on_max_tokens_slider_changed)
         self.spin_max_tokens.valueChanged.connect(self._on_max_tokens_spin_changed)
@@ -450,6 +516,8 @@ class ModelSamplingDialog(QDialog):
         ref_top_p = ref_params.get("top_p", 1.00 if self.is_engineer_mode else 0.95)
         ref_rep_pen = ref_params["repeat_penalty"]
         ref_dry = ref_params.get("dry_multiplier", 0.00 if self.is_engineer_mode else 0.80)
+        ref_xtc_prob = ref_params.get("xtc_probability", 0.00 if self.is_engineer_mode else 0.20)
+        ref_xtc_thresh = ref_params.get("xtc_threshold", 0.10)
         ref_max_tok = ref_params["max_tokens"]
 
         init_temp = float(current_params.get("temperature", ref_temp))
@@ -457,6 +525,8 @@ class ModelSamplingDialog(QDialog):
         init_top_p = float(current_params.get("top_p", ref_top_p))
         init_rep_pen = float(current_params.get("repeat_penalty", ref_rep_pen))
         init_dry = float(current_params.get("dry_multiplier", ref_params.get("dry_multiplier", 0.80 if not self.is_engineer_mode else 0.00)))
+        init_xtc_prob = float(current_params.get("xtc_probability", ref_xtc_prob))
+        init_xtc_thresh = float(current_params.get("xtc_threshold", ref_xtc_thresh))
         init_max_tokens = int(current_params.get("max_tokens", ref_max_tok))
 
         if self.is_engineer_mode:
@@ -480,11 +550,27 @@ class ModelSamplingDialog(QDialog):
             self.spin_dry.setToolTip(dry_eng_tip)
             self.slider_dry.setToolTip(dry_eng_tip)
             self.lbl_dry.setToolTip(dry_eng_tip)
+
+            self.spin_xtc_prob.setValue(0.00)
+            self._on_xtc_prob_spin_changed(0.00)
+            self.spin_xtc_prob.setEnabled(False)
+            self.slider_xtc_prob.setEnabled(False)
+            self.lbl_xtc_prob.setText("Срез клише XTC: 🔒 0.00 (Режим «⚡ Инженер»)")
+            self.lbl_xtc_prob.setStyleSheet("color: #00F0FF; font-weight: bold;")
+            xtc_eng_tip = "В режиме «⚡ Инженер» сэмплер XTC зафиксирован на 0.00 (выключен) во избежание искажения синтаксиса и точных ключевых слов кода."
+            self.spin_xtc_prob.setToolTip(xtc_eng_tip)
+            self.slider_xtc_prob.setToolTip(xtc_eng_tip)
+            self.lbl_xtc_prob.setToolTip(xtc_eng_tip)
         else:
             self.spin_temp.setValue(init_temp)
             self._on_temp_spin_changed(init_temp)
             self.spin_dry.setValue(init_dry)
             self._on_dry_spin_changed(init_dry)
+            self.spin_xtc_prob.setValue(init_xtc_prob)
+            self._on_xtc_prob_spin_changed(init_xtc_prob)
+
+        self.spin_xtc_thresh.setValue(init_xtc_thresh)
+        self._on_xtc_thresh_spin_changed(init_xtc_thresh)
 
         self.spin_min_p.setValue(init_min_p)
         self._on_min_p_spin_changed(init_min_p)
@@ -605,6 +691,38 @@ class ModelSamplingDialog(QDialog):
             self.slider_dry.setValue(target)
             self.slider_dry.blockSignals(False)
 
+    def _on_xtc_prob_slider_changed(self, val: int):
+        self._on_user_input_changed()
+        target = round(val / 100.0, 2)
+        if abs(self.spin_xtc_prob.value() - target) > 0.001:
+            self.spin_xtc_prob.blockSignals(True)
+            self.spin_xtc_prob.setValue(target)
+            self.spin_xtc_prob.blockSignals(False)
+
+    def _on_xtc_prob_spin_changed(self, val: float):
+        self._on_user_input_changed()
+        target = int(round(val * 100))
+        if self.slider_xtc_prob.value() != target:
+            self.slider_xtc_prob.blockSignals(True)
+            self.slider_xtc_prob.setValue(target)
+            self.slider_xtc_prob.blockSignals(False)
+
+    def _on_xtc_thresh_slider_changed(self, val: int):
+        self._on_user_input_changed()
+        target = round(val / 100.0, 2)
+        if abs(self.spin_xtc_thresh.value() - target) > 0.001:
+            self.spin_xtc_thresh.blockSignals(True)
+            self.spin_xtc_thresh.setValue(target)
+            self.spin_xtc_thresh.blockSignals(False)
+
+    def _on_xtc_thresh_spin_changed(self, val: float):
+        self._on_user_input_changed()
+        target = int(round(val * 100))
+        if self.slider_xtc_thresh.value() != target:
+            self.slider_xtc_thresh.blockSignals(True)
+            self.slider_xtc_thresh.setValue(target)
+            self.slider_xtc_thresh.blockSignals(False)
+
     def _on_max_tokens_slider_changed(self, val: int):
         self._on_user_input_changed()
         snapped = round(val / 64) * 64
@@ -633,17 +751,27 @@ class ModelSamplingDialog(QDialog):
                 self.slider_temp.setValue(15)
                 self.spin_dry.setValue(0.00)
                 self.slider_dry.setValue(0)
+                self.spin_xtc_prob.setValue(0.00)
+                self.slider_xtc_prob.setValue(0)
             else:
                 self.spin_temp.setValue(defaults["temperature"])
                 self.slider_temp.setValue(int(round(defaults["temperature"] * 100)))
                 dry_val = float(defaults.get("dry_multiplier", 0.80 if not self.is_engineer_mode else 0.00))
                 self.spin_dry.setValue(dry_val)
                 self.slider_dry.setValue(int(round(dry_val * 100)))
+                xtc_p_val = float(defaults.get("xtc_probability", 0.20 if self.mode == "assistant" else 0.30))
+                self.spin_xtc_prob.setValue(xtc_p_val)
+                self.slider_xtc_prob.setValue(int(round(xtc_p_val * 100)))
             self.spin_min_p.setValue(defaults["min_p"])
             self.slider_min_p.setValue(int(round(defaults["min_p"] * 100)))
             top_p_def = float(defaults.get("top_p", 1.00 if self.is_engineer_mode else 0.95))
             self.spin_top_p.setValue(top_p_def)
             self.slider_top_p.setValue(int(round(top_p_def * 100)))
+
+            xtc_t_val = float(defaults.get("xtc_threshold", 0.10))
+            self.spin_xtc_thresh.setValue(xtc_t_val)
+            self.slider_xtc_thresh.setValue(int(round(xtc_t_val * 100)))
+
             self.spin_rep_pen.setValue(defaults["repeat_penalty"])
             self.slider_rep_pen.setValue(int(round(defaults["repeat_penalty"] * 100)))
             self.spin_max_tokens.setValue(defaults["max_tokens"])
@@ -657,6 +785,8 @@ class ModelSamplingDialog(QDialog):
             self._is_resetting = False
             self.was_reset_to_defaults = True
 
+    _on_reset_clicked = _reset_defaults
+
     def get_sampling_params(self) -> Dict[str, Any]:
         params = {
             "temperature": round(self.spin_temp.value(), 2),
@@ -664,11 +794,14 @@ class ModelSamplingDialog(QDialog):
             "top_p": round(self.spin_top_p.value(), 2),
             "repeat_penalty": round(self.spin_rep_pen.value(), 2),
             "dry_multiplier": round(self.spin_dry.value(), 2),
+            "xtc_probability": 0.00 if self.is_engineer_mode else round(self.spin_xtc_prob.value(), 2),
+            "xtc_threshold": round(self.spin_xtc_thresh.value(), 2),
             "max_tokens": int(self.spin_max_tokens.value())
         }
         if self.is_engineer_mode:
             params["temperature"] = 0.15
             params["dry_multiplier"] = 0.00
+            params["xtc_probability"] = 0.00
         if hasattr(self, "chk_dm_mode") and self.mode == "roleplay":
             params["is_dm_mode"] = self.chk_dm_mode.isChecked()
         return params

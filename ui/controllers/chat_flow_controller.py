@@ -875,6 +875,8 @@ class ChatFlowControllerMixin:
         default_max_tok = cfg_defaults.get("max_tokens", prof_sampling.get("max_tokens", 1024))
         default_top_p = cfg_defaults.get("top_p", prof_sampling.get("top_p", 0.95))
         default_dry = 0.00 if is_eng else cfg_defaults.get("dry_multiplier", prof_sampling.get("dry_multiplier", 0.80))
+        default_xtc_prob = 0.00 if is_eng else cfg_defaults.get("xtc_probability", prof_sampling.get("xtc_probability", 0.30 if self.current_mode == "roleplay" else 0.20))
+        default_xtc_thresh = cfg_defaults.get("xtc_threshold", prof_sampling.get("xtc_threshold", 0.10))
 
         temp = float(effective_sampling.get("temperature", default_temp))
         min_p = float(effective_sampling.get("min_p", default_min_p))
@@ -882,6 +884,8 @@ class ChatFlowControllerMixin:
         top_p_val = effective_sampling.get("top_p", default_top_p)
         top_p = float(top_p_val) if top_p_val is not None else 0.95
         dry_mult = 0.00 if is_eng else float(effective_sampling.get("dry_multiplier", default_dry))
+        xtc_prob = 0.00 if is_eng else float(effective_sampling.get("xtc_probability", default_xtc_prob))
+        xtc_thresh = float(effective_sampling.get("xtc_threshold", default_xtc_thresh))
 
         has_custom_max_tok = ("max_tokens" in effective_sampling)
         user_max_tokens = effective_sampling.get("max_tokens")
@@ -919,6 +923,8 @@ class ChatFlowControllerMixin:
             "dry_base": 1.75,
             "dry_allowed_length": 2,
             "dry_penalty_last_n": 0,
+            "xtc_probability": xtc_prob,
+            "xtc_threshold": xtc_thresh,
             "stream": True
         }
 

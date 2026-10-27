@@ -142,6 +142,8 @@ MODE_PROFILES = {
             "top_p": 0.95,
             "repeat_penalty": 1.05,
             "dry_multiplier": 0.80,
+            "xtc_probability": 0.20,
+            "xtc_threshold": 0.10,
             "max_tokens": 1024,
         }
     },
@@ -155,6 +157,8 @@ MODE_PROFILES = {
             "top_p": 0.95,
             "repeat_penalty": 1.02,
             "dry_multiplier": 0.80,
+            "xtc_probability": 0.30,
+            "xtc_threshold": 0.10,
             "max_tokens": 4096,         # Полные 4K на литературный пост
             "is_dm_mode": False
         }
@@ -169,6 +173,8 @@ MODE_PROFILES = {
             "top_p": 1.00,
             "repeat_penalty": 1.00,
             "dry_multiplier": 0.00,
+            "xtc_probability": 0.00,
+            "xtc_threshold": 0.10,
             "max_tokens": 4096,         # До 4K под генерацию скриптов
         }
     }

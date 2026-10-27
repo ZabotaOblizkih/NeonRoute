@@ -550,10 +550,17 @@ class LMStudioClient(QObject):
         if "dry_penalty_last_n" in kwargs and kwargs["dry_penalty_last_n"] is not None:
             payload["dry_penalty_last_n"] = int(kwargs["dry_penalty_last_n"])
 
+        # Нативный сэмплер XTC (Exclude Top Choices) для llama-server
+        if "xtc_probability" in kwargs and kwargs["xtc_probability"] is not None:
+            payload["xtc_probability"] = float(kwargs["xtc_probability"])
+        if "xtc_threshold" in kwargs and kwargs["xtc_threshold"] is not None:
+            payload["xtc_threshold"] = float(kwargs["xtc_threshold"])
+
         logger.info(
             f"[LMS-PARAMS] model='{active_model_id}', temp={payload.get('temperature')}, "
             f"top_p={payload.get('top_p')}, min_p={payload.get('min_p')}, "
             f"rep_pen={payload.get('repetition_penalty')}, dry_mult={payload.get('dry_multiplier')}, "
+            f"xtc_p={payload.get('xtc_probability')}, xtc_t={payload.get('xtc_threshold')}, "
             f"max_tokens={payload.get('max_tokens')} (context_limit={context_limit})"
         )
 
