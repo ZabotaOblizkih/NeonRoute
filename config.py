@@ -139,6 +139,7 @@ MODE_PROFILES = {
         "sampling": {
             "temperature": 0.70,
             "min_p": 0.05,
+            "top_p": 0.95,
             "repeat_penalty": 1.05,
             "dry_multiplier": 0.80,
             "max_tokens": 1024,
@@ -165,6 +166,7 @@ MODE_PROFILES = {
         "sampling": {
             "temperature": 0.15,
             "min_p": 0.00,
+            "top_p": 1.00,
             "repeat_penalty": 1.00,
             "dry_multiplier": 0.00,
             "max_tokens": 4096,         # До 4K под генерацию скриптов

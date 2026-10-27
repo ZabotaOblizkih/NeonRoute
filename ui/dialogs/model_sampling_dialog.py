@@ -155,6 +155,7 @@ class ModelSamplingDialog(QDialog):
     Modal dialog in NeonRoute glassmorphism style for configuring individual LLM sampling parameters:
     - Temperature (0.10 - 2.00, step 0.05)
     - Min-P Sampling (0.00 - 0.20, step 0.01)
+    - Top-P Nucleus Sampling (0.10 - 1.00, step 0.01)
     - Repetition Penalty (1.00 - 1.30, step 0.01)
     - DRY Multiplier (0.00 - 1.50, step 0.05)
     - Max Tokens (256 - 4096, step 64)
@@ -308,7 +309,35 @@ class ModelSamplingDialog(QDialog):
         min_p_row.addWidget(self.slider_min_p)
         params_box.addLayout(min_p_row)
 
-        # 3. Repetition Penalty
+        # 3. Top-P (Nucleus Sampling)
+        top_p_row = QVBoxLayout()
+        top_p_row.setSpacing(4)
+        top_p_header = QHBoxLayout()
+        self.lbl_top_p = QLabel("Ядерная выборка (Top-P):", self)
+        self.lbl_top_p.setProperty("class", "param_label")
+        top_p_tip = "Отсекает длинный хвост маловероятных токенов. 1.00 — выключен (полный охват), 0.90–0.95 — мягкая фильтрация шума."
+        self.lbl_top_p.setToolTip(top_p_tip)
+
+        self.spin_top_p = SamplingDoubleSpinBox(self)
+        self.spin_top_p.setRange(0.10, 1.00)
+        self.spin_top_p.setSingleStep(0.01)
+        self.spin_top_p.setDecimals(2)
+        self.spin_top_p.setToolTip(top_p_tip)
+
+        top_p_header.addWidget(self.lbl_top_p)
+        top_p_header.addStretch()
+        top_p_header.addWidget(self.spin_top_p)
+        top_p_row.addLayout(top_p_header)
+
+        self.slider_top_p = SamplingSlider(Qt.Orientation.Horizontal, self)
+        self.slider_top_p.setRange(10, 100)
+        self.slider_top_p.setSingleStep(1)
+        self.slider_top_p.setPageStep(5)
+        self.slider_top_p.setToolTip(top_p_tip)
+        top_p_row.addWidget(self.slider_top_p)
+        params_box.addLayout(top_p_row)
+
+        # 4. Repetition Penalty
         rep_row = QVBoxLayout()
         rep_row.setSpacing(4)
         rp_header = QHBoxLayout()
@@ -330,7 +359,7 @@ class ModelSamplingDialog(QDialog):
         rep_row.addWidget(self.slider_rep_pen)
         params_box.addLayout(rep_row)
 
-        # 4. DRY Multiplier (Don't Repeat Yourself)
+        # 5. DRY Multiplier (Don't Repeat Yourself)
         dry_row = QVBoxLayout()
         dry_row.setSpacing(4)
         dry_header = QHBoxLayout()
@@ -358,7 +387,7 @@ class ModelSamplingDialog(QDialog):
         dry_row.addWidget(self.slider_dry)
         params_box.addLayout(dry_row)
 
-        # 5. Max Tokens (Ограничено мастер-предохранителем 4096)
+        # 6. Max Tokens (Ограничено мастер-предохранителем 4096)
         tokens_row = QVBoxLayout()
         tokens_row.setSpacing(4)
         tok_header = QHBoxLayout()
@@ -379,7 +408,7 @@ class ModelSamplingDialog(QDialog):
         tokens_row.addWidget(self.slider_max_tokens)
         params_box.addLayout(tokens_row)
 
-        # 6. Checkbox DM Mode (Roleplay only)
+        # 7. Checkbox DM Mode (Roleplay only)
         self.chk_dm_mode = CheckBox("🎲 Режим Гейммастера (DM / Ведущий игры)", self)
         self.chk_dm_mode.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: 600; margin-top: 4px;")
         self.chk_dm_mode.setChecked(bool(current_params.get("is_dm_mode", False)))
@@ -396,6 +425,10 @@ class ModelSamplingDialog(QDialog):
         self.slider_min_p.valueChanged.connect(self._on_min_p_slider_changed)
         self.slider_min_p.sliderMoved.connect(self._on_min_p_slider_changed)
         self.spin_min_p.valueChanged.connect(self._on_min_p_spin_changed)
+
+        self.slider_top_p.valueChanged.connect(self._on_top_p_slider_changed)
+        self.slider_top_p.sliderMoved.connect(self._on_top_p_slider_changed)
+        self.spin_top_p.valueChanged.connect(self._on_top_p_spin_changed)
 
         self.slider_rep_pen.valueChanged.connect(self._on_rep_pen_slider_changed)
         self.slider_rep_pen.sliderMoved.connect(self._on_rep_pen_slider_changed)
@@ -414,12 +447,14 @@ class ModelSamplingDialog(QDialog):
         ref_params = get_default_sampling_params(active_mode)
         ref_temp = ref_params["temperature"]
         ref_min_p = ref_params["min_p"]
+        ref_top_p = ref_params.get("top_p", 1.00 if self.is_engineer_mode else 0.95)
         ref_rep_pen = ref_params["repeat_penalty"]
         ref_dry = ref_params.get("dry_multiplier", 0.00 if self.is_engineer_mode else 0.80)
         ref_max_tok = ref_params["max_tokens"]
 
         init_temp = float(current_params.get("temperature", ref_temp))
         init_min_p = float(current_params.get("min_p", ref_min_p))
+        init_top_p = float(current_params.get("top_p", ref_top_p))
         init_rep_pen = float(current_params.get("repeat_penalty", ref_rep_pen))
         init_dry = float(current_params.get("dry_multiplier", ref_params.get("dry_multiplier", 0.80 if not self.is_engineer_mode else 0.00)))
         init_max_tokens = int(current_params.get("max_tokens", ref_max_tok))
@@ -453,6 +488,9 @@ class ModelSamplingDialog(QDialog):
 
         self.spin_min_p.setValue(init_min_p)
         self._on_min_p_spin_changed(init_min_p)
+
+        self.spin_top_p.setValue(init_top_p)
+        self._on_top_p_spin_changed(init_top_p)
 
         self.spin_rep_pen.setValue(init_rep_pen)
         self._on_rep_pen_spin_changed(init_rep_pen)
@@ -518,6 +556,22 @@ class ModelSamplingDialog(QDialog):
             self.slider_min_p.blockSignals(True)
             self.slider_min_p.setValue(target)
             self.slider_min_p.blockSignals(False)
+
+    def _on_top_p_slider_changed(self, val: int):
+        target = round(val / 100.0, 2)
+        if abs(self.spin_top_p.value() - target) > 0.001:
+            self.spin_top_p.blockSignals(True)
+            self.spin_top_p.setValue(target)
+            self.spin_top_p.blockSignals(False)
+        self._on_user_input_changed()
+
+    def _on_top_p_spin_changed(self, val: float):
+        target = int(round(val * 100))
+        if self.slider_top_p.value() != target:
+            self.slider_top_p.blockSignals(True)
+            self.slider_top_p.setValue(target)
+            self.slider_top_p.blockSignals(False)
+        self._on_user_input_changed()
 
     def _on_rep_pen_slider_changed(self, val: int):
         self._on_user_input_changed()
@@ -587,13 +641,15 @@ class ModelSamplingDialog(QDialog):
                 self.slider_dry.setValue(int(round(dry_val * 100)))
             self.spin_min_p.setValue(defaults["min_p"])
             self.slider_min_p.setValue(int(round(defaults["min_p"] * 100)))
+            top_p_def = float(defaults.get("top_p", 1.00 if self.is_engineer_mode else 0.95))
+            self.spin_top_p.setValue(top_p_def)
+            self.slider_top_p.setValue(int(round(top_p_def * 100)))
             self.spin_rep_pen.setValue(defaults["repeat_penalty"])
             self.slider_rep_pen.setValue(int(round(defaults["repeat_penalty"] * 100)))
             self.spin_max_tokens.setValue(defaults["max_tokens"])
             self.slider_max_tokens.setValue(defaults["max_tokens"])
 
-            if "top_p" in defaults:
-                self.current_params["top_p"] = defaults["top_p"]
+            self.current_params["top_p"] = top_p_def
 
             if hasattr(self, "chk_dm_mode") and self.mode == "roleplay":
                 self.chk_dm_mode.setChecked(bool(defaults.get("is_dm_mode", False)))
@@ -605,12 +661,11 @@ class ModelSamplingDialog(QDialog):
         params = {
             "temperature": round(self.spin_temp.value(), 2),
             "min_p": round(self.spin_min_p.value(), 2),
+            "top_p": round(self.spin_top_p.value(), 2),
             "repeat_penalty": round(self.spin_rep_pen.value(), 2),
             "dry_multiplier": round(self.spin_dry.value(), 2),
             "max_tokens": int(self.spin_max_tokens.value())
         }
-        if "top_p" in getattr(self, "current_params", {}):
-            params["top_p"] = self.current_params["top_p"]
         if self.is_engineer_mode:
             params["temperature"] = 0.15
             params["dry_multiplier"] = 0.00
