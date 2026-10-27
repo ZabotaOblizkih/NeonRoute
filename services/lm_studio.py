@@ -519,7 +519,8 @@ class LMStudioClient(QObject):
             "model": active_model_id,
             "messages": messages,
             "temperature": float(temperature),
-            "stream": stream
+            "stream": stream,
+            "cache_prompt": bool(kwargs.get("cache_prompt", True))
         }
         if stop:
             payload["stop"] = stop
@@ -561,6 +562,7 @@ class LMStudioClient(QObject):
             f"top_p={payload.get('top_p')}, min_p={payload.get('min_p')}, "
             f"rep_pen={payload.get('repetition_penalty')}, dry_mult={payload.get('dry_multiplier')}, "
             f"xtc_p={payload.get('xtc_probability')}, xtc_t={payload.get('xtc_threshold')}, "
+            f"cache_prompt={payload.get('cache_prompt')}, "
             f"max_tokens={payload.get('max_tokens')} (context_limit={context_limit})"
         )
 
