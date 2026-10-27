@@ -514,12 +514,12 @@ class CharacterCard:
         if hasattr(card, "companions") and isinstance(card.companions, list) and len(card.companions) > 1:
             card.is_group = True
 
-        # Self-Healing: если source_path отсутствует или файл не существует на диске
-        needs_disk_sync = not card.source_path or not Path(card.source_path).exists()
-
-        if needs_disk_sync and card.name:
-            candidate_p = None
-            # 1. Прямой поиск по точному имени карточки
+        # Self-Healing: синхронизация карточки с файлом на диске
+        candidate_p = None
+        if card.source_path and Path(card.source_path).exists():
+            candidate_p = Path(card.source_path)
+        elif card.name:
+            # Поиск по имени, если исходный путь потерян или не задан
             cand_exact = CHARACTERS_DIR / f"{card.name}.json"
             safe_name = "".join(c for c in card.name if c.isalnum() or c in (' ', '_', '-')).strip()
             cand_safe = CHARACTERS_DIR / f"{safe_name}.json" if safe_name else None
@@ -529,7 +529,6 @@ class CharacterCard:
             elif cand_safe and cand_safe.exists() and cand_safe.is_file():
                 candidate_p = cand_safe
             elif CHARACTERS_DIR.exists():
-                # 2. Глубокий поиск по внутреннему ID и имени персонажа среди всех файлов на диске
                 c_name_lower = card.name.strip().lower()
                 c_id = getattr(card, "id", None)
                 for f_cand in CHARACTERS_DIR.glob("*.json"):
@@ -542,17 +541,18 @@ class CharacterCard:
                         disk_name = str(target_meta.get("name") or cd_raw.get("name") or "").strip().lower()
                         disk_id = str(target_meta.get("id") or cd_raw.get("id") or "").strip()
                         if c_id and disk_id and c_id != disk_id:
-                            continue  # Строгий отказ от связывания чужих ID
+                            continue
                         if (c_id and disk_id == c_id) or (disk_name and disk_name == c_name_lower and not disk_id):
                             candidate_p = f_cand
                             break
                     except Exception:
                         continue
 
-            if candidate_p and candidate_p.exists():
+        if candidate_p and candidate_p.exists():
                 try:
                     with open(candidate_p, "r", encoding="utf-8") as f:
                         disk_raw = json.load(f)
+                    from services.tavern_parser import TavernParser
                     disk_card = TavernParser.parse_dict(disk_raw, source_path=candidate_p)
                     if disk_card:
                         card.source_path = str(candidate_p.resolve())
@@ -578,6 +578,32 @@ class CharacterCard:
                             card.companions = disk_card.companions
                             if len(card.companions) > 1:
                                 card.is_group = True
+
+                        # ---------------------------------------------------------
+                        # Self-Healing: синхронизация локализации (_ru) с диска
+                        # ---------------------------------------------------------
+                        loc_fields = [
+                            'description_ru',
+                            'personality_ru',
+                            'scenario_ru',
+                            'first_mes_ru',
+                            'mes_example_ru',
+                        ]
+                        for field in loc_fields:
+                            s_val = getattr(card, field, None)
+                            d_val = getattr(disk_card, field, None)
+                            if (s_val is None or (isinstance(s_val, str) and not s_val.strip())) and d_val:
+                                setattr(card, field, d_val)
+
+                        s_alts = getattr(card, 'alternate_greetings_ru', None) or []
+                        d_alts = getattr(disk_card, 'alternate_greetings_ru', None) or []
+                        if not any(bool(alt and alt.strip()) for alt in s_alts) and d_alts:
+                            card.alternate_greetings_ru = list(d_alts)
+                        elif s_alts and d_alts and len(s_alts) < len(d_alts):
+                            m_alts = list(s_alts)
+                            for i in range(len(s_alts), len(d_alts)):
+                                m_alts.append(d_alts[i])
+                            card.alternate_greetings_ru = m_alts
                 except Exception as e:
                     logger.debug(f"[CharacterCard] Self-healing error for '{card.name}': {e}")
 
