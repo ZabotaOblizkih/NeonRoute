@@ -483,9 +483,24 @@ class TestTwoCircuitAssistantFlowControllerIntegration:
         # В Ступени 1 должно быть 1024 токена ответа
         assert task.kwargs["max_tokens"] == 1024
 
-    def test_emergency_guard_at_vram_450_sets_tier_3(self, host):
-        """При просадке свободной VRAM = 450 МБ аварийный предохранитель принудительно выставляет max_tokens=512."""
-        host.system_monitor.get_free_vram_mb.return_value = 450
+    def test_normal_vram_250_sets_tier_1(self, host):
+        """При VRAM = 250 МБ (штатный режим) и ratio < 0.60 задача ставится со Ступенью 1 (max_tokens=1024)."""
+        host.system_monitor.get_free_vram_mb.return_value = 250
+        host.chat_history = [
+            {"role": "user", "content": "Привет"},
+            {"role": "assistant", "content": "Привет! Чем помочь?"}
+        ]
+        host._current_user_request = "Штатный запрос при 250 МБ"
+
+        host._enqueue_assistant_llm_task()
+
+        assert host.task_queue.enqueue.called
+        task = host.task_queue.enqueue.call_args[0][0]
+        assert task.kwargs["max_tokens"] == 1024
+
+    def test_emergency_guard_at_vram_120_sets_tier_3(self, host):
+        """При реальном дефиците свободной VRAM = 120 МБ (< 150 МБ) аварийный предохранитель принудительно выставляет max_tokens=512."""
+        host.system_monitor.get_free_vram_mb.return_value = 120
         # Короткая история (ratio близко к 0)
         host.chat_history = [
             {"role": "user", "content": "Привет"},

@@ -52,8 +52,9 @@ class LayerBudgeter:
             import pynvml
             try:
                 pynvml.nvmlInit()
-            except Exception:
-                pass
+            except Exception as init_err:
+                if "already initialized" not in str(init_err).lower():
+                    raise
 
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
@@ -81,6 +82,56 @@ class LayerBudgeter:
             logger.debug(f"[LayerBudgeter] NVML detection error/fallback: {e}")
             fallback_reserve = int(OS_RESERVE_PRIMARY_DISPLAY_MB) if OS_RESERVE_PRIMARY_DISPLAY_MB else 700
             return (False, fallback_reserve)
+
+    @classmethod
+    def detect_hardware_kv_profile(cls) -> Dict[str, Any]:
+        """
+        Детектор архитектуры GPU для автотюна KV-кэша и Flash Attention.
+        Чипы Turing+ (Compute Capability >= 7.5 или RTX) поддерживают скоростной q8_0 и Flash Attention.
+        """
+        try:
+            import pynvml
+            try:
+                pynvml.nvmlInit()
+            except Exception as init_err:
+                if "already initialized" not in str(init_err).lower():
+                    raise
+
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(gpu_name, bytes):
+                gpu_name = gpu_name.decode("utf-8")
+            gpu_name = str(gpu_name or "NVIDIA GPU")
+
+            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+            compute_cap_val = float(major) + float(minor) / 10.0
+            cap_str = f"{major}.{minor}"
+
+            if compute_cap_val >= 7.5 or "RTX" in gpu_name.upper():
+                return {
+                    "supported": True,
+                    "gpu_name": gpu_name,
+                    "compute_cap": cap_str,
+                    "recommended_kv": "q8_0",
+                    "recommended_fa": True,
+                }
+            else:
+                return {
+                    "supported": False,
+                    "gpu_name": gpu_name,
+                    "compute_cap": cap_str if major else "N/A",
+                    "recommended_kv": "f16",
+                    "recommended_fa": False,
+                }
+        except Exception as e:
+            logger.debug(f"[LayerBudgeter] detect_hardware_kv_profile fallback error: {e}")
+            return {
+                "supported": False,
+                "gpu_name": "Unknown GPU",
+                "compute_cap": "N/A",
+                "recommended_kv": "f16",
+                "recommended_fa": False,
+            }
 
     # -------------------------------------------------------------------------
     # 2. Парсер метаданных GGUF с кэшированием
@@ -322,8 +373,8 @@ class LayerBudgeter:
         kb_per_token = 64
         c_lower = str(cache_type or "").lower()
         if "q4" in c_lower:
-            kb_per_token = 32
-        elif "f16" in c_lower:
+            kb_per_token = 36
+        elif "f16" in c_lower or "fp16" in c_lower:
             kb_per_token = 128
 
         raw_mb = (ctx * kb_per_token) / 1024.0
@@ -340,6 +391,7 @@ class LayerBudgeter:
         current_running_ngl: Optional[int] = None,
         total_vram_mb: Optional[int] = None,
         available_ram_mb: Optional[float] = None,
+        cache_type: Optional[str] = None,
     ) -> Tuple[int, bool, str, Dict[str, Any]]:
         """
         1) Опрашивает detect_gpu_topology() и берет Total_VRAM из system_monitor (или NVML).
@@ -382,7 +434,8 @@ class LayerBudgeter:
         total_vram = int(total_vram_mb)
 
         # 2. Расчет Usable VRAM
-        kv_cache_mb = cls.estimate_kv_cache_mb(target_context)
+        effective_cache_type = cache_type or "q8_0"
+        kv_cache_mb = cls.estimate_kv_cache_mb(target_context, cache_type=effective_cache_type)
         forge_res = int(FORGE_VRAM_RESERVE_MB)
         safety_res = int(SAFETY_MARGIN_VRAM_MB)
         usable_vram_mb = total_vram - os_reserve_mb - forge_res - safety_res - kv_cache_mb
@@ -413,7 +466,7 @@ class LayerBudgeter:
         hysteresis_applied = False
 
         # 6. Зона нечувствительности (гистерезис)
-        if current_running_ngl is not None and current_running_ngl >= 0:
+        if current_running_ngl is not None and isinstance(current_running_ngl, int) and current_running_ngl >= 0:
             delta = abs(calculated_ngl - current_running_ngl)
             # Если разница не превышает гистерезис и VRAM не находится в критическом дефиците
             if delta <= int(HYSTERESIS_LAYER_DELTA) and usable_vram_mb >= 0:

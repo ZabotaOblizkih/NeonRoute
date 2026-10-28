@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, List
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtWidgets import QInputDialog
 
-from config import MemoryStrategy, OUTPUTS_DIR
+from config import MemoryStrategy, OUTPUTS_DIR, EMERGENCY_VRAM_THRESHOLD_MB
 from services.task_queue import InferenceTask
 from services.session_manager import SessionManager
 from services.art_director import GenerationPlan
@@ -268,7 +268,7 @@ class HardwareEngineMixin:
         temp_str = f" • {temp}°C" if temp else ""
 
         v_free = max(0, v_total - v_used)
-        color = "#00FF66" if v_free >= 1200 else ("#FFE600" if v_free >= 600 else "#FF007F")
+        color = "#00FF66" if v_free >= 1200 else ("#FFE600" if v_free >= EMERGENCY_VRAM_THRESHOLD_MB else "#FF007F")
         self.lbl_vram.setText(f"VRAM: {v_used} / {v_total} MB ({v_pct}%){temp_str}")
         self.lbl_vram.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 15px;")
 
@@ -422,6 +422,50 @@ class HardwareEngineMixin:
             self.art_director.reload_models()
             self._refresh_forge_models()
             self.statusBar().showMessage("Конфигурация моделей Арт-директора обновлена.", 4000)
+
+    def _open_llm_engine_settings_dialog(self):
+        """Открывает диалог настройки движка LLM (llama-server)."""
+        from ui.dialogs.llm_engine_settings_dialog import LLMEngineSettingsDialog
+        dlg = LLMEngineSettingsDialog(self)
+        dlg.exec()
+
+    def _perform_hardware_kv_autotune(self):
+        """
+        Однократный аппаратный автотюн KV-кэша и Flash Attention при первом старте.
+        """
+        try:
+            from services.layer_budgeter import LayerBudgeter
+            from utils.config_manager import ConfigManager
+            from qfluentwidgets import InfoBar
+
+            cfg = ConfigManager.load_config()
+            if cfg.get("hardware_autotune_done", False):
+                return
+
+            profile = LayerBudgeter.detect_hardware_kv_profile()
+            cfg["kv_cache_type"] = profile.get("recommended_kv", "q8_0")
+            cfg["flash_attention_enabled"] = profile.get("recommended_fa", True)
+            cfg["hardware_autotune_done"] = True
+            ConfigManager.save_config(cfg)
+            self.app_config = cfg
+
+            if profile.get("supported", False):
+                InfoBar.success(
+                    title="Аппаратный автотюн GPU",
+                    content=f"Обнаружена {profile['gpu_name']} (CC {profile['compute_cap']}). Активирован скоростной буфер Q8_0 и Flash Attention (экономия 50% VRAM).",
+                    duration=6000,
+                    parent=self
+                )
+            else:
+                InfoBar.info(
+                    title="Аппаратный автотюн GPU",
+                    content=f"Видеокарта {profile['gpu_name']} не поддерживает Flash Attention. Выставлен стандартный режим FP16.",
+                    duration=6000,
+                    parent=self
+                )
+            logger.info(f"[HardwareEngine] Аппаратный автотюн выполнен: {profile}")
+        except Exception as e:
+            logger.warning(f"[HardwareEngine] Ошибка выполнения аппаратного автотюна: {e}")
 
     # -------------------------------------------------------------------------
     # 3. Генерация арта и жонглинг 8GB VRAM

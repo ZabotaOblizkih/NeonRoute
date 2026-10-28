@@ -5,6 +5,7 @@ and service health indicators modernized with QFluentWidgets.
 """
 
 from typing import TYPE_CHECKING, Optional
+from config import EMERGENCY_VRAM_THRESHOLD_MB
 import re
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtWidgets import QStatusBar, QWidget, QHBoxLayout, QLabel
@@ -87,9 +88,9 @@ class VramLabel(QLabel):
     """
     Hardware metric label for VRAM with two-way synchronization to QFluentWidgets ProgressBar.
     Applies colors strictly per Agentrules hardware thresholds:
-    - Free >= 5500 MB: Calm green accent (#10B981)
-    - Free 4200 - 5499 MB: Warning amber tint (#F59E0B)
-    - Free < 4200 MB: Critical load indicator (#EF4444)
+    - Free >= 1200 MB: Calm green accent (#10B981)
+    - Free 150 - 1199 MB: Warning amber tint (#F59E0B)
+    - Free < 150 MB: Critical load indicator (#EF4444)
     """
 
     def __init__(self, text: str = "", parent: Optional[QWidget] = None, progress_bar: Optional[ProgressBar] = None):
@@ -101,7 +102,7 @@ class VramLabel(QLabel):
         free_mb = max(0, v_total - v_used)
         if free_mb >= 1200:
             color = "#10B981"
-        elif 600 <= free_mb < 1200:
+        elif EMERGENCY_VRAM_THRESHOLD_MB <= free_mb < 1200:
             color = "#F59E0B"
         else:
             color = "#EF4444"

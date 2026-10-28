@@ -54,6 +54,28 @@ def _get_win32_hidden_process_flags(create_new_group: bool = False) -> Tuple[Opt
     return startupinfo, flags
 
 
+def inspect_port_occupant(port: int) -> Tuple[bool, Optional[int], Optional[str]]:
+    """
+    Через psutil.net_connections сканирует статус порта.
+    Возвращает кортеж (is_occupied, pid, process_name).
+    """
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                pid = conn.pid
+                pname = None
+                if pid:
+                    try:
+                        pname = psutil.Process(pid).name()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pname = "unknown"
+                return (True, pid, pname)
+    except Exception as e:
+        logger.debug(f"[ProcessManager] inspect_port_occupant error: {e}")
+
+    return (False, None, None)
+
+
 class ProcessManager(QObject):
     """
     Orchestrates execution of external local AI servers (llama-server, LM Studio, SD WebUI Forge).
@@ -63,6 +85,7 @@ class ProcessManager(QObject):
     forge_status_changed = pyqtSignal(bool, str)   # is_running, message
     action_completed = pyqtSignal(str, bool, str)  # action_name, success, message
     server_state_changed = pyqtSignal(str, str)    # state_name, message
+    inspect_port_occupant = staticmethod(inspect_port_occupant)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,6 +99,8 @@ class ProcessManager(QObject):
         self._lms_safe_profile_applied: bool = False
         self._is_loading_lms: bool = False
         self._lm_client: Optional[Any] = None
+        self.last_error: Optional[str] = None
+        self._current_running_ngl: Optional[int] = None
 
     @property
     def lm_client(self) -> Optional[Any]:
@@ -94,8 +119,43 @@ class ProcessManager(QObject):
     def server_state(self) -> ServerState:
         return self._server_state
 
+    @property
+    def port(self) -> int:
+        if hasattr(self, "_port") and self._port:
+            return self._port
+        try:
+            return int(ServerConfigResolver.load_ini().get("port", 1234))
+        except Exception:
+            return 1234
+
+    @port.setter
+    def port(self, p: int):
+        self._port = int(p)
+
+    @property
+    def _process(self) -> Optional[subprocess.Popen]:
+        return self._llama_process
+
+    @_process.setter
+    def _process(self, proc: Optional[subprocess.Popen]):
+        self._llama_process = proc
+
+    @property
+    def _tracked_pid(self) -> Optional[int]:
+        if self._llama_process and hasattr(self._llama_process, "pid") and isinstance(self._llama_process.pid, int):
+            return self._llama_process.pid
+        return getattr(self, "_saved_tracked_pid", None)
+
+    @_tracked_pid.setter
+    def _tracked_pid(self, val: Optional[int]):
+        self._saved_tracked_pid = val
+
     def _set_server_state(self, new_state: ServerState, message: str = ""):
         self._server_state = new_state
+        if new_state == ServerState.ERROR and message:
+            self.last_error = message
+        elif new_state == ServerState.READY:
+            self.last_error = None
         logger.info(f"[ProcessManager.ServerState] {new_state.value}: {message}")
         try:
             self.server_state_changed.emit(new_state.value, message)
@@ -186,6 +246,7 @@ class ProcessManager(QObject):
                     except Exception as e:
                         logger.warning(f"Error terminating llama-server PID {pid}: {e}")
                 self._llama_process = None
+                self._current_running_ngl = None
 
             if self._llama_log_file and not getattr(self._llama_log_file, "closed", True):
                 try:
@@ -234,6 +295,60 @@ class ProcessManager(QObject):
             if not for_forge_eviction:
                 self.lms_status_changed.emit(False, msg)
 
+    def _wait_for_server_ready(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 1234,
+        timeout_s: float = 60.0
+    ) -> bool:
+        """
+        Polls GET http://{host}:{port}/v1/models until ready or timeout.
+        Immediately returns False if process crashed (poll() is not None).
+        Validates that response payload contains non-empty models/data.
+        """
+        models_url = f"http://{host}:{port}/v1/models"
+        start_time = time.time()
+
+        while time.time() - start_time < timeout_s:
+            proc = self._process
+            if proc is not None and proc.poll() is not None:
+                exit_code = proc.poll()
+                err_msg = f"Процесс llama-server завершился с кодом {exit_code}. См. logs/llama_server.log"
+                logger.error(f"[ProcessManager] {err_msg}")
+                self._process = None
+                self._current_running_ngl = None
+                self._set_server_state(ServerState.ERROR, err_msg)
+                self.last_error = err_msg
+                self.lms_status_changed.emit(False, err_msg)
+                return False
+
+            try:
+                resp = requests.get(models_url, timeout=0.35)
+                if resp.status_code == 200:
+                    try:
+                        payload = resp.json()
+                        if isinstance(payload, dict):
+                            data = payload.get("data")
+                            if data is None:
+                                data = payload.get("models")
+                            if isinstance(data, list):
+                                if len(data) > 0:
+                                    return True
+                                else:
+                                    logger.debug("[ProcessManager] /v1/models вернул 200 OK, но список моделей пуст. Ожидание...")
+                            else:
+                                return True
+                        else:
+                            return True
+                    except Exception:
+                        return True
+            except Exception:
+                pass
+
+            time.sleep(0.35)
+
+        return False
+
     def start_llama_server_sync(
         self,
         model_identifier: Optional[str] = None,
@@ -252,7 +367,18 @@ class ProcessManager(QObject):
         - Sets state to READY and synchronizes lm_client
         """
         with self._process_lock:
-            # 1. Kill existing instance if running
+            # 1. Grab current running server's ngl for hysteresis before killing
+            current_running_ngl = None
+            if self._llama_process is not None and self._llama_process.poll() is None:
+                val = getattr(self, "_current_running_ngl", None)
+                if isinstance(val, int):
+                    current_running_ngl = val
+            if current_running_ngl is None and hasattr(self, "lm_client") and self.lm_client:
+                val = getattr(self.lm_client, "_current_running_ngl", None)
+                if isinstance(val, int):
+                    current_running_ngl = val
+
+            # Kill existing instance if running
             self._kill_llama_server_instance()
 
             # 2. Update state to STARTING or RESTORING
@@ -266,6 +392,36 @@ class ProcessManager(QObject):
                 ini_cfg = ServerConfigResolver.load_ini()
                 host = ini_cfg.get("host", "127.0.0.1")
                 port = ini_cfg.get("port", 1234)
+                self.port = int(port)
+
+                # Pre-flight: Port Conflict Guard
+                is_occupied, occ_pid, occ_name = self.inspect_port_occupant(self.port)
+                if is_occupied:
+                    tracked_pid = self._tracked_pid
+                    is_our_server = (tracked_pid is not None and occ_pid == tracked_pid)
+                    if is_our_server and occ_pid:
+                        logger.info(f"[ProcessManager] Порт {self.port} занят нашим зависшим сервером (PID {occ_pid}). Завершаем через taskkill.")
+                        try:
+                            s_info, s_flags = _get_win32_hidden_process_flags()
+                            subprocess.run(
+                                ["taskkill", "/F", "/T", "/PID", str(occ_pid)],
+                                capture_output=True,
+                                timeout=5,
+                                startupinfo=s_info,
+                                creationflags=s_flags
+                            )
+                            time.sleep(0.3)
+                        except Exception as kill_err:
+                            logger.warning(f"[ProcessManager] Ошибка taskkill PID {occ_pid}: {kill_err}")
+                    else:
+                        proc_name = occ_name or "unknown"
+                        pid_str = occ_pid if occ_pid is not None else "Unknown"
+                        err_msg = f"Порт {self.port} занят процессом '{proc_name}' (PID: {pid_str}). Закройте стороннее приложение."
+                        logger.error(f"[ProcessManager] {err_msg}")
+                        self._set_server_state(ServerState.ERROR, err_msg)
+                        self.last_error = err_msg
+                        self.lms_status_changed.emit(False, err_msg)
+                        return False
 
                 # 4. Resolve binary
                 server_exe = ServerConfigResolver.resolve_server_exe()
@@ -293,7 +449,55 @@ class ProcessManager(QObject):
                     return False
 
                 effective_ctx = context_length or ini_cfg.get("default_context", 14336)
-                effective_ngl = gpu_layers if gpu_layers is not None else ini_cfg.get("gpu_layers", 99)
+
+                # Read KV-cache type and Flash Attention settings from config.json (with ini_cfg fallback)
+                app_cfg = {}
+                try:
+                    from utils.config_manager import ConfigManager
+                    app_cfg = ConfigManager.load_config()
+                except Exception:
+                    pass
+
+                kv_cache_type = app_cfg.get("kv_cache_type") or ini_cfg.get("cache_type_k") or "q8_0"
+                fa_enabled = app_cfg.get("flash_attention_enabled")
+                if fa_enabled is None:
+                    fa_enabled = (ini_cfg.get("flash_attn", "on") == "on")
+                fa_str = "on" if fa_enabled else "off"
+
+                # Динамический расчет слоев через LayerBudgeter
+                audit_data: Dict[str, Any] = {}
+                is_manual_override = (
+                    gpu_layers is not None
+                    and str(gpu_layers).strip().lower() != "auto"
+                    and gpu_layers != 99
+                )
+
+                if is_manual_override:
+                    try:
+                        effective_ngl = int(gpu_layers)
+                    except (ValueError, TypeError):
+                        effective_ngl = 99
+                    logger.warning(
+                        f"[ProcessManager] Ручной оверрайд gpu_layers={effective_ngl}. Авторасчет LayerBudgeter пропущен."
+                    )
+                else:
+                    from services.layer_budgeter import LayerBudgeter
+                    ngl, can_run, reason, audit_data = LayerBudgeter.calculate_layer_offload(
+                        model_path=model_path,
+                        target_context=effective_ctx,
+                        current_running_ngl=current_running_ngl,
+                        cache_type=kv_cache_type
+                    )
+                    LayerBudgeter.log_audit_report(audit_data)
+
+                    if not can_run:
+                        logger.error(f"[ProcessManager] Запуск отменен: {reason}")
+                        self._set_server_state(ServerState.ERROR, reason)
+                        self.last_error = reason
+                        self.lms_status_changed.emit(False, reason)
+                        return False
+
+                    effective_ngl = ngl
 
                 # 6. Assemble CLI arguments (strict list, no shell=True)
                 cmd = [
@@ -301,15 +505,16 @@ class ProcessManager(QObject):
                     "-m", str(model_path),
                     "-c", str(effective_ctx),
                     "-ngl", str(effective_ngl),
-                    "-fa", str(ini_cfg.get("flash_attn", "on")),
-                    "-ctk", str(ini_cfg.get("cache_type_k", "q8_0")),
-                    "-ctv", str(ini_cfg.get("cache_type_v", "q8_0")),
+                    "-fa", str(fa_str),
+                    "-ctk", str(kv_cache_type),
+                    "-ctv", str(kv_cache_type),
                     "-np", str(ini_cfg.get("parallel_slots", 1)),
                     "--port", str(port),
                     "--host", str(host),
                 ]
 
-                if ini_cfg.get("no_mmap", True):
+                is_hybrid = effective_ngl < audit_data.get("total_layers", 99)
+                if (ini_cfg.get("no_mmap", True) or is_hybrid) and "--no-mmap" not in cmd:
                     cmd.append("--no-mmap")
 
                 mmproj = ServerConfigResolver.resolve_mmproj_for_model(model_path)
@@ -390,30 +595,9 @@ class ProcessManager(QObject):
                 ).start()
 
                 # 11. Polling readiness handshake GET http://{host}:{port}/v1/models (up to 60s)
-                models_url = f"http://{host}:{port}/v1/models"
                 timeout_s = 60.0
                 start_time = time.time()
-                server_ready = False
-
-                while time.time() - start_time < timeout_s:
-                    if self._llama_process and self._llama_process.poll() is not None:
-                        exit_code = self._llama_process.poll()
-                        err_msg = f"Процесс llama-server завершился с кодом {exit_code}. См. logs/llama_server.log"
-                        logger.error(err_msg)
-                        self._llama_process = None
-                        self._set_server_state(ServerState.ERROR, err_msg)
-                        self.lms_status_changed.emit(False, err_msg)
-                        return False
-
-                    try:
-                        resp = requests.get(models_url, timeout=0.35)
-                        if resp.status_code == 200:
-                            server_ready = True
-                            break
-                    except Exception:
-                        pass
-
-                    time.sleep(0.35)
+                server_ready = self._wait_for_server_ready(host=host, port=port, timeout_s=timeout_s)
 
                 if server_ready:
                     elapsed = round(time.time() - start_time, 1)
@@ -421,17 +605,21 @@ class ProcessManager(QObject):
                     logger.info(f"llama-server ready on {host}:{port} in {elapsed}s.")
                     self._set_server_state(ServerState.READY, ready_msg)
                     self.lms_status_changed.emit(True, "Сервер LLM запущен.")
+                    self._current_running_ngl = effective_ngl
+                    self.last_error = None
                     if hasattr(self, "lm_client") and self.lm_client:
                         self.lm_client._is_model_unloaded = False
                         self.lm_client._last_loaded_model_id = model_path.stem
                         self.lm_client._current_loaded_ctx = effective_ctx
+                        self.lm_client._current_running_ngl = effective_ngl
                     return True
                 else:
-                    err_msg = f"Превышено время ожидания запуска llama-server ({timeout_s} с)."
-                    logger.warning(err_msg)
-                    self._kill_llama_server_instance()
-                    self._set_server_state(ServerState.ERROR, err_msg)
-                    self.lms_status_changed.emit(False, err_msg)
+                    if self._server_state != ServerState.ERROR:
+                        err_msg = f"Превышено время ожидания запуска llama-server ({timeout_s} с)."
+                        logger.warning(err_msg)
+                        self._kill_llama_server_instance()
+                        self._set_server_state(ServerState.ERROR, err_msg)
+                        self.lms_status_changed.emit(False, err_msg)
                     return False
             except Exception as e:
                 logger.error(f"Error starting llama-server: {e}")
@@ -439,6 +627,24 @@ class ProcessManager(QObject):
                 self._set_server_state(ServerState.ERROR, str(e))
                 self.lms_status_changed.emit(False, str(e))
                 return False
+
+    def restart_llama_server_async(self):
+        """Kills running llama-server and starts it afresh with current settings."""
+        def _run():
+            target_model = getattr(self.lm_client, "_last_loaded_model_id", None)
+            if not target_model:
+                try:
+                    from utils.config_manager import ConfigManager
+                    target_model = ConfigManager.load_config().get("active_model")
+                except Exception:
+                    pass
+            ok = self.start_llama_server_sync(model_identifier=target_model)
+            if ok:
+                self.action_completed.emit("lms_restart", True, "LLM сервер успешно перезапущен.")
+            else:
+                self.action_completed.emit("lms_restart", False, "Не удалось перезапустить LLM сервер.")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def start_lm_studio_async(self):
         """Launches LLM server in a separate thread to avoid UI freeze."""

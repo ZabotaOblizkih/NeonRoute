@@ -3,7 +3,7 @@ Token Budget Manager for NeonRoute.
 Provides token estimation and traffic light styling for character cards and lorebooks.
 Implements the two-circuit context management model:
 - Circuit 1: Relative Token Budget (Ratio-based Tier 1 / Tier 2 / Tier 3)
-- Circuit 2: Emergency Hardware Guard (VRAM < 600 MB cutoff)
+- Circuit 2: Emergency Hardware Guard (VRAM < 150 MB cutoff)
 """
 
 import re
@@ -260,7 +260,7 @@ class TokenBudgetManager:
         - Ступень 3 (ratio >= 0.80): История = 24 сообщения, max_tokens = 512.
 
         Контур 2: Аварийный аппаратный предохранитель (Пожарный рубильник)
-        - Если system_monitor.get_free_vram_mb() < 600 (критическая просадка из-за внешних программ):
+        - Если system_monitor.get_free_vram_mb() < 150 (критическая просадка из-за внешних программ):
           принудительно переключать параметры на Ступень 3 (24 сообщения, max_tokens = 512) независимо от значения ratio.
         """
         if isinstance(current_prompt_tokens, (list, tuple)):
@@ -297,8 +297,8 @@ class TokenBudgetManager:
             history_limit = 24
             max_tokens = 512
 
-        # Контур 2: Аварийный аппаратный предохранитель (< 600 МБ свободной VRAM)
-        emergency_threshold = 600
+        # Контур 2: Аварийный аппаратный предохранитель (< 150 МБ свободной VRAM)
+        emergency_threshold = 150
         try:
             from config import EMERGENCY_VRAM_THRESHOLD_MB
             emergency_threshold = int(EMERGENCY_VRAM_THRESHOLD_MB)

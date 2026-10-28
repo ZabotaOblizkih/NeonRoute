@@ -167,18 +167,37 @@ class TestTwoCircuitContextBudget:
         assert hist_limit == 60
         assert max_tok == 1024
 
-    def test_emergency_guard_triggers_at_vram_450(self):
+    def test_stage_1_normal_operation_vram_250(self):
         """
-        Проверка аварийного режима:
-        При VRAM = 450 МБ (< 600 МБ) аварийный рубильник принудительно включает
-        Ступень 3 (24 сообщения, max_tokens = 512) даже при низком ratio (0.10 или 0.35).
+        Проверка штатного режима при VRAM = 250 МБ:
+        Ранее 250 МБ считались аварией (< 600 МБ), теперь при пороге 150 МБ это штатный режим.
+        При ratio < 0.60 должны отдаваться Ступень 1: 60 сообщений и 1024 токена.
         """
         target_ctx = 14336
         tokens = int(target_ctx * 0.35)
         decision = TokenBudgetManager.calculate_context_budget(
             current_prompt_tokens=tokens,
             mode="assistant",
-            free_vram_mb=450,
+            free_vram_mb=250,
+            target_context_window=target_ctx
+        )
+        assert decision.tier == 1
+        assert decision.history_limit == 60
+        assert decision.max_tokens == 1024
+        assert decision.is_emergency is False
+
+    def test_emergency_guard_triggers_at_vram_120(self):
+        """
+        Проверка аварийного режима при реальном дефиците VRAM = 120 МБ (< 150 МБ):
+        Аварийный предохранитель принудительно включает Ступень 3
+        (24 сообщения, max_tokens = 512) даже при низком ratio (0.35).
+        """
+        target_ctx = 14336
+        tokens = int(target_ctx * 0.35)
+        decision = TokenBudgetManager.calculate_context_budget(
+            current_prompt_tokens=tokens,
+            mode="assistant",
+            free_vram_mb=120,
             target_context_window=target_ctx
         )
         assert decision.tier == 3
@@ -187,11 +206,11 @@ class TestTwoCircuitContextBudget:
         assert decision.is_emergency is True
 
     def test_emergency_guard_triggers_regardless_of_ratio(self):
-        """При свободной VRAM = 599 МБ аварийный предохранитель активен даже при пустом промпте."""
+        """При свободной VRAM = 149 МБ аварийный предохранитель активен даже при пустом промпте."""
         decision = TokenBudgetManager.calculate_context_budget(
             current_prompt_tokens=0,
             mode="assistant",
-            free_vram_mb=599
+            free_vram_mb=149
         )
         assert decision.tier == 3
         assert decision.history_limit == 24

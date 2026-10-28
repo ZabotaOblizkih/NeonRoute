@@ -84,8 +84,15 @@ VRAM_SAFE_LIMIT_MB = 7000    # Alert threshold for high VRAM pressure
 VRAM_MONITOR_INTERVAL_MS = 2000  # 2.0 seconds polling
 
 # Двухконтурная модель управления контекстом (Token Budget + Emergency VRAM Guard)
-EMERGENCY_VRAM_THRESHOLD_MB = 600  # Пожарный рубильник: критический порог свободной VRAM (< 600 МБ)
-EMERGENCY_VRAM_MB = 600            # Алиас для обратной совместимости
+EMERGENCY_VRAM_THRESHOLD_MB = 150  # Пожарный рубильник: критический порог свободной VRAM (< 150 МБ)
+EMERGENCY_VRAM_MB = 150            # Алиас для обратной совместимости
+
+# Константы аппаратного резервирования VRAM
+FORGE_VRAM_RESERVE_MB = 450          # Несгораемый слот под PyTorch CUDA context Forge
+SAFETY_MARGIN_VRAM_MB = 150          # Неприкосновенный запас от краша видеодрайвера (TDR)
+OS_RESERVE_PURE_COMPUTE_MB = 150     # Резерв ОС при изолированном выводе на iGPU
+OS_RESERVE_PRIMARY_DISPLAY_MB = 700  # Резерв ОС при выводе экрана через dGPU
+HYSTERESIS_LAYER_DELTA = 3           # Зона нечувствительности рестартов по слоям
 
 # Пороги относительного коэффициента заполнения контекста (Контур 1)
 CONTEXT_RATIO_TIER_1 = 0.60        # ratio < 0.60 -> Ступень 1 (60 сообщ / 1024 токена)
