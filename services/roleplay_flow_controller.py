@@ -266,6 +266,9 @@ class RoleplayFlowControllerMixin:
             rep_pen = float(cfg_defaults.get("repeat_penalty", profile_sampling.get("repeat_penalty", 1.02)))
         top_p_val = sampling.get("top_p", cfg_defaults.get("top_p", profile_sampling.get("top_p", 0.95)))
         top_p = float(top_p_val) if top_p_val is not None else 0.95
+        dry_mult = float(sampling.get("dry_multiplier", cfg_defaults.get("dry_multiplier", profile_sampling.get("dry_multiplier", 0.80))))
+        xtc_prob = float(sampling.get("xtc_probability", cfg_defaults.get("xtc_probability", profile_sampling.get("xtc_probability", 0.30))))
+        xtc_thresh = float(sampling.get("xtc_threshold", cfg_defaults.get("xtc_threshold", profile_sampling.get("xtc_threshold", 0.10))))
 
         default_max_tok = int(profile_sampling.get("max_tokens", 4096))
         raw_user_max = sampling.get("max_tokens", cfg_defaults.get("max_tokens", default_max_tok))
@@ -287,6 +290,12 @@ class RoleplayFlowControllerMixin:
             "top_p": top_p,
             "repetition_penalty": rep_pen,
             "repeat_penalty": rep_pen,
+            "dry_multiplier": dry_mult,
+            "dry_base": 1.75,
+            "dry_allowed_length": 2,
+            "dry_penalty_last_n": 0,
+            "xtc_probability": xtc_prob,
+            "xtc_threshold": xtc_thresh,
             "stream": True
         }
 
