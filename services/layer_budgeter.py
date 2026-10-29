@@ -41,12 +41,16 @@ class LayerBudgeter:
     @classmethod
     def detect_gpu_topology(cls) -> Tuple[bool, int]:
         """
-        Опрашивает pynvml. Замеряет базовую занятость VRAM чипа.
-        Если занято < 250 МБ и nvmlDeviceGetDisplayActive == False:
-            режим PURE COMPUTE (дисплей на iGPU Intel), возвращает (True, OS_RESERVE_PURE_COMPUTE_MB).
-        Иначе:
-            режим PRIMARY DISPLAY (дисплей или DWM на dGPU), возвращает (False, OS_RESERVE_PRIMARY_DISPLAY_MB).
-        При ошибке NVML — безопасный фоллбэк на (False, 700).
+        Опрашивает pynvml.
+        Аппаратный флаг NVML первичнее цифры текущей занятости:
+        Если nvmlDeviceGetDisplayActive(handle) == False (или 0), видеокарта физически
+        НЕ выводит изображение на монитор (дисплей подключен к iGPU).
+        В таком случае ВСЕГДА возвращается (True, OS_RESERVE_PURE_COMPUTE_MB = 150),
+        даже если текущая занятость VRAM превышает 250 МБ (остаточный кэш PyTorch/Forge).
+        Переключение в PRIMARY DISPLAY (False, OS_RESERVE_PRIMARY_DISPLAY_MB = 700) ТОЛЬКО если:
+            * nvmlDeviceGetDisplayActive(handle) == True, ИЛИ
+            * на GPU обнаружен активный процесс dwm.exe / csrss.exe с графическим дескриптором, ИЛИ
+            * произошла фатальная ошибка опроса NVML (фоллбэк).
         """
         try:
             import pynvml
@@ -62,21 +66,57 @@ class LayerBudgeter:
 
             display_active = False
             if hasattr(pynvml, "nvmlDeviceGetDisplayActive"):
-                try:
-                    display_active = bool(pynvml.nvmlDeviceGetDisplayActive(handle))
-                except Exception:
-                    display_active = False
+                display_active = bool(pynvml.nvmlDeviceGetDisplayActive(handle))
 
-            if used_mb < 250.0 and not display_active:
+            # Проверка наличия графических процессов dwm.exe / csrss.exe на GPU
+            has_display_proc = False
+            if hasattr(pynvml, "nvmlDeviceGetGraphicsRunningProcesses"):
+                try:
+                    graphics_procs = pynvml.nvmlDeviceGetGraphicsRunningProcesses(handle)
+                    if isinstance(graphics_procs, (list, tuple)):
+                        for proc in graphics_procs:
+                            try:
+                                pid = getattr(proc, "pid", None)
+                                if pid is None:
+                                    continue
+                                proc_name = None
+                                if hasattr(pynvml, "nvmlSystemGetProcessName"):
+                                    try:
+                                        name_b = pynvml.nvmlSystemGetProcessName(pid)
+                                        if isinstance(name_b, bytes):
+                                            proc_name = name_b.decode("utf-8", errors="replace")
+                                        elif isinstance(name_b, str):
+                                            proc_name = name_b
+                                    except Exception:
+                                        pass
+                                if not proc_name and isinstance(pid, int):
+                                    try:
+                                        proc_name = psutil.Process(pid).name()
+                                    except Exception:
+                                        pass
+                                elif not proc_name and hasattr(proc, "name"):
+                                    proc_name = getattr(proc, "name", "")
+
+                                if proc_name and str(proc_name).lower() in ("dwm.exe", "csrss.exe"):
+                                    has_display_proc = True
+                                    break
+                            except Exception:
+                                continue
+                except Exception as proc_err:
+                    logger.debug(f"[LayerBudgeter] Ошибка сканирования графических процессов NVML: {proc_err}")
+
+            if display_active or has_display_proc:
                 logger.info(
-                    f"[LayerBudgeter] Топология: PURE COMPUTE (VRAM used: {used_mb:.1f} MB, display_active={display_active}) -> резерв {OS_RESERVE_PURE_COMPUTE_MB} МБ"
-                )
-                return (True, int(OS_RESERVE_PURE_COMPUTE_MB))
-            else:
-                logger.info(
-                    f"[LayerBudgeter] Топология: PRIMARY DISPLAY (VRAM used: {used_mb:.1f} MB, display_active={display_active}) -> резерв {OS_RESERVE_PRIMARY_DISPLAY_MB} МБ"
+                    f"[LayerBudgeter] Топология: PRIMARY DISPLAY (VRAM used: {used_mb:.1f} MB, "
+                    f"display_active={display_active}, display_proc={has_display_proc}) -> резерв {OS_RESERVE_PRIMARY_DISPLAY_MB} МБ"
                 )
                 return (False, int(OS_RESERVE_PRIMARY_DISPLAY_MB))
+            else:
+                logger.info(
+                    f"[LayerBudgeter] Топология: PURE COMPUTE (VRAM used: {used_mb:.1f} MB, "
+                    f"display_active={display_active}, display_proc={has_display_proc}) -> резерв {OS_RESERVE_PURE_COMPUTE_MB} МБ"
+                )
+                return (True, int(OS_RESERVE_PURE_COMPUTE_MB))
 
         except Exception as e:
             logger.debug(f"[LayerBudgeter] NVML detection error/fallback: {e}")
@@ -411,8 +451,8 @@ class LayerBudgeter:
         7) Pre-flight RAM Guard:
            Если ngl < Total_Layers:
                cpu_weights_mb = Model_Size_MB - (Base_Overhead + ngl * Layer_Weight).
-               usable_ram = psutil.virtual_memory().available / (1024 * 1024) - 3000 (ОС) - 3500 (Forge RAM).
-               Если cpu_weights_mb > usable_ram:
+               headroom_mb = 1024 (при cpu_weights_mb <= 500) или 1500 (при > 500).
+               Если available_ram_mb < (cpu_weights_mb + headroom_mb):
                    return (0, False, "OOM Guard: недостаточно VRAM + RAM для безопасного запуска", audit_data).
         8) Возвращает кортеж: (calculated_ngl, can_run, reason_string, audit_dict).
         """
@@ -480,7 +520,7 @@ class LayerBudgeter:
         if available_ram_mb is None or available_ram_mb <= 0:
             available_ram_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
 
-        usable_ram_mb = available_ram_mb - 3000.0 - 3500.0
+        min_os_headroom_mb = 1500.0  # Минимальный буфер для дыхания Windows и Python
 
         cpu_weights_mb = 0.0
         if calculated_ngl < total_layers:
@@ -490,7 +530,11 @@ class LayerBudgeter:
             else:
                 cpu_weights_mb = model_size_mb
 
-            if cpu_weights_mb > usable_ram_mb:
+            # Пропорциональный буфер: 1024 МБ для 1-3 слоев (<= 500 МБ) или 1500 МБ для тяжелого оффлоада
+            headroom_mb = 1024.0 if cpu_weights_mb <= 500.0 else min_os_headroom_mb
+            usable_ram_mb = max(0.0, available_ram_mb - headroom_mb)
+
+            if available_ram_mb < (cpu_weights_mb + headroom_mb):
                 can_run = False
                 reason = "OOM Guard: недостаточно VRAM + RAM для безопасного запуска"
                 audit_data = {
@@ -521,6 +565,8 @@ class LayerBudgeter:
                 }
                 cls.log_audit_report(audit_data)
                 return (0, False, reason, audit_data)
+        else:
+            usable_ram_mb = max(0.0, available_ram_mb - min_os_headroom_mb)
 
         # 8. Итоговый аудит-паспорт
         audit_data = {

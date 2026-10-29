@@ -78,6 +78,7 @@ class ChatBubbleBuilderMixin:
         new_offset = max(0, cur_offset - chunk_size)
         slice_to_insert = self._all_session_messages[new_offset:cur_offset]
         self._rendered_messages_offset = new_offset
+        self._is_loading_more_history = True
 
         # Фиксируем текущий scroll bar через реальные свойства MainWindow
         v_bar = None
@@ -117,7 +118,13 @@ class ChatBubbleBuilderMixin:
                 def _restore_scroll():
                     new_max = v_bar.maximum()
                     diff = new_max - old_max
-                    v_bar.setValue(old_val + diff)
+                    target_pos = old_val + diff
+                    if hasattr(self, "_sync_scroll_to"):
+                        self._sync_scroll_to(target_pos)
+                    else:
+                        v_bar.setValue(target_pos)
+                    self._prev_scroll_max = new_max
+                    self._is_loading_more_history = False
                 QTimer.singleShot(20, _restore_scroll)
 
     def _render_stored_message(self, msg: dict, target_index: Optional[int] = None) -> ChatMessageWidget:

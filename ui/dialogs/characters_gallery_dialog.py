@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate
 )
 
+from ui.components.step_progress_button import StepProgressButton
 from qfluentwidgets import (
     SearchLineEdit,
     PushButton,
@@ -42,6 +43,7 @@ from config import CHARACTERS_DIR, DATA_DIR
 from services.tavern_parser import TavernParser, CharacterCard
 from services.token_budget_manager import TokenBudgetManager
 from services.task_queue import InferenceTask
+from services.chub_client import sanitize_card_description
 from services.card_translator import (
     CardTranslator,
     mask_card_tags,
@@ -710,7 +712,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.btn_change_avatar.clicked.connect(self._change_avatar)
         top_row.addWidget(self.btn_change_avatar)
 
-        self.btn_translate_all = PushButton(FIF.LANGUAGE, "🌐 Перевести всё (RU)")
+        self.btn_translate_all = StepProgressButton(FIF.LANGUAGE, "🌐 Перевести всё (RU)")
         self.btn_translate_all.clicked.connect(self._on_translate_all_clicked)
         top_row.addWidget(self.btn_translate_all)
 
@@ -1562,15 +1564,34 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                     raw = {"spec": "chara_card_v2", "spec_version": "2.0", "data": {}}
                 is_v2 = raw.get("spec") == "chara_card_v2" or "data" in raw
                 target = raw.setdefault("data", {}) if is_v2 else raw
+
+                # Санитизация описания и характера при импорте
+                clean_desc, extra_notes = sanitize_card_description(card.description or "")
+                clean_pers, pers_notes = sanitize_card_description(card.personality or "")
+
                 target["name"] = card.name
-                target["description"] = card.description
-                target["personality"] = card.personality
+                target["description"] = clean_desc
+                target["personality"] = clean_pers
                 target["scenario"] = card.scenario
                 target["first_mes"] = card.first_mes
                 target["mes_example"] = card.mes_example
                 target["alternate_greetings"] = getattr(card, "alternate_greetings", [])
                 target["avatar_path"] = str(dest_avatar.resolve())
                 target["visual_dna"] = getattr(card, "visual_dna", "")
+
+                # Сохраняем ссылки и мета-примечания автора в creator_notes, не засоряя prompt
+                all_extra = extra_notes + pers_notes
+                if all_extra:
+                    existing_notes = target.get("creator_notes", "") or getattr(card, "creator_notes", "") or ""
+                    merged = [existing_notes] if existing_notes else []
+                    merged.extend(all_extra)
+                    target["creator_notes"] = "\n\n".join(dict.fromkeys([n for n in merged if n]))
+
+                card.description = clean_desc
+                card.personality = clean_pers
+                if hasattr(card, "creator_notes") and target.get("creator_notes"):
+                    card.creator_notes = target["creator_notes"]
+
                 with open(dest_json, "w", encoding="utf-8") as f:
                     json.dump(raw, f, ensure_ascii=False, indent=2)
 
@@ -1595,6 +1616,39 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
                         break
 
                 card = TavernParser.parse_file(dest_path)
+
+                # Санитизация описания и характера при импорте JSON
+                raw = dict(card.raw_data) if card.raw_data else {}
+                if not raw:
+                    raw = {"spec": "chara_card_v2", "spec_version": "2.0", "data": {}}
+                is_v2 = raw.get("spec") == "chara_card_v2" or "data" in raw
+                target = raw.setdefault("data", {}) if is_v2 else raw
+
+                clean_desc, extra_notes = sanitize_card_description(card.description or "")
+                clean_pers, pers_notes = sanitize_card_description(card.personality or "")
+
+                target["name"] = card.name
+                target["description"] = clean_desc
+                target["personality"] = clean_pers
+                target["scenario"] = card.scenario
+                target["first_mes"] = card.first_mes
+                target["mes_example"] = card.mes_example
+
+                all_extra = extra_notes + pers_notes
+                if all_extra:
+                    existing_notes = target.get("creator_notes", "") or getattr(card, "creator_notes", "") or ""
+                    merged = [existing_notes] if existing_notes else []
+                    merged.extend(all_extra)
+                    target["creator_notes"] = "\n\n".join(dict.fromkeys([n for n in merged if n]))
+
+                card.description = clean_desc
+                card.personality = clean_pers
+                if hasattr(card, "creator_notes") and target.get("creator_notes"):
+                    card.creator_notes = target["creator_notes"]
+
+                with open(dest_path, "w", encoding="utf-8") as f:
+                    json.dump(raw, f, ensure_ascii=False, indent=2)
+
                 card.source_path = dest_path
                 select_target = dest_path
                 char_name = card.name
@@ -1832,31 +1886,29 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
         card.name = name
         if getattr(self, "_showing_ru", False):
+            # В режиме RU обновляем ТОЛЬКО русские поля карточки при наличии кириллицы.
+            # Английские оригиналы (card.description и т.д.) НИ ПРИ КАКИХ УСЛОВИЯХ НЕ ЗАТИРАЮТСЯ!
             if _has_cyrillic(desc):
                 card.description_ru = desc
-            elif not getattr(card, "description_ru", None):
-                card.description = desc
-
             if _has_cyrillic(personality):
                 card.personality_ru = personality
-            elif not getattr(card, "personality_ru", None):
-                card.personality = personality
-
             if _has_cyrillic(scenario):
                 card.scenario_ru = scenario
-            elif not getattr(card, "scenario_ru", None):
-                card.scenario = scenario
-
             if _has_cyrillic(mes_example):
                 card.mes_example_ru = mes_example
-            elif not getattr(card, "mes_example_ru", None):
-                card.mes_example = mes_example
         else:
-            card.description = desc
-            card.personality = personality
-            card.scenario = scenario
-            card.mes_example = mes_example
-        card.system_prompt = system_prompt
+            # В режиме оригинала обновляем английские поля, только если поле не пустое
+            if desc.strip():
+                card.description = desc
+            if personality.strip():
+                card.personality = personality
+            if scenario.strip():
+                card.scenario = scenario
+            if mes_example.strip():
+                card.mes_example = mes_example
+
+        if system_prompt.strip():
+            card.system_prompt = system_prompt
 
         # Update raw data dictionary
         raw = card.raw_data if isinstance(card.raw_data, dict) else {}
@@ -1889,9 +1941,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         target["description"] = card.description
         target["personality"] = card.personality
         target["scenario"] = card.scenario
-        target["system_prompt"] = system_prompt
+        target["system_prompt"] = card.system_prompt
         if "system_prompt" in raw and raw is not target:
-            raw["system_prompt"] = system_prompt
+            raw["system_prompt"] = card.system_prompt
         target["mes_example"] = card.mes_example
         target["first_mes"] = card.first_mes
         target["alternate_greetings"] = getattr(card, "alternate_greetings", [])

@@ -760,7 +760,10 @@ class SessionManager:
         is_analysis: bool = False,
         image_path: Optional[str] = None,
         model_id: Optional[str] = None,
-        session_history: Optional[List[Dict[str, str]]] = None
+        session_history: Optional[List[Dict[str, str]]] = None,
+        on_message_callback: Optional[Any] = None,
+        on_status_callback: Optional[Any] = None,
+        **kwargs
     ) -> dict:
         """Делегирует исполнение в изолированный SubagentEngineer."""
         from services.subagent_engineer import SubagentEngineer
@@ -772,7 +775,10 @@ class SessionManager:
             image_path=image_path,
             lm_client=client,
             model_id=model_id,
-            session_history=session_history
+            session_history=session_history,
+            on_message_callback=on_message_callback,
+            on_status_callback=on_status_callback,
+            **kwargs
         )
 
     # --- ROLEPLAY CAST FORWARDERS ---

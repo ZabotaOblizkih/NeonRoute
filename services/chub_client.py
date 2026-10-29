@@ -21,6 +21,82 @@ logger = logging.getLogger("NeonRoute.ChubClient")
 CHUB_API_BASE = "https://api.chub.ai"
 
 
+def sanitize_card_description(raw_text: str) -> Tuple[str, List[str]]:
+    """
+    Очищает описание персонажа от промо-ссылок, списков других ботов и метаданных автора.
+    Возвращает (чистый_текст_для_LLM, список_извлеченных_ссылок_для_creator_notes).
+    """
+    if not raw_text:
+        return "", []
+
+    url_pat = re.compile(
+        r'(https?://[^\s<]+|www\.[^\s<]+|t\.me/|discord\.(?:gg|com)/|patreon\.com/|ko-fi\.com/|boosty\.to/|civitai\.com/|chub\.ai/)',
+        re.IGNORECASE
+    )
+    header_pat = re.compile(
+        r'^(more\s+.*cards?|other\s+.*cards?|check\s+out\s+my|my\s+other\s+bots?|'
+        r'другие\s+карточки|мои\s+другие\s+боты|другие\s+персонажи|links?:|ссылки:|'
+        r'support\s+me|поддержать|credits?:|благодарности:|changelog:)',
+        re.IGNORECASE
+    )
+    meta_pat = re.compile(
+        r'^(card\s+made\s+with|bot\s+made\s+with|created\s+by|made\s+by|original\s+bot\s+by|'
+        r'prompt\s+by|создано|автор\s+карточки|leave\s+a\s+(?:review|like|star)|'
+        r'version\s*\d|v\d+\s*[-:])',
+        re.IGNORECASE
+    )
+
+    cleaned_lines = []
+    extracted_notes = []
+    in_junk_block = False
+
+    for line in raw_text.splitlines():
+        trimmed = line.strip()
+        if not trimmed:
+            if cleaned_lines and cleaned_lines[-1] != "":
+                cleaned_lines.append("")
+            continue
+
+        # 1. Заголовки блоков ссылок ("More Nier Automata cards:")
+        if header_pat.match(trimmed):
+            in_junk_block = True
+            extracted_notes.append(trimmed)
+            continue
+
+        # 2. Строки со ссылками
+        if url_pat.search(trimmed):
+            in_junk_block = True
+            extracted_notes.append(trimmed)
+            continue
+
+        # 3. Мета-комментарии создателя
+        if meta_pat.match(trimmed):
+            extracted_notes.append(trimmed)
+            continue
+
+        # 4. Элементы списков в блоке промо (например "9S - ")
+        if in_junk_block and re.match(r'^[\w\s\-_]+[:-]\s*$', trimmed):
+            continue
+
+        # Сброс флага промо при переходе к связному повествовательному тексту
+        if len(trimmed) > 30 and trimmed[-1] in ('.', '!', '?', '"'):
+            in_junk_block = False
+
+        if in_junk_block and trimmed.startswith(('-', '*', '•')):
+            extracted_notes.append(trimmed)
+            continue
+
+        in_junk_block = False
+        cleaned_lines.append(line)
+
+    while cleaned_lines and cleaned_lines[-1].strip() == "":
+        cleaned_lines.pop()
+    while cleaned_lines and cleaned_lines[0].strip() == "":
+        cleaned_lines.pop(0)
+
+    return "\n".join(cleaned_lines), extracted_notes
+
+
 class ChubClient:
     def __init__(self, timeout: float = 14.0):
         self.timeout = timeout
@@ -192,26 +268,32 @@ class ChubClient:
                     defn_pers = str(defn.get("personality") or "").strip()
                     defn_tav_pers = str(defn.get("tavern_personality") or "").strip()
 
-                    if defn_desc and defn_pers:
-                        final_desc = defn_desc
-                        pers_parts = [p for p in (defn_pers, defn_tav_pers) if p]
-                        final_pers = "\n\n".join(dict.fromkeys(pers_parts))
+                    # Не подтягиваем веб-страницу node.get("description"), если у персонажа задан defn_pers!
+                    if defn_desc:
+                        raw_desc = defn_desc
                     elif defn_pers:
-                        final_desc = defn_pers
-                        final_pers = defn_tav_pers if defn_tav_pers != defn_pers else ""
-                        if defn_desc and defn_desc != defn_pers and len(defn_pers) < 200:
-                            final_desc = f"{defn_pers}\n\n{defn_desc}"
+                        raw_desc = defn_pers
                     else:
-                        final_desc = defn_desc or str(node.get("description") or "").strip()
-                        final_pers = defn_tav_pers
+                        raw_desc = str(node.get("description") or "").strip()
 
+                    # Очищаем описание и характер от ссылок и промо-мусора
+                    clean_desc, extra_notes = sanitize_card_description(raw_desc)
+                    pers_parts = [p for p in (defn_pers, defn_tav_pers) if p]
+                    raw_pers = "\n\n".join(dict.fromkeys(pers_parts))
+                    clean_pers, pers_notes = sanitize_card_description(raw_pers)
+
+                    # Все ссылки и примечания аккуратно убираем в creator_notes
+                    creator_notes_list = []
                     raw_tagline = str(node.get("tagline") or "").strip()
-                    creator_notes_parts = []
-                    if raw_tagline and raw_tagline not in (final_desc, final_pers):
-                        creator_notes_parts.append(raw_tagline)
-                    if defn_desc and defn_desc not in (final_desc, final_pers, raw_tagline):
-                        creator_notes_parts.append(defn_desc)
-                    creator_notes = "\n\n".join(creator_notes_parts)
+                    if raw_tagline:
+                        creator_notes_list.append(raw_tagline)
+                    existing_cn = str(defn.get("creator_notes") or node.get("creator_notes") or "").strip()
+                    if existing_cn:
+                        creator_notes_list.append(existing_cn)
+                    creator_notes_list.extend(extra_notes)
+                    creator_notes_list.extend(pers_notes)
+
+                    creator_notes = "\n\n".join(dict.fromkeys([n for n in creator_notes_list if n]))
 
                     depth_prompt = (
                         defn.get("depth_prompt")
@@ -230,8 +312,8 @@ class ChubClient:
                         "spec_version": "2.0",
                         "data": {
                             "name": node.get("name", card_title),
-                            "description": final_desc,
-                            "personality": final_pers,
+                            "description": clean_desc,
+                            "personality": clean_pers,
                             "first_mes": defn.get("first_message", ""),
                             "mes_example": defn.get("example_dialogs", ""),
                             "scenario": defn.get("scenario", ""),
@@ -274,6 +356,25 @@ class ChubClient:
                             except Exception:
                                 card_data = json.loads(raw_b64)
                             if card_data:
+                                is_v2 = card_data.get("spec") == "chara_card_v2" or "data" in card_data
+                                target_png = card_data.setdefault("data", {}) if is_v2 else card_data
+
+                                raw_png_desc = str(target_png.get("description") or "").strip()
+                                raw_png_pers = str(target_png.get("personality") or "").strip()
+
+                                clean_png_desc, desc_notes = sanitize_card_description(raw_png_desc)
+                                clean_png_pers, pers_notes = sanitize_card_description(raw_png_pers)
+
+                                target_png["description"] = clean_png_desc
+                                target_png["personality"] = clean_png_pers
+
+                                png_extra = desc_notes + pers_notes
+                                if png_extra:
+                                    existing_notes = str(target_png.get("creator_notes", "") or "").strip()
+                                    merged = [existing_notes] if existing_notes else []
+                                    merged.extend(png_extra)
+                                    target_png["creator_notes"] = "\n\n".join(dict.fromkeys([n for n in merged if n]))
+
                                 logger.info(f"[ChubClient] Полные данные карточки распакованы из PNG: {png_url}")
                                 break
                 except Exception as e_png:

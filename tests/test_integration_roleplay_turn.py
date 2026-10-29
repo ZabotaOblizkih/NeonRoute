@@ -90,7 +90,7 @@ class TestEndToEndRoleplayTurnPipeline:
             active_persona=persona
         )
 
-        assert "Игрок (Роман) — мужчина. Обращайся к игроку в мужском роде" in system_prompt
+        assert "Игрок (Роман) — мужчина. В прямой речи обращайся к Роман в мужском роде." in system_prompt
         assert "Селеста — женский персонаж" in system_prompt
         assert "Помни: Селеста предана Роман." in system_prompt
         assert "Категорически запрещено выходить из роли" in system_prompt

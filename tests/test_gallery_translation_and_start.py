@@ -195,6 +195,161 @@ class TestTranslationParsing:
             assert card.alternate_greetings_ru == ["Кто идет?"]
             mock_save.assert_called()
 
+    def test_cyrillic_delimiters_parsing(self, qapp):
+        """Проверка распознавания чисто кириллических заголовков секций от LLM."""
+        class MockMainWindow(RoleplayControllerMixin):
+            def __init__(self):
+                self.lm_client = MagicMock()
+                self.task_queue = MagicMock()
+                self._active_tasks = {}
+                self.current_session = None
+
+            def statusBar(self):
+                mock_sb = MagicMock()
+                mock_sb.showMessage = MagicMock()
+                return mock_sb
+
+            def _save_current_session(self):
+                pass
+
+        window = MockMainWindow()
+        card = CharacterCard(
+            name="Каэла",
+            description="Elven scout.",
+            personality="Cold.",
+            scenario="Guiding travellers.",
+            mes_example="Example dialog.",
+            first_mes="Stop right there.",
+            alternate_greetings=["Who goes there?"]
+        )
+
+        llm_reply = (
+            "=== ОПИСАНИЕ ===\n"
+            "Эльфийская разведчица.\n"
+            "=== ХАРАКТЕР ===\n"
+            "Холодная.\n"
+            "=== СЦЕНАРИЙ ===\n"
+            "Сопровождение путников.\n"
+            "=== ПРИМЕРЫ ДИАЛОГОВ ===\n"
+            "Пример диалога.\n"
+            "=== ПЕРВОЕ СООБЩЕНИЕ ===\n"
+            "Стой на месте.\n"
+            "=== АЛЬТ_ПРИВЕТСТВИЕ_1 ===\n"
+            "Кто идет?"
+        )
+
+        completed_data = []
+
+        def on_done_cb(success, res_dict):
+            completed_data.append((success, res_dict))
+
+        with patch("services.tavern_parser.TavernParser.save_card_translations"):
+            window.lm_client.chat_completion = lambda *args, **kwargs: llm_reply
+            window._translate_character_card_task(card, on_complete=on_done_cb)
+
+            connect_calls = window.task_queue.task_finished.connect.call_args_list
+            on_done_wrapper = connect_calls[-1][0][0]
+
+            task = list(window._active_tasks.values())[0]
+            result = task.func(task.kwargs.get("text"))
+            on_done_wrapper(task.id, result)
+
+            assert len(completed_data) == 1
+            success, res_dict = completed_data[0]
+            assert success is True
+            assert res_dict["DESCRIPTION"] == "Эльфийская разведчица."
+            assert res_dict["PERSONALITY"] == "Холодная."
+            assert res_dict["SCENARIO"] == "Сопровождение путников."
+            assert res_dict["MES_EXAMPLE"] == "Пример диалога."
+            assert res_dict["FIRST_MES"] == "Стой на месте."
+            assert res_dict["ALT_GREETING_1"] == "Кто идет?"
+
+            assert card.description_ru == "Эльфийская разведчица."
+            assert card.personality_ru == "Холодная."
+            assert card.scenario_ru == "Сопровождение путников."
+            assert card.mes_example_ru == "Пример диалога."
+            assert card.first_mes_ru == "Стой на месте."
+            assert card.alternate_greetings_ru == ["Кто идет?"]
+
+    def test_only_nonempty_sections_sent_in_payload(self, qapp):
+        """Проверка: в запрос не отправляются пустые секции."""
+        class MockMainWindow(RoleplayControllerMixin):
+            def __init__(self):
+                self.lm_client = MagicMock()
+                self.task_queue = MagicMock()
+                self._active_tasks = {}
+                self.current_session = None
+
+            def statusBar(self):
+                mock_sb = MagicMock()
+                mock_sb.showMessage = MagicMock()
+                return mock_sb
+
+        window = MockMainWindow()
+        card = CharacterCard(
+            name="Каэла",
+            description="Elven scout.",
+            personality="",  # Пустое поле!
+            scenario="",     # Пустое поле!
+            first_mes="Stop right there."
+        )
+
+        with patch("services.tavern_parser.TavernParser.save_card_translations"):
+            window._translate_character_card_task(card, on_complete=MagicMock())
+
+            task = list(window._active_tasks.values())[0]
+            payload = task.kwargs.get("text", "")
+            assert "===DESCRIPTION===" in payload
+            assert "===FIRST_MES===" in payload
+            assert "===PERSONALITY===" not in payload
+            assert "===SCENARIO===" not in payload
+            assert "===MES_EXAMPLE===" not in payload
+
+    def test_empty_res_dict_results_in_failure_without_wiping(self, qapp):
+        """Проверка: если ответ модели не содержит распознанных секций, вызывается on_complete(False)."""
+        class MockMainWindow(RoleplayControllerMixin):
+            def __init__(self):
+                self.lm_client = MagicMock()
+                self.task_queue = MagicMock()
+                self._active_tasks = {}
+                self.current_session = None
+
+            def statusBar(self):
+                mock_sb = MagicMock()
+                mock_sb.showMessage = MagicMock()
+                return mock_sb
+
+        window = MockMainWindow()
+        card = CharacterCard(
+            name="Каэла",
+            description="Elven scout.",
+            first_mes="Stop right there."
+        )
+
+        completed_data = []
+
+        def on_done_cb(success, res_dict=None):
+            completed_data.append((success, res_dict))
+
+        with patch("services.tavern_parser.TavernParser.save_card_translations"):
+            window.lm_client.chat_completion = lambda *args, **kwargs: "Просто текст без разделителей."
+            window._translate_character_card_task(card, on_complete=on_done_cb)
+
+            connect_calls = window.task_queue.task_finished.connect.call_args_list
+            on_done_wrapper = connect_calls[-1][0][0]
+
+            task = list(window._active_tasks.values())[0]
+            result = task.func(task.kwargs.get("text"))
+            on_done_wrapper(task.id, result)
+
+            assert len(completed_data) == 1
+            success, res_dict = completed_data[0]
+            assert success is False
+            assert res_dict == {}
+            # Оригинальные поля не затерты
+            assert card.description == "Elven scout."
+            assert card.first_mes == "Stop right there."
+
 
 class TestRuFieldsProtection:
     """Проверка защиты полей _ru от затирания при сохранении и переключении."""
@@ -295,6 +450,95 @@ class TestRuFieldsProtection:
         assert dlg.input_first_mes.toPlainText() == "В режиме ожидания."
         assert card.description_ru == "Кибернетический оперативник."
         assert card.first_mes_ru == "В режиме ожидания."
+
+    def test_on_all_done_safe_fallback_prevents_empty_inputs(self, gallery_env):
+        """Если LLM не вернула перевод для поля, UI откатывается к оригиналу, а не очищается."""
+        dlg, parent_widget, chars_dir = gallery_env
+        card = CharacterCard(
+            name="Соня",
+            description="Cybernetic operative.",
+            personality="Tactical and focused.",
+            scenario="Infiltration mission.",
+            mes_example="Copy that.",
+            first_mes="Standing by."
+        )
+        card_path = chars_dir / "sonya.json"
+        with open(card_path, "w", encoding="utf-8") as f:
+            json.dump({"name": "Соня", "description": card.description, "personality": card.personality}, f)
+
+        dlg.active_entry = {"card": card, "path": card_path}
+        dlg.input_name.setText("Соня")
+        dlg.input_desc.setPlainText(card.description)
+        dlg.input_personality.setPlainText(card.personality)
+        dlg.input_scenario.setPlainText(card.scenario)
+        dlg.input_mes_example.setPlainText(card.mes_example)
+        dlg.input_first_mes.setPlainText(card.first_mes)
+
+        # Перевод возвращает ТОЛЬКО first_mes и description_ru, остальные поля отсутствуют
+        def mock_translate_task(c, on_complete=None):
+            partial_res = {
+                "DESCRIPTION": "Кибернетический оперативник.",
+                "FIRST_MES": "В режиме ожидания."
+            }
+            if on_complete:
+                on_complete(True, partial_res)
+
+        parent_widget._translate_character_card_task = mock_translate_task
+
+        with patch("PyQt6.QtWidgets.QMessageBox.information"):
+            dlg._on_translate_all_clicked()
+
+        assert dlg._showing_ru is True
+        # Переведенные поля обновились на русский
+        assert dlg.input_desc.toPlainText() == "Кибернетический оперативник."
+        assert dlg.input_first_mes.toPlainText() == "В режиме ожидания."
+        # Непереведенные поля сохранили английский оригинал (безопасный фоллбэк), а не очистились в ""
+        assert dlg.input_personality.toPlainText() == "Tactical and focused."
+        assert dlg.input_scenario.toPlainText() == "Infiltration mission."
+        assert dlg.input_mes_example.toPlainText() == "Copy that."
+
+        # Английские оригиналы в card НЕ затерты
+        assert card.description == "Cybernetic operative."
+        assert card.personality == "Tactical and focused."
+        assert card.scenario == "Infiltration mission."
+        assert card.mes_example == "Copy that."
+
+    def test_save_changes_ru_mode_never_wipes_english_originals(self, gallery_env):
+        """В режиме _showing_ru ни при каких условиях английские оригиналы не стираются."""
+        dlg, _, chars_dir = gallery_env
+        card = CharacterCard(
+            name="Соня",
+            description="Cybernetic operative.",
+            personality="Tactical and focused.",
+            scenario="Infiltration mission.",
+            mes_example="Copy that.",
+            first_mes="Standing by."
+        )
+        card_path = chars_dir / "sonya.json"
+        with open(card_path, "w", encoding="utf-8") as f:
+            json.dump({"name": "Соня", "description": card.description}, f)
+
+        dlg.active_entry = {"card": card, "path": card_path}
+        dlg._showing_ru = True
+        # Поля ввода пустые (например, модель вернула пустоту)
+        dlg.input_desc.setPlainText("")
+        dlg.input_personality.setPlainText("")
+        dlg.input_scenario.setPlainText("")
+        dlg.input_mes_example.setPlainText("")
+
+        dlg._save_changes(silent=True)
+
+        # Английские поля карточки остались нетронутыми!
+        assert card.description == "Cybernetic operative."
+        assert card.personality == "Tactical and focused."
+        assert card.scenario == "Infiltration mission."
+        assert card.mes_example == "Copy that."
+
+        with open(card_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        target = saved.get("data", saved)
+        assert target.get("description") == "Cybernetic operative."
+        assert target.get("personality") == "Tactical and focused."
 
 
 class TestChatGreetingDisplay:

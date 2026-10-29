@@ -283,7 +283,8 @@ class HardwareEngineMixin:
     def _refresh_models(self):
         if getattr(self, "_discovery_worker", None) and self._discovery_worker.isRunning():
             return
-        self.btn_refresh_models.setEnabled(False)
+        if hasattr(self, "btn_refresh_models") and self.btn_refresh_models:
+            self.btn_refresh_models.setEnabled(False)
         self.statusBar().showMessage("Поиск доступных моделей в фоне...", 2000)
         self._discovery_worker = ModelDiscoveryWorker(self.process_manager, self.lm_client, self.forge_client)
         self._discovery_worker.lms_models_ready.connect(self._on_lms_models_discovered)
@@ -291,23 +292,25 @@ class HardwareEngineMixin:
         self._discovery_worker.start()
 
     def _on_lms_models_discovered(self, all_models: list):
-        self.btn_refresh_models.setEnabled(True)
+        if hasattr(self, "btn_refresh_models") and self.btn_refresh_models:
+            self.btn_refresh_models.setEnabled(True)
         self._is_refreshing_models = True
         try:
-            current_choice = self.lm_combo.currentText().strip()
-            self.lm_combo.blockSignals(True)
-            self.lm_combo.clear()
-            if all_models:
-                self.lm_combo.addItems(all_models)
-                target = current_choice or self.active_lms_model or all_models[0]
-                idx = self.lm_combo.findText(target)
-                if idx >= 0:
-                    self.lm_combo.setCurrentIndex(idx)
+            if hasattr(self, "lm_combo") and self.lm_combo:
+                current_choice = self.lm_combo.currentText().strip()
+                self.lm_combo.blockSignals(True)
+                self.lm_combo.clear()
+                if all_models:
+                    self.lm_combo.addItems(all_models)
+                    target = current_choice or getattr(self, "active_lms_model", "") or all_models[0]
+                    idx = self.lm_combo.findText(target)
+                    if idx >= 0:
+                        self.lm_combo.setCurrentIndex(idx)
+                    else:
+                        self.lm_combo.setCurrentIndex(0)
                 else:
-                    self.lm_combo.setCurrentIndex(0)
-            else:
-                self.lm_combo.addItem("default (авто)")
-            self.lm_combo.blockSignals(False)
+                    self.lm_combo.addItem("default (авто)")
+                self.lm_combo.blockSignals(False)
             if all_models:
                 self.statusBar().showMessage(f"Список моделей LM Studio обновлен ({len(all_models)} доступно).", 2500)
         finally:
@@ -317,6 +320,8 @@ class HardwareEngineMixin:
 
     def _on_lms_model_activated(self, index: int):
         if self._is_refreshing_models:
+            return
+        if not (hasattr(self, "lm_combo") and self.lm_combo):
             return
         model_name = self.lm_combo.currentText().strip()
         if not model_name or model_name.startswith("default"):

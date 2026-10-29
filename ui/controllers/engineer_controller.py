@@ -80,10 +80,14 @@ class EngineerControllerMixin:
     def _is_engineering_session(self) -> bool:
         return self.is_engineer_mode_active()
 
-    def _open_engineer_settings_dialog(self):
-        from ui.dialogs.engineer_settings_dialog import EngineerSettingsDialog
-        dlg = EngineerSettingsDialog(parent=self)
+    def _open_mode_model_settings_dialog(self):
+        from ui.dialogs.engineer_settings_dialog import ModeModelSettingsDialog
+        dlg = ModeModelSettingsDialog(parent=self)
         dlg.exec()
+
+    def _open_engineer_settings_dialog(self):
+        """Алиас для сохранения обратной совместимости."""
+        self._open_mode_model_settings_dialog()
 
     def _switch_to_engineer_model(self, model_name: Optional[str] = None):
         eng_model = (model_name or self.app_config.get("engineer_model", "")).strip()
@@ -175,7 +179,7 @@ class EngineerControllerMixin:
         if checked:
             eng_model = getattr(self, "app_config", {}).get("engineer_model", "").strip()
             if eng_model:
-                if hasattr(self, "lm_combo"):
+                if hasattr(self, "lm_combo") and self.lm_combo:
                     self.lm_combo.blockSignals(True)
                     idx = self.lm_combo.findText(eng_model)
                     if idx >= 0:
@@ -192,8 +196,23 @@ class EngineerControllerMixin:
 
 
     def _execute_workspace_script(self, script_path: str):
+        inspector = getattr(self, "workspace_inspector", None)
+        if inspector:
+            inspector.mark_running(f"Запуск {Path(script_path).name}...")
         ok, msg = WorkspaceLauncher.execute_file(script_path)
         self.statusBar().showMessage(msg, 3500)
+        if inspector:
+            if ok:
+                inspector.mark_success()
+            else:
+                line_num = 0
+                m_line = re.search(r'line\s+(\d+)', msg, re.IGNORECASE)
+                if m_line:
+                    try:
+                        line_num = int(m_line.group(1))
+                    except ValueError:
+                        line_num = 0
+                inspector.show_error(Path(script_path).name, line_num, msg)
 
     def _is_ephemeral_doc_request(self, user_query: str, has_vision: bool = False) -> bool:
         if has_vision or getattr(self, "current_mode", "assistant") == "roleplay":
@@ -396,6 +415,8 @@ class EngineerControllerMixin:
             from services.sandbox_manager import SandboxManager
             target_sid = session_id or (self.current_session.get("id") if getattr(self, "current_session", None) else None)
             try:
+                on_msg_cb = lambda *args: getattr(self, "_sig_engineer_plan_card", None) and self._sig_engineer_plan_card.emit(args[-1])
+                on_status_cb = lambda st, fn, ln, em: getattr(self, "_sig_inspector_status", None) and self._sig_inspector_status.emit(st, fn, ln, em)
                 with SandboxManager.session_scope(target_sid):
                     sm = SessionManager(lm_client=getattr(self, "lm_client", None))
                     return sm.run_ephemeral_engineer_worker(
@@ -403,7 +424,10 @@ class EngineerControllerMixin:
                         context_hint=hint,
                         is_analysis=is_analysis,
                         image_path=image_path,
-                        session_history=session_history
+                        session_history=session_history,
+                        on_message_callback=on_msg_cb,
+                        on_status_callback=on_status_cb,
+                        inspector=getattr(self, "workspace_inspector", None)
                     )
             except Exception as e:
                 logger.error(f"Error in engineer worker: {e}", exc_info=True)
@@ -440,6 +464,8 @@ class EngineerControllerMixin:
                 "image_path": image_path
             }
         )
+        if hasattr(self, "workspace_inspector") and self.workspace_inspector:
+            self.workspace_inspector.mark_running()
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)
         self.statusBar().showMessage(f"Элария выполняет: {action_name}...", 4000)
@@ -566,7 +592,22 @@ class EngineerControllerMixin:
             if hasattr(self, "_force_reset_busy_state"):
                 self._force_reset_busy_state()
 
+    def _display_engineer_plan_card(self, card_text: str):
+        if getattr(self, "typing_loader", None) is not None:
+            self._remove_typing_loader()
+        avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
+        bubble = self._append_message("Элария", card_text, is_user=False, avatar_path=avatar)
+        if hasattr(self, "_active_tasks"):
+            for t in self._active_tasks.values():
+                if t.metadata and t.metadata.get("is_ephemeral_doc"):
+                    t.metadata["bubble"] = bubble
+                    break
+        if hasattr(self, "_sync_turn"):
+            self._sync_turn(role="assistant", content=card_text, replace_last=False)
+        self._scroll_to_bottom()
+
     def _handle_engineer_task_finished(self, task: InferenceTask, result: Any):
+        inspector = getattr(self, "workspace_inspector", None)
         bubble = task.metadata.get("bubble")
         res = result if isinstance(result, dict) else {}
         success = bool(res.get("success", False))
@@ -575,6 +616,20 @@ class EngineerControllerMixin:
         stderr = res.get("stderr", "")
         summary = res.get("summary", "")
         is_analysis = bool(task.metadata.get("is_analysis", False) or res.get("is_analysis", False))
+
+        if inspector:
+            if success:
+                inspector.mark_success()
+            else:
+                err_text = stderr or summary or "Скрипт завершился с ошибкой"
+                line_num = 0
+                m_line = re.search(r'line\s+(\d+)', err_text, re.IGNORECASE)
+                if m_line:
+                    try:
+                        line_num = int(m_line.group(1))
+                    except ValueError:
+                        line_num = 0
+                inspector.show_error(file_name, line_num, err_text)
 
         if artifact_path:
             artifact_path = Path(artifact_path)

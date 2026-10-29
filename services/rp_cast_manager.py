@@ -44,9 +44,9 @@ class RPCastManager:
     @staticmethod
     def bootstrap_party_from_card(session_id: str, card: Any) -> Optional[Dict[str, Any]]:
         """
-        Мгновенно инициализирует отряд сопартийцев в cast_data сессии из карточки персонажа за 0 мс.
-        Если card.companions содержит > 1 спутников, регистрирует каждого в cast_data["entities"]
-        с role='companion' и их предрассчитанным visual_dna.
+        Мгновенно инициализирует каст сессии из карточки персонажа за 0 мс:
+        - Регистрирует сопартийцев и их visual_dna.
+        - Выполняет pre-scan стартового приветствия (first_mes) на наличие статов, локации, инвентаря и квестов.
         """
         if not session_id or not card:
             return None
@@ -60,6 +60,36 @@ class RPCastManager:
         if card_scenery and not env.get("location_dna"):
             env["location_dna"] = card_scenery
             modified = True
+
+        # Pre-scan стартового приветствия карточки (first_mes / first_mes_ru)
+        first_mes = getattr(card, "first_mes_ru", "") or getattr(card, "first_mes", "")
+        if first_mes and isinstance(first_mes, str):
+            from services.roleplay_state_manager import RoleplayStateManager
+            parsed_status = RoleplayStateManager.parse_explicit_status(first_mes)
+            if parsed_status.get("location"):
+                cast_data["current_location"] = parsed_status["location"]
+                modified = True
+            elif card_scenery and not cast_data.get("current_location"):
+                cast_data["current_location"] = card_scenery.split(',')[0].strip()
+                modified = True
+
+            if parsed_status.get("inventory"):
+                cast_data["inventory"] = parsed_status["inventory"]
+                modified = True
+            if parsed_status.get("quest"):
+                cast_data["active_quest"] = parsed_status["quest"]
+                modified = True
+            if parsed_status.get("stats"):
+                cast_data.setdefault("stats", {}).update(parsed_status["stats"])
+                modified = True
+
+        # Инициализация первичного состояния мира из сценария (если пусто)
+        scenario = getattr(card, "scenario", "") or getattr(card, "description", "")
+        if scenario and not cast_data.get("world_state"):
+            first_line = scenario.strip().splitlines()[0][:140]
+            if first_line:
+                cast_data.setdefault("world_state", []).append(first_line)
+                modified = True
 
         companions = getattr(card, "companions", [])
         if hasattr(card, "companions") and isinstance(companions, list) and len(companions) > 1:

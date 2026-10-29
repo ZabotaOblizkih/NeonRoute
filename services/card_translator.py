@@ -15,39 +15,33 @@ logger = logging.getLogger("NeonRoute.CardTranslator")
 
 RE_TAG_PATTERN = re.compile(r'(\{\{[^}]+\}\}|<[^>]+>|\[IMAGE[\s_-]PROMPT:[^\]]+\])', re.IGNORECASE)
 RE_CJK_PATTERN = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]')
+RE_MIXED_SCRIPT_PATTERN = re.compile(r'\b(?=[a-zA-Z]*[а-яА-ЯёЁ])(?=[а-яА-ЯёЁ]*[a-zA-Z])[a-zA-Zа-яА-ЯёЁ]{2,}\b')
 
-PROMPT_LITERARY_PROSE = (
-    "Ты — профессиональный литературный переводчик художественной ролевой прозы на русский язык.\n"
-    "СТРОГИЕ ПРАВИЛА:\n"
-    "1. Переводи выразительным литературным языком. Избегай дословной механической кальки "
-    "(не «дает кивок», а «кивает»; не «делает шаг», а «шагает»). Адаптируй оборот под нормы русского языка.\n"
-    "2. Переводи текст с ЛЮБОГО языка оригинала (английский, китайский, японский или смешанный) ПОЛНОСТЬЮ.\n"
-    "3. СТРОГИЙ ЗАПРЕТ: в ответе не должно быть китайских иероглифов, японских символов или остаточных фраз на английском.\n"
-    "4. Сохраняй неизменными системные идентификаторы вида __NR_TAG_X__ точно на своих местах.\n"
-    "5. Выводи ТОЛЬКО перевод без предисловий, пояснений и внешних кавычек."
-)
+PROMPT_LITERARY_PROSE = """Ты — профессиональный писатель и литературный переводчик художественной ролевой прозы на русский язык.
+ПРАВИЛА:
+1. Переводи выразительным русским литературным языком, адаптируя обороты и избегая дословной механической кальки.
+2. Все титулы, ранги, статусы и игровые классы персонажей (включая написанные с заглавной буквы: Sage, Great Sage, Mage, Knight) переводи смысловыми русскими словами (Мудрец, Великий Мудрец, Маг, Рыцарь).
+3. Названия характеристик, параметров и списков (строки вида Параметр: Значение) переводи на русский язык.
+4. Текст должен быть полностью на русском языке (кириллица). Каждое слово пишется строго на одном алфавите без смешивания латиницы и кириллицы.
+5. Сохраняй неизменными системные идентификаторы вида __NR_TAG_X__ точно на своих местах.
+6. Выводи только готовый перевод без предисловий и комментариев."""
 
-PROMPT_MES_EXAMPLE = (
-    "Ты — профессиональный литературный переводчик ролевой прозы и диалогов на русский язык.\n"
-    "СТРОГИЕ ПРАВИЛА:\n"
-    "1. Переведи ВСЕ реплики и действия персонажей живым языком. Сохраняй разметку диалога и звездочки *действий*.\n"
-    "2. Переводи с любого языка оригинала полностью без сокращений.\n"
-    "3. СТРОГИЙ ЗАПРЕТ: никаких иероглифов и непереведенного текста.\n"
-    "4. Сохраняй неизменными идентификаторы вида __NR_TAG_X__.\n"
-    "5. Выводи ТОЛЬКО готовый перевод."
-)
+PROMPT_MES_EXAMPLE = """Ты — профессиональный писатель и литературный переводчик ролевой прозы и диалогов на русский язык.
+ПРАВИЛА:
+1. Переведи все реплики и действия персонажей живым языком. Сохраняй разметку диалога и звездочки *действий*.
+2. Все титулы, ранги и роли персонажей переводи смысловыми русскими словами.
+3. Сохраняй неизменными идентификаторы вида __NR_TAG_X__.
+4. Выводи только готовый перевод без комментариев."""
 
-PROMPT_FIRST_MES = (
-    "Ты — профессиональный писатель и литературный переводчик художественной прозы на русский язык.\n"
-    "СТРОГИЕ ПРАВИЛА:\n"
-    "1. Переведи вступительную сцену ПОЛНОСТЬЮ от первого до последнего предложения живым, богатым языком.\n"
-    "2. Избегай дословной кальки (не «дает непроницаемый кивок», а «сдержанно кивает»; не «маленький салют», а «коротко отдает честь»).\n"
-    "3. Сохраняй структуру абзацев, прямую речь и *действия* персонажей.\n"
-    "4. СТРОГИЙ ЗАПРЕТ: никаких китайских/японских иероглифов или остаточных английских фраз.\n"
-    "5. Сохраняй системные идентификаторы вида __NR_TAG_X__ неизменными.\n"
-    "6. Выводи ТОЛЬКО перевод без лишних вводных слов."
-)
-
+PROMPT_FIRST_MES = """Ты — профессиональный писатель и литературный переводчик художественной прозы на русский язык.
+ПРАВИЛА:
+1. Переведи вступительную сцену полностью от первого до последнего предложения выразительным русским языком.
+2. Сохраняй структуру абзацев, прямую речь и *действия* персонажей.
+3. Все титулы, ранги, статусы и игровые классы персонажей (включая написанные с заглавной буквы: Sage, Great Sage, Mage, Knight) переводи смысловыми русскими словами (Мудрец, Великий Мудрец, Маг, Рыцарь).
+4. Названия характеристик и параметров (строки вида Параметр: Значение) переводи на русский язык.
+5. Текст должен быть строго на русском языке без смешивания алфавитов внутри слов.
+6. Сохраняй идентификаторы вида __NR_TAG_X__ неизменными.
+7. Выводи только готовый перевод без комментариев."""
 
 def mask_card_tags(text: str) -> tuple[str, dict[str, str]]:
     """Маскирует макросы {{char}}, {{user}} и HTML/XML теги перед отправкой в LLM."""
@@ -84,7 +78,225 @@ mask_tags = mask_card_tags
 unmask_tags = unmask_card_tags
 
 
+
+def sanitize_repetition(text: str) -> tuple[str, bool]:
+    """Детектирует и срезает зацикливания модели (например: ОКОКОК... или фразовые петли)."""
+    pattern = re.compile(r'((?:.{2,40}?)){5,}', re.DOTALL)
+    match = pattern.search(text)
+    if match:
+        clean = text[:match.start()].rstrip()
+        return clean, True
+    return text, False
+
+
+def split_text_hierarchical(text: str, max_chars: int = 1400) -> list[str]:
+    """
+    Иерархический чанкинг для предотвращения перегрузки контекста модели:
+    1. Сначала делит по двойным переводам строк (\n\n).
+    2. Длинные блоки без \n\n делит по одиночным переводам строк (\n).
+    3. Формирует плотные чанки оптимального размера (< max_chars).
+    """
+    raw_paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    atomic_units = []
+
+    for para in raw_paras:
+        if len(para) > max_chars and "\n" in para:
+            lines = [l.strip() for l in para.split("\n") if l.strip()]
+            atomic_units.extend(lines)
+        else:
+            atomic_units.append(para)
+
+    chunks = []
+    current_chunk = []
+    current_len = 0
+
+    for unit in atomic_units:
+        unit_len = len(unit)
+        if current_len + unit_len > max_chars and current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+            current_chunk = [unit]
+            current_len = unit_len
+        else:
+            current_chunk.append(unit)
+            current_len += unit_len
+
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+
+    return chunks
+
+
+def translate_text_slot(
+    text: str,
+    field_key: str,
+    lm_client: Any,
+    abort_event: Optional[Any] = None,
+    on_slot_chunk_cb: Optional[Callable[[str, int, int], None]] = None
+) -> str:
+    """
+    Атомарный перевод отдельного текстового слота карточки:
+    - Полноразмерный контекст (max_chars=4500) для предотвращения прорыва CJK
+    - Температура 0.25 для исключения локальных BPE-склеек
+    - Позитивный ретрай при детекции CJK без эха артефактов
+    - Сохранение разметки и маскирование системных тегов
+    """
+    if not text or not text.strip():
+        return ""
+
+    if abort_event and abort_event.is_set():
+        return ""
+
+    sys_prompt = CardTranslator.build_field_prompt(field_key)
+    if field_key.lower() == "personality":
+        sys_prompt += (
+            "\n\nКРИТИЧЕСКИ ВАЖНО:\n"
+            "Текст ниже содержит шаблоны характеристик и правила статов.\n"
+            "НЕ симулируй игру, НЕ вычисляй характеристики и НЕ заполняй статы.\n"
+            "Переведи исключительно формулировки и правила на русский язык."
+        )
+
+    masked_text, tag_map = mask_card_tags(text)
+    chunks = split_text_hierarchical(masked_text, max_chars=4500)
+
+    translated_paras = []
+    for idx, chunk in enumerate(chunks, 1):
+        if abort_event and abort_event.is_set():
+            break
+
+        if on_slot_chunk_cb:
+            on_slot_chunk_cb(field_key, idx, len(chunks))
+
+        user_prompt = (
+            "Переведи следующий текст на русский язык, "
+            "строго сохраняя системные идентификаторы вида __NR_TAG_X__:\n\n"
+            f"{chunk}"
+        )
+
+        resp = lm_client.chat_completion(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.25,
+            max_tokens=4096,
+            emit_signal=False,
+            is_roleplay=False
+        )
+
+        raw_reply = str(resp or "").strip()
+        clean_reply, had_loop = sanitize_repetition(raw_reply)
+
+        if had_loop or len(clean_reply) < 10:
+            logger.warning(
+                f"[CardTranslator] Зацикливание токенов в слоте '{field_key}' (чанк {idx}/{len(chunks)}). "
+                f"Повтор с temperature=0.15..."
+            )
+            retry_resp = lm_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.15,
+                max_tokens=2048,
+                emit_signal=False,
+                is_roleplay=False
+            )
+            retry_clean, _ = sanitize_repetition(str(retry_resp or "").strip())
+            if retry_clean:
+                clean_reply = retry_clean
+
+        if RE_CJK_PATTERN.search(clean_reply):
+            logger.warning(f"[CardTranslator] Иероглифы в слоте '{field_key}' (чанк {idx}). Позитивная повторная попытка...")
+            cjk_user_prompt = (
+                "Ты — профессиональный писатель и литературный переводчик ролевой прозы и диалогов на русский язык.\n"
+                "ПРАВИЛА:\n"
+                "1. Переведи все реплики и действия персонажей живым языком. Сохраняй разметку диалога и звездочки *действий*.\n"
+                "2. Все титулы, ранги и роли персонажей переводи смысловыми русскими словами.\n\n"
+                f"{chunk}"
+            )
+            cjk_resp = lm_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": cjk_user_prompt}
+                ],
+                temperature=0.25,
+                max_tokens=4096,
+                emit_signal=False,
+                is_roleplay=False
+            )
+            cjk_clean, _ = sanitize_repetition(str(cjk_resp or "").strip())
+            if cjk_clean and not RE_CJK_PATTERN.search(cjk_clean):
+                clean_reply = cjk_clean
+
+        translated_paras.append(clean_reply)
+
+    merged_text = "\n\n".join(translated_paras)
+    return unmask_card_tags(merged_text, tag_map)
+def translate_card_slots_sequential(
+    card: Any,
+    lm_client: Any,
+    abort_event: Optional[Any] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None
+) -> dict[str, str]:
+    """
+    Последовательный пошаговый перевод (Slot-by-Slot) карточки персонажа:
+    - Изолированная обработка каждого непустого поля
+    - Полная защита от разрушения контекста монолитными склейками
+    - Возвращает канонический словарь res_dict с ключами DESCRIPTION, PERSONALITY, FIRST_MES, etc.
+    """
+    slots_to_translate: list[tuple[str, str, str]] = []
+
+    if getattr(card, "description", None) and card.description.strip():
+        slots_to_translate.append(("DESCRIPTION", "description", card.description.strip()))
+    if getattr(card, "personality", None) and card.personality.strip():
+        slots_to_translate.append(("PERSONALITY", "personality", card.personality.strip()))
+    if getattr(card, "scenario", None) and card.scenario.strip():
+        slots_to_translate.append(("SCENARIO", "scenario", card.scenario.strip()))
+    if getattr(card, "mes_example", None) and card.mes_example.strip():
+        slots_to_translate.append(("MES_EXAMPLE", "mes_example", card.mes_example.strip()))
+    if getattr(card, "first_mes", None) and card.first_mes.strip():
+        slots_to_translate.append(("FIRST_MES", "first_mes", card.first_mes.strip()))
+
+    alts = getattr(card, "alternate_greetings", []) or []
+    for idx, alt_greet in enumerate(alts):
+        if alt_greet and alt_greet.strip():
+            slots_to_translate.append((f"ALT_GREETING_{idx+1}", "alternate_greetings", alt_greet.strip()))
+
+    total_slots = len(slots_to_translate)
+    res_dict: dict[str, str] = {}
+
+    for slot_idx, (dict_key, field_type, src_text) in enumerate(slots_to_translate, 1):
+        if abort_event and abort_event.is_set():
+            logger.info("[CardTranslator] Процесс перевода прерван по сигналу abort.")
+            break
+
+        if on_progress:
+            try:
+                on_progress(slot_idx, total_slots, dict_key)
+            except Exception:
+                pass
+
+        logger.info(f"[CardTranslator] [{slot_idx}/{total_slots}] Перевод слота '{dict_key}' ({len(src_text)} симв.)...")
+        translated_val = translate_text_slot(
+            text=src_text,
+            field_key=field_type,
+            lm_client=lm_client,
+            abort_event=abort_event
+        )
+        if translated_val:
+            res_dict[dict_key] = translated_val
+
+    return res_dict
+
+
 class CardTranslator:
+    # Модульные пошаговые методы локализации (v2)
+    split_text_hierarchical = staticmethod(split_text_hierarchical)
+    sanitize_repetition = staticmethod(sanitize_repetition)
+    translate_text_slot = staticmethod(translate_text_slot)
+    translate_card_slots_sequential = staticmethod(translate_card_slots_sequential)
+
+
     """
     Статический сервис для подготовки и выполнения переводов полей карточек персонажей.
     """
@@ -196,7 +408,7 @@ class CardTranslator:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": retry_user_prompt}
                         ],
-                        temperature=0.25,
+                        temperature=0.1,
                         max_tokens=budget,
                         emit_signal=False,
                         is_roleplay=False

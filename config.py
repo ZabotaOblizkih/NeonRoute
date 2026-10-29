@@ -175,7 +175,7 @@ MODE_PROFILES = {
         "history_tokens": 22000,
         "history_limit": 50,
         "sampling": {
-            "temperature": 0.15,
+            "temperature": 0.70,
             "min_p": 0.00,
             "top_p": 1.00,
             "repeat_penalty": 1.00,

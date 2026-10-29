@@ -1,30 +1,30 @@
 {
   "version": 1,
-  "last_synced_at": "2026-10-26T23:37:04.715156",
+  "last_synced_at": "2026-10-30T00:15:00.553251",
   "total_documents": 1,
   "documents": {
     "architecture.md": {
       "filename": "architecture.md",
       "relative_path": "architecture.md",
       "path": "C:\\NeonRoute\\knowledge_base\\architecture.md",
-      "mtime": 1793046880.6952977,
-      "hash": "6c777e8f6da799a56788f69634b6244aec3e7cfb8a2e046ca77457261dbe4f9c",
-      "size_bytes": 76518,
-      "size_kb": 74.72,
-      "line_count": 943,
+      "mtime": 1793178092.3530068,
+      "hash": "3b6f8a03a67abe07f3c74e13628b53a720e3bb98b025f4a6a234191c0220a451",
+      "size_bytes": 82103,
+      "size_kb": 80.18,
+      "line_count": 897,
       "page_count": null,
-      "updated_at": "2026-10-26T23:37:04.715156",
+      "updated_at": "2026-10-28T13:12:00.694136",
       "triggers": [
+        "строк",
+        "строки",
+        "базы",
         "NeonRoute",
         "VRAM",
-        "файлов",
         "кодовой",
-        "базы",
-        "init__",
-        "RAM",
-        "REST",
         "CPU",
-        "системы"
+        "файлов",
+        "инициализация",
+        "парсер"
       ],
       "status": "parsed"
     }

@@ -18,6 +18,10 @@ import config
 from config import CHARACTERS_DIR
 ASSETS_DIR = getattr(config, "ASSETS_DIR", getattr(config, "BASE_DIR", Path(".")) / "assets")
 from services.session_manager import SessionManager
+from services.roleplay_prompt_builder import RoleplayPromptBuilder
+from ui.dialogs.anchor_viewer_dialog import AnchorViewerDialog
+from ui.dialogs.prompt_viewer_dialog import PromptViewerDialog
+from qfluentwidgets import InfoBar, InfoBarPosition
 from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 from ui.components.chat_bubble import render_circular_avatar
 
@@ -388,12 +392,24 @@ class AvatarControllerMixin:
             act_files = menu.addAction("📂 Файлы чата в проводнике")
             act_files.triggered.connect(self._on_open_chat_files_clicked)
 
-            menu.addSeparator()
+            # Проверка режима: отображаем якорь ИСКЛЮЧИТЕЛЬНО в режиме Roleplay
+            is_rp = (
+                getattr(self, "current_mode", "") == "roleplay"
+                or (hasattr(self, "current_session") and isinstance(self.current_session, dict) and self.current_session.get("mode") == "roleplay")
+            )
+            if is_rp:
+                menu.addSeparator()
+                act_anchor = menu.addAction("⚓ Якорь сцены...")
+                act_anchor.triggered.connect(self._open_anchor_dialog)
 
+                act_prompts = menu.addAction("📜 Промпты...")
+                act_prompts.triggered.connect(self._open_prompts_dialog)
+
+            menu.addSeparator()
             act_reset = menu.addAction("❌ Сбросить аватар")
             act_reset.triggered.connect(self._on_reset_avatar_clicked)
 
-            if getattr(self, "current_mode", "") == "roleplay":
+            if is_rp:
                 act_rename = menu.addAction("✏️ Переименовать...")
                 act_rename.triggered.connect(self._on_rename_clicked)
 
@@ -407,6 +423,137 @@ class AvatarControllerMixin:
 
             menu.exec(global_pos)
         except Exception as e:
-            logger.error(f"Error opening avatar menu: {e}", exc_info=True)
+            logger.error(f"[AvatarController] Ошибка контекстного меню аватара: {e}", exc_info=True)
+
+    def _open_anchor_dialog(self):
+        """Открывает диалог инспекции и настройки Depth-0 якоря для текущей РП сессии."""
+        try:
+            # 1. Получаем активную карточку персонажа
+            card = getattr(self, "active_character", None)
+            if not card and hasattr(self, "roleplay_flow_controller"):
+                card = getattr(self.roleplay_flow_controller, "active_character", None)
+
+            if not card:
+                InfoBar.warning(
+                    title="Якорь недоступен",
+                    content="В текущей сессии не загружена карточка персонажа.",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=3000
+                )
+                return
+
+            # 2. Получаем имя активной персоны пользователя
+            sess_persona_id = self.current_session.get("user_persona_id") if self.current_session else None
+            active_p = SessionManager.get_active_user_persona(is_roleplay=True, session_persona_id=sess_persona_id)
+            user_name = active_p.get("name") or "Игрок"
+
+            # 3. Текущий кастомный якорь сессии
+            current_custom = self.current_session.get("custom_depth_anchor") if self.current_session else None
+
+            # 4. Запуск диалога
+            dialog = AnchorViewerDialog(
+                parent=self,
+                character_card=card,
+                user_name=user_name,
+                current_anchor=current_custom
+            )
+
+            if dialog.exec():
+                new_anchor = dialog.get_configured_anchor()
+                if self.current_session:
+                    if new_anchor is None:
+                        self.current_session.pop("custom_depth_anchor", None)
+                    else:
+                        self.current_session["custom_depth_anchor"] = new_anchor
+
+                    SessionManager.save_session(self.current_session)
+
+                InfoBar.success(
+                    title="Якорь обновлен",
+                    content="Параметры директивы сцены сохранены для текущей сессии.",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=2500
+                )
+        except Exception as e:
+            logger.error(f"[AvatarController] Ошибка при открытии AnchorViewerDialog: {e}", exc_info=True)
+            InfoBar.error(
+                title="Ошибка",
+                content=f"Не удалось открыть параметры якоря: {e}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500
+            )
+
+    def _open_prompts_dialog(self):
+        """Открывает диалог инспекции и редактирования системного промпта для текущей РП сессии."""
+        try:
+            # 1. Получаем активную карточку персонажа
+            card = getattr(self, "active_character", None)
+            if not card and hasattr(self, "roleplay_flow_controller"):
+                card = getattr(self.roleplay_flow_controller, "active_character", None)
+
+            if not card:
+                InfoBar.warning(
+                    title="Промпты недоступны",
+                    content="В текущей сессии не загружена карточка персонажа.",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=3000
+                )
+                return
+
+            # 2. Получаем имя активной персоны игрока
+            sess_persona_id = self.current_session.get("user_persona_id") if self.current_session else None
+            active_p = SessionManager.get_active_user_persona(is_roleplay=True, session_persona_id=sess_persona_id)
+            user_name = active_p.get("name") or "Игрок"
+
+            # 3. Текущий кастомный системный промпт сессии
+            current_custom = self.current_session.get("custom_system_prompt") if self.current_session else None
+
+            # 4. Факты о мире (если доступны в контроллере)
+            curr_sess_id = self.current_session.get("id") if self.current_session else None
+            world_facts = ""
+            if hasattr(self, "roleplay_flow_controller"):
+                from services.rp_cast_manager import RPCastManager
+                world_facts = RPCastManager.get_world_state(curr_sess_id) if curr_sess_id else ""
+
+            # 5. Запуск диалога
+            dialog = PromptViewerDialog(
+                parent=self,
+                character_card=card,
+                user_name=user_name,
+                current_prompt=current_custom,
+                world_facts=world_facts,
+                active_persona=active_p
+            )
+
+            if dialog.exec():
+                new_prompt = dialog.get_configured_prompt()
+                if self.current_session:
+                    if new_prompt is None:
+                        self.current_session.pop("custom_system_prompt", None)
+                    else:
+                        self.current_session["custom_system_prompt"] = new_prompt
+
+                    SessionManager.save_session(self.current_session)
+
+                InfoBar.success(
+                    title="Промпт обновлен",
+                    content="Системный промпт сохранен для текущей сессии.",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=2500
+                )
+        except Exception as e:
+            logger.error(f"[AvatarController] Ошибка при открытии PromptViewerDialog: {e}", exc_info=True)
+            InfoBar.error(
+                title="Ошибка",
+                content=f"Не удалось открыть системный промпт: {e}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500
+            )
 
     _show_header_context_menu = _show_avatar_menu

@@ -139,9 +139,11 @@ class CharacterCard:
         is_male: Optional[bool] = None,
         is_minor: bool = False,
         character_book: Optional[Dict[str, Any]] = None,
+        is_environment: Optional[bool] = None,
         **kwargs: Any
     ):
         self._is_male: Optional[bool] = is_male
+        self._is_environment: Optional[bool] = is_environment if is_environment is not None else kwargs.get("is_environment")
         self.is_minor: bool = is_minor
         self.character_book = character_book or kwargs.get("character_book") or kwargs.get("lorebook")
         self.id = character_id or f"char_{uuid.uuid4().hex[:8]}"
@@ -232,7 +234,9 @@ class CharacterCard:
     @property
     def is_environment(self) -> bool:
         """True для карточек среды, мира, квеста или системы (без физического тела бота)."""
-        return bool(self.is_system or self.is_dm or self.is_cyoa or self.is_scenario or self.is_lorebook)
+        if getattr(self, "_is_environment", None) is not None:
+            return bool(self._is_environment)
+        return bool(self.is_system or self.is_dm or self.is_cyoa or self.is_scenario or self.is_lorebook or self.is_horror)
 
     @property
     def is_male(self) -> bool:

@@ -40,19 +40,30 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "min_p": 0.05,
         "top_p": 0.95,
         "repeat_penalty": 1.02,
+        "dry_multiplier": 0.80,
+        "xtc_probability": 0.30,
+        "xtc_threshold": 0.10,
         "max_tokens": 4096,
         "is_dm_mode": False
     },
     "default_sampling_assistant": {
         "temperature": 0.70,
         "min_p": 0.05,
+        "top_p": 0.95,
         "repeat_penalty": 1.05,
+        "dry_multiplier": 0.80,
+        "xtc_probability": 0.20,
+        "xtc_threshold": 0.10,
         "max_tokens": 1024
     },
     "default_sampling_engineer": {
-        "temperature": 0.10,
+        "temperature": 0.70,
         "min_p": 0.00,
+        "top_p": 1.00,
         "repeat_penalty": 1.00,
+        "dry_multiplier": 0.00,
+        "xtc_probability": 0.00,
+        "xtc_threshold": 0.10,
         "max_tokens": 4096
     },
 
@@ -71,7 +82,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "translation_settings": {
         "temperature": 0.20,
         "max_tokens_limit": 4096
-    }
+    },
+
+    # 6. LLM Engine & Hardware Autotune Settings
+    "hardware_autotune_done": False,
+    "kv_cache_type": "q8_0",             # Допустимые: "q8_0", "q4_0", "f16"
+    "flash_attention_enabled": True
 }
 
 

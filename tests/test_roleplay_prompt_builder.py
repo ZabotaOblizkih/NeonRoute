@@ -35,7 +35,7 @@ class TestRoleplayPromptBuilderMacrosAndPersona:
         assert "Характер и повадки: Спокойный наемник" in prompt
         assert "Предыстория и статус: Бывший капитан стражи" in prompt
         assert "Обращайся к игроку по имени — Роман." in prompt
-        assert "Игрок (Роман) — мужчина. Обращайся к игроку в мужском роде" in prompt
+        assert "Игрок (Роман) — мужчина. В прямой речи обращайся к Роман в мужском роде." in prompt
 
 
 class TestGrammarAndPOVAgreement:
@@ -56,7 +56,7 @@ class TestGrammarAndPOVAgreement:
         )
 
         # Проверка пола игрока
-        assert "Игрок (Анна) — женщина. Обращайся к игроку в женском роде (ты сделала, пошла)." in prompt
+        assert "Игрок (Анна) — женщина. В прямой речи обращайся к Анна в женском роде." in prompt
         # Проверка пола бота и POV
         assert "Алекс — мужской персонаж (глаголы и причастия в мужском роде)." in prompt
         assert "Манера повествования действий: от первого лица («я»)." in prompt
@@ -75,9 +75,64 @@ class TestGrammarAndPOVAgreement:
             active_persona=persona
         )
 
-        assert "Игрок (Роман) — мужчина. Обращайся к игроку в мужском роде" in prompt
+        assert "Игрок (Роман) — мужчина. В прямой речи обращайся к Роман в мужском роде." in prompt
         assert "Селеста — женский персонаж (глаголы и причастия в женском роде)." in prompt
         assert "Манера повествования действий: от третьего лица («Селеста», «он/она»)." in prompt
+
+    def test_third_person_scene_grammar(self):
+        card = CharacterCard(name="Система", is_system=True)
+        persona_f = {"gender": "female"}
+        prompt_f = RoleplayPromptBuilder.build(
+            character_card=card,
+            user_name="Анна",
+            active_persona=persona_f
+        )
+        assert "Повествование о действиях игрока (Анна) ведётся строго в третьем лице в женском роде («Анна сделала», «она пошла»)." in prompt_f
+
+        persona_m = {"gender": "male"}
+        prompt_m = RoleplayPromptBuilder.build(
+            character_card=card,
+            user_name="Роман",
+            active_persona=persona_m
+        )
+        assert "Повествование о действиях игрока (Роман) ведётся строго в третьем лице в мужском роде («Роман сделал», «он пошел»)." in prompt_m
+
+    def test_depth_anchor_generation(self):
+        # 1. LitRPG / System -> <stats>
+        card_sys = CharacterCard(name="Система", is_system=True)
+        anchor_sys = RoleplayPromptBuilder.build_depth_anchor(card_sys, user_name="Игрок", user_query="Статус")
+        assert "<stats>" in anchor_sys and "</stats>" in anchor_sys
+
+        # 2. Detective -> <stats>
+        card_det = CharacterCard(name="Лестрейд", is_detective=True)
+        anchor_det = RoleplayPromptBuilder.build_depth_anchor(card_det, user_name="Холмс", user_query="Где улика?")
+        assert "<stats>" in anchor_det and "</stats>" in anchor_det
+
+        # 3. Dating -> <meters>
+        card_dat = CharacterCard(name="Мика", is_dating=True)
+        anchor_dat = RoleplayPromptBuilder.build_depth_anchor(card_dat, user_name="Игрок", user_query="Привет")
+        assert "<meters>" in anchor_dat and "симпатии и доверия" in anchor_dat
+
+        # 4. Horror -> <meters>
+        card_hor = CharacterCard(name="Нечто", is_horror=True)
+        anchor_hor = RoleplayPromptBuilder.build_depth_anchor(card_hor, user_name="Игрок", user_query="Кто здесь?")
+        assert "<meters>" in anchor_hor and "рассудка и стресса" in anchor_hor
+
+        # 5. DM / CYOA -> <choices>
+        card_dm = CharacterCard(name="ГМ", is_dm=True)
+        anchor_dm = RoleplayPromptBuilder.build_depth_anchor(card_dm, user_name="Игрок", user_query="Иду на север")
+        assert "<choices>" in anchor_dm
+
+        # 6. Group
+        card_grp = CharacterCard(name="Отряд", is_group=True)
+        anchor_grp = RoleplayPromptBuilder.build_depth_anchor(card_grp, user_name="Командир", user_query="В атаку!")
+        assert "Выдели одного конкретного персонажа группы" in anchor_grp
+
+        # 7. Solo
+        card_solo = CharacterCard(name="Селеста")
+        anchor_solo = RoleplayPromptBuilder.build_depth_anchor(card_solo, user_name="Игрок", user_query="Привет")
+        assert "Сфокусируйся на мимике" in anchor_solo
+
 
 
 class TestArchetypePromptGeneration:

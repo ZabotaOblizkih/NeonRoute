@@ -8,6 +8,7 @@
     "scenario": "",
     "first_mes": "*Лия точит клинок, а Висп читает свиток.*",
     "mes_example": "",
+    "alternate_greetings": [],
     "system_prompt": "",
     "post_history_instructions": "",
     "scenery_dna": "",
@@ -31,7 +32,6 @@
           }
         ]
       }
-    },
-    "alternate_greetings": []
+    }
   }
 }

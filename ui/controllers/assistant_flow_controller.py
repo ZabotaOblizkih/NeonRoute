@@ -315,7 +315,16 @@ class AssistantFlowControllerMixin:
         if art_guidance is None:
             art_guidance = getattr(self, "_pre_routed_art_guidance", None)
 
-        model_name = self.lm_combo.currentText().strip()
+        model_name = None
+        if hasattr(self, "lm_combo") and self.lm_combo:
+            model_name = self.lm_combo.currentText().strip()
+        if not model_name:
+            model_name = (
+                getattr(self, "active_lms_model", "")
+                or (self.current_session.get("model_id") if getattr(self, "current_session", None) else "")
+                or getattr(self.lm_client, "_last_loaded_model_id", None)
+                or ""
+            )
         if model_name.startswith("default"):
             model_name = None
 
@@ -896,22 +905,46 @@ class AssistantFlowControllerMixin:
             thought_data = self._thought_stream_parser.get_thought_data()
             # Финально обновляем накопленный normal_text после finalize()
             parser_normal_text = getattr(self._thought_stream_parser, "normal_text", "").strip() or parser_normal_text
-            self._thought_stream_parser = None
 
-        # Фоллбэк: если в ответе присутствуют теги <think>...</think>
-        if not thought_data and "<think>" in text.lower():
-            m_th = re.search(r"<think>([\s\S]*?)(?:</think>|$)", text, flags=re.IGNORECASE)
-            if m_th:
-                th_body = m_th.group(1).strip()
-                if th_body:
-                    thought_data = {
-                        "content": th_body,
-                        "duration": 0.0,
-                        "token_count": max(1, len(th_body) // 4)
-                    }
+        # ── [HistorySanitizer] Санитайзер истории и тегов рассуждений ──
+        # Фаза 1: Спасение мыслей в thought_data (Rescue to UI spoiler)
+        re_thought_body = r"<(think|analyze|thought|reasoning)>([\s\S]*?)(?:</\1>|$)"
+        re_thought_clean = r"<(think|analyze|thought|reasoning)>[\s\S]*?(?:</\1>|$)"
 
-        # Очищаем теги <think>...</think> из итогового текста ответа
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+        if thought_data is None:
+            match = re.search(re_thought_body, text, flags=re.IGNORECASE)
+            if match:
+                th_body = match.group(2).strip()
+                tag_name = match.group(1).lower()
+                thought_data = {
+                    "content": th_body,
+                    "duration": round(getattr(self._thought_stream_parser, "duration", 0.0), 2),
+                    "tag": tag_name
+                }
+                if hasattr(self, "_turn_bubble") and self._turn_bubble and hasattr(self._turn_bubble, "finalize_thought"):
+                    self._turn_bubble.finalize_thought(
+                        self._thought_stream_parser.duration if hasattr(self, "_thought_stream_parser") and self._thought_stream_parser is not None else 0.0,
+                        th_body
+                    )
+                logger.info(f"[HistorySanitizer] Спасён блок мыслей из тега <{tag_name}> ({len(th_body)} симв.) и направлен в UI спойлер.")
+
+        self._thought_stream_parser = None
+
+        # Фаза 2: Очистка текста ответа от тегов
+        had_tags = bool(re.search(re_thought_clean, text, flags=re.IGNORECASE))
+        cleaned_text = re.sub(re_thought_clean, "", text, flags=re.IGNORECASE).strip()
+
+        if not cleaned_text and parser_normal_text:
+            cleaned_text = parser_normal_text
+
+        # Фаза 3: Защита от опустошения сообщения (Empty Text Guard)
+        if not cleaned_text and thought_data and thought_data.get("content"):
+            text = thought_data["content"]
+            logger.warning("[HistorySanitizer] Ответ модели целиком состоял из блока рассуждений. Текст восстановлен во избежание пустого сообщения.")
+        else:
+            text = cleaned_text
+            if had_tags:
+                logger.info(f"[HistorySanitizer] Текст реплики очищен от тегов рассуждений. Итоговая длина для сохранения в историю: {len(text)} симв.")
 
         # Если внешний text оказался пустым, но потоковый парсер собрал ответ — берем ответ из парсера
         if not text and parser_normal_text:

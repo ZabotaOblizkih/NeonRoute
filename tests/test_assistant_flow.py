@@ -563,3 +563,162 @@ class TestThoughtResponseHandling:
 
         assert bubble.text == "Связь с моделью обновлена. Я готова, о чём поговорим?"
 
+
+class TestHistorySanitizer:
+    """Комплексная верификация HistorySanitizer для псевдо-тегов рассуждений."""
+
+    @pytest.fixture
+    def host(self):
+        h = DummyAssistantHost()
+        return h
+
+    def test_rescue_analyze_tag_and_spoiler_and_sync(self, host, caplog):
+        """Проверка спасения тега <analyze>: плашка мыслей, чистый ответ и вызов _sync_turn."""
+        import logging
+        bubble = MagicMock()
+        bubble.text = ""
+        bubble.get_text.return_value = ""
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        with caplog.at_level(logging.INFO):
+            host._handle_assistant_llm_response("<analyze>Тестовый анализ</analyze>Финальный ответ")
+
+        # 1. Проверка передачи мыслей в бабл
+        bubble.finalize_thought.assert_called_once_with(0.0, "Тестовый анализ")
+        bubble.set_text.assert_called_once_with("Финальный ответ")
+        bubble.set_thought_data.assert_called_once_with("Тестовый анализ", 0.0, 0)
+
+        # 2. Проверка вызова _sync_turn с чистым текстом и thought_data
+        host._sync_turn.assert_called_once()
+        kwargs = host._sync_turn.call_args.kwargs
+        assert kwargs["role"] == "assistant"
+        assert kwargs["content"] == "Финальный ответ"
+        assert kwargs["replace_last"] is True
+        assert kwargs["thought"] == {
+            "content": "Тестовый анализ",
+            "duration": 0.0,
+            "tag": "analyze"
+        }
+
+        # 3. Проверка логирования [HistorySanitizer]
+        assert "[HistorySanitizer] Спасён блок мыслей из тега <analyze> (15 симв.) и направлен в UI спойлер." in caplog.text
+        assert "[HistorySanitizer] Текст реплики очищен от тегов рассуждений. Итоговая длина для сохранения в историю: 15 симв." in caplog.text
+
+    @pytest.mark.parametrize("tag", ["think", "analyze", "thought", "reasoning", "THINK", "Thought"])
+    def test_all_reasoning_tags_supported(self, host, tag):
+        """Проверка поддержки всех тегов рассуждений think, analyze, thought, reasoning и регистронезависимости."""
+        bubble = MagicMock()
+        bubble.text = ""
+        bubble.get_text.return_value = ""
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        raw_resp = f"<{tag}>Внутренние рассуждения</{tag}>Результат работы"
+        host._handle_assistant_llm_response(raw_resp)
+
+        bubble.finalize_thought.assert_called_once_with(0.0, "Внутренние рассуждения")
+        bubble.set_text.assert_called_once_with("Результат работы")
+        kwargs = host._sync_turn.call_args.kwargs
+        assert kwargs["content"] == "Результат работы"
+        assert kwargs["thought"]["tag"] == tag.lower()
+        assert kwargs["thought"]["content"] == "Внутренние рассуждения"
+
+    def test_unclosed_tag_rescued_and_cleaned(self, host):
+        """Проверка спасения рассуждений при незакрытом теге до конца текста."""
+        bubble = MagicMock()
+        bubble.text = ""
+        bubble.get_text.return_value = ""
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        # Тег без закрывающей части
+        raw_resp = "<thought>Анализ без закрывающего тега"
+        host._handle_assistant_llm_response(raw_resp)
+
+        kwargs = host._sync_turn.call_args.kwargs
+        # Текст восстановлен Empty Text Guard
+        assert kwargs["content"] == "Анализ без закрывающего тега"
+        assert kwargs["thought"]["content"] == "Анализ без закрывающего тега"
+        assert kwargs["thought"]["tag"] == "thought"
+
+    def test_empty_text_guard_restores_text_when_only_reasoning(self, host, caplog):
+        """Проверка защиты от опустошения сообщения (Empty Text Guard), когда ответ модели - только мысли."""
+        import logging
+        bubble = MagicMock()
+        bubble.text = ""
+        bubble.get_text.return_value = ""
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        with caplog.at_level(logging.WARNING):
+            host._handle_assistant_llm_response("<reasoning>Только логика рассуждений без финального ответа</reasoning>")
+
+        kwargs = host._sync_turn.call_args.kwargs
+        assert kwargs["content"] == "Только логика рассуждений без финального ответа"
+        assert "[HistorySanitizer] Ответ модели целиком состоял из блока рассуждений. Текст восстановлен во избежание пустого сообщения." in caplog.text
+
+    def test_session_json_persistence_without_tags(self):
+        """Проверка сохранения в current_session['messages'] без тегов <analyze> и <think>."""
+        from ui.controllers.chat_flow_controller import ChatFlowControllerMixin
+
+        class FullHost(DummyAssistantHost, ChatFlowControllerMixin):
+            def __init__(self):
+                super().__init__()
+                self.current_mode = "assistant"
+                self.current_session = {
+                    "id": "chat_12345",
+                    "messages": [{"role": "user", "text": "Привет", "is_user": True}]
+                }
+                self.chat_history = [{"role": "user", "content": "Привет"}]
+                self._sync_turn = ChatFlowControllerMixin._sync_turn.__get__(self, FullHost)
+
+        host = FullHost()
+        bubble = MagicMock()
+        bubble.text = ""
+        bubble.get_text.return_value = ""
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        host._handle_assistant_llm_response("<analyze>Анализирую запрос</analyze>Вот твой ответ.")
+
+        messages = host.current_session["messages"]
+        assert len(messages) == 2
+        last_msg = messages[-1]
+        assert last_msg["role"] == "assistant"
+        assert last_msg["text"] == "Вот твой ответ."
+        assert "<analyze>" not in last_msg["text"]
+        assert "<think>" not in last_msg["text"]
+        assert last_msg["thought"] == {
+            "content": "Анализирую запрос",
+            "duration": 0.0,
+            "tag": "analyze"
+        }
+
+    def test_real_bubble_ui_thought_spoiler_and_chat_text(self, host):
+        """Критерий 2: При <analyze>Тестовый анализ</analyze>Финальный ответ плашка мыслей отображает текст анализа, а в чате только Финальный ответ."""
+        import sys
+        from PyQt6.QtWidgets import QApplication
+        from ui.components.chat_bubble import ChatMessageWidget
+
+        app = QApplication.instance() or QApplication(sys.argv)
+
+        bubble = ChatMessageWidget(sender="Элария", text="", is_user=False)
+        bubble.show()
+        host._turn_bubble = bubble
+        host._thought_stream_parser = None
+
+        host._handle_assistant_llm_response("<analyze>Тестовый анализ</analyze>Финальный ответ")
+
+        # В чате отображается только «Финальный ответ»
+        assert bubble.raw_text == "Финальный ответ"
+        assert "<analyze>" not in bubble.raw_text
+        assert "<think>" not in bubble.raw_text
+
+        # В интерфейсе создана плашка мыслей с текстом анализа
+        assert bubble.thought_spoiler is not None
+        assert not bubble.thought_spoiler.isHidden()
+        assert bubble.thought_spoiler.get_thought_text() == "Тестовый анализ"
+
+
+

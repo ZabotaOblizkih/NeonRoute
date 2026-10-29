@@ -7,7 +7,8 @@ Cyberpunk Glassmorphism styling:
 - Real-time token streaming and status/duration metrics
 """
 
-from typing import Optional
+import re
+from typing import Optional, Union
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
@@ -21,6 +22,16 @@ from qfluentwidgets import (
     ToolTipFilter,
     ToolTipPosition
 )
+
+
+def clean_thought_chunk(chunk: str) -> str:
+    """Вырезает служебные теги инструментов из потока мыслей модели."""
+    # Удаляем <<TOOL:write_file ...>> и <</TOOL>>
+    cleaned = re.sub(r'<<?/?(?:TOOL|tool)(?::\w+)?(?:\s+[^>\r\n]*?)?>>?', '', chunk)
+    # Удаляем маркеры Markdown-блоков кода и имена файлов
+    cleaned = re.sub(r'`{3}(?:python|py)?(?:\s+filename=[^\r\n]+)?', '', cleaned)
+    cleaned = re.sub(r'`{3}', '', cleaned)
+    return cleaned
 
 
 class ThoughtHeaderWidget(QWidget):
@@ -159,7 +170,11 @@ class ThoughtSpoilerWidget(QFrame):
         if not chunk:
             return
 
-        self._thought_text += chunk
+        cleaned = clean_thought_chunk(chunk)
+        if not cleaned:
+            return
+
+        self._thought_text += cleaned
         self.text_browser.setPlainText(self._thought_text)
 
         # Автопрокрутка вниз
@@ -173,16 +188,21 @@ class ThoughtSpoilerWidget(QFrame):
             if self._is_collapsed:
                 self.set_collapsed(False)
 
-    def finalize_thought(self, duration_sec: float = 0.0, token_count: int = 0):
+    def finalize_thought(self, duration_sec: float = 0.0, token_count: Union[int, str] = 0):
         """
         Фиксация таймера мыслей, смена бейджа на «{N} токенов • {X.X} сек»
         и автоматическое аккуратное сворачивание спойлера по умолчанию.
         """
         self._is_streaming = False
         self._duration = max(0.0, float(duration_sec))
-        self._token_count = int(token_count)
-        if self._token_count <= 0 and self._thought_text:
+        if isinstance(token_count, str) and not token_count.isdigit():
+            self._thought_text = clean_thought_chunk(token_count)
+            self.text_browser.setPlainText(self._thought_text)
             self._token_count = max(1, len(self._thought_text.strip()) // 4)
+        else:
+            self._token_count = int(token_count)
+            if self._token_count <= 0 and self._thought_text:
+                self._token_count = max(1, len(self._thought_text.strip()) // 4)
 
         dur_text = f"{self._duration:.1f}".replace(",", ".")
         self.metrics_label.setText(f"{self._token_count} токенов • {dur_text} сек")
@@ -193,7 +213,7 @@ class ThoughtSpoilerWidget(QFrame):
 
     def set_thought_data(self, text: str, duration: float = 0.0, token_count: int = 0):
         """Восстановление мыслей из истории (в свёрнутом виде)."""
-        clean_text = str(text or "").strip()
+        clean_text = clean_thought_chunk(str(text or "")).strip()
         if not clean_text:
             self.setVisible(False)
             self.hide()

@@ -133,6 +133,7 @@ class ContextWindowBuilder:
         session_id: Optional[str] = None,
         is_dm_mode: bool = False,
         enable_reasoning: bool = False,
+        custom_system_prompt: Optional[str] = None,
         **kwargs
     ) -> str:
         # Single Type normalization
@@ -165,6 +166,17 @@ class ContextWindowBuilder:
                     except Exception:
                         pass
 
+            if not custom_system_prompt:
+                custom_system_prompt = kwargs.get("custom_system_prompt")
+            if not custom_system_prompt and session_id:
+                try:
+                    from services.session_manager import SessionManager
+                    sess = SessionManager._sessions_cache.get(str(session_id)) or SessionManager.load_session(str(session_id))
+                    if sess:
+                        custom_system_prompt = sess.get("custom_system_prompt")
+                except Exception:
+                    pass
+
             return RoleplayPromptBuilder.build(
                 character_card=character_card,
                 user_name=effective_user_name,
@@ -174,7 +186,8 @@ class ContextWindowBuilder:
                 scene_memory=scene_memory,
                 active_cast_block=active_cast_block or "",
                 recalled_lore_block=recalled_lore_block or "",
-                meta_context_block=meta_context_block or ""
+                meta_context_block=meta_context_block or "",
+                custom_system_prompt=custom_system_prompt
             )
 
         # -------------------------------------------------------------
@@ -520,6 +533,16 @@ class ContextWindowBuilder:
                     active_cast_block = cast_context.strip()
 
             # 4. Якорь 1 (Системный промпт): messages[0] (личность, сценарий, правила, mes_example) — никогда не удаляется
+            custom_sys_prompt = kwargs.get("custom_system_prompt")
+            if not custom_sys_prompt and session_id:
+                try:
+                    from services.session_manager import SessionManager
+                    sess = SessionManager._sessions_cache.get(str(session_id)) or SessionManager.load_session(str(session_id))
+                    if sess:
+                        custom_sys_prompt = sess.get("custom_system_prompt")
+                except Exception:
+                    pass
+
             system_prompt = ContextWindowBuilder.build_system_prompt(
                 is_roleplay=True,
                 character_card=character_card,
@@ -543,7 +566,8 @@ class ContextWindowBuilder:
                 user_query=kwargs.get("user_query") or last_query,
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
                 matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
-                enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
+                enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False),
+                custom_system_prompt=custom_sys_prompt
             )
             safe_user_name = str(effective_user_name).strip() if effective_user_name else "пользователь"
             system_content = system_prompt.replace("{user_name}", safe_user_name)

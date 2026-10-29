@@ -16,6 +16,151 @@ class RoleplayPromptBuilder:
     """Централизованный строитель системных промптов для ролевого режима."""
 
     @staticmethod
+    def get_default_system_prompt(
+        character_card,
+        user_name: str = "Игрок",
+        world_facts: str = "",
+        active_persona: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Формирует эталонный базовый системный промпт для карточки персонажа,
+        включая описание, личность, сценарий, системные правила архетипа и данные игрока.
+        """
+        try:
+            w_facts = [world_facts] if isinstance(world_facts, str) and world_facts.strip() else (world_facts if isinstance(world_facts, list) else None)
+            res = RoleplayPromptBuilder.build(
+                character_card=character_card,
+                user_name=user_name,
+                active_persona=active_persona,
+                world_facts=w_facts,
+                custom_system_prompt=None
+            )
+            if res and res.strip():
+                return res.strip()
+        except Exception as e:
+            logger.warning(f"[RoleplayPromptBuilder] Ошибка при сборке базового промпта в get_default_system_prompt: {e}")
+
+        if isinstance(character_card, dict):
+            char_name = character_card.get("name", "Персонаж")
+            desc = character_card.get("description", "")
+            personality = character_card.get("personality", "")
+            scenario = character_card.get("scenario", "")
+            system_prompt = character_card.get("system_prompt", "")
+        else:
+            char_name = getattr(character_card, "name", "Персонаж")
+            desc = getattr(character_card, "description", "")
+            personality = getattr(character_card, "personality", "")
+            scenario = getattr(character_card, "scenario", "")
+            system_prompt = getattr(character_card, "system_prompt", "")
+
+        blocks = []
+        if system_prompt:
+            blocks.append(f"[Системные инструкции]:\n{system_prompt.strip()}")
+        if desc:
+            blocks.append(f"[Описание персонажа {char_name}]:\n{desc.strip()}")
+        if personality:
+            blocks.append(f"[Личность и характер {char_name}]:\n{personality.strip()}")
+        if scenario:
+            blocks.append(f"[Сценарий и контекст сцены]:\n{scenario.strip()}")
+        w_facts_str = "\n".join(world_facts) if isinstance(world_facts, list) else str(world_facts or "")
+        if w_facts_str.strip():
+            blocks.append(f"[Факты о мире]:\n{w_facts_str.strip()}")
+
+        blocks.append(f"[Ролевая директива]: Ты отыгрываешь роль {char_name}. Собеседник — {user_name}. Веди живой, глубокий диалог строго в рамках персонажа.")
+
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def get_default_depth_anchor(character_card, user_name: str) -> str:
+        """
+        Возвращает эталонный абстрактный Depth-0 якорь по умолчанию для архетипа карты.
+        Исключает цитирование реплик игрока и навязывание прямой речи.
+        """
+        if isinstance(character_card, dict):
+            is_sys = character_card.get("is_system", False)
+            is_dm = character_card.get("is_dm", False)
+            is_detective = character_card.get("is_detective", False)
+            is_horror = character_card.get("is_horror", False)
+            is_dating = character_card.get("is_dating", False)
+            is_cyoa = character_card.get("is_cyoa", False)
+            is_grp = character_card.get("is_group", False)
+            char_name = character_card.get("name", "Собеседник")
+        else:
+            is_sys = getattr(character_card, "is_system", False)
+            is_dm = getattr(character_card, "is_dm", False)
+            is_detective = getattr(character_card, "is_detective", False)
+            is_horror = getattr(character_card, "is_horror", False)
+            is_dating = getattr(character_card, "is_dating", False)
+            is_cyoa = getattr(character_card, "is_cyoa", False)
+            is_grp = getattr(character_card, "is_group", False)
+            char_name = getattr(character_card, "name", "Собеседник")
+
+        # 1. Исекай / ЛитРПГ (<stats>)
+        if is_sys:
+            return (
+                f"\n\n[Системная директива сцены: Отреагируй на действия, слова или присутствие {user_name}. "
+                f"Веди повествование строго в 3-м лице. Опиши кинематографичный отклик окружения и реакцию мира. "
+                f"Запрещено действовать, мыслить или говорить за {user_name}. "
+                f"Заверши сцену обращением или событием, требующим реакции игрока. "
+                f"В самом конце обязательно выведи актуальный блок <stats>```...```</stats>.]"
+            )
+        # 2. Детектив / Расследование (<stats>)
+        elif is_detective:
+            return (
+                f"\n\n[Системная директива сцены: Отреагируй на действия, слова или расследование {user_name}. "
+                f"Веди повествование строго в жанре детектива в 3-м лице. Опиши осязаемые улики, поведение окружения и невербальные детали. "
+                f"Запрещено делать выводы, действовать или говорить за {user_name}. "
+                f"Заверши сцену тревожной деталью или вопросом, передав ход игроку. "
+                f"В конце обнови журнал расследования в тегах <stats>```...```</stats>.]"
+            )
+        # 3. Дейт-сим / Хоррор (<meters>)
+        elif is_dating or is_horror:
+            metric_type = "симпатии и доверия" if is_dating else "рассудка и стресса"
+            return (
+                f"\n\n[Системная директива сцены: Отреагируй на слова, язык тела или действия {user_name} в адрес {char_name}. "
+                f"Опиши эмоциональный отклик, микромимику и внутреннее напряжение {char_name}. "
+                f"Запрещено действовать, чувствовать или говорить за {user_name}. "
+                f"Заверши ход репликой или жестом {char_name}, требующим реакции {user_name}. "
+                f"В самом конце выведи обновлённый блок шкалы {metric_type} в тегах <meters>...</meters>.]"
+            )
+        # 4. DM / Интерактивная новелла (<choices>)
+        elif is_dm or is_cyoa:
+            return (
+                f"\n\n[Системная директива сцены: Отреагируй на решение, слова или действия {user_name}. "
+                f"Опиши последствия для мира в 3-м лице без подыгрывания игроку. "
+                f"Запрещено принимать решения, действовать или говорить за {user_name}. "
+                f"В финале предложи варианты дальнейших действий внутри тегов <choices>...</choices>.]"
+            )
+        # 5. Групповой чат
+        elif is_grp:
+            return (
+                f"\n\n[Системная директива сцены: Отреагируй на действия, слова или присутствие {user_name} перед группой. "
+                f"Выдели одного конкретного персонажа группы как инициатора ответа, остальных покажи краткой фоновой реакцией. "
+                f"Запрещено действовать, мыслить или говорить за {user_name}. "
+                f"Заверши сцену прямым обращением выбранного спутника к {user_name}.]"
+            )
+        # 6. Одиночный персонаж (Solo)
+        else:
+            return (
+                f"\n\n[Системная директива сцены: Отреагируй на слова, действия или присутствие {user_name}. "
+                f"Сфокусируйся на мимике, подтексте и эмоциональной реакции {char_name}. "
+                f"Запрещено предпринимать действия, озвучивать мысли или говорить за {user_name}. "
+                f"Заверши ход репликой или действием {char_name}, требующим реакции {user_name}.]"
+            )
+
+    @staticmethod
+    def build_depth_anchor(character_card, user_name: str, user_query: str = "", custom_anchor: str = None) -> str:
+        """
+        Формирует Depth-0 якорь: возвращает переопределённый якорь сессии (если задан)
+        или абстрактный якорь по умолчанию.
+        """
+        if custom_anchor and custom_anchor.strip():
+            text = custom_anchor.strip()
+            return f"\n\n{text}" if not text.startswith("\n\n") else text
+
+        return RoleplayPromptBuilder.get_default_depth_anchor(character_card, user_name)
+
+    @staticmethod
     def slice_history(history: List[Dict[str, Any]], max_history_messages: int = 60) -> List[Dict[str, Any]]:
         """Нарезка глубины истории сообщений с учетом лимита сообщений."""
         if not history:
@@ -39,8 +184,16 @@ class RoleplayPromptBuilder:
         scene_memory: Optional[str] = None,
         active_cast_block: str = "",
         recalled_lore_block: str = "",
-        meta_context_block: str = ""
+        meta_context_block: str = "",
+        custom_system_prompt: Optional[str] = None
     ) -> str:
+        if custom_system_prompt and custom_system_prompt.strip():
+            u_name = user_name or "Игрок"
+            if isinstance(character_card, dict):
+                char_name = character_card.get("name", "Персонаж")
+            else:
+                char_name = getattr(character_card, "name", "Персонаж") if character_card else "Персонаж"
+            return MacroEngine.process(custom_system_prompt.strip(), user_name=u_name, char_name=char_name)
         if isinstance(character_card, dict):
             character_card = CharacterCard.from_dict(character_card)
 

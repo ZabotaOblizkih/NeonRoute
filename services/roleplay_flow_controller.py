@@ -130,7 +130,16 @@ class RoleplayFlowControllerMixin:
         art_guidance: Optional[str] = None
     ):
         """Формирует контекст ролевой игры с лимитом на 50 сообщений и передаёт задачу в TaskQueue."""
-        model_name = self.lm_combo.currentText().strip()
+        model_name = None
+        if hasattr(self, "lm_combo") and self.lm_combo:
+            model_name = self.lm_combo.currentText().strip()
+        if not model_name:
+            model_name = (
+                getattr(self, "active_lms_model", "")
+                or (self.current_session.get("model_id") if getattr(self, "current_session", None) else "")
+                or getattr(self.lm_client, "_last_loaded_model_id", None)
+                or ""
+            )
         if model_name.startswith("default"):
             model_name = None
 
@@ -176,6 +185,9 @@ class RoleplayFlowControllerMixin:
 
         is_dm = bool(self.current_session.get("is_dm_mode", False)) if self.current_session else False
 
+        # Извлечение сохраненного кастомного системного промпта сессии (если задан)
+        custom_sys_prompt = self.current_session.get("custom_system_prompt") if self.current_session else None
+
         messages = SessionManager.get_lm_studio_messages(
             history=self.chat_history,
             is_roleplay=True,
@@ -193,8 +205,15 @@ class RoleplayFlowControllerMixin:
             active_cast_block=active_cast_block,
             recalled_lore_block=recalled_lore_block,
             meta_context_block=meta_context_block,
-            is_dm_mode=is_dm
+            is_dm_mode=is_dm,
+            custom_system_prompt=custom_sys_prompt
         )
+
+        if custom_sys_prompt and messages and messages[0].get("role") == "system":
+            from services.roleplay_prompt_builder import RoleplayPromptBuilder
+            messages[0]["content"] = RoleplayPromptBuilder.process_macros(
+                custom_sys_prompt, user_name=effective_user_name, char_name=c_name
+            )
 
         # Подмешивание режиссуры сцены при арт-триггере
         if _should_art:
@@ -241,6 +260,27 @@ class RoleplayFlowControllerMixin:
                         _c = user_msg_copy.get("content")
                         if isinstance(_c, str):
                             user_msg_copy["content"] = _c + _directive
+                        messages[idx] = user_msg_copy
+                        break
+
+        # Точка инъекции: Depth-0 якорь active_character к последнему user сообщению (Задача 4)
+        if hasattr(self, "active_character") and self.active_character and messages:
+            from services.roleplay_prompt_builder import RoleplayPromptBuilder
+            # Извлечение сохраненного якоря сессии (если был настроен пользователем):
+            custom_anchor = self.current_session.get("custom_depth_anchor") if self.current_session else None
+            depth_anchor = RoleplayPromptBuilder.build_depth_anchor(
+                self.active_character,
+                user_name=effective_user_name,
+                user_query=_req,
+                custom_anchor=custom_anchor
+            )
+            if depth_anchor:
+                for idx in reversed(range(len(messages))):
+                    if messages[idx].get("role") == "user":
+                        user_msg_copy = dict(messages[idx])
+                        _c = user_msg_copy.get("content")
+                        if isinstance(_c, str):
+                            user_msg_copy["content"] = _c + depth_anchor
                         messages[idx] = user_msg_copy
                         break
 
@@ -313,6 +353,18 @@ class RoleplayFlowControllerMixin:
 
     def _handle_roleplay_llm_response(self, text: str):
         """Обрабатывает сгенерированный ответ ролевой модели, статус и извлечение сцены."""
+        # Предохранитель парсера стрима: защита от незакрытых тегов (Задача 4)
+        final_reply = text
+        for tag in ["stats", "meters", "choices"]:
+            open_tag = f"<{tag}>"
+            close_tag = f"</{tag}>"
+            if open_tag in final_reply and close_tag not in final_reply:
+                # Если блок кода внутри тега остался открытым, закрываем его
+                if "```" in final_reply and final_reply.count("```") % 2 != 0:
+                    final_reply += "\n```"
+                final_reply += f"\n{close_tag}"
+        text = final_reply
+
         sess_id = self.current_session.get("id") if getattr(self, "current_session", None) else None
         text = RoleplayStateManager.process_model_turn(sess_id, text)
         text = TextRegexFilter.process_output(text)
@@ -592,6 +644,14 @@ class RoleplayFlowControllerMixin:
         # Очищаем визуальное ДНК от технического синтаксиса LoRA перед передачей в ТЗ
         clean_visual_summary = re.sub(r'<lora:[^>]+>', '', visual_summary or '').strip(' ,')
 
+        # Очищаем контекст реплики от технической разметки (<stats>, <thought>, [STATUS])
+        # чтобы статы, уровни и мысли не попадали в Danbooru-промпт для Stable Diffusion
+        raw_ctx = last_assistant_message or ""
+        clean_ctx = re.sub(r'<stats>.*?</stats>', '', raw_ctx, flags=re.DOTALL | re.IGNORECASE)
+        clean_ctx = re.sub(r'<thought>.*?</thought>', '', clean_ctx, flags=re.DOTALL | re.IGNORECASE)
+        clean_ctx = re.sub(r'\[(?:СЦЕНА|SCENE|СТАТУС|STATUS|ШРАМ|SCAR|КВЕСТ|QUEST|IMAGE_PROMPT)[^\]]*\]', '', clean_ctx, flags=re.IGNORECASE)
+        clean_ctx = re.sub(r'</?(?:stats|thought|meters|choices|check|terminal|sms|phone)>', '', clean_ctx, flags=re.IGNORECASE).strip()
+
         # 4. Формирование контекста под мизансцену
         if scene_type == "intimate":
             gear_status = "ЗАБЛОКИРОВАНО (nude, экипировка скрыта)"
@@ -600,21 +660,21 @@ class RoleplayFlowControllerMixin:
                 f"- Location: {cur_loc or 'Private quarters'}",
                 "- State: strictly alone in private intimate sanctuary (characters undressed, bare skin)",
                 f"- Subject: {clean_visual_summary or 'Unspecified'}",
-                f"- Scene context: {last_assistant_message or 'Intimate moment'}",
+                f"- Scene context: {clean_ctx or 'Intimate moment'}",
                 "CRITICAL: Output ONLY comma-separated tags inside [IMAGE_PROMPT: ...]. Do NOT write prose or paragraphs."
             ]
         else:
             inv_items = cast_data.get("inventory", []) if isinstance(cast_data, dict) else []
             inventory_str = ", ".join(str(i) for i in inv_items) if isinstance(inv_items, list) else str(inv_items)
             comp_outfit = comp_state.get("current_outfit", "") or "Стандартная каноничная одежда"
-            
+
             gear_status = f"АКТИВНО ({inventory_str})" if inventory_str else "В ножнах/убрано"
             payload_lines = [
                 "Generate concise, comma-separated Danbooru tags for this RP scene:",
                 f"- Location: {cur_loc or 'Unspecified'}",
                 f"- Outfit: {comp_outfit}",
                 f"- Subject: {clean_visual_summary or 'Unspecified'}",
-                f"- Scene context: {last_assistant_message or 'Dialogue scene'}"
+                f"- Scene context: {clean_ctx or 'Dialogue scene'}"
             ]
             if inventory_str and scene_type in ("action", "exploration"):
                 payload_lines.insert(2, f"- Equipment: {inventory_str}")

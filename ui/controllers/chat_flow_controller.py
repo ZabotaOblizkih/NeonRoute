@@ -681,8 +681,9 @@ class ChatFlowControllerMixin:
         # Lock model on first message in this chat
         if self.current_session:
             self.current_session["is_model_locked"] = True
-            self.lm_combo.setEnabled(False)
-            self.lm_combo.setToolTip("Модель зафиксирована для этого диалога")
+            if hasattr(self, "lm_combo") and self.lm_combo:
+                self.lm_combo.setEnabled(False)
+                self.lm_combo.setToolTip("Модель зафиксирована для этого диалога")
 
         self._save_current_session()
         self._tool_loop_count = 0
@@ -753,7 +754,16 @@ class ChatFlowControllerMixin:
             art_guidance = getattr(self, "_pre_routed_art_guidance", None)
 
 
-        model_name = self.lm_combo.currentText().strip()
+        model_name = None
+        if hasattr(self, "lm_combo") and self.lm_combo:
+            model_name = self.lm_combo.currentText().strip()
+        if not model_name:
+            model_name = (
+                getattr(self, "active_lms_model", "")
+                or (self.current_session.get("model_id") if getattr(self, "current_session", None) else "")
+                or getattr(self.lm_client, "_last_loaded_model_id", None)
+                or ""
+            )
         if model_name.startswith("default"):
             model_name = None
 

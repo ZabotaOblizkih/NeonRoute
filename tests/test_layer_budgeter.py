@@ -91,13 +91,17 @@ class TestGPUTopologyDetection:
             assert is_pure is False
             assert reserve_mb == OS_RESERVE_PRIMARY_DISPLAY_MB  # 700
 
-    def test_primary_display_mode_when_vram_high_even_if_display_inactive(self):
-        """Если занято >= 250 МБ (например DWM/композитор на dGPU) -> PRIMARY DISPLAY (700 МБ)."""
+    def test_primary_display_mode_when_dwm_process_on_gpu(self):
+        """Если на GPU обнаружен активный процесс dwm.exe с графическим дескриптором -> PRIMARY DISPLAY (700 МБ)."""
         mock_pynvml = MagicMock()
         mock_mem = MagicMock()
         mock_mem.used = 420 * 1024 * 1024  # 420 MB
         mock_pynvml.nvmlDeviceGetMemoryInfo.return_value = mock_mem
         mock_pynvml.nvmlDeviceGetDisplayActive.return_value = False
+        mock_proc = MagicMock()
+        mock_proc.pid = 1001
+        mock_pynvml.nvmlDeviceGetGraphicsRunningProcesses.return_value = [mock_proc]
+        mock_pynvml.nvmlSystemGetProcessName.return_value = b"dwm.exe"
 
         with patch.dict(sys.modules, {"pynvml": mock_pynvml}):
             is_pure, reserve_mb = LayerBudgeter.detect_gpu_topology()
@@ -113,6 +117,23 @@ class TestGPUTopologyDetection:
             is_pure, reserve_mb = LayerBudgeter.detect_gpu_topology()
             assert is_pure is False
             assert reserve_mb == 700
+
+
+class TestGPUTopologyResidualVRAM:
+    """При display_active = False и текущей VRAM = 650 МБ (остаточный кэш Forge) топология обязана определяться как PURE COMPUTE с резервом 150 МБ."""
+
+    def test_residual_vram_pure_compute_mode(self):
+        mock_pynvml = MagicMock()
+        mock_mem = MagicMock()
+        mock_mem.used = 650 * 1024 * 1024  # 650 MB остаточный кэш Forge
+        mock_pynvml.nvmlDeviceGetMemoryInfo.return_value = mock_mem
+        mock_pynvml.nvmlDeviceGetDisplayActive.return_value = False
+        mock_pynvml.nvmlDeviceGetGraphicsRunningProcesses.return_value = []
+
+        with patch.dict(sys.modules, {"pynvml": mock_pynvml}):
+            is_pure, reserve_mb = LayerBudgeter.detect_gpu_topology()
+            assert is_pure is True
+            assert reserve_mb == OS_RESERVE_PURE_COMPUTE_MB  # 150
 
 
 class TestGGUFMetadataParser:
@@ -253,8 +274,41 @@ class TestHybridOffload:
             assert audit["final_ngl"] == ngl
 
 
+class TestSmallCPUOffloadRAMGuard:
+    """При вытеснении на CPU 1-2 слоев (~200 МБ) и available_ram = 4500 МБ проверка обязана успешно проходить (can_run = True)."""
+
+    def test_small_cpu_offload_ram_guard_passes(self, tmp_path):
+        model_file = tmp_path / "meissa_7b.gguf"
+        model_file.write_bytes(b"GGUF" + b"\x00" * 100)
+
+        # Модель Meissa 7B Q5 (~5192.6 MB, 28 слоев, вес слоя ~148.36 MB)
+        # Вытеснение 1 слоя на CPU (~148 MB <= 500 MB)
+        mock_meta = {
+            "total_layers": 28,
+            "model_size_mb": 5192.6,
+            "architecture": "llama",
+            "is_moe": False,
+            "context_length": 4096,
+        }
+
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=mock_meta):
+
+            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
+                model_path=model_file,
+                target_context=4096,
+                total_vram_mb=6100,
+                available_ram_mb=4500.0
+            )
+
+            assert can_run is True
+            assert ngl == 27
+            assert audit["cpu_weights_mb"] <= 500.0
+            assert "OK" in reason
+
+
 class TestOOMPreflightGuard:
-    """Попытка запуска модели 35 ГБ при 16 ГБ RAM -> can_run=False."""
+    """Попытка запуска модели 35 ГБ при 16 ГБ RAM или 20 ГБ слоев при 5 ГБ RAM -> can_run=False."""
 
     def test_heavy_model_triggers_oom_guard(self, tmp_path):
         model_file = tmp_path / "heavy_35gb.gguf"
@@ -285,6 +339,34 @@ class TestOOMPreflightGuard:
             assert can_run is False
             assert ngl == 0
             assert "OOM Guard" in reason
+
+    def test_20gb_cpu_offload_with_5gb_ram_triggers_oom_guard(self, tmp_path):
+        """При вытеснении на CPU 20 ГБ весов и available_ram = 5000 МБ проверка обязана возвращать can_run = False."""
+        model_file = tmp_path / "model_25gb.gguf"
+        model_file.write_bytes(b"GGUF" + b"\x00" * 100)
+
+        mock_meta = {
+            "total_layers": 50,
+            "model_size_mb": 27000.0,
+            "architecture": "llama",
+            "is_moe": False,
+            "context_length": 4096,
+        }
+
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(False, 700)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=mock_meta):
+
+            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
+                model_path=model_file,
+                target_context=4096,
+                total_vram_mb=8192,
+                available_ram_mb=5000.0
+            )
+
+            assert can_run is False
+            assert ngl == 0
+            assert "OOM Guard" in reason
+            assert audit["cpu_weights_mb"] >= 20000.0
 
 
 class TestHysteresisDelta:

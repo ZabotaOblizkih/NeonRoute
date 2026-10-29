@@ -22,14 +22,94 @@ logger = logging.getLogger("NeonRoute.TavernParser")
 # Facade Re-export (Zero-Breaking-Changes)
 from services.tavern_models import LoreEntry, CharacterCard
 
+def detect_card_archetype(card_data: dict) -> dict:
+    """
+    Определяет архетип карточки по явным флагам или эвристическому анализу полей.
+    Возвращает словарь булевых признаков.
+    """
+    if not isinstance(card_data, dict):
+        card_data = {}
+
+    inner = card_data.get("data") if isinstance(card_data.get("data"), dict) else {}
+
+    # 1. Сначала проверяем явные флаги автора (если есть)
+    explicit_sys = card_data.get("is_system") is True or inner.get("is_system") is True
+    explicit_dm = card_data.get("is_dm") is True or inner.get("is_dm") is True
+    explicit_detective = card_data.get("is_detective") is True or inner.get("is_detective") is True
+    explicit_horror = card_data.get("is_horror") is True or inner.get("is_horror") is True
+    explicit_dating = card_data.get("is_dating") is True or inner.get("is_dating") is True
+    explicit_cyoa = card_data.get("is_cyoa") is True or inner.get("is_cyoa") is True
+    explicit_scen = (card_data.get("is_scenario") is True or card_data.get("is_survival") is True or
+                     inner.get("is_scenario") is True or inner.get("is_survival") is True)
+    explicit_grp = (card_data.get("is_group") is True or card_data.get("group_only") is True or
+                    inner.get("is_group") is True or inner.get("group_only") is True)
+
+    # 2. Если ни один флаг не выставлен, запускаем контекстный классификатор
+    has_explicit = any([
+        explicit_sys, explicit_dm, explicit_detective, explicit_horror,
+        explicit_dating, explicit_cyoa, explicit_scen, explicit_grp
+    ])
+
+    if not has_explicit:
+        name = str(card_data.get("name") or inner.get("name") or "").lower()
+        tags_raw = card_data.get("tags") or inner.get("tags") or []
+        if isinstance(tags_raw, list):
+            tags = [str(t).lower() for t in tags_raw]
+        elif isinstance(tags_raw, str):
+            tags = [t.lower().strip() for t in tags_raw.split(",")]
+        else:
+            tags = []
+        scenario = str(card_data.get("scenario") or inner.get("scenario") or "").lower()
+        desc = str(card_data.get("description") or inner.get("description") or "").lower()
+        corpus = f"{name} {' '.join(tags)} {scenario[:500]} {desc[:500]}"
+
+        # Приоритет 1: Система / ЛитРПГ / Исекай
+        if any(w in corpus for w in ["isekai", "litrpg", "rpg", "система", "stats", "мудрец", "окно статуса"]):
+            explicit_sys = True
+        # Приоритет 2: DM / Гейммастер / Настолка
+        elif any(w in corpus for w in ["мастер подземелий", "гейммастер", "dungeon master", "d&d", "dnd", "гм"]):
+            explicit_dm = True
+        # Приоритет 3: Детектив / Расследование
+        elif any(w in corpus for w in ["детектив", "лестрейд", "расследование", "улики", "подозреваемый", "допрос", "mystery", "noir"]):
+            explicit_detective = True
+        # Приоритет 4: Хоррор / Психологический ужас / Зона
+        elif any(w in corpus for w in ["хоррор", "нечто", "horror", "рассудок", "безумие", "монстр"]):
+            explicit_horror = True
+        # Приоритет 5: Выживание / Сценарий открытого мира
+        elif any(w in corpus for w in ["зона отчуждения", "выживание", "сталкер", "апокалипсис", "радиация"]):
+            explicit_scen = True
+        # Приоритет 6: Группа / Отряд
+        elif any(w in corpus for w in ["отряд", "группа", "наёмниц", "спутники", "party", "girls"]):
+            explicit_grp = True
+        # Приоритет 7: Интерактивная новелла (CYOA)
+        elif any(w in corpus for w in ["cyoa", "новелла", "выбор пути", "ветвление"]):
+            explicit_cyoa = True
+
+    # is_environment активен, если это бесплотный мир, сценарий, система или DM
+    is_environment = explicit_sys or explicit_dm or explicit_scen or explicit_horror
+
+    return {
+        "is_system": explicit_sys,
+        "is_dm": explicit_dm,
+        "is_detective": explicit_detective,
+        "is_horror": explicit_horror,
+        "is_dating": explicit_dating,
+        "is_cyoa": explicit_cyoa,
+        "is_scenario": explicit_scen,
+        "is_group": explicit_grp,
+        "is_environment": is_environment,
+    }
+
 __all__ = [
     "TavernParser",
     "LoreEntry",
     "CharacterCard",
+    "detect_card_archetype",
 ]
 
 
 class TavernParser:
+    detect_card_archetype = staticmethod(detect_card_archetype)
     """Parses Tavern and Chub.ai character JSON cards."""
 
     @staticmethod
@@ -366,70 +446,52 @@ class TavernParser:
 
         # Имя персонажа
         raw_name = get_field("name", "char_name")
-        name_lower = str(raw_name).lower()
+        if raw_name:
+            name = raw_name
+        elif src_path and src_path.stem.lower() not in ("exported", "character_exported", "card", "exported.json", "character"):
+            name = src_path.stem.replace("_", " ").title()
+        else:
+            name = "Персонаж"
+
+        # Извлечение основных атрибутов через get_field с алиасами (макросы {{char}}, {{user}}, <START> не модифицируются)
+        description = get_field("description", "char_persona", "persona")
+        personality = get_field("personality", "char_persona", "persona")
+        scenario = get_field("scenario", "world_scenario", "situation", "context")
+
+        # Эвристическая детекция архетипов (Задача 1)
+        archetypes = detect_card_archetype({
+            "name": name,
+            "tags": tags,
+            "scenario": scenario,
+            "description": description,
+            "is_system": any(isinstance(d, dict) and d.get("is_system") is True for d in candidate_dicts),
+            "is_dm": any(isinstance(d, dict) and d.get("is_dm") is True for d in candidate_dicts),
+            "is_detective": any(isinstance(d, dict) and d.get("is_detective") is True for d in candidate_dicts),
+            "is_horror": any(isinstance(d, dict) and d.get("is_horror") is True for d in candidate_dicts),
+            "is_dating": any(isinstance(d, dict) and d.get("is_dating") is True for d in candidate_dicts),
+            "is_cyoa": any(isinstance(d, dict) and d.get("is_cyoa") is True for d in candidate_dicts),
+            "is_scenario": any(isinstance(d, dict) and (d.get("is_scenario") is True or d.get("is_survival") is True) for d in candidate_dicts),
+            "is_group": is_group or any(isinstance(d, dict) and (d.get("is_group") is True or d.get("group_only") is True) for d in candidate_dicts),
+        })
+
+        is_system = archetypes["is_system"]
+        is_dm = archetypes["is_dm"]
+        is_detective = archetypes["is_detective"]
+        is_horror = archetypes["is_horror"]
+        is_dating = archetypes["is_dating"]
+        is_cyoa = archetypes["is_cyoa"]
+        is_scenario = archetypes["is_scenario"]
+        is_group = archetypes["is_group"]
+        is_environment = archetypes["is_environment"]
+
+        name_lower = str(name).lower()
         tags_set = set(tags)
 
-        # DM / Game Master Detection (rpg removed to prevent false positives)
-        dm_tags = {"dungeon master", "game master", "dm", "gm", "narrator", "storyteller", "ttrpg", "text adventure", "cyoa", "мастер игры", "гейммастер", "ведущий", "мастер подземелий"}
-        dm_name_tokens = set(re.findall(r'\b[a-zA-Zа-яА-ЯёЁ]+\b', name_lower))
-        is_dm = (
-            bool(dm_tags.intersection(tags_set))
-            or bool({"dm", "gm", "storyteller", "narrator", "гейммастер", "ведущий"}.intersection(dm_name_tokens))
-            or "dungeon master" in name_lower
-            or "game master" in name_lower
-            or "мастер игры" in name_lower
-            or any(isinstance(d, dict) and d.get("is_dm") is True for d in candidate_dicts)
-        )
-
-        # Scenario / Survival Simulator Detection
-        scen_tags = {"scenario", "survival", "simulator", "симулятор", "выживание", "катастрофа", "апокалипсис"}
-        is_scenario = (
-            bool(scen_tags.intersection(tags_set))
-            or "simulator" in name_lower
-            or "симулятор" in name_lower
-            or "survival" in name_lower
-            or "выживание" in name_lower
-            or any(isinstance(d, dict) and (d.get("is_scenario") is True or d.get("is_simulator") is True) for d in candidate_dicts)
-        )
-
-        # LitRPG / Isekai / System Interface Detection
-        sys_tags = {"litrpg", "system", "isekai", "литрпг", "система", "исекай", "status window", "battle song", "интерфейс системы"}
-        is_system = (
-            bool(sys_tags.intersection(tags_set))
-            or "litrpg" in name_lower
-            or "литрпг" in name_lower
-            or "isekai" in name_lower
-            or "исекай" in name_lower
-            or any(isinstance(d, dict) and d.get("is_system") is True for d in candidate_dicts)
-        )
-
-        # Dating Sim / Romance Progression Detection
-        dating_tags = {"dating-sim", "dating sim", "romance", "yandere", "tsundere", "affection", "waifu", "love", "романтика", "дейт-сим"}
-        is_dating = (
-            bool(dating_tags.intersection(tags_set))
-            or "dating sim" in name_lower
-            or "dating-sim" in name_lower
-            or "дейт-сим" in name_lower
-            or any(isinstance(d, dict) and d.get("is_dating") is True for d in candidate_dicts)
-        )
-
-        # Psychological Horror / Sanity Detection
-        horror_tags = {"horror", "psychological horror", "cosmic horror", "lovecraft", "sanity", "хоррор", "ужасы", "безумие"}
-        is_horror = (
-            bool(horror_tags.intersection(tags_set))
-            or "horror" in name_lower
-            or "хоррор" in name_lower
-            or any(isinstance(d, dict) and d.get("is_horror") is True for d in candidate_dicts)
-        )
-
-        # CYOA / Visual Novel Detection
-        cyoa_tags = {"cyoa", "choose your own adventure", "visual novel", "interactive fiction", "текстовый квест", "новелла"}
-        is_cyoa = (
-            bool(cyoa_tags.intersection(tags_set))
-            or "cyoa" in name_lower
-            or "visual novel" in name_lower
-            or any(isinstance(d, dict) and d.get("is_cyoa") is True for d in candidate_dicts)
-        )
+        # Fallback for dating if not set by detect_card_archetype
+        if not any([is_system, is_dm, is_detective, is_horror, is_dating, is_cyoa, is_scenario, is_group]):
+            dating_tags = {"dating-sim", "dating sim", "romance", "yandere", "tsundere", "affection", "waifu", "love", "романтика", "дейт-сим"}
+            if bool(dating_tags.intersection(tags_set)) or "dating sim" in name_lower or "дейт-сим" in name_lower:
+                is_dating = True
 
         # Reverse Roleplay / Interrogation / Mentorship Detection
         reverse_tags = {"reverse roleplay", "interrogation", "captive", "prisoner", "submissive", "student", "допрос", "пленник", "ученик", "подсудимый"}
@@ -438,15 +500,6 @@ class TavernParser:
             or "interrogation" in name_lower
             or "допрос" in name_lower
             or any(isinstance(d, dict) and d.get("is_reverse_rp") is True for d in candidate_dicts)
-        )
-
-        # Detective / Investigation Detection
-        detective_tags = {"detective", "investigation", "mystery", "crime", "courtroom", "детектив", "расследование", "улики"}
-        is_detective = (
-            bool(detective_tags.intersection(tags_set))
-            or "detective" in name_lower
-            or "детектив" in name_lower
-            or any(isinstance(d, dict) and d.get("is_detective") is True for d in candidate_dicts)
         )
 
         if is_lorebook:
@@ -459,18 +512,7 @@ class TavernParser:
             is_cyoa = False
             is_reverse_rp = False
             is_detective = False
-
-        if raw_name:
-            name = raw_name
-        elif src_path and src_path.stem.lower() not in ("exported", "character_exported", "card", "exported.json", "character"):
-            name = src_path.stem.replace("_", " ").title()
-        else:
-            name = "Персонаж"
-
-        # Извлечение основных атрибутов через get_field с алиасами (макросы {{char}}, {{user}}, <START> не модифицируются)
-        description = get_field("description", "char_persona", "persona")
-        personality = get_field("personality", "char_persona", "persona")
-        scenario = get_field("scenario", "world_scenario", "situation", "context")
+            is_environment = True
         first_mes = get_field("first_mes", "greeting", "first_message", "char_greeting", "initial_message")
         mes_example = get_field("mes_example", "example_dialogue", "examples", "mes_examples")
         system_prompt = get_field("system_prompt", "post_history_instructions")
@@ -636,6 +678,7 @@ class TavernParser:
             is_cyoa=is_cyoa,
             is_reverse_rp=is_reverse_rp,
             is_detective=is_detective,
+            is_environment=is_environment,
             backgrounds=backgrounds,
             expressions=expressions,
             lore_entries=entries,

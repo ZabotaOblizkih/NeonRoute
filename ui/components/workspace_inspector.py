@@ -1,11 +1,13 @@
 import os
+import logging
 from pathlib import Path
 from typing import Optional, Set
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QTextFormat, QPainter, QFont, QSyntaxHighlighter, QTextCharFormat, QKeyEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QPlainTextEdit, QTextEdit, QTreeWidgetItem, QTreeWidget, QHeaderView, QLabel, QFrame
+    QPlainTextEdit, QTextEdit, QTreeWidgetItem, QTreeWidget, QHeaderView, QLabel, QFrame,
+    QPushButton
 )
 import qfluentwidgets
 from qfluentwidgets import (
@@ -14,6 +16,51 @@ from qfluentwidgets import (
     MessageBoxBase, LineEdit
 )
 from services.sandbox_manager import SandboxManager
+
+logger = logging.getLogger(__name__)
+
+
+class InteractiveTitleChip(QPushButton):
+    """Интерактивный заголовок-чип песочницы без рамок.
+    ЛКМ — открытие директории песочницы.
+    ПКМ — переименование сессии.
+    """
+    left_clicked = pyqtSignal()
+    right_clicked = pyqtSignal()
+
+    def __init__(self, text: str = "📁 Песочница", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("ЛКМ: Открыть папку песочницы в Проводнике\nПКМ: Переименовать диалог")
+        self.setStyleSheet("""
+            InteractiveTitleChip {
+                background-color: rgba(255, 255, 255, 0.06);
+                border: none;
+                border-radius: 6px;
+                color: #00F0FF;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 4px 10px;
+                text-align: left;
+            }
+            InteractiveTitleChip:hover {
+                background-color: rgba(255, 255, 255, 0.12);
+                color: #38BDF8;
+            }
+            InteractiveTitleChip:pressed {
+                background-color: rgba(255, 255, 255, 0.18);
+            }
+        """)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.left_clicked.emit()
+            super().mousePressEvent(event)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
 
 class InputDialog(MessageBoxBase):
@@ -295,6 +342,7 @@ class WorkspaceInspectorWidget(CardWidget):
     sig_stream_started = pyqtSignal(str)           # filename
     sig_stream_chunk = pyqtSignal(str)             # code_token
     sig_stream_finished = pyqtSignal(str, str)     # filename, final_code
+    rename_session_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -307,15 +355,17 @@ class WorkspaceInspectorWidget(CardWidget):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
-        # Шапка панели: заголовок + кнопка ручного обновления
+        # Шапка панели: интерактивный чип-заголовок + кнопка обновления
         header_layout = QHBoxLayout()
-        self.title_lbl = SubtitleLabel("📁 Песочница", self)
-        self.title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #00F0FF;")
+        self.title_btn = InteractiveTitleChip("📁 Песочница", self)
+        self.title_btn.left_clicked.connect(self.open_workspace_folder)
+        self.title_btn.right_clicked.connect(self._on_right_click_rename)
+        self.title_lbl = self.title_btn  # Сохраняем обратную совместимость атрибута
         self.btn_refresh = TransparentToolButton(FluentIcon.SYNC, self)
         self.btn_refresh.setToolTip("Обновить файлы вручную")
         self.btn_refresh.clicked.connect(self.refresh_files)
 
-        header_layout.addWidget(self.title_lbl)
+        header_layout.addWidget(self.title_btn)
         header_layout.addStretch(1)
         header_layout.addWidget(self.btn_refresh)
         main_layout.addLayout(header_layout)
@@ -384,6 +434,34 @@ class WorkspaceInspectorWidget(CardWidget):
         self._watcher.directoryChanged.connect(lambda _: self._debounce_timer.start())
         self._watcher.fileChanged.connect(lambda _: self._debounce_timer.start())
         self._init_watcher()
+
+    def open_workspace_folder(self):
+        """Открывает папку текущей песочницы в Проводнике Windows."""
+        try:
+            ws_dir = SandboxManager.get_workspace_dir()
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            import os
+            os.startfile(str(ws_dir))
+        except Exception as e:
+            logger.warning(f"Не удалось открыть папку песочницы: {e}")
+
+    def _on_right_click_rename(self):
+        """Эмитит сигнал запроса переименования для активной сессии."""
+        try:
+            sess_id = SandboxManager.get_active_session_id()
+            if sess_id:
+                self.rename_session_requested.emit(sess_id)
+        except Exception as e:
+            logger.warning(f"Ошибка запроса переименования: {e}")
+
+    def update_title(self, title: str):
+        """Обновляет текст заголовка песочницы."""
+        clean = (title or "").strip()
+        if not clean or clean.lower() == "диалог":
+            clean = "Песочница"
+        display_text = f"📁 {clean}" if not clean.startswith("📁") else clean
+        if hasattr(self, "title_btn"):
+            self.title_btn.setText(display_text)
 
     @property
     def current_file_path(self) -> Optional[Path]:

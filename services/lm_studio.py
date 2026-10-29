@@ -465,6 +465,7 @@ class LMStudioClient(QObject):
         Supports Structured Outputs (response_format) for strict JSON validation.
         """
         is_eng = kwargs.pop("is_engineer", False)
+        chunk_callback = kwargs.pop("chunk_callback", None)
         with _LMS_SOCKET_LOCK:
             target_m = model or getattr(self, "_last_loaded_model_id", None)
             if not target_m or target_m.startswith("default"):
@@ -648,6 +649,12 @@ class LMStudioClient(QObject):
                                     tokens_count += 1
 
                                 accumulated.append(content_piece)
+
+                                if chunk_callback and callable(chunk_callback):
+                                    try:
+                                        chunk_callback(content_piece)
+                                    except Exception as _cb_err:
+                                        logger.debug(f"Error in chunk_callback: {_cb_err}")
 
                                 if emit_signal:
                                     self.token_streamed.emit(content_piece)

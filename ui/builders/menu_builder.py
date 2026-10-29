@@ -277,9 +277,15 @@ class MenuBuilder:
         act_gallery.triggered.connect(lambda *_: window._open_characters_gallery_dialog())
         system_menu.addAction(act_gallery)
 
-        act_engineer_settings = Action(FIF.DEVELOPER_TOOLS, "Режим «Инженер»: выбор модели...", window)
-        act_engineer_settings.triggered.connect(lambda *_: window._open_engineer_settings_dialog())
+        act_engineer_settings = Action(FIF.DEVELOPER_TOOLS, "Выбор моделей по режимам...", window)
+        act_engineer_settings.setToolTip("Настройка постоянных LLM моделей для Ассистента, РП и Инженера")
+        act_engineer_settings.triggered.connect(lambda *_: window._open_mode_model_settings_dialog())
         system_menu.addAction(act_engineer_settings)
+
+        act_llm_engine_settings = Action(FIF.SETTING, "Настройки движка LLM...", window)
+        act_llm_engine_settings.setToolTip("Параметры квантования KV-кэша и Flash Attention")
+        act_llm_engine_settings.triggered.connect(lambda *_: window._open_llm_engine_settings_dialog())
+        system_menu.addAction(act_llm_engine_settings)
 
         system_menu.addSeparator()
 

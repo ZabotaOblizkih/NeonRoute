@@ -189,6 +189,49 @@ class GitSandboxManager:
         return success
 
     @classmethod
+    def get_working_diff(cls, ws_dir: Path, max_lines: int = 35) -> str:
+        """
+        Возвращает компактный git diff текущих изменений рабочей директории
+        относительно последнего стабильного коммита (HEAD).
+        Учитывает как модифицированные, так и новые (untracked) файлы.
+        """
+        ws_dir = Path(ws_dir).resolve()
+        if not cls.is_git_available() or not (ws_dir / ".git").is_dir():
+            return ""
+
+        try:
+            # 1. Помечаем новые файлы (intent-to-add), чтобы они попали в diff
+            cls._run_git(ws_dir, ["add", "-N", "."])
+
+            # 2. Снимаем diff относительно HEAD (или базовый diff, если коммитов мало)
+            ok, out = cls._run_git(ws_dir, ["diff", "HEAD", "--no-color"])
+            if not ok or not out.strip():
+                ok, out = cls._run_git(ws_dir, ["diff", "--no-color"])
+
+            if not ok or not out.strip():
+                return ""
+
+            raw_lines = out.splitlines()
+            clean_lines = []
+
+            # 3. Фильтруем технический шум git (хеши индексов)
+            for line in raw_lines:
+                if line.startswith("index ") or line.startswith("diff --git"):
+                    continue
+                clean_lines.append(line)
+
+            # 4. Ограничиваем объём диффа, чтобы не перегружать контекст 7B-модели
+            if len(clean_lines) > max_lines:
+                truncated = clean_lines[:max_lines]
+                truncated.append(f"\n[...остальные строки diff скрыты ({len(clean_lines) - max_lines} строк)...]")
+                return "\n".join(truncated)
+
+            return "\n".join(clean_lines)
+        except Exception as e:
+            logger.warning(f"[GitSandbox] Не удалось извлечь git diff: {e}")
+            return ""
+
+    @classmethod
     def create_backup_bundle(cls, ws_dir: Path, label: str = "manual") -> Optional[Path]:
         ws_dir = Path(ws_dir).resolve()
         backups_dir = ws_dir.parent / "backups"

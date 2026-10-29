@@ -242,3 +242,13 @@ class ChatHeaderWidget(QFrame):
         )
         self.btn_fullscreen.clicked.connect(self.window._toggle_fullscreen)
         header_layout.addWidget(self.btn_fullscreen)
+
+        # 8. Inspector (Sandbox) Toggle Button
+        self.btn_toggle_inspector = TransparentToolButton(FIF.CODE, self)
+        self.btn_toggle_inspector.setToolTip("Панель песочницы / инспектора (Ctrl+B)")
+        self.btn_toggle_inspector.setFixedSize(34, 34)
+        self.btn_toggle_inspector.installEventFilter(
+            ToolTipFilter(self.btn_toggle_inspector, showDelay=300, position=ToolTipPosition.BOTTOM)
+        )
+        self.btn_toggle_inspector.clicked.connect(self.window.toggle_workspace_inspector)
+        header_layout.addWidget(self.btn_toggle_inspector)

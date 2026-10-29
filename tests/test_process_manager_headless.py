@@ -98,6 +98,7 @@ def test_start_llama_server_sync_success(tmp_path):
          patch("services.server_config.ServerConfigResolver.load_ini", return_value={"host": "127.0.0.1", "port": 1234, "default_context": 14336, "gpu_layers": 99}), \
          patch("subprocess.Popen", return_value=mock_popen), \
          patch("requests.get", return_value=mock_resp), \
+         patch.object(pm, "inspect_port_occupant", return_value=(False, None, None)), \
          patch.object(pm, "_kill_llama_server_instance"):
         ok = pm.start_llama_server_sync("model.gguf")
 
@@ -113,6 +114,7 @@ def test_start_llama_server_sync_missing_model():
 
     with patch("services.server_config.ServerConfigResolver.resolve_server_exe", return_value=fake_exe), \
          patch("services.server_config.ServerConfigResolver.resolve_model_path", return_value=None), \
+         patch.object(pm, "inspect_port_occupant", return_value=(False, None, None)), \
          patch.object(pm, "_kill_llama_server_instance"):
         ok = pm.start_llama_server_sync("non_existent_model")
 

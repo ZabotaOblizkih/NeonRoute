@@ -11,6 +11,72 @@ from services.sandbox_manager import SandboxManager
 from services.engineer_prompts import resolve_pip_package
 
 
+def clean_traceback(raw_tb: str, max_frames: int = 4) -> str:
+    """
+    Очищает стектрейс Python от инфраструктурного шума песочницы.
+    Отсекает вызовы runpy.py, sandbox_runner.py, sandbox_guard.py, <frozen ...> и site-packages,
+    оставляя только пользовательские фреймы скрипта песочницы и финальную строку ошибки.
+    """
+    if not raw_tb or not str(raw_tb).strip():
+        return ""
+
+    lines = str(raw_tb).splitlines()
+    filtered_blocks: list = []
+    current_block: list = []
+    last_error_line = ""
+
+    # Игнорируемые инфраструктурные модули
+    ignored_patterns = (
+        "sandbox_runner.py",
+        "sandbox_guard.py",
+        "runpy.py",
+        "<frozen",
+        "site-packages",
+        "importlib"
+    )
+
+    is_in_traceback = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("Traceback (most recent call last):"):
+            is_in_traceback = True
+            continue
+
+        if is_in_traceback:
+            if line.startswith("  File "):
+                if current_block:
+                    filtered_blocks.append(current_block)
+                    current_block = []
+                # Проверяем, не относится ли файл к системному раннеру
+                if not any(ign in line for ign in ignored_patterns):
+                    current_block.append(line)
+            elif current_block:
+                current_block.append(line)
+            elif not line.startswith(" ") and stripped:
+                # Финальная строка исключения (например: NameError: ...)
+                last_error_line = stripped
+        else:
+            if stripped:
+                last_error_line = stripped
+
+    if current_block:
+        filtered_blocks.append(current_block)
+
+    # Если все фреймы оказались системными — возвращаем хотя бы текст ошибки
+    if not filtered_blocks:
+        return last_error_line or raw_tb.strip()
+
+    # Берем последние max_frames пользовательских вызовов
+    result_lines = ["Traceback (most recent call last, sandbox filtered):"]
+    for block in filtered_blocks[-max_frames:]:
+        result_lines.extend(block)
+
+    if last_error_line:
+        result_lines.append(last_error_line)
+
+    return "\n".join(result_lines)
+
+
 def extract_error_fingerprint(output: str) -> str:
     """Извлекает нормализованный цифровой отпечаток ошибки для детекции зацикливания."""
     if not output or not str(output).strip():
@@ -33,8 +99,10 @@ def extract_error_fingerprint(output: str) -> str:
     for line in reversed(lines):
         m = re.search(r'File\s+["\']([^"\']+)["\'],\s+line\s+(\d+)', line)
         if m:
-            file_line = f"{Path(m.group(1)).name}:{m.group(2)}"
-            break
+            fname = Path(m.group(1)).name
+            if fname not in ("sandbox_runner.py", "sandbox_guard.py", "runpy.py"):
+                file_line = f"{fname}:{m.group(2)}"
+                break
 
     last_line = lines[-1][:150]
     return f"{file_line}::{last_line}" if file_line else last_line
@@ -47,6 +115,8 @@ def diagnose_runtime_error(raw_error: str) -> str:
     инженерными подсказками и примерами синтаксиса при обнаружении
     известных антипаттернов API.
     """
+    raw_error = clean_traceback(raw_error)
+
     if not raw_error:
         return raw_error
 

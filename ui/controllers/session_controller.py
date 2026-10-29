@@ -73,6 +73,8 @@ class SessionControllerMixin:
             if session_id in self._session_items:
                 _, w = self._session_items[session_id]
                 w.update_title(clean_title)
+            if hasattr(self, "workspace_inspector"):
+                self.workspace_inspector.update_title(clean_title)
             self.statusBar().showMessage(f"Диалог переименован: '{clean_title}'", 3000)
 
     def _on_delete_session_requested(self, session_id: str):

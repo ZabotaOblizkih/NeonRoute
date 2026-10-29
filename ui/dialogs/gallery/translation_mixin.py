@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QPushButton, QMessageBox, QApplication
 )
 
-from services.tavern_parser import CharacterCard
+from services.tavern_parser import CharacterCard, TavernParser
 from services.task_queue import InferenceTask
 from services.card_translator import (
     CardTranslator,
@@ -210,40 +210,88 @@ class GalleryTranslationMixin:
 
         card: CharacterCard = self.active_entry["card"]
 
-        # Sync inputs to card
+        # Sync inputs to card only if not showing RU and fields are not empty
         self._save_current_greeting_text()
-        card.name = self.input_name.text().strip() or card.name
-        card.visual_dna = self.input_visual_dna.toPlainText().strip()
-        card.description = self.input_desc.toPlainText().strip()
-        card.personality = self.input_personality.toPlainText().strip()
-        card.scenario = self.input_scenario.toPlainText().strip()
-        card.system_prompt = self.input_system_prompt.toPlainText().strip()
-        card.mes_example = self.input_mes_example.toPlainText().strip()
+        if self.input_name.text().strip():
+            card.name = self.input_name.text().strip()
+        if hasattr(self, "input_visual_dna") and self.input_visual_dna.toPlainText().strip():
+            card.visual_dna = self.input_visual_dna.toPlainText().strip()
+
+        if not getattr(self, "_showing_ru", False):
+            if self.input_desc.toPlainText().strip():
+                card.description = self.input_desc.toPlainText().strip()
+            if self.input_personality.toPlainText().strip():
+                card.personality = self.input_personality.toPlainText().strip()
+            if self.input_scenario.toPlainText().strip():
+                card.scenario = self.input_scenario.toPlainText().strip()
+            if hasattr(self, "input_system_prompt") and self.input_system_prompt.toPlainText().strip():
+                card.system_prompt = self.input_system_prompt.toPlainText().strip()
+            if self.input_mes_example.toPlainText().strip():
+                card.mes_example = self.input_mes_example.toPlainText().strip()
 
         self.btn_translate_all.setEnabled(False)
-        self.btn_translate_all.setText("⏳ Перевод карточки...")
+        if hasattr(self.btn_translate_all, "update_step_progress"):
+            self.btn_translate_all.update_step_progress(1, 1, "Подготовка...")
+        else:
+            self.btn_translate_all.setText("⏳ Перевод карточки...")
 
         def _on_all_done(success: bool, res_dict=None):
-            self.btn_translate_all.setEnabled(True)
-            self.btn_translate_all.setText("🌐 Перевести всю карточку (RU)")
+            if hasattr(self.btn_translate_all, "reset_state"):
+                self.btn_translate_all.reset_state(success=success)
+            else:
+                self.btn_translate_all.setEnabled(True)
+                self.btn_translate_all.setText("🌐 Перевести всю карточку (RU)")
             if success:
+                self._showing_ru = True
+                if hasattr(self, "btn_toggle_lang"):
+                    self.btn_toggle_lang.setText("🌐 RU / EN [RU]")
+                    self.btn_toggle_lang.setToolTip("Отображается: Русский перевод (RU). Нажмите для переключения на оригинал (EN).")
+
+                if isinstance(res_dict, dict) and res_dict:
+                    if res_dict.get("DESCRIPTION"):
+                        card.description_ru = res_dict["DESCRIPTION"]
+                    if res_dict.get("PERSONALITY"):
+                        card.personality_ru = res_dict["PERSONALITY"]
+                    if res_dict.get("SCENARIO"):
+                        card.scenario_ru = res_dict["SCENARIO"]
+                    if res_dict.get("MES_EXAMPLE"):
+                        card.mes_example_ru = res_dict["MES_EXAMPLE"]
+                    if res_dict.get("FIRST_MES"):
+                        card.first_mes_ru = res_dict["FIRST_MES"]
+
+                    if hasattr(card, "alternate_greetings") and card.alternate_greetings:
+                        alt_ru = list(getattr(card, "alternate_greetings_ru", []) or [])
+                        while len(alt_ru) < len(card.alternate_greetings):
+                            alt_ru.append("")
+                        for idx in range(len(card.alternate_greetings)):
+                            key = f"ALT_GREETING_{idx+1}"
+                            if res_dict.get(key):
+                                alt_ru[idx] = res_dict[key]
+                        card.alternate_greetings_ru = alt_ru
+
                 if self.active_entry and self.active_entry["card"] == card:
-                    self.input_desc.setPlainText(card.description_ru or "")
-                    self.input_personality.setPlainText(card.personality_ru or "")
-                    self.input_scenario.setPlainText(card.scenario_ru or "")
-                    self.input_mes_example.setPlainText(card.mes_example_ru or "")
-                    self._showing_ru = True
-                    if hasattr(self, "btn_toggle_lang"):
-                        self.btn_toggle_lang.setText("🌐 RU / EN [RU]")
-                        self.btn_toggle_lang.setToolTip("Отображается: Русский перевод (RU). Нажмите для переключения на оригинал (EN).")
-                    # Обновить текущее отображаемое первое сообщение с учетом активной страницы приветствий:
-                    self._update_greeting_display()
+                    self.input_desc.setPlainText(card.description_ru or card.description or "")
+                    self.input_personality.setPlainText(card.personality_ru or card.personality or "")
+                    self.input_scenario.setPlainText(card.scenario_ru or card.scenario or "")
+                    self.input_mes_example.setPlainText(card.mes_example_ru or card.mes_example or "")
+                    if hasattr(self, "_update_greeting_display"):
+                        self._update_greeting_display()
+                    if hasattr(self, "_update_sections_visibility"):
+                        self._update_sections_visibility()
+                    TavernParser.save_card_translations(card)
                     self._save_changes(silent=True)
                 else:
-                    self._showing_ru = True
+                    TavernParser.save_card_translations(card)
+
                 QMessageBox.information(self, "Успех", f"Карточка '{card.name}' успешно переведена на русский язык!")
             else:
                 QMessageBox.warning(self, "Ошибка", "Не удалось перевести карточку.")
 
-        parent_win._translate_character_card_task(card, on_complete=_on_all_done)
+        translate_fn = getattr(parent_win, "_translate_character_card_task", None)
+        if translate_fn:
+            progress_cb = getattr(self.btn_translate_all, "update_step_progress", None)
+            try:
+                translate_fn(card, on_complete=_on_all_done, on_progress=progress_cb)
+            except TypeError:
+                translate_fn(card, on_complete=_on_all_done)
 

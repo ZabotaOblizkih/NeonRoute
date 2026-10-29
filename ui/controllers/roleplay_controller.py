@@ -16,6 +16,8 @@ from PyQt6.QtGui import QPixmap
 from services.tavern_parser import CharacterCard, TavernParser
 from services.session_manager import SessionManager
 from services.task_queue import InferenceTask
+from ui.components.step_progress_button import CardProgressBridge
+from services.card_translator import translate_card_slots_sequential
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -260,32 +262,61 @@ class RoleplayControllerMixin:
         """Opens Characters Gallery dialog for companion selection."""
         self._open_characters_gallery_dialog()
 
-    def _translate_character_card_task(self, card: CharacterCard, on_complete=None):
+    def _translate_character_card_task(self, card: CharacterCard, on_complete=None, on_progress=None):
         """Пайплайн асинхронной локализации карточки персонажа на русский язык."""
-        sections = [
-            f"===DESCRIPTION===\n{card.description or ''}",
-            f"===PERSONALITY===\n{card.personality or ''}",
-            f"===SCENARIO===\n{card.scenario or ''}",
-            f"===MES_EXAMPLE===\n{card.mes_example or ''}",
-            f"===FIRST_MES===\n{card.first_mes or ''}"
-        ]
-        # Добавить ВСЕ альтернативные приветствия карточки:
+        sections = []
+        if getattr(card, "description", None) and card.description.strip():
+            sections.append(f"===DESCRIPTION===\n{card.description.strip()}")
+        if getattr(card, "personality", None) and card.personality.strip():
+            sections.append(f"===PERSONALITY===\n{card.personality.strip()}")
+        if getattr(card, "scenario", None) and card.scenario.strip():
+            sections.append(f"===SCENARIO===\n{card.scenario.strip()}")
+        if getattr(card, "mes_example", None) and card.mes_example.strip():
+            sections.append(f"===MES_EXAMPLE===\n{card.mes_example.strip()}")
+        if getattr(card, "first_mes", None) and card.first_mes.strip():
+            sections.append(f"===FIRST_MES===\n{card.first_mes.strip()}")
+
         if hasattr(card, "alternate_greetings") and card.alternate_greetings:
             for idx, alt_greet in enumerate(card.alternate_greetings):
-                sections.append(f"===ALT_GREETING_{idx+1}===\n{alt_greet}")
+                if alt_greet and alt_greet.strip():
+                    sections.append(f"===ALT_GREETING_{idx+1}===\n{alt_greet.strip()}")
+
+        if not sections:
+            if on_complete:
+                try:
+                    on_complete(False, {})
+                except TypeError:
+                    on_complete(False)
+            return
 
         raw_payload = "\n".join(sections)
+        bridge = CardProgressBridge()
+        if on_progress:
+            bridge.progress_changed.connect(on_progress)
 
         sys_prompt = (
             "Ты — профессиональный художественный переводчик литературной прозы и ролевых игр на русский язык.\n"
             "Переведи каждую секцию карточки персонажа на богатый, атмосферный русский язык, сохраняя стиль и характер.\n"
             "СТРОГО СОХРАНЯЙ ВСЕ РАЗДЕЛИТЕЛИ ===SECTION=== В СВОЕМ ОТВЕТЕ! Переведи все приветствия ===FIRST_MES=== и ===ALT_GREETING_X=== без исключений."
         )
-        user_prompt = f"Переведи следующие секции карточки на русский язык:\n\n{raw_payload}"
 
-        def _worker_fn(text: str) -> dict:
+        def _worker_fn(text: str = None, task_card: CharacterCard = None) -> dict:
+            # 1. Если задан коллбэк прогресса — используем слот-конвейер
+            if on_progress:
+                target_card = task_card or card
+                def _slot_cb(cur: int, tot: int, slot_key: str):
+                    bridge.progress_changed.emit(cur, tot, slot_key)
+
+                return translate_card_slots_sequential(
+                    card=target_card,
+                    lm_client=self.lm_client,
+                    on_progress=_slot_cb
+                )
+
+            # 2. Монолитный вызов для тестов и обратной совместимости
+            payload_text = text if text is not None else raw_payload
             resp = self.lm_client.chat_completion(
-                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}],
+                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": payload_text}],
                 temperature=0.25,
                 max_tokens=8192,
                 emit_signal=False,
@@ -294,18 +325,52 @@ class RoleplayControllerMixin:
             return {"raw_reply": resp}
 
         def _on_done(task_id, result):
-            reply = result.get("raw_reply", "") if isinstance(result, dict) else str(result)
-            # Парсинг делимитеров: устойчив к пробелам, регистру и маркдауну
-            parts = re.split(r'===+\s*([A-Za-z0-9_]+)\s*===+', reply, flags=re.IGNORECASE)
-            res_dict = {}
-            if len(parts) >= 3:
-                for i in range(1, len(parts), 2):
-                    key = parts[i].upper().strip()
-                    val = parts[i+1].strip()
-                    val = re.sub(r'^[*\s`#_]+(?:\r?\n|$)', '', val)
-                    val = re.sub(r'(?:\r?\n|^)[*\s`#_]+$', '', val).strip()
-                    if val:
-                        res_dict[key] = val
+            if isinstance(result, dict) and "raw_reply" not in result:
+                res_dict = result
+            else:
+                reply = result.get("raw_reply", "") if isinstance(result, dict) else str(result)
+                parts = re.split(r'===+\s*([A-Za-z0-9_А-Яа-яЁё\s]+)\s*===+', reply, flags=re.IGNORECASE)
+                res_dict = {}
+                key_aliases = {
+                    "DESCRIPTION": "DESCRIPTION", "ОПИСАНИЕ": "DESCRIPTION",
+                    "PERSONALITY": "PERSONALITY", "ХАРАКТЕР": "PERSONALITY", "ЛИЧНОСТЬ": "PERSONALITY",
+                    "SCENARIO": "SCENARIO", "СЦЕНАРИЙ": "SCENARIO", "ОКРУЖЕНИЕ": "SCENARIO",
+                    "MES_EXAMPLE": "MES_EXAMPLE", "ПРИМЕРЫ": "MES_EXAMPLE", "ПРИМЕРЫ ДИАЛОГОВ": "MES_EXAMPLE", "ДИАЛОГИ": "MES_EXAMPLE",
+                    "FIRST_MES": "FIRST_MES", "FIRST_MESSAGE": "FIRST_MES", "FIRST MESSAGE": "FIRST_MES",
+                    "GREETING": "FIRST_MES", "ПЕРВОЕ СООБЩЕНИЕ": "FIRST_MES", "ПРИВЕТСТВИЕ": "FIRST_MES", "ВСТУПЛЕНИЕ": "FIRST_MES"
+                }
+                if len(parts) >= 3:
+                    for i in range(1, len(parts), 2):
+                        raw_header = parts[i].upper().strip()
+                        clean_header = re.sub(r'[\s_]+', ' ', raw_header).strip()
+                        underscore_header = re.sub(r'\s+', '_', clean_header)
+
+                        canonical_key = (
+                            key_aliases.get(raw_header)
+                            or key_aliases.get(clean_header)
+                            or key_aliases.get(underscore_header)
+                        )
+                        if not canonical_key:
+                            alt_match = re.match(r'^(?:ALT[_\s]*GREETING|АЛЬТ(?:ЕРНАТИВНОЕ)?[_\s]*ПРИВЕТСТВИЕ)[_\s]*(\d+)$', raw_header, flags=re.IGNORECASE)
+                            if alt_match:
+                                canonical_key = f"ALT_GREETING_{alt_match.group(1)}"
+                            else:
+                                canonical_key = raw_header
+
+                        val = parts[i+1].strip()
+                        val = re.sub(r'^[\*\s`#_]+(?:\r?\n|$)', '', val)
+                        val = re.sub(r'(?:\r?\n|^)[\*\s`#_]+$', '', val).strip()
+                        if val and canonical_key:
+                            res_dict[canonical_key] = val
+
+            if not res_dict:
+                self.statusBar().showMessage(f"Не удалось распознать перевод для карточки '{card.name}'.", 5000)
+                if on_complete:
+                    try:
+                        on_complete(False, {})
+                    except TypeError:
+                        on_complete(False)
+                return
 
             if res_dict.get("DESCRIPTION"): card.description_ru = res_dict["DESCRIPTION"]
             if res_dict.get("PERSONALITY"): card.personality_ru = res_dict["PERSONALITY"]
@@ -313,7 +378,6 @@ class RoleplayControllerMixin:
             if res_dict.get("MES_EXAMPLE"): card.mes_example_ru = res_dict["MES_EXAMPLE"]
             if res_dict.get("FIRST_MES"): card.first_mes_ru = res_dict["FIRST_MES"]
 
-            # Извлечение всех переведённых альтернативных приветствий:
             if hasattr(card, "alternate_greetings") and card.alternate_greetings:
                 alt_ru = list(getattr(card, "alternate_greetings_ru", []) or [])
                 while len(alt_ru) < len(card.alternate_greetings):
@@ -324,7 +388,6 @@ class RoleplayControllerMixin:
                         alt_ru[idx] = res_dict[key]
                 card.alternate_greetings_ru = alt_ru
 
-            # Сохранить на диск и в активную сессию
             TavernParser.save_card_translations(card)
             if self.current_session:
                 cd = self.current_session.get("character_data")
@@ -351,7 +414,7 @@ class RoleplayControllerMixin:
             name=f"🌐 Локализация карточки: {card.name}",
             task_type="translation",
             func=_worker_fn,
-            kwargs={"text": raw_payload},
+            kwargs={"text": raw_payload, "task_card": card},
             abort_fn=self.lm_client.abort
         )
         if hasattr(self, "_active_tasks"):

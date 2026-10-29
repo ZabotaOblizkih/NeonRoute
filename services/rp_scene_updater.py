@@ -437,19 +437,32 @@ def apply_scene_updates_to_cast(
                 ent["companion_state"] = dict(cast_data.get("companion_state", {}))
                 break
 
-    if modified:
-        RPCastManager.save_cast(session_id, cast_data)
-
-    # Автоматическая запись в векторную память сессии
+    # Автоматическая запись сюжетной хроники в каст и векторную память сессии
     from services.memory_db import memory_db
 
     m_stone = updates.get("story_milestone")
     if m_stone and m_stone.strip() and m_stone.strip().lower() != "null":
-        memory_db.add_rp_memory(session_id, m_stone.strip())
+        clean_ms = m_stone.strip()
+        ms_list = cast_data.setdefault("story_milestones", [])
+        if clean_ms not in ms_list:
+            ms_list.append(clean_ms)
+            if len(ms_list) > 10:
+                cast_data["story_milestones"] = ms_list[-10:]
+            modified = True
+
+        ws = cast_data.setdefault("world_state", [])
+        if not ws and clean_ms not in ws:
+            ws.append(clean_ms)
+            modified = True
+
+        memory_db.add_rp_memory(session_id, clean_ms)
 
     rel_event = updates.get("relationship_shift") or updates.get("intimacy_milestone")
     if rel_event and str(rel_event).strip().lower() not in ("null", "none", ""):
         memory_db.add_rp_memory(session_id, f"Веха отношений: {str(rel_event).strip()}")
+
+    if modified:
+        RPCastManager.save_cast(session_id, cast_data)
 
 
 __all__ = [

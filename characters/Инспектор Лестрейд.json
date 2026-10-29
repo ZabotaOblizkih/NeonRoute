@@ -8,6 +8,7 @@
     "scenario": "",
     "first_mes": "*Осматривает разбитое окно.*",
     "mes_example": "",
+    "alternate_greetings": [],
     "system_prompt": "",
     "post_history_instructions": "",
     "scenery_dna": "",
@@ -17,7 +18,6 @@
     "mes_example_ru": "",
     "first_mes_ru": "",
     "alternate_greetings_ru": [],
-    "visual_dna": "",
-    "alternate_greetings": []
+    "visual_dna": ""
   }
 }

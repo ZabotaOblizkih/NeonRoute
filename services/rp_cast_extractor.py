@@ -42,7 +42,7 @@ def build_cast_extraction_spec(
 
     # 1. Базовые правила (Core) — присутствуют во всех ролевых карточках
     rules = [
-        "1. npc: стороннее лицо (третий персонаж сцены). Запрещено создавать NPC из игрока или спутницы. Если в ПОСЛЕДНЕМ ходе появился/упомянут сторонний персонаж: has_update=true, укажи name (на русском), new_fact (на русском), visual_dna, presence ('physical'|'memory'), vital_status ('alive'|'critical'|'dead'). Иначе has_update=false.",
+        "1. npc: стороннее лицо (третий персонаж сцены). Запрещено создавать NPC из игрока или спутницы. Если в ПОСЛЕДНЕМ ходе появился/упомянут сторонний персонаж: has_update=true, укажи name (на русском), new_fact (на русском), visual_dna (строго до 6-8 Danbooru-тегов через запятую, только ключевые маркеры внешности), presence ('physical'|'memory'), vital_status ('alive'|'critical'|'dead'). Иначе has_update=false.",
         "2. new_location: краткое название новой зоны на русском языке, ЕСЛИ отряд явно переместился (например: 'Поверхность у гробницы', 'Пустыня'), иначе null.",
         "2a. new_location_dna: English Danbooru tags for the new physical geometry (architecture, lighting, materials), or null if location has not changed.",
         "2b. scene_ambience: физическое состояние освещения, теней и воздуха в ТЕКУЩЕЙ точке сцены на русском языке (до 7 слов: источник света, полумрак/яркость, воздух, например: 'затхлый полумрак, свет факела, сырой камень' или 'палящий багровый зенит, сухой воздух'). Если обстановка не менялась — СТРОГО null.",
@@ -321,7 +321,7 @@ class RPCastExtractor:
                 dialogue_lines.append("Контекст прошлых реплик (для справки):")
                 for m in context_msgs:
                     txt = str(m.get("text") or m.get("content") or "").strip()
-                    if txt and not txt.startswith("["):
+                    if txt and not txt.startswith("[IMAGE_PROMPT"):
                         role = "ИГРОК" if (m.get("is_user") or m.get("role") == "user") else ("СПУТНИЦА" if not is_environment else "СРЕДА")
                         dialogue_lines.append(f"{role}: {txt}")
                 dialogue_lines.append("")
@@ -329,7 +329,7 @@ class RPCastExtractor:
             dialogue_lines.append("ПОСЛЕДНИЙ ХОД (анализируй только эти новые действия):")
             for m in last_turn_msgs:
                 txt = str(m.get("text") or m.get("content") or "").strip()
-                if txt and not txt.startswith("["):
+                if txt and not txt.startswith("[IMAGE_PROMPT"):
                     role = "ИГРОК" if (m.get("is_user") or m.get("role") == "user") else ("СПУТНИЦА" if not is_environment else "СРЕДА")
                     dialogue_lines.append(f"{role}: {txt}")
 
@@ -397,7 +397,7 @@ class RPCastExtractor:
                 messages=req_messages,
                 model=active_loaded_model,
                 temperature=0.0,
-                max_tokens=700,
+                max_tokens=1400,
                 context_length=active_loaded_ctx,
                 is_roleplay=True,
                 stream=False,
@@ -414,26 +414,56 @@ class RPCastExtractor:
             try:
                 data = json.loads(clean_resp)
             except json.JSONDecodeError:
-                depth = 0
-                start_idx = -1
-                found_objects = []
-                for idx, char in enumerate(clean_resp):
-                    if char == '{':
-                        if depth == 0:
-                            start_idx = idx
-                        depth += 1
-                    elif char == '}':
-                        depth -= 1
-                        if depth == 0 and start_idx != -1:
-                            try:
-                                candidate = json.loads(clean_resp[start_idx:idx+1])
-                                if isinstance(candidate, dict):
-                                    found_objects.append(candidate)
-                            except json.JSONDecodeError:
-                                pass
-                            start_idx = -1
-                if found_objects:
-                    data = found_objects[-1]
+                # Попытка 1: Библиотека json_repair (если установлена в окружении)
+                try:
+                    import json_repair
+                    repaired = json_repair.loads(clean_resp)
+                    if isinstance(repaired, dict):
+                        data = repaired
+                except Exception:
+                    pass
+
+                # Попытка 2: Восстановление оборванного JSON (закрытие висячих кавычек и скобок)
+                if not data:
+                    try:
+                        fixed_text = clean_resp.rstrip()
+                        # Дозакрываем незакрытую строковую литераль
+                        if fixed_text.count('"') % 2 != 0:
+                            fixed_text += '"'
+                        
+                        # Дозакрываем открытые фигурные скобки объекта
+                        open_braces = fixed_text.count('{') - fixed_text.count('}')
+                        if open_braces > 0:
+                            fixed_text += '}' * open_braces
+                            
+                        candidate = json.loads(fixed_text)
+                        if isinstance(candidate, dict):
+                            data = candidate
+                    except Exception:
+                        pass
+
+                # Попытка 3: Извлечение первого валидного под-объекта через баланс скобок
+                if not data:
+                    depth = 0
+                    start_idx = -1
+                    found_objects = []
+                    for idx, char in enumerate(clean_resp):
+                        if char == '{':
+                            if depth == 0:
+                                start_idx = idx
+                            depth += 1
+                        elif char == '}':
+                            depth -= 1
+                            if depth == 0 and start_idx != -1:
+                                try:
+                                    candidate = json.loads(clean_resp[start_idx:idx+1])
+                                    if isinstance(candidate, dict):
+                                        found_objects.append(candidate)
+                                except Exception:
+                                    pass
+                                start_idx = -1
+                    if found_objects:
+                        data = found_objects[-1]
 
             if data and isinstance(data, dict):
                 if not (HISTORY_DIR / f"chat_{session_id}.json").exists():

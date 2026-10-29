@@ -144,6 +144,8 @@ class MainWindow(
     models_refreshed = pyqtSignal()
     _sig_reload_lms = pyqtSignal(float)
     _sig_cancel_lms = pyqtSignal()
+    _sig_engineer_plan_card = pyqtSignal(str)
+    _sig_inspector_status = pyqtSignal(str, str, int, str)
 
     def __init__(self):
         super().__init__()
@@ -251,6 +253,8 @@ class MainWindow(
 
         self._sig_reload_lms.connect(self._do_reload_active_lms_timer)
         self._sig_cancel_lms.connect(self._do_cancel_lms_reload)
+        self._sig_engineer_plan_card.connect(self._on_engineer_plan_card)
+        self._sig_inspector_status.connect(self._on_inspector_status)
 
         from services.mode_coordinator import ModeCoordinator, AppMode
         self.mode_coordinator = ModeCoordinator(self)
@@ -410,6 +414,7 @@ class MainWindow(
         # Третий элемент: инспектор песочницы для режима Инженер
         self.workspace_inspector = WorkspaceInspectorWidget(self)
         self.workspace_inspector.setVisible(False)
+        self.workspace_inspector.rename_session_requested.connect(self._on_rename_session_requested)
         self.main_splitter.addWidget(self.workspace_inspector)
 
         self.main_splitter.setStretchFactor(0, 0)
@@ -445,6 +450,7 @@ class MainWindow(
         self.btn_export = self.chat_header_bar.btn_export
         self.btn_audio = self.chat_header_bar.btn_audio
         self.btn_fullscreen = self.chat_header_bar.btn_fullscreen
+        self.btn_toggle_inspector = self.chat_header_bar.btn_toggle_inspector
 
         # Floating close button for fullscreen mode
         self.floating_close_btn = QPushButton("✕", self)
@@ -552,6 +558,7 @@ class MainWindow(
 
     def _setup_shortcuts(self):
         MenuBuilder.setup_shortcuts(self)
+        self.sc_toggle_inspector = QShortcut(QKeySequence("Ctrl+B"), self, self.toggle_workspace_inspector)
 
     def _setup_signals(self):
         # Task Queue Signals
@@ -838,6 +845,8 @@ class MainWindow(
         self.chat_list_widget.setItemWidget(item, w)
         self._session_items[sess_id] = (item, w)
         self.chat_list_widget.setCurrentItem(item)
+        if hasattr(self, "workspace_inspector"):
+            self.workspace_inspector.update_title(item_title)
 
         # Welcome / greeting message
         if mode == "assistant":
@@ -1074,8 +1083,15 @@ class MainWindow(
             if not session_data:
                 return
 
+            if hasattr(self, "workspace_inspector"):
+                sess_title = session_data.get("title", "Песочница")
+                self.workspace_inspector.update_title(sess_title)
+
             from services.mode_coordinator import AppMode
-            is_eng_sess = bool(session_data.get("type") == "engineering" or session_data.get("mode") == "engineering")
+            is_eng_sess = bool(
+                session_data.get("type") in ("engineering", "engineer")
+                or session_data.get("mode") in ("engineering", "engineer")
+            )
             target_app_mode = AppMode.from_string(session_data.get("mode"), is_engineer_checked=is_eng_sess)
             self.mode_coordinator.transition_to(target_app_mode, session_data=session_data)
 
@@ -1174,6 +1190,8 @@ class MainWindow(
             self._check_mode_lock()
             self.on_active_chat_changed(session_id)
             self.statusBar().showMessage(f"Загружен диалог: {session_data.get('title', 'Диалог')}", 3000)
+            # Гарантированное обновление визуального режима и сплиттера под загруженную сессию
+            self._update_mode_ui()
         finally:
             self._is_switching_session = False
 
@@ -1384,6 +1402,18 @@ class MainWindow(
         self.mode_coordinator.transition_to(target)
 
 
+    def toggle_workspace_inspector(self):
+        """Ручное переключение видимости инспектора песочницы."""
+        if not hasattr(self, "workspace_inspector"):
+            return
+        is_visible = not self.workspace_inspector.isVisible()
+        self.workspace_inspector.setVisible(is_visible)
+        if is_visible:
+            self.workspace_inspector.refresh_files()
+            self.main_splitter.setSizes([260, 560, 380])
+        else:
+            self.main_splitter.setSizes([280, 920, 0])
+
     def _update_mode_ui(self):
         is_eng = self.is_engineer_mode_active()
         if is_eng:
@@ -1471,6 +1501,23 @@ class MainWindow(
     def _on_llm_response_received(self, text: str):
         """Завершение генерации ответа LLM и делегирование в контроллер потока чата."""
         super()._on_llm_response_received(text)
+
+    @pyqtSlot(str)
+    def _on_engineer_plan_card(self, card_text: str):
+        if hasattr(self, "_display_engineer_plan_card"):
+            self._display_engineer_plan_card(card_text)
+
+    @pyqtSlot(str, str, int, str)
+    def _on_inspector_status(self, status: str, filename: str, line_num: int, error_msg: str):
+        inspector = getattr(self, "workspace_inspector", None)
+        if not inspector:
+            return
+        if status == "running":
+            inspector.mark_running()
+        elif status == "success":
+            inspector.mark_success()
+        elif status == "error":
+            inspector.show_error(filename, line_num, error_msg)
 
     def _on_llm_error_occurred(self, error: str):
         """Called directly when LMStudioClient emits error_occurred signal."""

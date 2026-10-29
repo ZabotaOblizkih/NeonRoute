@@ -85,30 +85,9 @@ class SidebarWidget(QFrame):
         self.char_card_widget.setVisible(False)
         layout.addWidget(self.char_card_widget)
 
-        # 3. Model Selectors (LM Studio)
-        models_box = QVBoxLayout()
-        models_box.setSpacing(6)
-
-        lm_lbl = QLabel("МОДЕЛЬ LM STUDIO:", self)
-        lm_lbl.setStyleSheet("color: #64748B; font-size: 10px; font-weight: bold;")
-        models_box.addWidget(lm_lbl)
-
-        lm_row = QHBoxLayout()
-        self.lm_combo = ComboBox(self)
-        self.lm_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        self.btn_refresh_models = TransparentToolButton(FIF.SYNC, self)
-        self.btn_refresh_models.setFixedSize(32, 32)
-        self.btn_refresh_models.setToolTip("Обновить список моделей LM Studio")
-        self.btn_refresh_models.installEventFilter(
-            ToolTipFilter(self.btn_refresh_models, showDelay=300, position=ToolTipPosition.TOP)
-        )
-        self.btn_refresh_models.clicked.connect(self.window._refresh_models)
-
-        lm_row.addWidget(self.lm_combo)
-        lm_row.addWidget(self.btn_refresh_models)
-        models_box.addLayout(lm_row)
-        layout.addLayout(models_box)
+        # Backward compatibility placeholders
+        self.lm_combo = None
+        self.btn_refresh_models = None
 
         # 4. Chat Sessions List
         layout.addSpacing(6)

@@ -529,16 +529,13 @@ class ModelSamplingDialog(QDialog):
         init_xtc_thresh = float(current_params.get("xtc_threshold", ref_xtc_thresh))
         init_max_tokens = int(current_params.get("max_tokens", ref_max_tok))
 
+        self.spin_temp.setValue(init_temp)
+        self._on_temp_spin_changed(init_temp)
+
         if self.is_engineer_mode:
-            self.spin_temp.setValue(0.15)
-            self._on_temp_spin_changed(0.15)
-            self.spin_temp.setEnabled(False)
-            self.slider_temp.setEnabled(False)
-            lbl_t.setText("Температура: 🔒 0.15 (Режим «⚡ Инженер»)")
-            lbl_t.setStyleSheet("color: #00F0FF; font-weight: bold;")
-            tip = "В режиме «⚡ Инженер» температура зафиксирована на 0.15 для стабильности синтаксиса и аргументов API."
-            self.spin_temp.setToolTip(tip)
-            self.slider_temp.setToolTip(tip)
+            # Температура разблокирована для свободного управления креативностью генерации кода
+            self.spin_temp.setEnabled(True)
+            self.slider_temp.setEnabled(True)
 
             self.spin_dry.setValue(0.00)
             self._on_dry_spin_changed(0.00)
@@ -562,8 +559,6 @@ class ModelSamplingDialog(QDialog):
             self.slider_xtc_prob.setToolTip(xtc_eng_tip)
             self.lbl_xtc_prob.setToolTip(xtc_eng_tip)
         else:
-            self.spin_temp.setValue(init_temp)
-            self._on_temp_spin_changed(init_temp)
             self.spin_dry.setValue(init_dry)
             self._on_dry_spin_changed(init_dry)
             self.spin_xtc_prob.setValue(init_xtc_prob)
@@ -747,8 +742,8 @@ class ModelSamplingDialog(QDialog):
             defaults = get_default_sampling_params(active_mode)
 
             if self.is_engineer_mode:
-                self.spin_temp.setValue(0.15)
-                self.slider_temp.setValue(15)
+                self.spin_temp.setValue(defaults["temperature"])
+                self.slider_temp.setValue(int(round(defaults["temperature"] * 100)))
                 self.spin_dry.setValue(0.00)
                 self.slider_dry.setValue(0)
                 self.spin_xtc_prob.setValue(0.00)
@@ -799,7 +794,8 @@ class ModelSamplingDialog(QDialog):
             "max_tokens": int(self.spin_max_tokens.value())
         }
         if self.is_engineer_mode:
-            params["temperature"] = 0.15
+            # Для режима Инженер сохраняем реальное значение температуры, выставленное пользователем
+            pass
             params["dry_multiplier"] = 0.00
             params["xtc_probability"] = 0.00
         if hasattr(self, "chk_dm_mode") and self.mode == "roleplay":

@@ -98,7 +98,11 @@ class TaskLifecycleMixin:
             {"role": "user", "content": user_prompt}
         ]
 
-        model_name = getattr(self.lm_client, "_last_loaded_model_id", None) or self.lm_combo.currentText().strip()
+        model_name = (
+            getattr(self.lm_client, "_last_loaded_model_id", None)
+            or (self.lm_combo.currentText().strip() if hasattr(self, "lm_combo") and self.lm_combo else "")
+            or getattr(self, "active_lms_model", "")
+        )
         if model_name and model_name.startswith("default"):
             model_name = None
 
@@ -371,7 +375,7 @@ class TaskLifecycleMixin:
                     pass
 
             # 2. Разблокируем выбор модели для пользователя
-            if hasattr(self, "lm_combo"):
+            if hasattr(self, "lm_combo") and self.lm_combo:
                 self.lm_combo.setEnabled(True)
                 self.lm_combo.setToolTip("Выберите другую доступную модель")
             if getattr(self, "current_session", None):

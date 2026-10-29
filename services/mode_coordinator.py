@@ -445,5 +445,17 @@ class ModeCoordinator:
         if hasattr(self.mw, "btn_forge_toggle"):
             self.mw.btn_forge_toggle.setVisible(mode != AppMode.ENGINEER)
 
+        # Синхронизация инспектора песочницы и размеров сплиттера
+        if hasattr(self.mw, "workspace_inspector"):
+            self.mw.workspace_inspector.setVisible(is_eng)
+            if is_eng:
+                self.mw.workspace_inspector.refresh_files()
+
+        if hasattr(self.mw, "main_splitter"):
+            if is_eng:
+                self.mw.main_splitter.setSizes([260, 560, 380])
+            else:
+                self.mw.main_splitter.setSizes([280, 920, 0])
+
         # 4. Обновление шапки
         self.mw._update_header_for_current_state()

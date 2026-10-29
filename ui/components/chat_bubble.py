@@ -781,8 +781,14 @@ class ChatMessageWidget(QWidget):
         spoiler.append_thought_chunk(chunk)
         self._update_bubble_geometry()
 
-    def finalize_thought(self, duration_sec: float = 0.0, token_count: int = 0):
+    def finalize_thought(self, duration_sec: float = 0.0, token_count: Union[int, str] = 0):
         """Фиксирует метрики мыслей и сворачивает спойлер."""
+        if isinstance(token_count, str) and not token_count.isdigit():
+            spoiler = self.get_or_create_thought_spoiler()
+            spoiler.set_thought_data(token_count, duration_sec)
+            self._update_bubble_geometry()
+            return
+
         if getattr(self, "thought_spoiler", None) is not None:
             self.thought_spoiler.finalize_thought(duration_sec, token_count)
             self._update_bubble_geometry()
