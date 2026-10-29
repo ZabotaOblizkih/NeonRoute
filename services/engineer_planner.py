@@ -35,6 +35,7 @@ class ArchitectPlan:
     plan_content: str = ""
     system_prompt: str = ""
     planned_files: List[str] = field(default_factory=list)
+    intent: str = "new"
 
 
 class EngineerPlanner:
@@ -52,6 +53,8 @@ class EngineerPlanner:
         context_length: int = 28672,
         gpu_ratio: str = "1.0",
         available_libs: Optional[List[str]] = None,
+        temperature: float = 0.70,
+        max_tokens: int = 1200,
     ) -> ArchitectPlan:
         if ws_dir is None:
             ws_dir = SandboxManager.get_workspace_dir()
@@ -113,8 +116,8 @@ class EngineerPlanner:
                 arch_resp = client.chat_completion(
                     messages=arch_messages,
                     model=target_model,
-                    temperature=0.10,
-                    max_tokens=350,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                     context_length=context_length,
                     gpu_ratio=gpu_ratio,
                     stream=False,
@@ -124,8 +127,8 @@ class EngineerPlanner:
                 arch_resp = client.chat_completion(
                     messages=arch_messages,
                     model=target_model,
-                    temperature=0.10,
-                    max_tokens=350,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                     stream=False,
                     emit_signal=False
                 )
@@ -218,7 +221,13 @@ class EngineerPlanner:
         target_entry_file = verification_script or target_artifact
         system_prompt = get_engineer_system_prompt(artifact_format=artifact_format, is_analysis=is_analysis)
 
-        intent_val = "maintenance" if is_maintenance else "new"
+        if intent == "review":
+            is_maintenance = False
+            intent_val = "review"
+        elif is_maintenance:
+            intent_val = "maintenance"
+        else:
+            intent_val = "new"
         if context_hint and target_artifact == Path(context_hint).name.strip():
             logger.info(f"🔒 [Архитектор] Принудительно зафиксирован целевой файл доработки из контекста: {target_artifact}")
 
@@ -259,11 +268,36 @@ class EngineerPlanner:
             if verification_script else
             f"запусти главную точку входа через <<TOOL:run_script filename=\"{target_artifact}\">>."
         )
-        plan_content += (
-            "\n\nПлан утверждён. Приступай к реализации (Фаза 2: Инженер). "
-            "Создай все спроектированные файлы строго согласно плану через отдельные блоки <<TOOL:write_file filename=\"...\">> "
-            f"и {run_instruction}"
-        )
+
+        target_file_path = (ws_dir / target_artifact) if ws_dir and target_artifact else None
+        target_lines_count = 0
+        if target_file_path and target_file_path.is_file():
+            try:
+                target_lines_count = len(target_file_path.read_text(encoding="utf-8", errors="ignore").splitlines())
+            except Exception:
+                target_lines_count = 0
+
+        if is_maintenance and target_lines_count > 250:
+            plan_content += (
+                f"\n\nПлан утверждён (Режим: Крупный файл, {target_lines_count} строк > порога 250 строк).\n"
+                f"ВНИМАНИЕ: Полная перезапись файла запрещена во избежание обрыва контекста!\n"
+                f"1. Выполни текстовый RCA-диагноз с указанием конкретных строк и функций.\n"
+                f"2. Применяй строго локальную точечную правку целевого класса/функции.\n"
+                f"3. После внесения изменений {run_instruction}"
+            )
+        elif is_maintenance:
+            plan_content += (
+                f"\n\nПлан утверждён. Приступай к двухфазной доработке файла {target_artifact} ({target_lines_count} строк <= 250 строк):\n"
+                f"1. ФАЗА 1: Краткий текстовый диагноз (в какой функции баг / что конкретно меняется).\n"
+                f"2. ФАЗА 2: Полная сборка монолитного файла через <<TOOL:write_file filename=\"{target_artifact}\">> (без заглушек и без номеров строк).\n"
+                f"3. {run_instruction}"
+            )
+        else:
+            plan_content += (
+                "\n\nПлан утверждён. Приступай к реализации (Фаза 2: Инженер). "
+                "Создай все спроектированные файлы строго согласно плану через отдельные блоки <<TOOL:write_file filename=\"...\">> "
+                f"и {run_instruction}"
+            )
 
         return ArchitectPlan(
             artifact_format=artifact_format,
@@ -276,7 +310,8 @@ class EngineerPlanner:
             is_ephemeral=is_ephemeral,
             plan_content=plan_content,
             system_prompt=system_prompt,
-            planned_files=planned_files
+            planned_files=planned_files,
+            intent=intent_val
         )
 
 

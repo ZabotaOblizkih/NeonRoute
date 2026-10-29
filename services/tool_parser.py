@@ -91,16 +91,31 @@ class ToolParser:
         calls_with_pos = []
         seen_spans = []
 
-        write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\']\s*>>?[\r\n]*(?P<content>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+)'
-        for match in re.finditer(write_pattern, norm, flags=re.DOTALL | re.IGNORECASE):
+        write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\'](?:\s+[^>\r\n]+?)?\s*>>?[\r\n]*(?P<body>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+)'
+        candidates = list(re.finditer(write_pattern, norm, flags=re.DOTALL | re.IGNORECASE))
+        
+        # Если найдено несколько блоков write_file с одинаковым именем файла (вложенные мок-строки тестов),
+        # приоритет отдается внешнему контейнеру с наибольшей длиной содержимого:
+        if len(candidates) > 1:
+            by_fn = {}
+            for m in candidates:
+                fn_cand = html.unescape(m.group('filename')).strip().strip("'\"`")
+                if fn_cand not in by_fn or len(m.group('body')) > len(by_fn[fn_cand].group('body')):
+                    by_fn[fn_cand] = m
+            candidates = list(by_fn.values())
+
+        for match in candidates:
             fn = html.unescape(match.group('filename')).strip().strip("'\"`")
-            cnt = match.group('content').strip()
+            body = match.group('body')
+            tag_header = match.group(0).split('>>', 1)[0]
+            attrs = ToolParser._parse_attributes(tag_header)
+
             seen_spans.append(match.span())
             calls_with_pos.append((match.start(), ToolCall(
                 name="write_file",
-                params={"filename": fn, "content": cnt},
+                params={"filename": fn, **attrs},
                 raw_tag=match.group(0),
-                body=cnt
+                body=body
             )))
 
         if not any(c[1].name == "write_file" for c in calls_with_pos) and '<<TOOL:write_file' in norm:
