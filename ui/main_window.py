@@ -73,6 +73,7 @@ from ui.components.rp.rp_chat_bubble import RPChatMessageWidget
 from ui.components.chat_list_item import ChatSessionItemWidget
 from ui.components.chat_background import ChatBackgroundViewport
 from ui.components.chat_stream_widget import ChatStreamWidget
+from ui.components.workspace_inspector import WorkspaceInspectorWidget
 from ui.components.typing_loader import TypingLoaderWidget
 from ui.components.input_box import ChatInputBox
 from ui.components.status_pill import StatusPill
@@ -366,50 +367,55 @@ class MainWindow(
                     if sub_action.shortcut().toString():
                         self.addAction(sub_action)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setHandleWidth(1)
-        root_layout.addWidget(splitter, 1)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.main_splitter.setHandleWidth(1)
+        root_layout.addWidget(self.main_splitter, 1)
 
         # Принудительно поднимаем заголовок над всеми слоями интерфейса
         self.titleBar.raise_()
 
         # 1. Left Sidebar Component
         self.sidebar = SidebarWidget(window=self)
-        splitter.addWidget(self.sidebar)
+        self.main_splitter.addWidget(self.sidebar)
 
         # Aliases for backward compatibility with mixins
         self.char_card_widget = self.sidebar.char_card_widget
         self.char_name_lbl = self.sidebar.char_name_lbl
         self.btn_campaign_info = self.sidebar.btn_campaign_info
         self.btn_load_character = self.sidebar.btn_load_character
-        self.lm_combo = self.sidebar.lm_combo
-        self.btn_refresh_models = self.sidebar.btn_refresh_models
+        self.lm_combo = getattr(self.sidebar, "lm_combo", None)
+        self.btn_refresh_models = getattr(self.sidebar, "btn_refresh_models", None)
         self.chat_list_widget = self.sidebar.chat_list_widget
 
         # Первичное быстрое наполнение lm_combo найденными .gguf моделями через ServerConfigResolver
-        try:
-            from services.server_config import ServerConfigResolver
-            discovered_models = ServerConfigResolver.discover_gguf_models()
-            if discovered_models:
-                self.lm_combo.blockSignals(True)
-                self.lm_combo.clear()
-                self.lm_combo.addItems(list(discovered_models.keys()))
-                active_cfg_model = self.app_config.get("active_model", "")
-                if active_cfg_model and self.lm_combo.findText(active_cfg_model) >= 0:
-                    self.lm_combo.setCurrentIndex(self.lm_combo.findText(active_cfg_model))
-                self.lm_combo.blockSignals(False)
-        except Exception as e:
-            logger.debug(f"Initial GGUF discovery error: {e}")
+        if self.lm_combo:
+            try:
+                from services.server_config import ServerConfigResolver
+                discovered_models = ServerConfigResolver.discover_gguf_models()
+                if discovered_models:
+                    self.lm_combo.blockSignals(True)
+                    self.lm_combo.clear()
+                    self.lm_combo.addItems(list(discovered_models.keys()))
+                    active_cfg_model = self.app_config.get("active_model", "")
+                    if active_cfg_model and self.lm_combo.findText(active_cfg_model) >= 0:
+                        self.lm_combo.setCurrentIndex(self.lm_combo.findText(active_cfg_model))
+                    self.lm_combo.blockSignals(False)
+            except Exception as e:
+                logger.debug(f"Initial GGUF discovery error: {e}")
 
         # 2. Main Central Work Area
         self.main_content = self._create_main_content()
-        splitter.addWidget(self.main_content)
+        self.main_splitter.addWidget(self.main_content)
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([280, 920])
+        # Третий элемент: инспектор песочницы для режима Инженер
+        self.workspace_inspector = WorkspaceInspectorWidget(self)
+        self.workspace_inspector.setVisible(False)
+        self.main_splitter.addWidget(self.workspace_inspector)
 
-        root_layout.addWidget(splitter)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+        self.main_splitter.setSizes([280, 920, 0])
 
         # 3. Status Bar
         self._setup_status_bar()
@@ -576,7 +582,8 @@ class MainWindow(
         self.health_worker.health_updated.connect(self._on_health_updated)
 
         # Model Selector Signal
-        self.lm_combo.activated[int].connect(self._on_lms_model_activated)
+        if hasattr(self, "lm_combo") and self.lm_combo:
+            self.lm_combo.activated[int].connect(self._on_lms_model_activated)
 
     def _start_background_services(self):
         self.task_queue.start()
@@ -605,6 +612,10 @@ class MainWindow(
 
         from utils.config_manager import ConfigManager
         cfg = ConfigManager.load_config()
+        if not cfg.get("hardware_autotune_done", False):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(1200, self._perform_hardware_kv_autotune)
+
         if cfg.get("check_dependencies_on_startup", True):
             missing = EnvironmentDoctor.check_missing()
             if missing:
@@ -738,8 +749,32 @@ class MainWindow(
         if self.current_session and not is_initial:
             self._save_current_session()
 
-        current_model = self.lm_combo.currentText().strip()
-        if current_model.startswith("default"):
+        mode_str = str(mode).lower()
+        if mode_str in ("rp", "roleplay"):
+            char_model = None
+            if isinstance(character_card, dict):
+                char_model = character_card.get("character_model") or character_card.get("model_id")
+            elif character_card is not None:
+                char_model = getattr(character_card, "character_model", None) or getattr(character_card, "model_id", None)
+
+            current_model = (
+                char_model
+                or self.app_config.get("rp_model_name")
+                or self.app_config.get("active_model", "")
+            )
+        elif mode_str in ("engineer", "engineering"):
+            current_model = (
+                self.app_config.get("engineer_model_name")
+                or self.app_config.get("engineer_model")
+                or self.app_config.get("active_model", "")
+            )
+        else:
+            current_model = (
+                self.app_config.get("assistant_model_name")
+                or self.app_config.get("active_model", "")
+            )
+
+        if current_model and current_model.startswith("default"):
             current_model = ""
 
         new_sess = SessionManager.create_session(
@@ -777,8 +812,9 @@ class MainWindow(
         self._apply_chat_background()
 
         # Unlock model selector for a fresh dialog
-        self.lm_combo.setEnabled(True)
-        self.lm_combo.setToolTip("Выберите модель LM Studio")
+        if hasattr(self, "lm_combo") and self.lm_combo:
+            self.lm_combo.setEnabled(True)
+            self.lm_combo.setToolTip("Выберите модель LM Studio")
 
         # Insert new list item at top of sidebar
         sess_id = new_sess["id"]
@@ -1062,27 +1098,31 @@ class MainWindow(
 
             # Restore model and lock status for this session WITHOUT triggering async weight reloads
             sess_model = session_data.get("model_id")
-            self.lm_combo.blockSignals(True)
-            try:
-                if sess_model and not sess_model.startswith("default"):
-                    idx = self.lm_combo.findText(sess_model)
-                    if idx >= 0:
-                        if self.lm_combo.currentIndex() != idx:
-                            self.lm_combo.setCurrentIndex(idx)
-                    else:
-                        self.lm_combo.addItem(sess_model)
-                        self.lm_combo.setCurrentIndex(self.lm_combo.count() - 1)
-                    self.active_lms_model = sess_model
+            if hasattr(self, "lm_combo") and self.lm_combo:
+                self.lm_combo.blockSignals(True)
+                try:
+                    if sess_model and not sess_model.startswith("default"):
+                        idx = self.lm_combo.findText(sess_model)
+                        if idx >= 0:
+                            if self.lm_combo.currentIndex() != idx:
+                                self.lm_combo.setCurrentIndex(idx)
+                        else:
+                            self.lm_combo.addItem(sess_model)
+                            self.lm_combo.setCurrentIndex(self.lm_combo.count() - 1)
+                        self.active_lms_model = sess_model
 
-                is_locked = session_data.get("is_model_locked", False)
-                if is_locked:
-                    self.lm_combo.setEnabled(False)
-                    self.lm_combo.setToolTip("Модель зафиксирована для этого диалога")
-                else:
-                    self.lm_combo.setEnabled(True)
-                    self.lm_combo.setToolTip("Выберите модель LM Studio")
-            finally:
-                self.lm_combo.blockSignals(False)
+                    is_locked = session_data.get("is_model_locked", False)
+                    if is_locked:
+                        self.lm_combo.setEnabled(False)
+                        self.lm_combo.setToolTip("Модель зафиксирована для этого диалога")
+                    else:
+                        self.lm_combo.setEnabled(True)
+                        self.lm_combo.setToolTip("Выберите модель LM Studio")
+                finally:
+                    self.lm_combo.blockSignals(False)
+            else:
+                if sess_model and not sess_model.startswith("default"):
+                    self.active_lms_model = sess_model
 
             # Set current item in sidebar
             if session_id in self._session_items:
@@ -1163,8 +1203,12 @@ class MainWindow(
             target_model = self.app_config.get("engineer_model_name") or self.app_config.get("engineer_model")
         elif target_mode == "rp":
             char_data = chat.get("character_data") or {}
+            char_model = (
+                char_data.get("character_model") if isinstance(char_data, dict)
+                else getattr(char_data, "character_model", None)
+            )
             target_model = (
-                char_data.get("character_model")
+                char_model
                 or self.app_config.get("rp_model_name")
                 or chat.get("model_id")
                 or self.app_config.get("active_model")
@@ -1174,18 +1218,18 @@ class MainWindow(
         else:
             target_model = None
 
-        current_model = getattr(self.lm_client, "_last_loaded_model_id", None) or self.active_lms_model
+        current_model = getattr(self.lm_client, "_last_loaded_model_id", None) or getattr(self, "active_lms_model", "")
         if target_model and current_model != target_model:
             self.active_lms_model = target_model
-            if hasattr(self, "lm_combo") and self.lm_combo:
-                self.lm_combo.blockSignals(True)
-                idx = self.lm_combo.findText(target_model)
-                if idx >= 0:
-                    self.lm_combo.setCurrentIndex(idx)
-                else:
-                    self.lm_combo.addItem(target_model)
-                    self.lm_combo.setCurrentIndex(self.lm_combo.count() - 1)
-                self.lm_combo.blockSignals(False)
+            logger.info(f"[ModeSwitch] Переключение модели для режима '{target_mode}': '{current_model}' -> '{target_model}'")
+            if hasattr(self, "lm_client") and hasattr(self.lm_client, "ensure_model_loaded"):
+                import threading
+                def _switch_worker():
+                    try:
+                        self.lm_client.ensure_model_loaded(preferred_model=target_model)
+                    except Exception as err:
+                        logger.warning(f"[ModeSwitch] Ошибка фонового переключения модели: {err}")
+                threading.Thread(target=_switch_worker, daemon=True).start()
 
 
 
@@ -1347,13 +1391,23 @@ class MainWindow(
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(False)
             self.statusBar().showMessage("Режим: 🛠️ Инженер (Песочница C:\\NeonRoute\\workspace)")
+            if hasattr(self, "workspace_inspector"):
+                self.workspace_inspector.setVisible(True)
+                self.workspace_inspector.refresh_files()
+                self.main_splitter.setSizes([260, 560, 380])
         elif self.current_mode == "assistant":
             self.char_card_widget.setVisible(False)
+            if hasattr(self, "workspace_inspector"):
+                self.workspace_inspector.setVisible(False)
+                self.main_splitter.setSizes([280, 920, 0])
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
             self.statusBar().showMessage("Режим: 💬 Ассистент (Элария)")
         else:
             self.char_card_widget.setVisible(True)
+            if hasattr(self, "workspace_inspector"):
+                self.workspace_inspector.setVisible(False)
+                self.main_splitter.setSizes([280, 920, 0])
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
             has_user_messages = False
