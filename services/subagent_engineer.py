@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.git_sandbox import GitSandboxManager
 from services.sandbox_manager import SandboxManager
 from services.tool_engine import ToolEngine
-from services.code_engine import CodeValidator, ASTSkeletonizer
+from services.code_engine import CodeValidator, ASTSkeletonizer, AutoImporter
 from services.engineer_prompts import (
     scan_installed_libraries,
     resolve_pip_package,
@@ -38,6 +38,58 @@ from services.engineer_context import (
 
 
 logger = logging.getLogger("NeonRoute.SubagentEngineer")
+
+
+class CodeStreamExtractor:
+    """Извлекает чистый Python-код из входящего потока Markdown/Tool тегов."""
+    def __init__(self, on_code_chunk_callback):
+        self.callback = on_code_chunk_callback
+        self.in_code_block = False
+        self.buffer = ""
+
+    def feed(self, token: str):
+        self.buffer += token
+        if not self.in_code_block:
+            # Поиск маркера начала блока кода python
+            match = re.search(r'```(?:python|py)?\s*[\r\n]+', self.buffer, re.IGNORECASE)
+            if match:
+                self.in_code_block = True
+                remaining = self.buffer[match.end():]
+                self.buffer = ""
+                if remaining and self.callback:
+                    self.callback(remaining)
+        else:
+            # Обработка закрывающего маркера
+            if "```" in self.buffer:
+                clean_chunk = self.buffer.split("```")[0]
+                if clean_chunk and self.callback:
+                    self.callback(clean_chunk)
+                self.in_code_block = False
+                self.buffer = ""
+            else:
+                # Отправка порции кода, удерживая хвост на случай разорванного маркера
+                if len(self.buffer) > 3:
+                    to_send = self.buffer[:-3]
+                    self.buffer = self.buffer[-3:]
+                    if self.callback:
+                        self.callback(to_send)
+
+    def finalize(self):
+        if self.in_code_block and self.buffer and self.callback:
+            if not self.buffer.startswith("```"):
+                self.callback(self.buffer)
+        self.buffer = ""
+        self.in_code_block = False
+
+
+def extract_clean_code(full_generated_text: str) -> str:
+    """Извлекает чистый блок кода Python из ответа модели."""
+    pure = EngineerContext.extract_pure_py(full_generated_text)
+    if not pure:
+        m = re.search(r'```(?:python|py)?\s*[\r\n]+([\s\S]*?)```', full_generated_text, re.IGNORECASE)
+        if m:
+            pure = m.group(1).strip()
+    return pure or full_generated_text
 
 
 class SubagentEngineer:
@@ -95,7 +147,11 @@ class SubagentEngineer:
         image_path: Optional[str] = None,
         lm_client: Optional[Any] = None,
         model_id: Optional[str] = None,
-        session_history: Optional[List[Dict[str, str]]] = None
+        session_history: Optional[List[Dict[str, str]]] = None,
+        on_message_callback: Optional[Any] = None,
+        on_status_callback: Optional[Any] = None,
+        inspector: Optional[Any] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         worker = cls()
         res = worker.execute_worker(
@@ -105,7 +161,11 @@ class SubagentEngineer:
             image_path=image_path,
             lm_client=lm_client,
             model_id=model_id,
-            session_history=session_history
+            session_history=session_history,
+            on_message_callback=on_message_callback,
+            on_status_callback=on_status_callback,
+            inspector=inspector,
+            **kwargs
         )
         cls.active_verification_script = worker.active_verification_script
         cls.target_artifact = worker.target_artifact
@@ -122,7 +182,11 @@ class SubagentEngineer:
         image_path: Optional[str] = None,
         lm_client: Optional[Any] = None,
         model_id: Optional[str] = None,
-        session_history: Optional[List[Dict[str, str]]] = None
+        session_history: Optional[List[Dict[str, str]]] = None,
+        on_message_callback: Optional[Any] = None,
+        on_status_callback: Optional[Any] = None,
+        inspector: Optional[Any] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         from services.vision_utils import VisionUtils
 
@@ -259,11 +323,10 @@ class SubagentEngineer:
         if sess and isinstance(sess.get("sampling_params"), dict) and "temperature" in sess["sampling_params"]:
             worker_temp = float(sess["sampling_params"]["temperature"])
         else:
-            worker_temp = float(get_default_sampling_params("engineer").get("temperature", 0.15))
+            worker_temp = float(get_default_sampling_params("engineer").get("temperature", 0.70))
 
-        worker_temp = max(0.05, min(0.50, worker_temp))
-        if worker_temp > 0.20:
-            worker_temp = 0.15
+        # Предохранитель только от поломки токенизатора при экстремальных значениях
+        worker_temp = max(0.05, min(1.50, worker_temp))
 
         if client and hasattr(client, "ensure_model_loaded"):
             try:
@@ -293,7 +356,42 @@ class SubagentEngineer:
             context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
             gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
             available_libs=scan_installed_libraries(),
+            temperature=worker_temp,
+            max_tokens=1200,
         )
+        logger.info(f"📐 [Архитектор: Утверждённый план]: {plan.plan_content}")
+
+        format_badge = "🎮 Pygame" if plan.artifact_format == "pygame" else f"📦 {plan.artifact_format.upper()}"
+        if plan.intent == "review":
+            clean_plan_card = (
+                f"### 🔍 Инспекция проекта: `{plan.target_artifact}`\n"
+                f"**Формат:** {format_badge} | **Действие:** `Анализ / Git Diff`\n\n"
+                f"> **Цель запроса:**\n"
+                f"> {plan.plan_content}\n\n"
+                f"⏳ *Выполняю анализ состояния рабочей области...*"
+            )
+        else:
+            clean_plan_card = (
+                f"### 📐 Архитектурный план: `{plan.target_artifact}`\n"
+                f"**Формат:** {format_badge} | **Действие:** `{plan.intent}`\n\n"
+                f"> **Техническое задание:**\n"
+                f"> {plan.plan_content}\n\n"
+                f"⏳ *Приступаю к автономной реализации кода...*"
+            )
+
+        def _safe_send_message(role: str, text: str):
+            if on_message_callback and callable(on_message_callback):
+                try:
+                    on_message_callback(role, text)
+                except TypeError:
+                    try:
+                        on_message_callback(text)
+                    except Exception:
+                        pass
+                except Exception as _cb_err:
+                    logger.warning(f"Error calling on_message_callback: {_cb_err}")
+
+        _safe_send_message("assistant", clean_plan_card)
 
         artifact_format = plan.artifact_format
         self.artifact_format = plan.artifact_format
@@ -321,12 +419,122 @@ class SubagentEngineer:
             else:
                 messages[1]["content"] += plan.plan_content
 
+        last_turn_diff = ""
+        has_sent_start_status = False
+
+        # === ВЕТКА ИНСПЕКЦИИ / REVIEW (БЕЗ ПЕРЕЗАПИСИ КОДА) ===
+        if plan.intent == "review":
+            import subprocess
+            ws_dir = SandboxManager.get_workspace_dir()
+            target_fn = plan.target_artifact or "game.py"
+            target_file = ws_dir / target_fn
+
+            # 1. Получаем Git Diff текущей рабочей области
+            git_diff_text = ""
+            try:
+                res_diff = subprocess.run(
+                    ["git", "diff", "HEAD", "--", target_fn],
+                    cwd=str(ws_dir),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="ignore"
+                )
+                git_diff_text = res_diff.stdout.strip()
+                if not git_diff_text:
+                    # Если незакоммиченных правок нет, берём diff последнего коммита
+                    res_last = subprocess.run(
+                        ["git", "diff", "HEAD~1", "HEAD", "--", target_fn],
+                        cwd=str(ws_dir),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore"
+                    )
+                    git_diff_text = res_last.stdout.strip()
+            except Exception as e:
+                git_diff_text = f"Ошибка получения git diff: {e}"
+
+            # 2. Читаем текущее содержимое файла, если он существует
+            file_code = ""
+            if target_file.is_file():
+                try:
+                    file_code = target_file.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    file_code = ""
+
+            # 3. Формируем контекст для аналитического ответа
+            review_system_prompt = (
+                "Ты — старший инженер-наставник и системный аналитик NeonRoute. "
+                "Твоя задача — внимательно изучить запрос пользователя, текущее состояние файла и данные Git Diff, "
+                "после чего дать точный, профессиональный и исчерпывающий ответ на русском языке. "
+                "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать служебные теги <<TOOL:write_file>> или <<TOOL:run_script>>. "
+                "Код проекта менять НЕ требуется. Отвечай прямо по существу вопроса."
+            )
+
+            diff_block = f"```diff\n{git_diff_text}\n```" if git_diff_text else "Текущих изменений в Git не обнаружено (рабочая область чиста)."
+            code_block = f"```python\n{file_code[:3500]}\n```" if file_code else "Файл не найден на диске."
+
+            review_user_prompt = (
+                f"Вопрос пользователя: «{task_prompt}»\n\n"
+                f"Целевой файл: {target_fn}\n\n"
+                f"--- ДАННЫЕ GIT DIFF ---\n{diff_block}\n\n"
+                f"--- ТЕКУЩИЙ КОД ФАЙЛА (фрагмент) ---\n{code_block}\n\n"
+                f"Проанализируй эти данные и ответь пользователю на его вопрос."
+            )
+
+            try:
+                review_messages = [
+                    {"role": "system", "content": review_system_prompt},
+                    {"role": "user", "content": review_user_prompt}
+                ]
+                ans_resp = client.chat_completion(
+                    messages=review_messages,
+                    model=target_model,
+                    temperature=0.3,
+                    max_tokens=1500,
+                    context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
+                    gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
+                    stream=False,
+                    emit_signal=False
+                )
+                ans_text = str(ans_resp or "").strip()
+                _safe_send_message("assistant", ans_text)
+                return {
+                    "success": True,
+                    "target_artifact": target_fn,
+                    "verification_passed": True,
+                    "turns": 1,
+                    "message": "Инспекция завершена успешно."
+                }
+            except Exception as e:
+                logger.error(f"Review cycle error: {e}")
+                _safe_send_message("assistant", f"⚠️ Произошла ошибка при анализе: {e}")
+                return {"success": False, "error": str(e)}
+
         while turn < max_turns:
             turn += 1
             logger.info(f"[Инженер] Автономный ход {turn}/{max_turns}")
             ws_dir = SandboxManager.get_workspace_dir()
             GitSandboxManager.create_checkpoint(ws_dir, f"turn_{turn}")
-            current_temp = worker_temp if turn == 1 else min(0.35, worker_temp + 0.15)
+            current_temp = worker_temp
+
+            # Оповестить инспектор о старте:
+            if inspector and hasattr(inspector, "sig_stream_started"):
+                inspector.sig_stream_started.emit(target_artifact or "script.py")
+
+            # В центральный чат отправить однократное сообщение статуса:
+            if not has_sent_start_status:
+                has_sent_start_status = True
+                _safe_send_message("assistant", f"🛠️ **Инженер**: Приступаю к реализации `{target_artifact or 'script.py'}`...")
+
+            # Настроить стриминг токенов через extractor:
+            extractor = CodeStreamExtractor(
+                on_code_chunk_callback=lambda ch: inspector.sig_stream_chunk.emit(ch) if (inspector and hasattr(inspector, "sig_stream_chunk")) else None
+            )
+            def _chunk_handler(chunk_text: str):
+                extractor.feed(chunk_text)
+
             try:
                 response_text = client.chat_completion(
                     messages=messages,
@@ -335,18 +543,32 @@ class SubagentEngineer:
                     max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
                     context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
                     gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
-                    stream=False,
-                    emit_signal=False
+                    stream=True,
+                    emit_signal=False,
+                    chunk_callback=_chunk_handler
                 )
             except TypeError:
-                response_text = client.chat_completion(
-                    messages=messages,
-                    model=target_model,
-                    temperature=current_temp,
-                    max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
-                    stream=False,
-                    emit_signal=False
-                )
+                try:
+                    response_text = client.chat_completion(
+                        messages=messages,
+                        model=target_model,
+                        temperature=current_temp,
+                        max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                        stream=True,
+                        emit_signal=False,
+                        chunk_callback=_chunk_handler
+                    )
+                except TypeError:
+                    response_text = client.chat_completion(
+                        messages=messages,
+                        model=target_model,
+                        temperature=current_temp,
+                        max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                        stream=False,
+                        emit_signal=False
+                    )
+                    if response_text and not extractor.in_code_block:
+                        extractor.feed(str(response_text))
             except Exception as e:
                 logger.error(f"LM Studio call failed in SubagentEngineer: {e}")
                 return {
@@ -362,6 +584,12 @@ class SubagentEngineer:
                     "verification_script": self.verification_script,
                     "verification_passed": False
                 }
+
+            extractor.finalize()
+            full_generated_text = str(response_text or "")
+            pure_code = extract_clean_code(full_generated_text)
+            if inspector and hasattr(inspector, "sig_stream_finished"):
+                inspector.sig_stream_finished.emit(target_artifact or "script.py", pure_code)
 
             response_text = str(response_text or "")
 
@@ -538,6 +766,10 @@ class SubagentEngineer:
                             ast.parse(code)
                         except SyntaxError as e:
                             logger.warning(f"[SubagentEngineer] Извлеченный код содержит синтаксическую ошибку: {e}")
+                            failed_fn = target_entry_file or script_to_run or "script.py"
+                            failed_l = getattr(e, "lineno", 0) or 0
+                            if on_status_callback and callable(on_status_callback):
+                                on_status_callback("error", failed_fn, failed_l, str(e))
                             return {
                                 "success": False,
                                 "artifact_path": None,
@@ -732,6 +964,10 @@ class SubagentEngineer:
                         syntax_error_detected = True
                         syntax_err = s_err or ""
                         logger.warning(f"SubagentEngineer: обнаружен невалидный синтаксис в {fn} (is_entry={is_entry}) до записи на диск: {syntax_err}")
+                        m_l = re.search(r'line\s+(\d+)', syntax_err, re.I)
+                        s_line = int(m_l.group(1)) if m_l else 0
+                        if on_status_callback and callable(on_status_callback):
+                            on_status_callback("error", fn, s_line, syntax_err)
                         last_error = syntax_err
                         break
 
@@ -873,11 +1109,7 @@ class SubagentEngineer:
                         diag_msg = escalation_warning + diag_msg
 
                     clean_user_prompt = _build_goal_anchor(diag_msg)
-                    assistant_draft = (
-                        f"Понял (попытка {turn}), вношу изменения в целевую логику файла."
-                        if is_noop_error
-                        else f"Понял (попытка {turn}), устраняю ошибку валидации в {target_name}: {current_fp or 'Синтаксис'}."
-                    )
+                    assistant_draft = "Понял, вношу изменения в целевую логику файла."
 
                     messages = [
                         messages[0],
@@ -898,6 +1130,9 @@ class SubagentEngineer:
                         logger.warning(f"[SubagentEngineer] Извлеченный код содержит синтаксическую ошибку: {e}")
                         ws_dir = SandboxManager.get_workspace_dir()
                         SubagentEngineer._rollback_workspace(ws_dir, file_backups)
+                        failed_l = getattr(e, "lineno", 0) or 0
+                        if on_status_callback and callable(on_status_callback):
+                            on_status_callback("error", filename, failed_l, str(e))
                         return {
                             "success": False,
                             "artifact_path": None,
@@ -1124,8 +1359,24 @@ class SubagentEngineer:
                         pass
 
             # 6. Запуск скрипта
+            if on_status_callback and callable(on_status_callback):
+                on_status_callback("running", script_to_run, 0, "")
+            _safe_send_message("assistant", f"✅ Файл `{target_artifact or script_to_run}` сформирован. Запускаю верификацию в песочнице...")
             raw_run_res = ToolEngine.run_script(filename=script_to_run)
             run_res = _RunResultWrapper(raw_run_res)
+
+            # === ZERO-TOKEN HEALING (Тихий автоимпорт) ===
+            if not run_res.success and script_to_run:
+                raw_err = run_res.output or run_res.error or ""
+                m_name = re.search(r"NameError:\s+name\s+['\"](\w+)['\"]\s+is not defined", raw_err)
+                if m_name:
+                    missing_symbol = m_name.group(1)
+                    target_file_path = ws_dir / script_to_run
+                    if AutoImporter.try_inject_import(target_file_path, missing_symbol):
+                        logger.info(f"⚡ [Zero-Token Healing] Повторный запуск {script_to_run} после добавления '{missing_symbol}'...")
+                        raw_run_res = ToolEngine.run_script(filename=script_to_run)
+                        run_res = _RunResultWrapper(raw_run_res)
+
             stdout = run_res.stdout or ""
             if not stdout and run_res.output and not run_res.output.startswith("[Скрипт завершен"):
                 stdout = run_res.output
@@ -1133,6 +1384,8 @@ class SubagentEngineer:
 
             if not run_res.success:
                 ws_dir = SandboxManager.get_workspace_dir()
+                # Извлекаем git diff до отката рабочей области
+                last_turn_diff = GitSandboxManager.get_working_diff(ws_dir)
                 executed_code = ""
                 for fn, cnt in write_blocks:
                     if Path(fn).name.lower() == Path(script_to_run).name.lower():
@@ -1163,6 +1416,10 @@ class SubagentEngineer:
 
                 last_error = run_res.output or run_res.error or "Неизвестная ошибка выполнения"
                 self.active_verification_script = script_to_run
+                m_l = re.search(r'line\s+(\d+)', last_error, re.I)
+                f_line = int(m_l.group(1)) if m_l else 0
+                if on_status_callback and callable(on_status_callback):
+                    on_status_callback("error", script_to_run, f_line, last_error)
 
                 if turn == 1 and self.verification_script:
                     vs_name = Path(self.verification_script).name.lower()
@@ -1268,6 +1525,8 @@ class SubagentEngineer:
                     diag_body = f"Скрипт {script_to_run} упал с ошибкой:\n{enriched_error}\n\n"
                     if rca_text:
                         diag_body += f"АНАЛИЗ АРХИТЕКТОРА:\n{rca_text}\n\n"
+                    if last_turn_diff:
+                        diag_body += f"[ПОСЛЕДНИЕ ИЗМЕНЕНИЯ В КОДЕ (git diff)]:\n```diff\n{last_turn_diff}\n```\n\n"
                     if turn == 1 and turn1_test_signature_mismatch:
                         diag_body += (
                             f"[РЕВИЗИЯ ВЕРИФИКАЦИИ]: Обнаружено расхождение интерфейсов или сигнатур вызова между тестом и кодом ({self.verification_script}). "
@@ -1306,6 +1565,8 @@ class SubagentEngineer:
             else:
                 # Скрипт script_to_run выполнился с кодом 0
                 logger.info(f"✅ Скрипт {script_to_run} успешно выполнен с exit_code == 0.")
+                if on_status_callback and callable(on_status_callback):
+                    on_status_callback("success", script_to_run, 0, "")
 
                 # Детерминированное завершение для документов (excel, word)
                 if self.artifact_format in ("excel", "word") and Path(script_to_run).name.lower() == "make_doc.py":
@@ -1342,6 +1603,8 @@ class SubagentEngineer:
                             logger.info(f"🔄 [Root-Cause Loop] Модуль {script_to_run} выполнен успешно. Автоматический перезапуск верификатора {self.verification_script}...")
                             self.active_verification_script = self.verification_script
                             script_to_run = Path(self.verification_script).name
+                            if on_status_callback and callable(on_status_callback):
+                                on_status_callback("running", script_to_run, 0, "")
                             raw_v_res = ToolEngine.run_script(filename=script_to_run)
                             v_res = _RunResultWrapper(raw_v_res)
                             if v_res.success:
@@ -1350,6 +1613,8 @@ class SubagentEngineer:
                                 verification_passed = True
                                 self.active_verification_script = None
                                 loop_succeeded = True
+                                if on_status_callback and callable(on_status_callback):
+                                    on_status_callback("success", script_to_run, 0, "")
                                 logger.info(f"🎉 [Root-Cause Loop] Верификатор {self.verification_script} успешно завершился с exit_code == 0!")
                                 GitSandboxManager.checkpoint(ws_dir, f"Turn {turn}: verified by {self.verification_script}")
                                 break
@@ -1357,6 +1622,10 @@ class SubagentEngineer:
                                 last_error = v_res.output or v_res.error or "Ошибка верификатора"
                                 stdout = v_res.stdout or stdout
                                 stderr = v_res.error or ""
+                                m_vl = re.search(r'line\s+(\d+)', last_error, re.I)
+                                vf_line = int(m_vl.group(1)) if m_vl else 0
+                                if on_status_callback and callable(on_status_callback):
+                                    on_status_callback("error", script_to_run, vf_line, last_error)
                                 if turn == 1 and self.verification_script:
                                     err_text = f"{last_error} {v_res.error or ''}"
                                     if any(sig_err in err_text for sig_err in ("TypeError", "AssertionError")):
@@ -1540,6 +1809,8 @@ class SubagentEngineer:
                         diag_body = (
                             f"[ОШИБКА ВЫПОЛНЕНИЯ]:\n{enriched_error}\n\n"
                         )
+                        if last_turn_diff:
+                            diag_body += f"[ПОСЛЕДНИЕ ИЗМЕНЕНИЯ (git diff)]:\n```diff\n{last_turn_diff}\n```\n\n"
                         if vs_section:
                             diag_body += vs_section
                         if tgt_section:
@@ -1685,6 +1956,8 @@ class SubagentEngineer:
 
         file_name = artifact_path.name if artifact_path else (target_artifact or script_to_run or "")
         clean_summary = ToolEngine.strip_tool_tags(response_text).strip() if hasattr(ToolEngine, "strip_tool_tags") else response_text.strip()
+        # Исключаем простыни кода из центрального чата
+        clean_summary = re.sub(r'```(?:python|py)?[\s\S]*?```', '', clean_summary).strip()
 
         # Формирование информативного summary при пустом ответе модели или наличии консольного вывода
         if not clean_summary:

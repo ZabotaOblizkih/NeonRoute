@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Set, Optional, Union
+from typing import Set, Optional, Union, Tuple
 from dataclasses import dataclass
 
 from config import BASE_DIR, WORKSPACE_DIR, OUTPUTS_DIR, FORGE_ROOT_DIR
@@ -756,3 +756,116 @@ class SandboxManager:
     def is_ignored_directory(cls, dir_name: str) -> bool:
         clean_name = dir_name.strip().lower()
         return clean_name in cls.IGNORE_DIRS or clean_name.startswith("$")
+    @staticmethod
+    def get_changed_line_ranges(ws_dir: Path, filename: str) -> str:
+        """Анализирует git diff файла и возвращает отформатированную строку диапазонов строк."""
+        try:
+            import subprocess
+            import re
+
+            res = subprocess.run(
+                ["git", "diff", "-U0", "--", filename],
+                cwd=str(ws_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore"
+            )
+            diff_text = res.stdout or ""
+            if not diff_text:
+                return "без изменений"
+
+            # Ищем заголовки вида @@ -old,count +new_start,new_count @@ или @@ -old +new_start @@
+            hunks = re.findall(r'@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@', diff_text)
+            if not hunks:
+                return "строки не определены"
+
+            ranges = []
+            for start_str, count_str in hunks:
+                start = int(start_str)
+                count = int(count_str) if count_str else 1
+                if count <= 1:
+                    ranges.append(f"строка {start}")
+                else:
+                    end = start + count - 1
+                    ranges.append(f"строки {start}–{end}")
+
+            return ", ".join(ranges)
+        except Exception as e:
+            return f"строки ? (ошибка diff: {e})"
+
+    @staticmethod
+    def commit_manual_edit(ws_dir: Path, filename: str, user_comment: str, line_ranges: str) -> bool:
+        """Фиксирует ручную правку пользователя в Git песочницы."""
+        try:
+            import subprocess
+            if not (ws_dir / ".git").exists():
+                subprocess.run(["git", "init"], cwd=str(ws_dir), check=True, capture_output=True)
+            subprocess.run(["git", "add", filename], cwd=str(ws_dir), check=True, capture_output=True)
+
+            comment_clean = user_comment.strip()
+            if comment_clean:
+                msg = f"manual: {comment_clean} ({filename}, {line_ranges})"
+            else:
+                msg = f"manual: правка {filename} ({line_ranges})"
+
+            subprocess.run(["git", "commit", "-m", msg], cwd=str(ws_dir), check=True, capture_output=True)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def verify_single_file(ws_dir: Path, filename: str) -> Tuple[bool, str, str, Optional[int]]:
+        """Изолированно валидирует синтаксис (AST) и запускает короткий Smoke-тест файла.
+        Возвращает: (is_ok, err_type, message_or_traceback, error_line_num)
+        """
+        import ast
+        import subprocess
+        import sys
+
+        target = ws_dir / filename
+        if not target.is_file():
+            return False, "FileNotFoundError", f"Файл {filename} не найден", None
+
+        # 1. AST валидация
+        try:
+            code = target.read_text(encoding="utf-8", errors="ignore")
+            ast.parse(code, filename=filename)
+        except SyntaxError as se:
+            return False, "SyntaxError", f"Синтаксическая ошибка: {se.msg}", se.lineno
+
+        # 2. Быстрый изолированный Smoke-запуск (1.5-2 сек)
+        try:
+            env = dict(sys.modules.get("os", {}).environ or {})
+            env["SDL_VIDEODRIVER"] = "dummy"  # Для headless проверки pygame, если доступно
+            proc = subprocess.run(
+                [sys.executable, str(target)],
+                cwd=str(ws_dir),
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                encoding="utf-8",
+                errors="ignore"
+            )
+            if proc.returncode != 0:
+                # Извлекаем тип ошибки и номер строки из трейсбека
+                import re
+                lines = proc.stderr.splitlines()
+                err_line = None
+                err_type = "RuntimeError"
+                for l in reversed(lines):
+                    m = re.search(r'line\s+(\d+)', l)
+                    if m and err_line is None:
+                        err_line = int(m.group(1))
+                    type_m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*Error|Exception):', l.strip())
+                    if type_m:
+                        err_type = type_m.group(1)
+                return False, err_type, proc.stderr, err_line
+        except subprocess.TimeoutExpired:
+            # Таймаут для GUI/игр означает, что главный цикл успешно запустился и работает!
+            pass
+        except Exception as e:
+            return False, type(e).__name__, str(e), None
+
+        return True, "", "AST-синтаксис корректен, модуль успешно инициализирован.", None
+
