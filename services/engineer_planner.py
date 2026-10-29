@@ -3,6 +3,7 @@ services/engineer_planner.py
 Architect Phase and Planning Logic for NeonRoute Engineer Sub-Agent.
 """
 
+import ast
 import json
 import logging
 import re
@@ -277,14 +278,57 @@ class EngineerPlanner:
             except Exception:
                 target_lines_count = 0
 
-        if is_maintenance and target_lines_count > 250:
-            plan_content += (
-                f"\n\nПлан утверждён (Режим: Крупный файл, {target_lines_count} строк > порога 250 строк).\n"
-                f"ВНИМАНИЕ: Полная перезапись файла запрещена во избежание обрыва контекста!\n"
-                f"1. Выполни текстовый RCA-диагноз с указанием конкретных строк и функций.\n"
-                f"2. Применяй строго локальную точечную правку целевого класса/функции.\n"
-                f"3. После внесения изменений {run_instruction}"
-            )
+        if is_maintenance and target_lines_count > 250 and target_file_path and target_file_path.is_file():
+            # Находим целевой узел в AST
+            try:
+                raw_code = target_file_path.read_text(encoding="utf-8", errors="ignore")
+                raw_lines = raw_code.splitlines(keepends=True)
+                file_ast = ast.parse(raw_code)
+
+                # Поиск наиболее релевантного класса или функции по запросу
+                matched_node = None
+                p_lower = (task_prompt or "").lower()
+                for node in ast.walk(file_ast):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        if node.name.lower() in p_lower:
+                            matched_node = node
+                            break
+                        doc = (ast.get_docstring(node) or "").lower()
+                        if any(w in doc for w in p_lower.split() if len(w) > 4):
+                            matched_node = node
+                            break
+
+                if matched_node:
+                    s_idx = matched_node.lineno - 1
+                    e_idx = getattr(matched_node, "end_lineno", s_idx + 1)
+                    node_code = "".join(raw_lines[s_idx:e_idx])
+                    ctx_before = "".join(raw_lines[max(0, s_idx - 10) : s_idx])
+                    ctx_after = "".join(raw_lines[e_idx : min(len(raw_lines), e_idx + 10)])
+
+                    plan_content += (
+                        f"\n\nПлан утверждён (Крупный файл {target_artifact}: {target_lines_count} строк > 250 строк).\n"
+                        f"РЕГЛАМЕНТ ТОЧЕЧНОЙ МОДИФИКАЦИИ УЗЛА '{matched_node.name}':\n"
+                        f"[ОКРУЖЕНИЕ ДО УЗЛА]:\n```python\n{ctx_before}```\n\n"
+                        f"[ЦЕЛЕВОЙ УЗЕЛ НА ДИСКЕ (строки {matched_node.lineno}-{e_idx})]:\n```python\n{node_code}```\n\n"
+                        f"[ОКРУЖЕНИЕ ПОСЛЕ УЗЛА]:\n```python\n{ctx_after}```\n\n"
+                        f"ВНИМАНИЕ: Полная перезапись файла запрещена!\n"
+                        f"1. ФАЗА 1 (ДИАГНОЗ): Напиши 1-2 строки: подтверди изменение/удаление узла '{matched_node.name}'.\n"
+                        f"2. ФАЗА 2 (КОД): Верни блок точечной замены:\n"
+                        f"   <<TOOL:replace_symbol filename=\"{target_artifact}\" name=\"{matched_node.name}\">>\n"
+                        f"   новый_код_узла_с_отступами (или DELETED для удаления)\n"
+                        f"   <</TOOL:replace_symbol>>\n"
+                        f"3. {run_instruction}"
+                    )
+                else:
+                    plan_content += (
+                        f"\n\nПлан утверждён (Режим: Крупный файл, {target_lines_count} строк > порога 250 строк).\n"
+                        f"ВНИМАНИЕ: Полная перезапись файла запрещена! "
+                        f"Используй <<TOOL:replace_symbol filename=\"{target_artifact}\" name=\"<имя_узла>\">> для точечной правки.\n"
+                        f"{run_instruction}"
+                    )
+            except Exception as e:
+                logger.warning(f"Ошибка AST-локализации узла в планировщике: {e}")
+                plan_content += f"\n\nПлан утверждён. {run_instruction}"
         elif is_maintenance:
             plan_content += (
                 f"\n\nПлан утверждён. Приступай к двухфазной доработке файла {target_artifact} ({target_lines_count} строк <= 250 строк):\n"

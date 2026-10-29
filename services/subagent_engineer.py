@@ -303,6 +303,7 @@ class SubagentEngineer:
         run_res = None
         write_blocks: List[Tuple[str, str]] = []
         patch_blocks: List[Tuple[str, str]] = []
+        replace_blocks: List[str] = []
         file_backups: Dict[str, str] = {}
 
         def _build_goal_anchor(extra_instruction: str = "") -> str:
@@ -422,12 +423,76 @@ class SubagentEngineer:
         last_turn_diff = ""
         has_sent_start_status = False
 
-        # === ВЕТКА ИНСПЕКЦИИ / REVIEW (БЕЗ ПЕРЕЗАПИСИ КОДА) ===
+        # === ВЕТКА ИНСПЕКЦИИ / REVIEW / GIT (БЕЗ ПЕРЕЗАПИСИ КОДА) ===
         if plan.intent == "review":
             import subprocess
+            from services.git_sandbox import GitSandbox
+
             ws_dir = SandboxManager.get_workspace_dir()
-            target_fn = plan.target_artifact or "game.py"
+            target_fn = plan.target_artifact or "main.py"
             target_file = ws_dir / target_fn
+
+            # 0. Перехват прямых запросов на создание Git-коммита
+            task_lower = (task_prompt or "").lower()
+            commit_keywords = [
+                "коммит", "комит", "закоммит", "закомит", "commit",
+                "зафиксируй в гит", "сохрани в гит", "чекпоинт", "сделай гит"
+            ]
+            if any(k in task_lower for k in commit_keywords):
+                logger.info(f"⚡ [SubagentEngineer] Запрос на создание Git-коммита: '{task_prompt}'")
+                
+                # Извлечение комментария коммита (в кавычках или из текста)
+                m_msg = re.search(r"['\"]([^'\"]+)['\"]", task_prompt)
+                if m_msg:
+                    commit_msg = m_msg.group(1).strip()
+                else:
+                    commit_msg = plan.plan_content or "Manual checkpoint via chat"
+                    for prefix in ("Сделать коммит к игре", "Сделать коммит текущего файла в Git", "Сделать коммит"):
+                        if commit_msg.startswith(prefix):
+                            commit_msg = commit_msg.replace(prefix, "").strip(": ").strip()
+                    if not commit_msg or len(commit_msg) < 3:
+                        commit_msg = f"Checkpoint: update {target_fn}"
+
+                # Создание коммита через нативный GitSandbox
+                ok = GitSandbox.checkpoint(ws_dir, commit_msg)
+
+                # Определение короткого хэша
+                commit_hash = "HEAD"
+                try:
+                    res_hash = subprocess.run(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        cwd=str(ws_dir),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8"
+                    )
+                    if res_hash.returncode == 0 and res_hash.stdout.strip():
+                        commit_hash = res_hash.stdout.strip()
+                except Exception:
+                    pass
+
+                if ok:
+                    report_msg = (
+                        f"✅ **Git-чекпоинт успешно зафиксирован**\n\n"
+                        f"- **Комментарий:** `{commit_msg}`\n"
+                        f"- **Коммит:** `{commit_hash}`\n"
+                        f"- **Песочница:** `{ws_dir.name}`\n\n"
+                        f"Все файлы рабочей области сохранены в истории репозитория."
+                    )
+                else:
+                    report_msg = (
+                        f"ℹ️ **Git**: Рабочая область чиста. Нет новых изменений для коммита "
+                        f"(текущий коммит: `{commit_hash}`)."
+                    )
+
+                _safe_send_message("assistant", report_msg)
+                return {
+                    "success": True,
+                    "target_artifact": target_fn,
+                    "verification_passed": True,
+                    "turns": 1,
+                    "message": report_msg
+                }
 
             # 1. Получаем Git Diff текущей рабочей области
             git_diff_text = ""
@@ -610,6 +675,7 @@ class SubagentEngineer:
                 if fn and body:
                     patch_blocks.append((fn, body))
 
+            replace_blocks = []
             git_checkpoint_results = []
             tool_calls = ToolEngine.parse_tool_calls(response_text)
             found_cp_tc = False
@@ -624,6 +690,25 @@ class SubagentEngineer:
                     body = tc.body or tc.params.get("diff") or ""
                     if fn and body:
                         patch_blocks.append((fn, body))
+                elif tc.name == "replace_symbol":
+                    fn = tc.params.get("filename") or ""
+                    sym = tc.params.get("symbol_name") or tc.params.get("name") or ""
+                    code_body = tc.body or tc.params.get("code") or ""
+                    if fn and sym:
+                        if fn not in file_backups:
+                            orig_file = ws_dir / fn
+                            if orig_file.exists() and orig_file.is_file():
+                                try:
+                                    file_backups[fn] = orig_file.read_text(encoding="utf-8", errors="ignore")
+                                except Exception as _e_bk:
+                                    logger.warning(f"SubagentEngineer: не удалось создать бэкап {fn}: {_e_bk}")
+                        res = ToolEngine.replace_symbol(filename=fn, symbol_name=sym, new_code=code_body)
+                        if not res.success:
+                            last_error = res.output
+                            logger.warning(f"[SubagentEngineer] Сбой replace_symbol: {last_error}")
+                        else:
+                            logger.info(f"[SubagentEngineer] {res.output}")
+                            replace_blocks.append(fn)
                 elif tc.name == "git_checkpoint":
                     found_cp_tc = True
                     c_res = ToolEngine.execute_tool_call(tc)
@@ -662,7 +747,7 @@ class SubagentEngineer:
                 }
 
             # 2. Полный Fallback-парсер (если модель опустила теги инструментов)
-            if not write_blocks and not patch_blocks:
+            if not write_blocks and not patch_blocks and not replace_blocks:
                 def _has_py_indicators(code: str) -> bool:
                     if not code or not code.strip():
                         return False
@@ -762,22 +847,6 @@ class SubagentEngineer:
                                         pass
                     code = SubagentEngineer._extract_pure_py(response_text, orig_content=orig_cnt)
                     if code:
-                        try:
-                            ast.parse(code)
-                        except SyntaxError as e:
-                            logger.warning(f"[SubagentEngineer] Извлеченный код содержит синтаксическую ошибку: {e}")
-                            failed_fn = target_entry_file or script_to_run or "script.py"
-                            failed_l = getattr(e, "lineno", 0) or 0
-                            if on_status_callback and callable(on_status_callback):
-                                on_status_callback("error", failed_fn, failed_l, str(e))
-                            return {
-                                "success": False,
-                                "artifact_path": None,
-                                "file_name": target_entry_file or script_to_run or "script.py",
-                                "stdout": stdout,
-                                "stderr": f"SyntaxError: {e}",
-                                "summary": f"Извлеченный код содержит синтаксическую ошибку: {e}"
-                            }
                         target_fn = _resolve_target_fn(code, used_names=used_target_files)
                         used_target_files.add(target_fn)
                         write_blocks.append((target_fn, code))
@@ -829,9 +898,10 @@ class SubagentEngineer:
 
             write_blocks = clean_blocks
 
-            if not write_blocks and not patch_blocks:
+            if not write_blocks and not patch_blocks and not replace_blocks:
                 clean_summary = ToolEngine.strip_tool_tags(response_text).strip() if hasattr(ToolEngine, "strip_tool_tags") else response_text.strip()
-                last_error = "Модель не сформировала блоки создания файлов."
+                if not last_error:
+                    last_error = "Модель не сформировала блоки создания файлов."
                 current_fp = extract_error_fingerprint(last_error)
 
                 if current_fp and current_fp == last_error_fingerprint:
@@ -868,9 +938,13 @@ class SubagentEngineer:
 
                 if turn < max_turns and not is_analysis:
                     retry_msg = (
-                        "В ответе отсутствуют созданные файлы. Оформи полный код через "
-                        "<<TOOL:write_file filename=\"make_doc.py\">>код<</TOOL:write_file>> "
-                        "и запусти его через <<TOOL:run_script filename=\"make_doc.py\">>."
+                        f"Ошибка применения replace_symbol:\n{last_error}\nИсправь параметры или код узла."
+                        if "replace_symbol" in (last_error or "") else
+                        (
+                            "В ответе отсутствуют созданные файлы. Оформи полный код через "
+                            "<<TOOL:write_file filename=\"make_doc.py\">>код<</TOOL:write_file>> "
+                            "и запусти его через <<TOOL:run_script filename=\"make_doc.py\">>."
+                        )
                     )
                     messages = [
                         messages[0],
@@ -1122,25 +1196,55 @@ class SubagentEngineer:
                     break
 
             # 3. Запись файлов
+            syntax_error_found = False
             for filename, content in write_blocks:
                 if filename.lower().endswith((".py", ".pyw")):
                     try:
                         ast.parse(content)
                     except SyntaxError as e:
-                        logger.warning(f"[SubagentEngineer] Извлеченный код содержит синтаксическую ошибку: {e}")
-                        ws_dir = SandboxManager.get_workspace_dir()
-                        SubagentEngineer._rollback_workspace(ws_dir, file_backups)
+                        syntax_error_found = True
                         failed_l = getattr(e, "lineno", 0) or 0
+                        syntax_err = f"SyntaxError в файле {filename} на строке {failed_l}: {e.msg or e}"
+                        logger.warning(f"[SubagentEngineer] Ход {turn}/{max_turns}: {syntax_err}")
+                        last_error = syntax_err
                         if on_status_callback and callable(on_status_callback):
                             on_status_callback("error", filename, failed_l, str(e))
-                        return {
-                            "success": False,
-                            "artifact_path": None,
-                            "file_name": filename,
-                            "stdout": stdout,
-                            "stderr": f"SyntaxError: {e}",
-                            "summary": f"Извлеченный код содержит синтаксическую ошибку: {e}"
-                        }
+                        break
+
+            if syntax_error_found:
+                # Откатываем рабочую область и переходим на следующий ход автономного цикла
+                ws_dir = SandboxManager.get_workspace_dir()
+                SubagentEngineer._rollback_workspace(ws_dir, file_backups)
+                consecutive_same_error_count = consecutive_same_error_count + 1 if last_error == prev_loop_error else 1
+                prev_loop_error = last_error
+
+                if turn < max_turns:
+                    diag_msg = (
+                        f"❌ [СИНТАКСИЧЕСКАЯ ОШИБКА НА ХОДЕ {turn}/{max_turns}]\n"
+                        f"{last_error}\n\n"
+                        f"Твой предыдущий вариант кода отклонён синтаксическим валидатором AST. "
+                        f"Внимательно исправь указанную строку (проверь баланс кавычек, двоеточия и отступы) "
+                        f"и верни корректный код через <<TOOL:write_file filename=\"{target_entry_file or filename}\">>."
+                    )
+                    clean_user_prompt = _build_goal_anchor(diag_msg)
+                    messages = [
+                        messages[0],
+                        messages[1],
+                        {"role": "assistant", "content": "Понял, исправляю синтаксическую ошибку в коде."},
+                        {"role": "user", "content": clean_user_prompt}
+                    ]
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "artifact_path": None,
+                        "file_name": target_entry_file or "main.py",
+                        "stdout": stdout,
+                        "stderr": last_error,
+                        "summary": f"Исчерпан лимит ходов ({max_turns}). Не удалось устранить синтаксическую ошибку: {last_error}"
+                    }
+
+            for filename, content in write_blocks:
                 write_res = ToolEngine.write_file(filename=filename, content=content)
                 if not write_res.success:
                     ws_dir = SandboxManager.get_workspace_dir()
@@ -1245,7 +1349,7 @@ class SubagentEngineer:
             # Если задача спроектирована как библиотечный модуль без верификатора — не запускаем его вхолостую
             if not script_to_run:
                 if artifact_format == "module" and not (self.active_verification_script or self.verification_script):
-                    target_file_name = target_artifact or target_entry_file or (write_blocks[0][0] if write_blocks else (patch_blocks[0][0] if patch_blocks else "module.py"))
+                    target_file_name = target_artifact or target_entry_file or (write_blocks[0][0] if write_blocks else (patch_blocks[0][0] if patch_blocks else (replace_blocks[0] if replace_blocks else "module.py")))
                     target_p = ws_dir / Path(target_file_name).name
                     logger.info(f"✅ [Модуль] Библиотечный файл '{target_file_name}' успешно пропатчен/сохранён и прошёл AST-валидацию (автономный запуск не требуется).")
                     return {
@@ -1277,6 +1381,12 @@ class SubagentEngineer:
 
             if not script_to_run and patch_blocks:
                 for fn, _ in patch_blocks:
+                    if fn.lower().endswith((".py", ".pyw")):
+                        script_to_run = fn
+                        break
+
+            if not script_to_run and replace_blocks:
+                for fn in replace_blocks:
                     if fn.lower().endswith((".py", ".pyw")):
                         script_to_run = fn
                         break

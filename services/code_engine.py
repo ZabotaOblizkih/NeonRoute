@@ -27,187 +27,95 @@ logger = logging.getLogger("NeonRoute.CodeEngine")
 # 1. ASTSkeletonizer
 # ==============================================================================
 
-class ASTSkeletonizer:
+class ASTSkeletonizer(ast.NodeTransformer):
     """
-    Преобразует исходный Python-код в компактный скелет без потери контекста интерфейсов.
+    Преобразует исходный Python-код в 100% синтаксически валидный скелет интерфейсов.
+    Работает строго на уровне AST-узлов (без строковых срезов), исключая незакрытые кавычки.
     """
 
     @classmethod
     def skeletonize(cls, source_code: str) -> str:
         """
-        Преобразует Python-код в компактный скелет.
-        - Сохраняет: import, from ... import, константы UPPER_CASE = ...,
-          классы с базовыми классами и docstrings.
-        - Сохраняет сигнатуры методов и функций, декораторы, аннотации типов и docstring.
-        - Заменяет тело методов/функций на `...` (Ellipsis).
-        - При SyntaxError возвращает исходный код без падения программы.
+        Преобразует Python-код в компактный скелет:
+        - Сохраняет import, from ... import, константы верхнего регистра (UPPER_CASE = ...).
+        - Сохраняет структуру классов, декораторы, docstrings, сигнатуры методов и аннотации типов.
+        - Заменяет тело всех функций и методов на синтаксический Ellipsis (...).
+        - При ошибке парсинга безопасно возвращает исходный код.
         """
         if not source_code or not source_code.strip():
             return source_code
 
         try:
             tree = ast.parse(source_code)
-        except (SyntaxError, IndentationError, Exception):
+            transformer = cls()
+            transformed_tree = transformer.visit(tree)
+            ast.fix_missing_locations(transformed_tree)
+            return ast.unparse(transformed_tree)
+        except Exception:
             return source_code
 
-        lines = source_code.splitlines()
+    def visit_Module(self, node: ast.Module) -> ast.Module:
+        new_body = []
+        is_first = True
+        for stmt in node.body:
+            # 1. Сохраняем docstring модуля
+            if is_first and isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                new_body.append(stmt)
+            # 2. Импорты
+            elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                new_body.append(stmt)
+            # 3. Константы верхнего регистра (MAX_LIMIT = 10, PORT: int = 8080)
+            elif isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id.isupper() for t in stmt.targets):
+                new_body.append(stmt)
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id.isupper():
+                new_body.append(stmt)
+            # 4. Классы и функции верхнего уровня
+            elif isinstance(stmt, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                transformed_stmt = self.visit(stmt)
+                if transformed_stmt:
+                    new_body.append(transformed_stmt)
+            is_first = False
 
-        def get_docstring_node(body_nodes: list) -> Optional[ast.Expr]:
-            if (
-                body_nodes
-                and isinstance(body_nodes[0], ast.Expr)
-                and isinstance(body_nodes[0].value, ast.Constant)
-                and isinstance(body_nodes[0].value.value, str)
-            ):
-                return body_nodes[0]
-            return None
+        node.body = new_body
+        return node
 
-        def format_docstring(doc_expr: ast.Expr, indent_str: str) -> str:
-            val = doc_expr.value.value  # type: ignore
-            # Формируем тройные кавычки
-            clean_val = val.replace('"""', r'\"\"\"')
-            if "\n" in clean_val:
-                doc_lines = clean_val.split("\n")
-                formatted = [f'{indent_str}"""{doc_lines[0]}']
-                for dl in doc_lines[1:]:
-                    formatted.append(f"{indent_str}{dl}")
-                formatted[-1] += '"""'
-                return "\n".join(formatted)
-            else:
-                return f'{indent_str}"""{clean_val}"""'
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        doc = ast.get_docstring(node)
+        new_body = []
+        if doc:
+            new_body.append(ast.Expr(value=ast.Constant(value=doc)))
 
-        def is_upper_case_target(target: ast.AST) -> bool:
-            if isinstance(target, ast.Name):
-                return target.id.isupper()
-            return False
+        for stmt in node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                new_body.append(self._skeletonize_function(stmt))
+            elif isinstance(stmt, ast.ClassDef):
+                new_body.append(self.visit_ClassDef(stmt))
+            elif isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id.isupper() for t in stmt.targets):
+                new_body.append(stmt)
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id.isupper():
+                new_body.append(stmt)
 
-        def get_source_slice(start_lineno: int, end_lineno: int) -> str:
-            # 1-indexed to 0-indexed slice
-            s = max(0, start_lineno - 1)
-            e = min(len(lines), end_lineno)
-            return "\n".join(lines[s:e])
+        if not new_body:
+            new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
 
-        def get_func_header(fn_node: Union[ast.FunctionDef, ast.AsyncFunctionDef], indent_str: str) -> str:
-            # Сигнатура функции/метода включая декораторы
-            start_l = fn_node.lineno
-            if fn_node.decorator_list:
-                start_l = fn_node.decorator_list[0].lineno
+        node.body = new_body
+        return node
 
-            # Ищем где заканчивается заголовок (строка с двоеточием перед телом)
-            first_body_node = fn_node.body[0] if fn_node.body else None
-            if first_body_node:
-                # Заголовок заканчивается до первой строчки тела
-                body_start_l = first_body_node.lineno
-                # Берём строки от start_l до body_start_l
-                header_lines = lines[start_l - 1 : body_start_l]
-                combined = "\n".join(header_lines)
-                # Ищем двоеточие, отделяющее заголовок
-                colon_idx = combined.rfind(":")
-                if colon_idx != -1:
-                    header_text = combined[: colon_idx + 1]
-                else:
-                    header_text = combined
-            else:
-                header_text = lines[start_l - 1]
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        return self._skeletonize_function(node)
 
-            return header_text.rstrip()
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        return self._skeletonize_function(node)
 
-        def process_function(
-            fn_node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
-            indent_level: int = 0
-        ) -> List[str]:
-            res: List[str] = []
-            indent_str = "    " * indent_level
-            body_indent = "    " * (indent_level + 1)
-
-            header = get_func_header(fn_node, indent_str)
-            res.append(header)
-
-            doc = get_docstring_node(fn_node.body)
-            if doc:
-                res.append(format_docstring(doc, body_indent))
-
-            res.append(f"{body_indent}...")
-            return res
-
-        def process_class(cls_node: ast.ClassDef, indent_level: int = 0) -> List[str]:
-            res: List[str] = []
-            indent_str = "    " * indent_level
-            body_indent = "    " * (indent_level + 1)
-
-            start_l = cls_node.lineno
-            if cls_node.decorator_list:
-                start_l = cls_node.decorator_list[0].lineno
-
-            first_body = cls_node.body[0] if cls_node.body else None
-            if first_body:
-                header_lines = lines[start_l - 1 : first_body.lineno]
-                combined = "\n".join(header_lines)
-                colon_idx = combined.rfind(":")
-                header_text = combined[: colon_idx + 1] if colon_idx != -1 else combined
-            else:
-                header_text = lines[start_l - 1]
-
-            res.append(header_text.rstrip())
-
-            doc = get_docstring_node(cls_node.body)
-            if doc:
-                res.append(format_docstring(doc, body_indent))
-
-            has_children = False
-            for item in cls_node.body:
-                if item == doc:
-                    continue
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    res.extend(process_function(item, indent_level + 1))
-                    has_children = True
-                elif isinstance(item, ast.ClassDef):
-                    res.extend(process_class(item, indent_level + 1))
-                    has_children = True
-                elif isinstance(item, ast.Assign):
-                    if any(is_upper_case_target(t) for t in item.targets):
-                        code = get_source_slice(item.lineno, getattr(item, "end_lineno", item.lineno))
-                        res.append(code)
-                        has_children = True
-                elif isinstance(item, ast.AnnAssign):
-                    if is_upper_case_target(item.target):
-                        code = get_source_slice(item.lineno, getattr(item, "end_lineno", item.lineno))
-                        res.append(code)
-                        has_children = True
-
-            if not has_children and not doc:
-                res.append(f"{body_indent}...")
-
-            return res
-
-        output_blocks: List[str] = []
-
-        # Обход верхнего уровня
-        for node in tree.body:
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                code = get_source_slice(node.lineno, getattr(node, "end_lineno", node.lineno))
-                output_blocks.append(code)
-
-            elif isinstance(node, ast.Assign):
-                # Сохраняем константы ВЕРХНЕГО РЕГИСТРА
-                if any(is_upper_case_target(t) for t in node.targets):
-                    code = get_source_slice(node.lineno, getattr(node, "end_lineno", node.lineno))
-                    output_blocks.append(code)
-
-            elif isinstance(node, ast.AnnAssign):
-                if is_upper_case_target(node.target):
-                    code = get_source_slice(node.lineno, getattr(node, "end_lineno", node.lineno))
-                    output_blocks.append(code)
-
-            elif isinstance(node, ast.ClassDef):
-                cls_lines = process_class(node, 0)
-                output_blocks.append("\n".join(cls_lines))
-
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                fn_lines = process_function(node, 0)
-                output_blocks.append("\n".join(fn_lines))
-
-        return "\n\n".join(output_blocks)
+    def _skeletonize_function(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> Union[ast.FunctionDef, ast.AsyncFunctionDef]:
+        doc = ast.get_docstring(node)
+        new_body = []
+        if doc:
+            new_body.append(ast.Expr(value=ast.Constant(value=doc)))
+        # Тело функции/метода полностью заменяется синтаксическим объектом Ellipsis (...)
+        new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+        node.body = new_body
+        return node
 
     @classmethod
     def extract_symbol(cls, source_code: str, symbol_name: str) -> Optional[str]:
@@ -341,6 +249,70 @@ class ExecutionSandbox:
         return SandboxManager.run_script(script_name, timeout=timeout)
 
 
+STANDARD_AUTO_IMPORTS: Dict[str, str] = {
+    "List": "from typing import List",
+    "Dict": "from typing import Dict",
+    "Tuple": "from typing import Tuple",
+    "Optional": "from typing import Optional",
+    "Union": "from typing import Union",
+    "Any": "from typing import Any",
+    "Callable": "from typing import Callable",
+    "Set": "from typing import Set",
+    "Path": "from pathlib import Path",
+    "math": "import math",
+    "random": "import random",
+    "json": "import json",
+    "time": "import time",
+    "re": "import re",
+    "sys": "import sys",
+    "shutil": "import shutil",
+    "datetime": "from datetime import datetime",
+    "timedelta": "from datetime import timedelta",
+    "defaultdict": "from collections import defaultdict",
+    "Counter": "from collections import Counter",
+    "deque": "from collections import deque",
+    "dataclass": "from dataclasses import dataclass",
+    "field": "from dataclasses import field",
+    "StringIO": "from io import StringIO",
+    "BytesIO": "from io import BytesIO",
+}
+
+class AutoImporter:
+    """Инструмент тихой инъекции забытых стандартных импортов (Zero-Token Healing)."""
+
+    @classmethod
+    def resolve_import(cls, symbol: str) -> Optional[str]:
+        return STANDARD_AUTO_IMPORTS.get(symbol)
+
+    @classmethod
+    def try_inject_import(cls, file_path: Path, missing_symbol: str) -> bool:
+        stmt = cls.resolve_import(missing_symbol)
+        if not stmt or not file_path.is_file():
+            return False
+
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            # Проверяем, нет ли уже такой строки
+            if stmt in content:
+                return False
+
+            lines = content.splitlines(keepends=True)
+            insert_idx = 0
+
+            # Пропускаем shebang (#!) и кодировку, если есть
+            for i, line in enumerate(lines[:3]):
+                if line.startswith("#!") or "coding:" in line:
+                    insert_idx = i + 1
+
+            lines.insert(insert_idx, f"{stmt}\n")
+            file_path.write_text("".join(lines), encoding="utf-8")
+            logger.info(f"✨ [Zero-Token Healing] Добавлен импорт: '{stmt}' в {file_path.name}")
+            return True
+        except Exception as e:
+            logger.warning(f"[Zero-Token Healing] Не удалось внедрить импорт в {file_path.name}: {e}")
+            return False
+
+
 from services.code_validator import CodeValidator
 from services.patch_engine import PatchResult, PatchApplier, SelfHealingEngine
 
@@ -351,4 +323,5 @@ __all__ = [
     "ExecutionSandbox",
     "SelfHealingEngine",
     "CodeValidator",
+    "AutoImporter",
 ]

@@ -7,6 +7,7 @@ and Read-Only System Storage.
 import os
 import re
 import sys
+import ast
 import time
 import shutil
 import logging
@@ -603,6 +604,81 @@ class ToolEngine:
             return ToolResult(tool_name="patch_file", success=False, output=err)
 
     @classmethod
+    def replace_symbol(cls, filename: str, symbol_name: str, new_code: str) -> ToolResult:
+        """
+        Точечно заменяет или удаляет класс/метод в файле по AST-координатам:
+        - Находит узел (ClassDef, FunctionDef, AsyncFunctionDef) с именем symbol_name.
+        - Если new_code.strip() == "DELETED" — удаляет строки узла.
+        - Иначе — замещает диапазон строк новым кодом.
+        - Валидирует итоговый файл через ast.parse() перед сохранением.
+        """
+        try:
+            if not filename or not str(filename).strip():
+                return ToolResult(tool_name="replace_symbol", success=False, output="[Ошибка replace_symbol]: Не указано имя файла")
+            if not symbol_name or not str(symbol_name).strip():
+                return ToolResult(tool_name="replace_symbol", success=False, output="[Ошибка replace_symbol]: Не указано имя символа")
+
+            target_path = SandboxManager.validate_read_file_path(filename)
+            clean_name = target_path.name
+
+            if not target_path.exists() or not target_path.is_file():
+                return ToolResult(tool_name="replace_symbol", success=False, output=f"[Ошибка replace_symbol]: Файл {clean_name} не найден")
+
+            content = target_path.read_text(encoding="utf-8", errors="ignore")
+            lines = content.splitlines(keepends=True)
+
+            try:
+                tree = ast.parse(content)
+            except SyntaxError as e:
+                return ToolResult(tool_name="replace_symbol", success=False, output=f"[Ошибка replace_symbol]: Исходный файл поврежден: {e}")
+
+            target_node = None
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if node.name == symbol_name:
+                        target_node = node
+                        break
+
+            if not target_node:
+                return ToolResult(tool_name="replace_symbol", success=False, output=f"[Ошибка replace_symbol]: Символ '{symbol_name}' не найден в AST файла {clean_name}")
+
+            start_idx = target_node.lineno - 1
+            end_idx = getattr(target_node, "end_lineno", start_idx + 1)
+
+            clean_new_code = (new_code or "").strip("\r\n")
+            if clean_new_code == "DELETED" or not clean_new_code:
+                updated_lines = lines[:start_idx] + lines[end_idx:]
+                action_desc = f"удален из строк {start_idx + 1}–{end_idx}"
+            else:
+                if not clean_new_code.endswith("\n"):
+                    clean_new_code += "\n"
+                updated_lines = lines[:start_idx] + [clean_new_code] + lines[end_idx:]
+                action_desc = f"заменен на новый код (строки {start_idx + 1}–{end_idx})"
+
+            updated_content = "".join(updated_lines)
+
+            # Pre-flight проверка синтаксиса
+            try:
+                ast.parse(updated_content)
+            except SyntaxError as e:
+                return ToolResult(
+                    tool_name="replace_symbol",
+                    success=False,
+                    output=f"[Ошибка replace_symbol]: Результирующий код содержит SyntaxError: {e}"
+                )
+
+            # Фиксация на диск
+            target_path.write_text(updated_content, encoding="utf-8")
+            msg = f"[Успешно]: Символ '{symbol_name}' в файле {clean_name} {action_desc}."
+            logger.info(msg)
+            return ToolResult(tool_name="replace_symbol", success=True, output=msg, artifact_path=target_path)
+
+        except Exception as e:
+            err = f"[Ошибка replace_symbol]: {e}"
+            logger.error(err)
+            return ToolResult(tool_name="replace_symbol", success=False, output=err)
+
+    @classmethod
     def execute_git_checkpoint(cls, message: str, make_backup: bool = True) -> str:
         from services.git_sandbox import GitSandboxManager
         from services.sandbox_manager import SandboxManager
@@ -741,6 +817,12 @@ class ToolEngine:
             replace_block = p.get("replace") or p.get("replace_block") or ""
             diff_body = call.body or p.get("diff") or p.get("diff_text") or ""
             return cls.patch_file(filename=filename, search_block=search_block, replace_block=replace_block, diff_body=diff_body)
+
+        elif name == "replace_symbol":
+            filename = p.get("filename") or p.get("path") or p.get("file") or p.get("name") or ""
+            symbol_name = p.get("symbol_name") or p.get("name") or p.get("symbol") or ""
+            new_code = call.body or p.get("code") or p.get("new_code") or ""
+            return cls.replace_symbol(filename=filename, symbol_name=symbol_name, new_code=new_code)
 
         elif name == "copy_file":
             src = p.get("src") or p.get("source") or p.get("path") or p.get("file") or p.get("from") or ""
