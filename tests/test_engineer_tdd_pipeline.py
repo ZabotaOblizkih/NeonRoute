@@ -428,3 +428,169 @@ class TestSubagentEngineerIncrementalFeaturePipeline:
         assert "def test_withdraw_valid():" in updated_test
         assert "def test_withdraw_insufficient():" in updated_test
         assert updated_test.count("import pytest") == 1  # Без дублирования импортов!
+
+
+    def test_incremental_feature_bootstrap_baseline_when_no_tests(self, workspace_tmp):
+        """
+        Если файл test_<module>.py отсутствует, пайплайн запускает Bootstrap Baseline:
+        1. Создает минимальный Happy Path тест под существующий код модуля.
+        2. Добивается 100% Green.
+        3. Продолжает Шаги 2-5 штатно.
+        """
+        # Существующий код без тестов
+        orig_code = (
+            "class MathHelper:\n"
+            "    def double(self, x):\n"
+            "        return x * 2\n"
+        )
+        (workspace_tmp / "math_helper.py").write_text(orig_code, encoding="utf-8")
+        assert not (workspace_tmp / "test_math_helper.py").exists()
+
+        class MockBootstrapClient:
+            def __init__(self):
+                self.calls = 0
+
+            def chat_completion(self, messages, *args, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    # Архитектор
+                    return json.dumps({
+                        "task_type": "INCREMENTAL_FEATURE",
+                        "target_file": "math_helper.py",
+                        "interface_spec": {
+                            "classes": [{"name": "MathHelper", "methods": [{"name": "triple", "args": ["self", "x"]}]}]
+                        },
+                        "plan": "Добавление функции triple"
+                    })
+                elif self.calls == 2:
+                    # Bootstrap Baseline генерация тестов под существующий код
+                    user_msg = str(messages[-1]["content"])
+                    assert "Исходный код модуля math_helper.py" in user_msg
+                    system_msg = str(messages[0]["content"])
+                    assert "ТОЛЬКО pytest функции `def test_...()`" in system_msg
+                    return (
+                        "<<TOOL:write_file filename=\"test_math_helper.py\">>\n"
+                        "import pytest\n"
+                        "from math_helper import MathHelper\n\n"
+                        "def test_double():\n"
+                        "    mh = MathHelper()\n"
+                        "    assert mh.double(5) == 10\n"
+                        "<</TOOL:write_file>>"
+                    )
+                elif self.calls == 3:
+                    # Шаг 2: Внесение правок (добавление triple с сохранением double)
+                    return (
+                        "<<TOOL:write_file filename=\"math_helper.py\">>\n"
+                        "class MathHelper:\n"
+                        "    def double(self, x):\n"
+                        "        return x * 2\n"
+                        "    def triple(self, x):\n"
+                        "        return x * 3\n"
+                        "<</TOOL:write_file>>"
+                    )
+                elif self.calls == 4:
+                    # Шаг 4: Дописывание тестов строго для новых методов
+                    return (
+                        "def test_triple():\n"
+                        "    mh = MathHelper()\n"
+                        "    assert mh.triple(4) == 12\n"
+                    )
+                return "OK"
+
+        client = MockBootstrapClient()
+        with patch("services.sandbox_manager.SandboxManager.get_workspace_dir", return_value=workspace_tmp):
+            res = SubagentEngineer.run_worker(
+                task_prompt="Добавь функцию triple в math_helper.py",
+                lm_client=client
+            )
+
+        assert res["success"] is True
+        assert res["verification_passed"] is True
+        assert (workspace_tmp / "test_math_helper.py").exists()
+
+        test_content = (workspace_tmp / "test_math_helper.py").read_text(encoding="utf-8")
+        assert "def test_double():" in test_content
+        assert "def test_triple():" in test_content
+
+    def test_incremental_feature_bootstrap_baseline_stabilizes_failing_test(self, workspace_tmp):
+        """
+        Если первая генерация Bootstrap теста содержит ошибку (например, опечатка в assert),
+        пайплайн исправляет тест (существующий код эталонен) до достижения Green.
+        """
+        orig_code = (
+            "class StringUtils:\n"
+            "    def to_upper(self, s):\n"
+            "        return s.upper()\n"
+        )
+        (workspace_tmp / "string_utils.py").write_text(orig_code, encoding="utf-8")
+
+        class MockStabilizingClient:
+            def __init__(self):
+                self.calls = 0
+
+            def chat_completion(self, messages, *args, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    # Архитектор
+                    return json.dumps({
+                        "task_type": "INCREMENTAL_FEATURE",
+                        "target_file": "string_utils.py",
+                        "interface_spec": {
+                            "classes": [{"name": "StringUtils", "methods": [{"name": "to_lower"}]}]
+                        },
+                        "plan": "Добавление to_lower"
+                    })
+                elif self.calls == 2:
+                    # Bootstrap Baseline с падающим ассертом
+                    return (
+                        "<<TOOL:write_file filename=\"test_string_utils.py\">>\n"
+                        "from string_utils import StringUtils\n\n"
+                        "def test_to_upper():\n"
+                        "    u = StringUtils()\n"
+                        "    assert u.to_upper('hi') == 'WRONG'\n"  # Намеренно падающий тест
+                        "<</TOOL:write_file>>"
+                    )
+                elif self.calls == 3:
+                    # Исправление базового теста под эталонный код (boot_attempts == 1)
+                    user_msg = str(messages[-1]["content"])
+                    assert "Ошибка pytest" in user_msg
+                    return (
+                        "<<TOOL:write_file filename=\"test_string_utils.py\">>\n"
+                        "from string_utils import StringUtils\n\n"
+                        "def test_to_upper():\n"
+                        "    u = StringUtils()\n"
+                        "    assert u.to_upper('hi') == 'HI'\n"
+                        "<</TOOL:write_file>>"
+                    )
+                elif self.calls == 4:
+                    # Шаг 2: Внесение правок
+                    return (
+                        "<<TOOL:write_file filename=\"string_utils.py\">>\n"
+                        "class StringUtils:\n"
+                        "    def to_upper(self, s):\n"
+                        "        return s.upper()\n"
+                        "    def to_lower(self, s):\n"
+                        "        return s.lower()\n"
+                        "<</TOOL:write_file>>"
+                    )
+                elif self.calls == 5:
+                    # Шаг 4: Дописывание тестов
+                    return (
+                        "def test_to_lower():\n"
+                        "    u = StringUtils()\n"
+                        "    assert u.to_lower('HI') == 'hi'\n"
+                    )
+                return "OK"
+
+        client = MockStabilizingClient()
+        with patch("services.sandbox_manager.SandboxManager.get_workspace_dir", return_value=workspace_tmp):
+            res = SubagentEngineer.run_worker(
+                task_prompt="Добавь to_lower в string_utils.py",
+                lm_client=client
+            )
+
+        assert res["success"] is True
+        assert res["verification_passed"] is True
+        test_content = (workspace_tmp / "test_string_utils.py").read_text(encoding="utf-8")
+        assert "assert u.to_upper('hi') == 'HI'" in test_content
+        assert "def test_to_lower():" in test_content

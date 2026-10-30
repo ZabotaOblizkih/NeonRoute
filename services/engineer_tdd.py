@@ -365,9 +365,63 @@ class CodeFirstTDDPipeline:
                 except Exception:
                     pass
 
-        # === ШАГ 1 (PRE-FLIGHT BASELINE CHECK): Прогон существующих тестов модуля ===
-        _send("assistant", f"🔍 **Шаг 1 (Pre-flight Baseline Check)**: Прогон существующих тестов `{test_file}`...")
-        if (ws_dir / test_file).is_file():
+        orig_mod_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore") if (ws_dir / mod_name).is_file() else ""
+
+        # === ШАГ 1: ПРОВЕРКА ИЛИ БУТСТРАП БАЗОВЫХ ТЕСТОВ ===
+        if not (ws_dir / test_file).is_file():
+            _send("assistant", f"⚡ **Bootstrap Baseline**: Тестовый файл `{test_file}` отсутствует. Фиксирую текущий контракт модуля `{mod_name}` перед доработкой...")
+            
+            boot_system = (
+                "Ты — инженер по тестированию NeonRoute. Для существующего рабочего кода нет тестов.\n"
+                "Твоя задача — написать минимальный набор базовых тестов pytest для фиксации текущего поведения (Happy Path).\n"
+                "СТРОГИЕ ПРАВИЛА:\n"
+                "1. ТОЛЬКО pytest функции `def test_...()`. Запрещен unittest.TestCase.\n"
+                "2. Не используй фикстуры в аргументах функций. Создавай объекты классов прямо внутри тестов.\n"
+                f"Верни ТОЛЬКО код тестов для файла {test_file}."
+            )
+            boot_user = (
+                f"Исходный код модуля {mod_name}:\n```python\n{orig_mod_code}\n```\n\n"
+                f"Напиши базовые тесты для фиксации текущего функционала в файле {test_file}."
+            )
+
+            boot_resp = client.chat_completion(
+                messages=[{"role": "system", "content": boot_system}, {"role": "user", "content": boot_user}],
+                model=target_model,
+                temperature=worker_temp
+            )
+            boot_blocks = cls.extract_code_blocks(str(boot_resp or ""), default_filename=test_file)
+            boot_test_code = boot_blocks.get(test_file) or (list(boot_blocks.values())[0] if boot_blocks else "")
+            boot_test_code = sanitize_code(boot_test_code, test_file)
+            (ws_dir / test_file).write_text(boot_test_code, encoding="utf-8")
+
+            # Проверяем базовый тест. Если упал — правим ТЕСТ (существующий код эталонен)
+            boot_check = ToolEngine.run_pytest(test_file)
+            boot_attempts = 0
+            while not boot_check.success and boot_attempts < 3:
+                boot_attempts += 1
+                logger.warning(f"[Bootstrap] Базовый тест упал, исправляем опечатки (попытка {boot_attempts}/3)...")
+                fix_boot_msgs = [
+                    {"role": "system", "content": f"Исправь опечатки в {test_file} под существующий эталонный код модуля. Создавай объекты внутри тестов без фикстур."},
+                    {"role": "user", "content": f"Код модуля {mod_name}:\n```python\n{orig_mod_code}\n```\n\nТекущий тест:\n```python\n{boot_test_code}\n```\n\nОшибка pytest:\n{boot_check.output or boot_check.stderr}"}
+                ]
+                fix_resp = client.chat_completion(messages=fix_boot_msgs, model=target_model, temperature=worker_temp)
+                f_blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
+                boot_test_code = f_blocks.get(test_file) or (list(f_blocks.values())[0] if f_blocks else boot_test_code)
+                boot_test_code = sanitize_code(boot_test_code, test_file)
+                (ws_dir / test_file).write_text(boot_test_code, encoding="utf-8")
+                boot_check = ToolEngine.run_pytest(test_file)
+
+            if not boot_check.success:
+                err_msg = f"⚠ [Bootstrap Warning]: Не удалось стабилизировать базовые тесты для `{mod_name}`. Продолжаем без baseline-страховки."
+                logger.warning(err_msg)
+                _send("assistant", err_msg)
+            else:
+                _send("assistant", f"✅ **Bootstrap завершён**: Базовые тесты `{test_file}` созданы и 100% зелёные. База зафиксирована.")
+
+            orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
+        else:
+            # Штатный прогон существующих тестов
+            _send("assistant", f"🔍 **Шаг 1 (Pre-flight Baseline Check)**: Прогон существующих тестов `{test_file}`...")
             preflight_res = ToolEngine.run_pytest(test_file)
             if not preflight_res.success:
                 alert_msg = (
@@ -386,9 +440,7 @@ class CodeFirstTDDPipeline:
                     "summary": alert_msg
                 }
             _send("assistant", f"✅ Базовые тесты `{test_file}` 100% зеленые. Приступаю к внесению правок.")
-
-        orig_mod_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore") if (ws_dir / mod_name).is_file() else ""
-        orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
+            orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore")
 
         # === ШАГ 2 (ВНЕСЕНИЕ ПРАВОК): Дописывание новых методов в класс с сохранением старой логики ===
         _send("assistant", f"🛠️ **Шаг 2 (Внесение правок)**: Дописывание новых методов в `{mod_name}` с сохранением существующей логики...")
