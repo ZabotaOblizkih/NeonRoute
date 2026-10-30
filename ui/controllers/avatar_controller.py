@@ -405,25 +405,41 @@ class AvatarControllerMixin:
                 act_prompts = menu.addAction("📜 Промпты...")
                 act_prompts.triggered.connect(self._open_prompts_dialog)
 
-            # Проверка режима: отображаем скиллы разработки ИСКЛЮЧИТЕЛЬНО в режиме Engineer
-            is_engineer = (
-                getattr(self, "current_mode", "") == "engineer"
-                or (hasattr(self, "current_session") and isinstance(self.current_session, dict) and self.current_session.get("mode") == "engineer")
-            )
+            # Каноническая проверка режима Инженера (SSOT)
+            is_engineer = False
+            if hasattr(self, "is_engineer_mode_active") and callable(self.is_engineer_mode_active):
+                is_engineer = self.is_engineer_mode_active()
+
+            if not is_engineer and hasattr(self, "mode_coordinator"):
+                cur_m = getattr(self.mode_coordinator, "current_mode", None)
+                val = getattr(cur_m, "value", str(cur_m)).lower()
+                is_engineer = val in ("engineer", "engineering")
+
+            if not is_engineer:
+                cur_sess = getattr(self, "current_session", {}) or {}
+                if isinstance(cur_sess, dict):
+                    raw_mode = str(cur_sess.get("mode") or "").lower()
+                    raw_type = str(cur_sess.get("type") or "").lower()
+                    is_engineer = (
+                        raw_mode in ("engineer", "engineering")
+                        or raw_type in ("engineer", "engineering")
+                    )
+
+            if not is_engineer:
+                is_engineer = bool(getattr(self, "_engineering_mode_active", False))
 
             if is_engineer:
                 menu.addSeparator()
 
-                # Создаем Fluent подменю скиллов разработки
                 skills_menu = RoundMenu("⚡ Скиллы разработки", parent=menu)
+                skills_menu.setToolTipsVisible(True)  # Обязательно для отображения триггеров по ховеру
 
-                # Получаем текущий активный скилл из сессии (по умолчанию 'auto')
                 cur_sess = getattr(self, "current_session", {}) or {}
                 sess_meta = cur_sess.get("metadata", {}) if isinstance(cur_sess, dict) else {}
                 active_skill = sess_meta.get("active_engineer_skill", "auto")
 
                 skills_data = [
-                    ("auto", "🤖 Автоопределение", "Векторный поиск архетипа по тексту запроса"),
+                    ("auto", "🤖 Автоопределение", "Триггер: Векторный подбор архетипа по смыслу задачи"),
                     ("interactive_loop", "🎮 Игры и GUI", "Триггеры: игра, змейка, тетрис, pygame, tkinter, окно, форма"),
                     ("pure_logic_tdd", "⚙️ Чистая логика (TDD)", "Триггеры: класс, функция, алгоритм, валидация, расчет, pytest"),
                     ("batch_artifact", "📊 Документы и отчеты", "Триггеры: excel, xlsx, word, docx, отчет, таблица, смета"),
@@ -432,15 +448,14 @@ class AvatarControllerMixin:
                 ]
 
                 for skill_id, label, triggers in skills_data:
-                    # Отображаем галочку или маркер для активного скилла
                     is_selected = (active_skill == skill_id)
                     display_text = f"✓ {label}" if is_selected else f"   {label}"
 
-                    # Action из qfluentwidgets
                     act = Action(display_text, parent=skills_menu)
                     act.setToolTip(triggers)
-                    # Связываем сигнал клика
-                    act.triggered.connect(lambda checked=False, s_id=skill_id, s_lbl=label: self._on_select_engineer_skill(s_id, s_lbl))
+                    act.triggered.connect(
+                        lambda checked=False, s_id=skill_id, s_lbl=label: self._on_select_engineer_skill(s_id, s_lbl)
+                    )
                     skills_menu.addAction(act)
 
                 menu.addMenu(skills_menu)
