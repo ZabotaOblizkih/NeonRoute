@@ -23,7 +23,18 @@ from config import OUTPUTS_DIR
 
 logger = logging.getLogger("NeonRoute.ToolEngine")
 
-__all__ = ["ToolEngine", "ToolCall", "ToolResult", "ToolParser"]
+__all__ = ["ToolEngine", "ToolCall", "ToolResult", "ToolParser", "sanitize_code"]
+
+
+def sanitize_code(raw_code: str, module_name: str) -> str:
+    """Вырезает случайные рекурсивные самоимпорты вида 'from foo import ...' или 'import foo'."""
+    lines = []
+    clean_mod = module_name.replace(".py", "")
+    for line in raw_code.splitlines():
+        if re.match(rf'^\s*(from\s+{clean_mod}\s+import|import\s+{clean_mod}\b)', line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 class ToolEngine:
@@ -31,6 +42,8 @@ class ToolEngine:
     Dispatcher and execution engine for Mini-Antigravity tools.
     Strictly isolated to C:\\NeonRoute\\workspace for writes/scripts.
     """
+
+    sanitize_code = staticmethod(sanitize_code)
 
     @classmethod
     def set_active_session_id(cls, session_id: Optional[str]) -> None:
@@ -43,8 +56,12 @@ class ToolEngine:
     @classmethod
     def write_file(cls, filename: str, content: str) -> ToolResult:
         try:
-            # Дешёвый in-memory AST-чекер перед записью на диск и запуском песочницы
+            # Предохранитель от самоимпорта sanitize_code
             clean_name = SandboxManager.clean_workspace_filename(filename)
+            if clean_name.lower().endswith((".py", ".pyw")):
+                content = sanitize_code(content, clean_name)
+
+            # Дешёвый in-memory AST-чекер перед записью на диск и запуском песочницы
             if clean_name.lower().endswith((".py", ".pyw")):
                 from services.code_engine import ExecutionSandbox
                 is_valid, lint_msg = ExecutionSandbox.preflight_lint(content)
@@ -83,6 +100,21 @@ class ToolEngine:
         res = SandboxManager.run_script(filename)
         return ToolResult(
             tool_name="run_script",
+            success=res.success,
+            output=res.output,
+            artifact_path=res.artifact_path,
+            is_script_run=True,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            exit_code=res.return_code
+        )
+
+    @classmethod
+    def run_pytest(cls, filename: str, timeout: int = 45) -> ToolResult:
+        """Делегирует запуск тестов pytest в SandboxManager."""
+        res = SandboxManager.run_pytest(filename, timeout=timeout)
+        return ToolResult(
+            tool_name="run_pytest",
             success=res.success,
             output=res.output,
             artifact_path=res.artifact_path,
@@ -645,14 +677,21 @@ class ToolEngine:
             start_idx = target_node.lineno - 1
             end_idx = getattr(target_node, "end_lineno", start_idx + 1)
 
+            orig_line = lines[start_idx]
+            orig_indent_len = len(orig_line) - len(orig_line.lstrip())
+            base_indent = " " * orig_indent_len
+
             clean_new_code = (new_code or "").strip("\r\n")
-            if clean_new_code == "DELETED" or not clean_new_code:
+            if clean_new_code == "DELETED" or not clean_new_code.strip():
                 updated_lines = lines[:start_idx] + lines[end_idx:]
                 action_desc = f"удален из строк {start_idx + 1}–{end_idx}"
             else:
-                if not clean_new_code.endswith("\n"):
-                    clean_new_code += "\n"
-                updated_lines = lines[:start_idx] + [clean_new_code] + lines[end_idx:]
+                import textwrap
+                dedented = textwrap.dedent(clean_new_code)
+                normalized_code = textwrap.indent(dedented, base_indent)
+                if not normalized_code.endswith("\n"):
+                    normalized_code += "\n"
+                updated_lines = lines[:start_idx] + [normalized_code] + lines[end_idx:]
                 action_desc = f"заменен на новый код (строки {start_idx + 1}–{end_idx})"
 
             updated_content = "".join(updated_lines)

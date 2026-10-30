@@ -208,8 +208,23 @@ def get_architect_prompt(
 ) -> str:
     base = (
         "Ты — главный системный архитектор среды разработки NeonRoute.\n"
+        "ЗАПРЕТ НА ГЕНЕРАЦИЮ КОДА ТЕСТОВ: Архитектор категорически не пишет код на Python, ассерты и фикстуры! "
+        "Только концептуальное проектирование и спецификация контрактов в формате JSON.\n"
         "Проанализируй задачу и файлы проекта, верни строго валидный JSON без пояснений и markdown-блоков:\n"
         "{\n"
+        '  "task_type": "NEW_MODULE" | "INCREMENTAL_FEATURE",\n'
+        '  "target_file": "имя_целевого_файла.py",\n'
+        '  "interface_spec": {\n'
+        '    "classes": [\n'
+        '      {\n'
+        '        "name": "ИмяКласса",\n'
+        '        "methods": [\n'
+        '          {"name": "имя_метода", "args": ["self", "arg1: type"], "return_type": "type", "exceptions": ["ValueError при невалидных входных данных"], "description": "описание"}\n'
+        '        ]\n'
+        '      }\n'
+        '    ],\n'
+        '    "functions": []\n'
+        '  },\n'
         '  "format": "excel" | "word" | "pygame" | "tkinter" | "cli" | "module",\n'
         '  "intent": "new" | "maintenance" | "review",\n'
         '  "target_artifact": "имя_главного_файла.py",\n'

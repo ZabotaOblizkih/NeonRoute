@@ -14,7 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from services.git_sandbox import GitSandboxManager
 from services.sandbox_manager import SandboxManager
-from services.tool_engine import ToolEngine
+from services.tool_engine import ToolEngine, sanitize_code
+from services.engineer_tdd import CodeFirstTDDPipeline
 from services.code_engine import CodeValidator, ASTSkeletonizer, AutoImporter
 from services.engineer_prompts import (
     scan_installed_libraries,
@@ -130,6 +131,12 @@ class SubagentEngineer:
     _extract_pure_py = staticmethod(EngineerContext.extract_pure_py)
     _inspect_workspace_file = staticmethod(EngineerContext.inspect_workspace_file)
     _rollback_workspace = staticmethod(EngineerContext.rollback_workspace)
+    sanitize_code = staticmethod(sanitize_code)
+    run_tdd_pipeline = staticmethod(CodeFirstTDDPipeline.run)
+    _run_new_module_tdd = staticmethod(CodeFirstTDDPipeline.run_new_module)
+    _run_incremental_feature_tdd = staticmethod(CodeFirstTDDPipeline.run_incremental_feature)
+    _extract_code_blocks = staticmethod(CodeFirstTDDPipeline.extract_code_blocks)
+    _append_new_tests = staticmethod(CodeFirstTDDPipeline.append_new_tests)
 
     def __init__(self):
         self.active_verification_script: Optional[str] = None
@@ -576,6 +583,32 @@ class SubagentEngineer:
                 logger.error(f"Review cycle error: {e}")
                 _safe_send_message("assistant", f"⚠️ Произошла ошибка при анализе: {e}")
                 return {"success": False, "error": str(e)}
+
+        # === ДВУХФАЗНЫЙ CODE-FIRST TDD ПАЙПЛАЙН (NEW_MODULE / INCREMENTAL_FEATURE) ===
+        is_tdd_mode = (
+            getattr(plan, "task_type", None) in ("NEW_MODULE", "INCREMENTAL_FEATURE")
+            and getattr(plan, "interface_spec", None)
+            and plan.artifact_format not in ("excel", "word", "pygame", "tkinter")
+        ) or kwargs.get("enable_tdd", False)
+        if is_tdd_mode:
+            logger.info(f"🧪 [Code-First TDD] Активирован двухфазный пайплайн для {plan.task_type} ({plan.target_file or plan.target_artifact})")
+            res = CodeFirstTDDPipeline.run(
+                plan=plan,
+                client=client,
+                target_model=target_model,
+                ws_dir=ws_dir,
+                task_prompt=task_prompt,
+                context_hint=context_hint,
+                on_message_callback=on_message_callback,
+                on_status_callback=on_status_callback,
+                inspector=inspector,
+                worker_temp=worker_temp,
+                **kwargs
+            )
+            self.active_verification_script = res.get("verification_script")
+            self.target_artifact = res.get("target_artifact")
+            self.verification_script = res.get("verification_script")
+            return res
 
         while turn < max_turns:
             turn += 1
@@ -1183,7 +1216,10 @@ class SubagentEngineer:
                         diag_msg = escalation_warning + diag_msg
 
                     clean_user_prompt = _build_goal_anchor(diag_msg)
-                    assistant_draft = "Понял, вношу изменения в целевую логику файла."
+                    if is_noop_error:
+                        assistant_draft = f"Понял (попытка {turn}), вношу изменения в целевую логику файла."
+                    else:
+                        assistant_draft = f"Понял (попытка {turn}), устраняю ошибку в коде."
 
                     messages = [
                         messages[0],

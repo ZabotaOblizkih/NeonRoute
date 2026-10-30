@@ -79,7 +79,7 @@ class ToolParser:
         if not text:
             return ""
         norm = re.sub(r'(`+|<+)TOOL:', '<<TOOL:', text, flags=re.IGNORECASE)
-        norm = re.sub(r'(<<TOOL:[^\n\r>]+?)(?:>>|>\'?|>`+|`+)(?=\s|\$|\r|\n)', r'\1>>', norm)
+        norm = re.sub(r'(<<TOOL:[^\n\r>]+?)(?:>>|>\'?|>`+|`+|>)(?=\s|\$|\r|\n|$)', r'\1>>', norm)
         return norm
 
     @classmethod
@@ -208,18 +208,19 @@ class ToolParser:
                     )))
 
         # Парсинг replace_symbol
-        replace_pattern = r'<<TOOL:replace_symbol\s+(?P<attrs>[^>\r\n]+?)\s*>>?[\r\n]*(?P<body>.*?)(?:<<?/+TOOL(?::replace_symbol)?>>?|`+/+TOOL(?::replace_symbol)?`+|$)'
+        replace_pattern = r'<<TOOL:replace_symbol\s+(?P<attrs>[^>\r\n]+?)\s*(?:>>|>)[\r\n]*(?P<body>.*?)(?:<<?/+TOOL(?::replace_symbol)?(?:>>|>)?|`+/+TOOL(?::replace_symbol)?`+|$)'
         for match in re.finditer(replace_pattern, norm, flags=re.DOTALL | re.IGNORECASE):
             attrs = ToolParser._parse_attributes(match.group('attrs'))
             fn = attrs.get('filename') or attrs.get('path') or attrs.get('file') or ''
             sym = attrs.get('name') or attrs.get('symbol') or ''
-            body = (match.group('body') or '').strip()
+            body_raw = match.group('body') or ''
+            body = re.sub(r'^\s*[\r\n]+', '', body_raw).rstrip()
 
             if fn and sym:
                 seen_spans.append(match.span())
                 calls_with_pos.append((match.start(), ToolCall(
                     name="replace_symbol",
-                    params={"filename": fn, "symbol_name": sym},
+                    params={"filename": fn, "name": sym, "symbol_name": sym},
                     raw_tag=match.group(0),
                     body=body
                 )))
@@ -264,7 +265,7 @@ class ToolParser:
             if m.end() > last_end:
                 last_end = m.end()
 
-        replace_pattern = r'<<TOOL:replace_symbol\s+(?P<attrs>[^>\r\n]+?)\s*>>?[\r\n]*(?P<body>.*?)(?:<<?/+TOOL(?::replace_symbol)?>>?|`+/+TOOL(?::replace_symbol)?`+|$)'
+        replace_pattern = r'<<TOOL:replace_symbol\s+(?P<attrs>[^>\r\n]+?)\s*(?:>>|>)[\r\n]*(?P<body>.*?)(?:<<?/+TOOL(?::replace_symbol)?(?:>>|>)?|`+/+TOOL(?::replace_symbol)?`+|$)'
         for m in re.finditer(replace_pattern, norm, flags=re.DOTALL | re.IGNORECASE):
             if m.end() > last_end:
                 last_end = m.end()
@@ -294,8 +295,8 @@ class ToolParser:
         cleaned = re.sub(r'<<TOOL:write_file\s+(?:filename|path|file)=["\'][^"\']+["\']\s*>>?[\r\n]*.*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r'<<TOOL:patch_file\s+(?:filename|path|file)=["\'][^"\']+["\']\s*>>?[\r\n]*.*?(?:<<?/+TOOL(?::patch_file)?>>?|`+/+TOOL(?::patch_file)?`+)', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r'<<TOOL:patch_file\s+(?:filename|path|file)=["\'][^"\']+["\']\s*>>?[\r\n]*.*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r'<<TOOL:replace_symbol\s+[^>\r\n]+?\s*>>?[\r\n]*.*?(?:<<?/+TOOL(?::replace_symbol)?>>?|`+/+TOOL(?::replace_symbol)?`+)', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r'<<TOOL:replace_symbol\s+[^>\r\n]+?\s*>>?[\r\n]*.*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r'<<TOOL:replace_symbol\s+[^>\r\n]+?\s*(?:>>|>)[\r\n]*.*?(?:<<?/+TOOL(?::replace_symbol)?(?:>>|>)?|`+/+TOOL(?::replace_symbol)?`+)', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r'<<TOOL:replace_symbol\s+[^>\r\n]+?\s*(?:>>|>)[\r\n]*.*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r'<<TOOL:\w+\s+.*?>>', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'(`+|<+)TOOL:.*?(?:>>|>\'?|>`*|`+|$)', '', cleaned, flags=re.IGNORECASE)
         return cleaned.strip()

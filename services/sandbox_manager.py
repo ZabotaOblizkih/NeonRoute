@@ -524,6 +524,7 @@ class SandboxManager:
         except Exception as _e_gui:
             logger.debug(f"GUI check skipped: {_e_gui}")
 
+
         # 2. Фиксация состояния файлов workspace до запуска
         before_files = set(ws_dir.glob("*"))
 
@@ -600,6 +601,58 @@ class SandboxManager:
             output=full_output,
             artifact_path=artifact_path
         )
+
+    @classmethod
+    def run_pytest(cls, filename: str, timeout: int = 45) -> ScriptExecutionResult:
+        """
+        Запуск набора тестов pytest для целевого файла в изолированной рабочей директории песочницы.
+        """
+        clean_name = cls.clean_workspace_filename(filename)
+        ws_dir = cls.get_workspace_dir()
+        script_path = (ws_dir / clean_name).resolve()
+
+        if not script_path.exists() or not script_path.is_file():
+            msg = f"Ошибка: Тестовый файл не найден: {script_path}"
+            return ScriptExecutionResult(success=False, return_code=1, stdout="", stderr=msg, output=msg)
+
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONUNBUFFERED"] = "1"
+        base_dir_str = str(BASE_DIR.resolve())
+        ws_dir_str = str(ws_dir.resolve())
+        env["PYTHONPATH"] = f"{ws_dir_str}{os.pathsep}{base_dir_str}{os.pathsep}{env.get('PYTHONPATH', '')}"
+        env["NEONROUTE_WORKSPACE_DIR"] = ws_dir_str
+
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", clean_name, "-v"],
+                cwd=ws_dir_str,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=timeout,
+                creationflags=flags
+            )
+            out = proc.stdout or ""
+            err = proc.stderr or ""
+            comb = (out + "\n" + err).strip() if err else out.strip()
+            return ScriptExecutionResult(
+                success=(proc.returncode == 0),
+                return_code=proc.returncode,
+                stdout=out,
+                stderr=err,
+                output=comb
+            )
+        except subprocess.TimeoutExpired:
+            err_msg = f"Ошибка: Превышен таймаут выполнения pytest ({timeout} сек)."
+            return ScriptExecutionResult(success=False, return_code=-1, stdout="", stderr=err_msg, output=err_msg)
+        except Exception as e:
+            err_msg = f"Ошибка запуска pytest: {e}"
+            return ScriptExecutionResult(success=False, return_code=1, stdout="", stderr=err_msg, output=err_msg)
 
     @classmethod
     def validate_write_path(self, path: Union[str, Path]) -> Path:

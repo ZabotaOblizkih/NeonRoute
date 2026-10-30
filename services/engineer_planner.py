@@ -37,6 +37,11 @@ class ArchitectPlan:
     system_prompt: str = ""
     planned_files: List[str] = field(default_factory=list)
     intent: str = "new"
+    target_symbol: Optional[str] = None
+    is_ast_modification: bool = False
+    task_type: str = "NEW_MODULE"
+    target_file: str = "main.py"
+    interface_spec: Any = field(default_factory=dict)
 
 
 class EngineerPlanner:
@@ -74,7 +79,10 @@ class EngineerPlanner:
                 is_ephemeral=False,
                 plan_content="",
                 system_prompt=sys_prompt,
-                planned_files=[]
+                planned_files=[],
+                task_type="INCREMENTAL_FEATURE",
+                target_file="main.py",
+                interface_spec={}
             )
 
         # 1. Фиксация baseline и учет памяти прошлых сбоев
@@ -148,6 +156,8 @@ class EngineerPlanner:
             else:
                 verification_script = None
 
+            raw_task_type = str(data.get("task_type") or "").strip().upper()
+            interface_spec = data.get("interface_spec") or {}
             raw_format = str(data.get("format") or data.get("artifact_type") or "").strip()
             parsed_format = EngineerContext.normalize_artifact_format(
                 raw_format,
@@ -155,7 +165,11 @@ class EngineerPlanner:
                 has_verification_script=bool(verification_script)
             )
             intent = str(data.get("intent") or "new").strip().lower()
-            target_artifact = data.get("target_artifact") or data.get("target_file")
+            if raw_task_type == "INCREMENTAL_FEATURE":
+                intent = "maintenance"
+            elif raw_task_type == "NEW_MODULE":
+                intent = "new"
+            target_artifact = data.get("target_file") or data.get("target_artifact")
             if not target_artifact:
                 m_py = re.findall(r'[\w\-]+\.py', task_prompt)
                 if m_py:
@@ -170,6 +184,8 @@ class EngineerPlanner:
                     target_artifact = "main.py"
             plan_desc = data.get("plan", "")
         except Exception as _e_arch:
+            raw_task_type = ""
+            interface_spec = {}
             logger.warning(f"📐 [Архитектор] Сбой фазы планирования, переход к эвристикам: {_e_arch}")
             m_py = re.findall(r'[\w\-]+\.py', task_prompt)
             extracted_target = m_py[0] if m_py else None
@@ -225,10 +241,15 @@ class EngineerPlanner:
         if intent == "review":
             is_maintenance = False
             intent_val = "review"
-        elif is_maintenance:
+            task_type = "INCREMENTAL_FEATURE"
+        elif is_maintenance or raw_task_type == "INCREMENTAL_FEATURE":
+            is_maintenance = True
             intent_val = "maintenance"
+            task_type = "INCREMENTAL_FEATURE"
         else:
             intent_val = "new"
+            task_type = "NEW_MODULE"
+        target_file = target_artifact
         if context_hint and target_artifact == Path(context_hint).name.strip():
             logger.info(f"🔒 [Архитектор] Принудительно зафиксирован целевой файл доработки из контекста: {target_artifact}")
 
@@ -258,11 +279,12 @@ class EngineerPlanner:
             plan_header += f", Верификатор: {verification_script}"
         plan_header += f"):\n{plan_desc}"
         plan_content = f"\n\n{plan_header}"
+        if interface_spec:
+            spec_str = json.dumps(interface_spec, ensure_ascii=False, indent=2) if isinstance(interface_spec, (dict, list)) else str(interface_spec)
+            plan_content += f"\n\nСпецификация интерфейса (interface_spec):\n```json\n{spec_str}\n```"
 
         if fail_context:
             plan_content = f"{fail_context}\n\n{plan_content}"
-        if file_context and is_maintenance:
-            plan_content += f"\n\nТекущий код файлов для доработки:\n{file_context}"
 
         run_instruction = (
             f"запусти скрипт верификации через <<TOOL:run_script filename=\"{verification_script}\">>."
@@ -278,6 +300,9 @@ class EngineerPlanner:
             except Exception:
                 target_lines_count = 0
 
+        target_symbol: Optional[str] = None
+        is_ast_modification: bool = False
+
         if is_maintenance and target_lines_count > 250 and target_file_path and target_file_path.is_file():
             # Находим целевой узел в AST
             try:
@@ -285,20 +310,67 @@ class EngineerPlanner:
                 raw_lines = raw_code.splitlines(keepends=True)
                 file_ast = ast.parse(raw_code)
 
+                # Построение карты родителей
+                parent_map = {}
+                for parent in ast.walk(file_ast):
+                    for child in ast.iter_child_nodes(parent):
+                        parent_map[child] = parent
+
                 # Поиск наиболее релевантного класса или функции по запросу
                 matched_node = None
                 p_lower = (task_prompt or "").lower()
+                p_clean = re.sub(r'\b[\w\-]+\.pyw?\b', '', p_lower)
+                candidates = []
                 for node in ast.walk(file_ast):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                        if node.name.lower() in p_lower:
-                            matched_node = node
-                            break
-                        doc = (ast.get_docstring(node) or "").lower()
-                        if any(w in doc for w in p_lower.split() if len(w) > 4):
-                            matched_node = node
-                            break
+                        if re.search(r'\b' + re.escape(node.name.lower()) + r'\b', p_clean):
+                            type_weight = 2 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else 1
+                            candidates.append((type_weight, len(node.name), node))
+                        else:
+                            doc = (ast.get_docstring(node) or "").lower()
+                            if doc and any(re.search(r'\b' + re.escape(w) + r'\b', doc) for w in p_clean.split() if len(w) > 4):
+                                type_weight = 2 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else 1
+                                candidates.append((type_weight, 0, node))
+
+                if candidates:
+                    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                    matched_node = candidates[0][2]
 
                 if matched_node:
+                    is_ast_modification = True
+                    target_symbol = matched_node.name
+
+                    # --- УРОВЕНЬ 1 (Импорты модуля) ---
+                    import_snippets = []
+                    for node in file_ast.body:
+                        if isinstance(node, (ast.Import, ast.ImportFrom)):
+                            s_line = node.lineno - 1
+                            e_line = getattr(node, "end_lineno", node.lineno)
+                            import_snippets.append("".join(raw_lines[s_line:e_line]))
+                    imports_block = "".join(import_snippets).strip()
+                    if not imports_block:
+                        imports_block = "# (Импорты не обнаружены в начале модуля)"
+
+                    # --- УРОВЕНЬ 2 (Каркас класса) ---
+                    parent_node = parent_map.get(matched_node)
+                    class_skeleton_lines = []
+                    target_class = parent_node if isinstance(parent_node, ast.ClassDef) else (matched_node if isinstance(matched_node, ast.ClassDef) else None)
+                    if target_class:
+                        class_skeleton_lines.append(f"class {target_class.name}:")
+                        for item in target_class.body:
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                is_async = "async " if isinstance(item, ast.AsyncFunctionDef) else ""
+                                try:
+                                    params_str = ast.unparse(item.args)
+                                    ret_ann = f" -> {ast.unparse(item.returns)}" if item.returns else ""
+                                    class_skeleton_lines.append(f"    {is_async}def {item.name}({params_str}){ret_ann}: ...")
+                                except Exception:
+                                    class_skeleton_lines.append(f"    {is_async}def {item.name}(...): ...")
+                    else:
+                        class_skeleton_lines.append("# (Целевой узел находится на уровне модуля, родительский класс отсутствует)")
+                    class_skeleton = "\n".join(class_skeleton_lines)
+
+                    # --- УРОВЕНЬ 3 (Срез узла с окружением ±10 строк) ---
                     s_idx = matched_node.lineno - 1
                     e_idx = getattr(matched_node, "end_lineno", s_idx + 1)
                     node_code = "".join(raw_lines[s_idx:e_idx])
@@ -307,19 +379,24 @@ class EngineerPlanner:
 
                     plan_content += (
                         f"\n\nПлан утверждён (Крупный файл {target_artifact}: {target_lines_count} строк > 250 строк).\n"
-                        f"РЕГЛАМЕНТ ТОЧЕЧНОЙ МОДИФИКАЦИИ УЗЛА '{matched_node.name}':\n"
+                        f"РЕГЛАМЕНТ ТОЧЕЧНОЙ МОДИФИКАЦИИ УЗЛА '{matched_node.name}':\n\n"
+                        f"--- УРОВЕНЬ 1 (Импорты модуля) ---\n```python\n{imports_block}\n```\n\n"
+                        f"--- УРОВЕНЬ 2 (Каркас класса) ---\n```python\n{class_skeleton}\n```\n\n"
+                        f"--- УРОВЕНЬ 3 (Срез узла с окружением ±10 строк) ---\n"
                         f"[ОКРУЖЕНИЕ ДО УЗЛА]:\n```python\n{ctx_before}```\n\n"
                         f"[ЦЕЛЕВОЙ УЗЕЛ НА ДИСКЕ (строки {matched_node.lineno}-{e_idx})]:\n```python\n{node_code}```\n\n"
                         f"[ОКРУЖЕНИЕ ПОСЛЕ УЗЛА]:\n```python\n{ctx_after}```\n\n"
                         f"ВНИМАНИЕ: Полная перезапись файла запрещена!\n"
-                        f"1. ФАЗА 1 (ДИАГНОЗ): Напиши 1-2 строки: подтверди изменение/удаление узла '{matched_node.name}'.\n"
-                        f"2. ФАЗА 2 (КОД): Верни блок точечной замены:\n"
+                        f"1. ФАЗА 1 (ДИАГНОЗ): 1–2 строки текстового анализа ошибки.\n"
+                        f"2. ФАЗА 2 (КОД): вызов инструмента точечной замены:\n"
                         f"   <<TOOL:replace_symbol filename=\"{target_artifact}\" name=\"{matched_node.name}\">>\n"
                         f"   новый_код_узла_с_отступами (или DELETED для удаления)\n"
                         f"   <</TOOL:replace_symbol>>\n"
                         f"3. {run_instruction}"
                     )
                 else:
+                    if file_context:
+                        plan_content += f"\n\nТекущий код файлов для доработки:\n{file_context}"
                     plan_content += (
                         f"\n\nПлан утверждён (Режим: Крупный файл, {target_lines_count} строк > порога 250 строк).\n"
                         f"ВНИМАНИЕ: Полная перезапись файла запрещена! "
@@ -328,8 +405,12 @@ class EngineerPlanner:
                     )
             except Exception as e:
                 logger.warning(f"Ошибка AST-локализации узла в планировщике: {e}")
+                if file_context:
+                    plan_content += f"\n\nТекущий код файлов для доработки:\n{file_context}"
                 plan_content += f"\n\nПлан утверждён. {run_instruction}"
         elif is_maintenance:
+            if file_context:
+                plan_content += f"\n\nТекущий код файлов для доработки:\n{file_context}"
             plan_content += (
                 f"\n\nПлан утверждён. Приступай к двухфазной доработке файла {target_artifact} ({target_lines_count} строк <= 250 строк):\n"
                 f"1. ФАЗА 1: Краткий текстовый диагноз (в какой функции баг / что конкретно меняется).\n"
@@ -355,7 +436,12 @@ class EngineerPlanner:
             plan_content=plan_content,
             system_prompt=system_prompt,
             planned_files=planned_files,
-            intent=intent_val
+            intent=intent_val,
+            target_symbol=target_symbol,
+            is_ast_modification=is_ast_modification,
+            task_type=task_type,
+            target_file=target_file,
+            interface_spec=interface_spec
         )
 
 
