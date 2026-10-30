@@ -367,16 +367,16 @@ class CodeFirstTDDPipeline:
 
         orig_mod_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore") if (ws_dir / mod_name).is_file() else ""
 
-        # === ШАГ 1: ПРОВЕРКА ИЛИ БУТСТРАП БАЗОВЫХ ТЕСТОВ ===
-        if not (ws_dir / test_file).is_file():
-            _send("assistant", f"⚡ **Bootstrap Baseline**: Тестовый файл `{test_file}` отсутствует. Фиксирую текущий контракт модуля `{mod_name}` перед доработкой...")
+        # === ШАГ 1: ПРОВЕРКА ИЛИ BOOTSTRAP БАЗОВЫХ ТЕСТОВ ===
+        if not (ws_dir / test_file).is_file() or (ws_dir / test_file).stat().st_size == 0:
+            _send("assistant", f"⚡ **Bootstrap Baseline**: Тестовый файл `{test_file}` отсутствует. Создаю базовые тесты для фиксации текущего поведения `{mod_name}`...")
             
             boot_system = (
                 "Ты — инженер по тестированию NeonRoute. Для существующего рабочего кода нет тестов.\n"
                 "Твоя задача — написать минимальный набор базовых тестов pytest для фиксации текущего поведения (Happy Path).\n"
                 "СТРОГИЕ ПРАВИЛА:\n"
                 "1. ТОЛЬКО pytest функции `def test_...()`. Запрещен unittest.TestCase.\n"
-                "2. Не используй фикстуры в аргументах функций. Создавай объекты классов прямо внутри тестов.\n"
+                "2. Создавай объекты классов прямо внутри тестов. Фикстуры в аргументах ЗАПРЕЩЕНЫ.\n"
                 f"Верни ТОЛЬКО код тестов для файла {test_file}."
             )
             boot_user = (
@@ -416,7 +416,7 @@ class CodeFirstTDDPipeline:
                 logger.warning(err_msg)
                 _send("assistant", err_msg)
             else:
-                _send("assistant", f"✅ **Bootstrap завершён**: Базовые тесты `{test_file}` созданы и 100% зелёные. База зафиксирована.")
+                _send("assistant", f"✅ **Bootstrap завершён**: Базовые тесты `{test_file}` созданы и 100% зелёные.")
 
             orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
         else:

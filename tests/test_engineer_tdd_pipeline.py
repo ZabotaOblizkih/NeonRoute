@@ -151,6 +151,8 @@ class TestArchitectCodeFirstContract:
             "plan": "Добавление удаления сотрудников"
         })
 
+        # Файл должен существовать на диске, иначе IntentOverrideGuard переключит в NEW_MODULE
+        (workspace_tmp / "staff_registry.py").write_text("class StaffRegistry:\n    pass\n", encoding="utf-8")
         plan = EngineerPlanner.plan_architecture(
             task_prompt="Добавь метод remove_employee в staff_registry.py",
             client=mock_client,
@@ -320,6 +322,7 @@ class TestSubagentEngineerIncrementalFeaturePipeline:
         mock_client = MagicMock()
         mock_client.chat_completion.return_value = json.dumps({
             "task_type": "INCREMENTAL_FEATURE",
+            "format": "pure_logic_tdd",
             "target_file": "storage.py",
             "interface_spec": {"classes": [{"name": "Storage", "methods": [{"name": "save"}]}]},
             "plan": "Доработка"
@@ -372,6 +375,7 @@ class TestSubagentEngineerIncrementalFeaturePipeline:
                     # Архитектор
                     return json.dumps({
                         "task_type": "INCREMENTAL_FEATURE",
+                        "format": "pure_logic_tdd",
                         "target_file": "account.py",
                         "interface_spec": {
                             "classes": [{"name": "Account", "methods": [{"name": "withdraw", "args": ["self", "amount"]}]}]

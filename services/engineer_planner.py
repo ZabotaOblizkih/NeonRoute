@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 from services.sandbox_manager import SandboxManager
 from services.git_sandbox import GitSandboxManager
 from services.engineer_context import EngineerContext
+from services.engineer_skill_router import EngineerSkillRouter
 from services.engineer_prompts import (
     scan_installed_libraries,
     get_architect_prompt,
@@ -42,6 +43,7 @@ class ArchitectPlan:
     task_type: str = "NEW_MODULE"
     target_file: str = "main.py"
     interface_spec: Any = field(default_factory=dict)
+    skill_id: str = "pure_logic_tdd"
 
 
 class EngineerPlanner:
@@ -61,6 +63,9 @@ class EngineerPlanner:
         available_libs: Optional[List[str]] = None,
         temperature: float = 0.70,
         max_tokens: int = 1200,
+        session_metadata: Optional[Dict[str, Any]] = None,
+        active_engineer_skill: Optional[str] = None,
+        **kwargs: Any,
     ) -> ArchitectPlan:
         if ws_dir is None:
             ws_dir = SandboxManager.get_workspace_dir()
@@ -100,7 +105,43 @@ class EngineerPlanner:
 
         if available_libs is None:
             available_libs = scan_installed_libraries()
-        architect_sys_prompt = get_architect_prompt(available_libs=available_libs, ws_files=ws_files)
+
+        # 1. Определение активного скилла (с приоритетом ручного выбора пользователя)
+        manual_skill = active_engineer_skill or kwargs.get("active_engineer_skill")
+        if not manual_skill and (session_metadata or kwargs.get("session_metadata")):
+            s_meta = session_metadata or kwargs.get("session_metadata")
+            if isinstance(s_meta, dict):
+                manual_skill = s_meta.get("active_engineer_skill")
+        if not manual_skill:
+            try:
+                active_sid = SandboxManager.get_active_session_id()
+                if active_sid:
+                    from services.session_manager import SessionManager
+                    cur_s = SessionManager.load_session(active_sid)
+                    if cur_s and isinstance(cur_s.get("metadata"), dict):
+                        manual_skill = cur_s["metadata"].get("active_engineer_skill")
+            except Exception:
+                pass
+
+        router = EngineerSkillRouter.get_instance()
+
+        if manual_skill and manual_skill != "auto" and manual_skill in router.skills:
+            skill_id = manual_skill
+            score = 1.0
+            skill_meta = router.skills[skill_id]
+            logger.info(f"📐 [Архитектор] Использован ПРИНУДИТЕЛЬНЫЙ скилл из сессии: '{skill_id}'")
+        else:
+            skill_id, score, skill_meta = router.route(task_prompt)
+            logger.info(f"📐 [Архитектор] Векторно активирован скилл: '{skill_id}' (уверенность: {score:.3f})")
+
+        # 2. Формирование промпта с инъекцией правил скилла
+        ws_file_names = list(ws_files.keys()) if isinstance(ws_files, dict) else list(ws_files)
+        architect_sys_prompt = get_architect_prompt(
+            available_libs=available_libs,
+            ws_files=ws_file_names,
+            injected_architect_rules=skill_meta.get("architect_rules", ""),
+            default_artifact=skill_meta.get("default_artifact", "app.py")
+        )
 
         arch_messages = [
             {"role": "system", "content": architect_sys_prompt},
@@ -158,7 +199,11 @@ class EngineerPlanner:
 
             raw_task_type = str(data.get("task_type") or "").strip().upper()
             interface_spec = data.get("interface_spec") or {}
-            raw_format = str(data.get("format") or data.get("artifact_type") or "").strip()
+            raw_format = str(data.get("format") or data.get("artifact_type") or "").strip().lower()
+            if raw_format in ("pure_logic_tdd", "interactive_loop", "batch_artifact", "service_backend", "cli_automation"):
+                skill_id = raw_format
+            elif raw_format == "module":
+                skill_id = "pure_logic_tdd" 
             parsed_format = EngineerContext.normalize_artifact_format(
                 raw_format,
                 f"{task_prompt} {context_hint}",
@@ -424,7 +469,7 @@ class EngineerPlanner:
                 f"и {run_instruction}"
             )
 
-        return ArchitectPlan(
+        plan = ArchitectPlan(
             artifact_format=artifact_format,
             artifact_type=artifact_type,
             target_artifact=target_artifact,
@@ -441,8 +486,23 @@ class EngineerPlanner:
             is_ast_modification=is_ast_modification,
             task_type=task_type,
             target_file=target_file,
-            interface_spec=interface_spec
+            interface_spec=interface_spec,
+            skill_id=skill_id
         )
+        plan.skill_id = skill_id
+
+        # 4. IntentOverrideGuard: защита от ложного maintenance на чистом каталоге
+        target_name = getattr(plan, "target_artifact", None) or getattr(plan, "target_file", None)
+        if target_name and ws_dir:
+            target_path = ws_dir / target_name
+            if not target_path.is_file() or target_path.stat().st_size == 0:
+                if getattr(plan, "intent", None) != "new" or getattr(plan, "task_type", None) != "NEW_MODULE":
+                    logger.warning(f"🛡️ [IntentOverrideGuard] Файл '{target_name}' отсутствует. Оверрайд intent -> 'new', task_type -> 'NEW_MODULE'")
+                    plan.intent = "new"
+                    plan.is_maintenance = False
+                    plan.task_type = "NEW_MODULE"
+
+        return plan 
 
 
 __all__ = ["ArchitectPlan", "EngineerPlanner"]

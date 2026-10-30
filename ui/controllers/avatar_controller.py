@@ -21,7 +21,7 @@ from services.session_manager import SessionManager
 from services.roleplay_prompt_builder import RoleplayPromptBuilder
 from ui.dialogs.anchor_viewer_dialog import AnchorViewerDialog
 from ui.dialogs.prompt_viewer_dialog import PromptViewerDialog
-from qfluentwidgets import InfoBar, InfoBarPosition
+from qfluentwidgets import RoundMenu, Action, InfoBar, InfoBarPosition
 from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 from ui.components.chat_bubble import render_circular_avatar
 
@@ -405,6 +405,46 @@ class AvatarControllerMixin:
                 act_prompts = menu.addAction("📜 Промпты...")
                 act_prompts.triggered.connect(self._open_prompts_dialog)
 
+            # Проверка режима: отображаем скиллы разработки ИСКЛЮЧИТЕЛЬНО в режиме Engineer
+            is_engineer = (
+                getattr(self, "current_mode", "") == "engineer"
+                or (hasattr(self, "current_session") and isinstance(self.current_session, dict) and self.current_session.get("mode") == "engineer")
+            )
+
+            if is_engineer:
+                menu.addSeparator()
+
+                # Создаем Fluent подменю скиллов разработки
+                skills_menu = RoundMenu("⚡ Скиллы разработки", parent=menu)
+
+                # Получаем текущий активный скилл из сессии (по умолчанию 'auto')
+                cur_sess = getattr(self, "current_session", {}) or {}
+                sess_meta = cur_sess.get("metadata", {}) if isinstance(cur_sess, dict) else {}
+                active_skill = sess_meta.get("active_engineer_skill", "auto")
+
+                skills_data = [
+                    ("auto", "🤖 Автоопределение", "Векторный поиск архетипа по тексту запроса"),
+                    ("interactive_loop", "🎮 Игры и GUI", "Триггеры: игра, змейка, тетрис, pygame, tkinter, окно, форма"),
+                    ("pure_logic_tdd", "⚙️ Чистая логика (TDD)", "Триггеры: класс, функция, алгоритм, валидация, расчет, pytest"),
+                    ("batch_artifact", "📊 Документы и отчеты", "Триггеры: excel, xlsx, word, docx, отчет, таблица, смета"),
+                    ("service_backend", "🌐 Сервисы и API", "Триггеры: api, fastapi, эндпоинт, бот, telegram, webhook"),
+                    ("cli_automation", "💻 Консольные утилиты", "Триггеры: скрипт, cli, утилита, автоматизация, argparse")
+                ]
+
+                for skill_id, label, triggers in skills_data:
+                    # Отображаем галочку или маркер для активного скилла
+                    is_selected = (active_skill == skill_id)
+                    display_text = f"✓ {label}" if is_selected else f"   {label}"
+
+                    # Action из qfluentwidgets
+                    act = Action(display_text, parent=skills_menu)
+                    act.setToolTip(triggers)
+                    # Связываем сигнал клика
+                    act.triggered.connect(lambda checked=False, s_id=skill_id, s_lbl=label: self._on_select_engineer_skill(s_id, s_lbl))
+                    skills_menu.addAction(act)
+
+                menu.addMenu(skills_menu)
+
             menu.addSeparator()
             act_reset = menu.addAction("❌ Сбросить аватар")
             act_reset.triggered.connect(self._on_reset_avatar_clicked)
@@ -424,6 +464,33 @@ class AvatarControllerMixin:
             menu.exec(global_pos)
         except Exception as e:
             logger.error(f"[AvatarController] Ошибка контекстного меню аватара: {e}", exc_info=True)
+
+    def _on_select_engineer_skill(self, skill_id: str, skill_label: str):
+        """Сохраняет выбранный скилл разработки в метаданные текущей сессии."""
+        try:
+            if not hasattr(self, "current_session") or not isinstance(self.current_session, dict):
+                return
+
+            if "metadata" not in self.current_session:
+                self.current_session["metadata"] = {}
+
+            self.current_session["metadata"]["active_engineer_skill"] = skill_id
+
+            # Сохраняем сессию через SessionManager без сайдкаров
+            if hasattr(self, "session_manager") and hasattr(self.session_manager, "save_session"):
+                self.session_manager.save_session(self.current_session)
+
+            clean_label = skill_label.replace("🤖 ", "").replace("🎮 ", "").replace("⚙️ ", "").replace("📊 ", "").replace("🌐 ", "").replace("💻 ", "")
+            InfoBar.success(
+                title="Скилл инженера обновлен",
+                content=f"Установлен режим: {clean_label}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3000
+            )
+            logger.info(f"[AvatarController] Установлен скилл инженера: {skill_id} ({skill_label})")
+        except Exception as e:
+            logger.error(f"[AvatarController] Ошибка смены скилла инженера: {e}", exc_info=True)
 
     def _open_anchor_dialog(self):
         """Открывает диалог инспекции и настройки Depth-0 якоря для текущей РП сессии."""

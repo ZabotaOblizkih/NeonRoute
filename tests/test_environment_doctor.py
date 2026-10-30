@@ -124,15 +124,13 @@ def test_dependency_dialog_ui_and_actions(qapp, tmp_path):
 
 
 def test_excel_directives_in_engineer_prompts():
-    prompt = get_engineer_system_prompt(artifact_format="excel")
+    from services.engineer_skill_router import EngineerSkillRouter
+    meta = EngineerSkillRouter.skills["batch_artifact"]
+    prompt = get_engineer_system_prompt(injected_worker_rules=meta["worker_rules"])
     assert "=SUM" in prompt
     assert "=AVERAGE" in prompt
-    assert "=COUNT" in prompt
-    assert "=VLOOKUP" in prompt
-    assert "СТРОГО НА АНГЛИЙСКОМ ЯЗЫКЕ ЗАГЛАВНЫМИ БУКВАМИ" in prompt
-    assert "bold=True" in prompt
-    assert "Border" in prompt
-    assert "нативные формулы Excel" in prompt
+    assert "openpyxl" in prompt
+    assert "make_doc.py" in prompt
 
 
 def test_main_window_menu_and_dialog_integration(qapp):

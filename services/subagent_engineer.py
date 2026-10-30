@@ -25,6 +25,7 @@ from services.engineer_prompts import (
     get_rca_prompt,
 )
 from services.engineer_planner import ArchitectPlan, EngineerPlanner
+from services.engineer_skill_router import EngineerSkillRouter
 from services.engineer_diagnostics import (
     extract_error_fingerprint,
     diagnose_runtime_error,
@@ -366,6 +367,7 @@ class SubagentEngineer:
             available_libs=scan_installed_libraries(),
             temperature=worker_temp,
             max_tokens=1200,
+            session_metadata=sess.get("metadata") if sess else None,
         )
         logger.info(f"📐 [Архитектор: Утверждённый план]: {plan.plan_content}")
 
@@ -417,7 +419,19 @@ class SubagentEngineer:
         verification_passed = False
         target_artifact_passed = False
 
-        system_prompt = plan.system_prompt
+        # При подготовке системного промпта рабочего:
+        skill_id = getattr(plan, "skill_id", "pure_logic_tdd")
+        if getattr(plan, "artifact_format", None) in ("module", "pure_logic_tdd"):
+            skill_id = "pure_logic_tdd"
+        router = EngineerSkillRouter.get_instance()
+        skill_meta = router.skills.get(skill_id, {})
+        worker_rules = skill_meta.get("worker_rules", "")
+
+        # Формируем системный промпт инженера с правилами архетипа
+        system_prompt = get_engineer_system_prompt(
+            artifact_format=plan.artifact_format,
+            injected_worker_rules=worker_rules
+        )
         messages[0]["content"] = system_prompt
         if plan.plan_content:
             if isinstance(messages[1]["content"], list):
@@ -585,10 +599,11 @@ class SubagentEngineer:
                 return {"success": False, "error": str(e)}
 
         # === ДВУХФАЗНЫЙ CODE-FIRST TDD ПАЙПЛАЙН (NEW_MODULE / INCREMENTAL_FEATURE) ===
+        # Управление режимом TDD через архетип (вместо старого блэклиста):
         is_tdd_mode = (
             getattr(plan, "task_type", None) in ("NEW_MODULE", "INCREMENTAL_FEATURE")
             and getattr(plan, "interface_spec", None)
-            and plan.artifact_format not in ("excel", "word", "pygame", "tkinter")
+            and skill_id == "pure_logic_tdd"  # TDD-пайплайн активен для чистой логики
         ) or kwargs.get("enable_tdd", False)
         if is_tdd_mode:
             logger.info(f"🧪 [Code-First TDD] Активирован двухфазный пайплайн для {plan.task_type} ({plan.target_file or plan.target_artifact})")
@@ -1527,6 +1542,7 @@ class SubagentEngineer:
             if not stdout and run_res.output and not run_res.output.startswith("[Скрипт завершен"):
                 stdout = run_res.output
             stderr = run_res.error or ""
+            exit_code = getattr(run_res, "return_code", getattr(raw_run_res, "exit_code", 0 if run_res.success else 1))
 
             if not run_res.success:
                 ws_dir = SandboxManager.get_workspace_dir()
@@ -1730,6 +1746,17 @@ class SubagentEngineer:
                         )
                         GitSandboxManager.checkpoint(ws_dir, f"Turn {turn}: generated document {created_docs[0].name}")
                         break
+
+                if exit_code == 0:
+                    target_file = ws_dir / (self.target_artifact or "app.py")
+                    is_solid, substance_err = ToolEngine.check_artifact_substance(target_file, min_bytes=350)
+                    if not is_solid:
+                        logger.warning(f"🚨 [SubstanceGuard REJECT] Файл забракован: {substance_err}")
+                        diag_msg = f"Файл '{target_file.name}' забракован: {substance_err}. Запрещены пустые заглушки! Напиши полную реализацию."
+                        messages.append({"role": "user", "content": diag_msg})
+                        continue
+                    else:
+                        logger.info(f"✅ [SubstanceGuard PASS] Артефакт '{target_file.name}' прошёл валидацию.")
 
                 # Проверяем критерий завершения задачи:
                 # 1. Если verification_script задан — он обязан быть выполнен с exit_code == 0

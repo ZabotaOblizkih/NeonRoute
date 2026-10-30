@@ -44,48 +44,30 @@ class TestArchitectMatrixAndDynamicPrompts:
     def test_architect_prompt_matrix_and_addons(self):
         prompt = get_architect_prompt(
             available_libs=["pygame", "openpyxl"],
-            ws_files=["data.csv", "main.py"]
+            ws_files=["data.csv", "main.py"],
+            injected_architect_rules="[Правила текущего скилла]",
+            default_artifact="game.py"
         )
-        assert "МАТРИЦА ПОДДЕРЖИВАЕМЫХ ФОРМАТОВ NEONROUTE:" in prompt
-        assert '"excel"' in prompt
-        assert '"word"' in prompt
-        assert '"pygame"' in prompt
-        assert '"tkinter"' in prompt
-        assert '"cli"' in prompt
-        assert '"module"' in prompt
+        assert "главный системный архитектор среды NeonRoute" in prompt
+        assert "ПРАВИЛА И СТАНДАРТЫ ДЛЯ ТЕКУЩЕГО ТИПА ЗАДАЧИ:" in prompt
+        assert "[Правила текущего скилла]" in prompt
         assert "ПРАВИЛА INTENT:" in prompt
-        assert "[Доступные сторонние библиотеки: pygame, openpyxl]" in prompt
-        assert "[Существующие файлы в проекте: data.csv, main.py]" in prompt
+        assert '"interactive_loop"' in prompt
+        assert '"pure_logic_tdd"' in prompt
+        assert '"game.py"' in prompt
+        assert "[Доступные библиотеки: pygame, openpyxl]" in prompt
+        assert "[Существующие файлы в рабочей директории: data.csv, main.py]" in prompt
 
     def test_dynamic_engineer_prompts(self):
-        p_excel = get_engineer_system_prompt(artifact_format="excel")
-        assert "СТАНДАРТ EXCEL (.xlsx)" in p_excel
-        assert "openpyxl" in p_excel
-        assert "#,##0.00 ₽" in p_excel
-
-        p_word = get_engineer_system_prompt(artifact_format="word")
-        assert "СТАНДАРТ WORD (.docx)" in p_word
-        assert "python-docx" in p_word or "docx" in p_word
-
-        p_pygame = get_engineer_system_prompt(artifact_format="pygame")
-        assert "СТАНДАРТ PYGAME (.py)" in p_pygame
-        assert "clock.tick(60)" in p_pygame
-        assert "rect.colliderect()" in p_pygame
-
-        p_tk = get_engineer_system_prompt(artifact_format="tkinter")
-        assert "СТАНДАРТ TKINTER (.py)" in p_tk
-        assert "Canvas" in p_tk
-        assert "root.mainloop()" in p_tk
-
-        p_mod = get_engineer_system_prompt(artifact_format="module")
-        assert "СТАНДАРТ PYTHON MODULE (.py)" in p_mod
-        assert "ООП" in p_mod
-
-        p_cli = get_engineer_system_prompt(artifact_format="cli")
-        assert "СТАНДАРТ CLI & PYTHON (.py)" in p_cli
-
-        p_analysis = get_engineer_system_prompt(artifact_format="cli", is_analysis=True)
-        assert "РЕЖИМ АНАЛИЗА (Read-Only)" in p_analysis
+        from services.engineer_skill_router import EngineerSkillRouter
+        router = EngineerSkillRouter.get_instance()
+        for skill_id in ("interactive_loop", "pure_logic_tdd", "batch_artifact", "service_backend", "cli_automation"):
+            meta = router.skills[skill_id]
+            p = get_engineer_system_prompt(injected_worker_rules=meta["worker_rules"])
+            assert "ведущий инженер-разработчик NeonRoute" in p
+            assert "СТАНДАРТЫ РЕАЛИЗАЦИИ ДЛЯ ДАННОГО АРХЕТИПА:" in p
+            assert meta["worker_rules"] in p
+            assert "ОБЩИЕ ПРАВИЛА КОДОГЕНЕРАЦИИ:" in p
 
 
 class TestEngineerModelPriorityAndWsFiles:

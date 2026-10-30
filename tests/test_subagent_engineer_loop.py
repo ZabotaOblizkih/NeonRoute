@@ -217,9 +217,18 @@ class TestNoOpGuardRetryAndParser:
                     # Turn 2: Model outputs old code AND new code in py_blocks
                     modified_code = (
                         "import sys\n"
+                        "class GameEngine:\n"
+                        "    def __init__(self):\n"
+                        "        self.active = True\n"
+                        "    def check_hit(self):\n"
+                        "        return True\n\n"
                         "def update():\n"
-                        "    # fixed collision condition\n"
+                        "    # fixed collision condition and extended logic\n"
+                        "    engine = GameEngine()\n"
                         "    print('removed on hit')\n"
+                        "    return engine.check_hit()\n\n"
+                        "# Additional comments to satisfy SubstanceGuard min_bytes requirement >= 350\n"
+                        "# This engine handles collision resolution and sprite removals\n"
                         "if __name__ == '__main__':\n"
                         "    update()\n"
                     )
@@ -409,7 +418,28 @@ class TestNoOpGuardRetryAndParser:
                     # Invalid unicodeescape syntax error in docstring
                     return '<<TOOL:write_file filename="main.py">>\n"""\nPath: C:\\Users\\test\n"""\nif __name__ == "__main__":\n    pass\n<</TOOL:write_file>>'
                 elif self.calls == 3:
-                    return '<<TOOL:write_file filename="main.py">>\nr"""\nPath: C:\\Users\\test\n"""\nif __name__ == "__main__":\n    pass\n<</TOOL:write_file>>\n<<TOOL:run_script filename="main.py">>'
+                    return (
+                        '<<TOOL:write_file filename="main.py">>\n'
+                        'r"""\n'
+                        'Path: C:\\Users\\test\n'
+                        '"""\n'
+                        'class Utility:\n'
+                        '    """Utility runner class for diagnostics."""\n'
+                        '    def __init__(self):\n'
+                        '        self.active = True\n'
+                        '    def run(self):\n'
+                        '        print("Executed successfully")\n'
+                        '        return True\n\n'
+                        'def main():\n'
+                        '    u = Utility()\n'
+                        '    return u.run()\n\n'
+                        '# Comments to satisfy SubstanceGuard >= 350 bytes\n'
+                        '# Utility application logic and configuration checks\n'
+                        'if __name__ == "__main__":\n'
+                        '    main()\n'
+                        '<</TOOL:write_file>>\n'
+                        '<<TOOL:run_script filename="main.py">>'
+                    )
                 return "OK"
 
         res = SubagentEngineer.run_worker(
@@ -418,4 +448,4 @@ class TestNoOpGuardRetryAndParser:
         )
 
         assert len(MockLMClient.recorded_messages if hasattr(MockLMClient, "recorded_messages") else res) or True
-        assert res["success"] is True
+        assert res["success"] is True
