@@ -254,6 +254,15 @@ class DialogControllerMixin:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Ошибка базы знаний", f"Не удалось открыть базу знаний:\n{e}")
 
+    def _open_engineer_skills_dialog(self):
+        """Открывает центр управления знаниями инженера."""
+        try:
+            from ui.engineer_skills_dialog import EngineerSkillsDialog
+            dlg = EngineerSkillsDialog(parent=self)
+            dlg.exec()
+        except Exception as e:
+            logger.error(f"[NeonRoute] Ошибка открытия окна Знания инженера: {e}", exc_info=True)
+
     def open_dependency_dialog(self):
         from ui.dialogs.dependency_dialog import DependencyDialog
         dlg = DependencyDialog(parent=self)

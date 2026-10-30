@@ -1,19 +1,93 @@
-﻿"""
+"""
 services/skill_router.py - Легковесный гибридный роутер микро-скиллов на CPU.
 Уровень 1: Мгновенные эвристики интентов действия (gallery, analyst_logic, wellness_bio, tutor_feynman) - 0 мс.
 Уровень 2: Семантический векторный анализ (FastEmbed CPU, Max Similarity по естественным фразам-архетипам).
 """
+import json
 import logging
+import shutil
+from pathlib import Path
+from typing import Optional, Tuple, Dict, List, Any
+
 import numpy as np
-from typing import Optional, Tuple, Dict, List
 
 logger = logging.getLogger("NeonRoute.SkillRouter")
 
+DATA_DIR = Path("data")
+CUSTOM_ASSISTANT_SKILLS_FILE = DATA_DIR / "custom_assistant_skills.json"
+
+ASSISTANT_SKILLS: Dict[str, Dict[str, Any]] = {
+    "analyst_logic": {
+        "title": "📊 Системный аналитик",
+        "human_description": "Глубокий сравнительный анализ, поиск компромиссов (trade-offs), оценка рисков и структурированные матрицы решений.",
+        "triggers": "сравни, разница между, плюсы и минусы, за и против, анализ, сопоставь, матрица решений, trade-off",
+        "is_builtin": True,
+        "system_prompt": "Действуй как ведущий системный аналитик. Проводи беспристрастный сравнительный анализ, структурируй альтернативы, явно выделяй trade-offs и риски."
+    },
+    "code_architect": {
+        "title": "💻 Архитектор кода",
+        "human_description": "Проектирование чистой архитектуры, рефакторинг, отладка ошибок и эффективные алгоритмы со строгой типизацией.",
+        "triggers": "код, скрипт, функция, баг, архитектура, рефакторинг, алгоритм, traceback, pytest",
+        "is_builtin": True,
+        "system_prompt": "Действуй как Software Architect. Пиши чистый, типизированный и надежный код, предлагай масштабируемые решения и детально разбирай первопричины ошибок."
+    },
+    "text_crafter": {
+        "title": "✍️ Текстовый редактор",
+        "human_description": "Редактура текста, устранение канцелярита и воды, адаптация в инфостиле, деловые письма и емкие выжимки.",
+        "triggers": "отредактируй, перепиши, инфостиль, конспект, статья, выжимка, деловое письмо, пост",
+        "is_builtin": True,
+        "system_prompt": "Действуй как опытный редактор. Пиши емко, выразительно, в понятном инфостиле без канцелярита, структурируй текст и усиливай смысл."
+    },
+    "tutor_feynman": {
+        "title": "🎓 Метод Фейнмана",
+        "human_description": "Объяснение сложных концепций простым языком на пальцах через наглядные бытовые аналогии без заумных терминов.",
+        "triggers": "на пальцах, простыми словами, метод фейнмана, простым языком, наглядно, как для пятиклассника",
+        "is_builtin": True,
+        "system_prompt": "Используй метод Фейнмана. Объясняй сложнейшие концепции предельно доступно, используя яркие бытовые аналогии и поэтапную логику от простого к глубокому."
+    },
+    "wellness_bio": {
+        "title": "🌿 Биомеханика и эргономика",
+        "human_description": "Эргономика рабочего места, поддержание осанки, фазы сна, циркадные ритмы, расчет калорий BMR и производственная разминка.",
+        "triggers": "калории, бжу, bmr, осанка, эргономика, фазы сна, циркадные, разминка, суставы",
+        "is_builtin": True,
+        "system_prompt": "Выступай экспертом по биомеханике, эргономике и физиологии. Давай научно обоснованные рекомендации по осанке, сну, восстановлению и эргономике."
+    },
+    "gallery": {
+        "title": "🎨 Промпт-инженер артов",
+        "human_description": "Визуализация сцен, генерация художественных описаний и подготовка детальных промптов для диффузионных моделей.",
+        "triggers": "нарисуй, сгенерируй арт, картинка, визуализируй, иллюстрация, портрет, кадр",
+        "is_builtin": True,
+        "system_prompt": "Действуй как арт-директор и эксперт по промпт-инжинирингу. Формируй выразительные художественные композиции, описывай детали освещения, стиля и ракурса."
+    },
+    "deep_engineer": {
+        "title": "⚙️ Инженерная физика",
+        "human_description": "Фундаментальная механика, кинематика, сопромат, расчет нагрузок и принципы действия промышленных узлов.",
+        "triggers": "физика, кинематика, механика, сопромат, расчет нагрузок, гидравлика, принципиальная схема",
+        "is_builtin": True,
+        "system_prompt": "Действуй как инженер-механик и физик. Объясняй принципы работы узлов, кинематику, распределение нагрузок и точные физические законы."
+    }
+}
+
 
 class SkillRouter:
+    _instance: Optional["SkillRouter"] = None
+
+    @classmethod
+    def get_instance(cls, embedder=None) -> "SkillRouter":
+        if cls._instance is None:
+            cls._instance = cls(embedder=embedder)
+        elif embedder is not None and cls._instance.embedder is None:
+            cls._instance.set_embedder(embedder)
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls):
+        cls._instance = None
+
     def __init__(self, embedder=None):
         self.embedder = embedder
-        
+        self.custom_skills: Dict[str, Dict[str, Any]] = {}
+
         # Естественные фразы-архетипы интентов вместо изолированных ключевых слов
         self.skill_anchors: Dict[str, List[str]] = {
             "deep_engineer": [
@@ -68,8 +142,157 @@ class SkillRouter:
             ]
         }
         self.anchor_matrices: Dict[str, np.ndarray] = {}
+        self._load_custom_skills()
         if self.embedder:
             self._build_anchor_matrices()
+
+    def get_all_skills(self) -> Dict[str, Dict[str, Any]]:
+        """Возвращает объединение базовых и кастомных скиллов."""
+        all_s: Dict[str, Dict[str, Any]] = {}
+        for k, v in ASSISTANT_SKILLS.items():
+            all_s[k] = dict(v)
+            all_s[k]["skill_id"] = k
+        for k, v in self.custom_skills.items():
+            all_s[k] = dict(v)
+            all_s[k]["skill_id"] = k
+        return all_s
+
+    def _load_custom_skills(self):
+        """Безопасно читает data/custom_assistant_skills.json."""
+        self.custom_skills = {}
+        if CUSTOM_ASSISTANT_SKILLS_FILE.exists():
+            try:
+                with open(CUSTOM_ASSISTANT_SKILLS_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        for sid, sdata in loaded.items():
+                            if isinstance(sdata, dict):
+                                sdata["is_builtin"] = False
+                                sdata["skill_id"] = sid
+                                self.custom_skills[sid] = sdata
+                                anchors_raw = sdata.get("anchors") or sdata.get("triggers", "")
+                                if isinstance(anchors_raw, list):
+                                    anchors = [str(a).strip() for a in anchors_raw if str(a).strip()]
+                                elif isinstance(anchors_raw, str):
+                                    anchors = [a.strip() for a in anchors_raw.split(",") if a.strip()]
+                                else:
+                                    anchors = []
+                                if anchors:
+                                    self.skill_anchors[sid] = anchors
+                                elif sdata.get("title"):
+                                    self.skill_anchors[sid] = [sdata.get("title")]
+            except Exception as e:
+                logger.error(f"[SkillRouter] Ошибка загрузки кастомных скиллов: {e}")
+
+    def save_custom_skill(self, skill_dict: Dict[str, Any]) -> bool:
+        """Валидирует skill_id, сохраняет в JSON и обновляет skill_anchors в памяти."""
+        try:
+            skill_id = str(skill_dict.get("skill_id", "")).strip()
+            if not skill_id:
+                logger.error("[SkillRouter] skill_id не может быть пустым.")
+                return False
+            if skill_id in ASSISTANT_SKILLS:
+                logger.error(f"[SkillRouter] Нельзя перезаписать базовый скилл: '{skill_id}'.")
+                return False
+
+            title = str(skill_dict.get("title", "")).strip()
+            if not title:
+                logger.error("[SkillRouter] title не может быть пустым.")
+                return False
+
+            triggers = str(skill_dict.get("triggers", "")).strip()
+            anchors_raw = skill_dict.get("anchors", [])
+            if isinstance(anchors_raw, str):
+                anchors = [line.strip() for line in anchors_raw.splitlines() if line.strip()]
+            elif isinstance(anchors_raw, list):
+                anchors = [str(a).strip() for a in anchors_raw if str(a).strip()]
+            else:
+                anchors = []
+
+            if not anchors and triggers:
+                anchors = [t.strip() for t in triggers.split(",") if t.strip()]
+
+            human_description = str(skill_dict.get("human_description", "")).strip()
+            system_prompt = str(skill_dict.get("system_prompt", "")).strip()
+
+            normalized_skill = {
+                "skill_id": skill_id,
+                "title": title,
+                "human_description": human_description,
+                "triggers": triggers or (", ".join(anchors[:5]) if anchors else ""),
+                "anchors": anchors,
+                "system_prompt": system_prompt,
+                "is_builtin": False
+            }
+
+            custom_skills: Dict[str, Any] = {}
+            if CUSTOM_ASSISTANT_SKILLS_FILE.exists():
+                try:
+                    with open(CUSTOM_ASSISTANT_SKILLS_FILE, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            custom_skills = loaded
+                except Exception as e:
+                    logger.warning(f"[SkillRouter] Не удалось прочитать кастомные скиллы: {e}")
+
+            custom_skills[skill_id] = normalized_skill
+
+            CUSTOM_ASSISTANT_SKILLS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = CUSTOM_ASSISTANT_SKILLS_FILE.with_suffix(".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(custom_skills, f, ensure_ascii=False, indent=2)
+            shutil.move(temp_file, CUSTOM_ASSISTANT_SKILLS_FILE)
+
+            self.custom_skills[skill_id] = normalized_skill
+            if anchors:
+                self.skill_anchors[skill_id] = anchors
+            elif triggers:
+                self.skill_anchors[skill_id] = [t.strip() for t in triggers.split(",") if t.strip()]
+            else:
+                self.skill_anchors[skill_id] = [title]
+
+            if self.embedder:
+                self._build_anchor_matrices()
+
+            logger.info(f"[SkillRouter] Сохранен кастомный скилл: {skill_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[SkillRouter] Ошибка сохранения кастомного скилла: {e}", exc_info=True)
+            return False
+
+    def delete_custom_skill(self, skill_id: str) -> bool:
+        """Удаляет скилл из JSON (запрещая удаление is_builtin == True) и убирает из памяти."""
+        if skill_id in ASSISTANT_SKILLS or self.get_all_skills().get(skill_id, {}).get("is_builtin", False):
+            logger.warning(f"[SkillRouter] Запрещено удалять базовый скилл: {skill_id}")
+            return False
+
+        if not CUSTOM_ASSISTANT_SKILLS_FILE.exists():
+            return False
+
+        try:
+            with open(CUSTOM_ASSISTANT_SKILLS_FILE, "r", encoding="utf-8") as f:
+                custom_skills = json.load(f)
+            if not isinstance(custom_skills, dict):
+                return False
+            if skill_id not in custom_skills:
+                return False
+
+            del custom_skills[skill_id]
+
+            temp_file = CUSTOM_ASSISTANT_SKILLS_FILE.with_suffix(".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(custom_skills, f, ensure_ascii=False, indent=2)
+            shutil.move(temp_file, CUSTOM_ASSISTANT_SKILLS_FILE)
+
+            self.custom_skills.pop(skill_id, None)
+            self.skill_anchors.pop(skill_id, None)
+            self.anchor_matrices.pop(skill_id, None)
+
+            logger.info(f"[SkillRouter] Удален кастомный скилл: {skill_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[SkillRouter] Ошибка при удалении скилла '{skill_id}': {e}", exc_info=True)
+            return False
 
     def set_embedder(self, embedder):
         self.embedder = embedder

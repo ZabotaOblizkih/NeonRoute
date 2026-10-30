@@ -18,10 +18,14 @@ import config
 from config import CHARACTERS_DIR
 ASSETS_DIR = getattr(config, "ASSETS_DIR", getattr(config, "BASE_DIR", Path(".")) / "assets")
 from services.session_manager import SessionManager
+from services.engineer_skill_router import EngineerSkillRouter
 from services.roleplay_prompt_builder import RoleplayPromptBuilder
 from ui.dialogs.anchor_viewer_dialog import AnchorViewerDialog
 from ui.dialogs.prompt_viewer_dialog import PromptViewerDialog
 from qfluentwidgets import RoundMenu, Action, InfoBar, InfoBarPosition
+
+if not hasattr(Action, "__contains__"):
+    Action.__contains__ = lambda self, item: item in self.text()
 from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 from ui.components.chat_bubble import render_circular_avatar
 
@@ -434,29 +438,116 @@ class AvatarControllerMixin:
                 skills_menu = RoundMenu("⚡ Скиллы разработки", parent=menu)
                 skills_menu.setToolTipsVisible(True)  # Обязательно для отображения триггеров по ховеру
 
-                cur_sess = getattr(self, "current_session", {}) or {}
-                sess_meta = cur_sess.get("metadata", {}) if isinstance(cur_sess, dict) else {}
-                active_skill = sess_meta.get("active_engineer_skill", "auto")
+                active_skill = getattr(self, "_active_engineer_skill", None)
+                if not active_skill:
+                    cur_sess = getattr(self, "current_session", {}) or {}
+                    sess_meta = cur_sess.get("metadata", {}) if isinstance(cur_sess, dict) else {}
+                    active_skill = sess_meta.get("active_engineer_skill", "auto")
 
-                skills_data = [
-                    ("auto", "🤖 Автоопределение", "Триггер: Векторный подбор архетипа по смыслу задачи"),
-                    ("interactive_loop", "🎮 Игры и GUI", "Триггеры: игра, змейка, тетрис, pygame, tkinter, окно, форма"),
-                    ("pure_logic_tdd", "⚙️ Чистая логика (TDD)", "Триггеры: класс, функция, алгоритм, валидация, расчет, pytest"),
-                    ("batch_artifact", "📊 Документы и отчеты", "Триггеры: excel, xlsx, word, docx, отчет, таблица, смета"),
-                    ("service_backend", "🌐 Сервисы и API", "Триггеры: api, fastapi, эндпоинт, бот, telegram, webhook"),
-                    ("cli_automation", "💻 Консольные утилиты", "Триггеры: скрипт, cli, утилита, автоматизация, argparse")
-                ]
+                # Пункт "Автоопределение"
+                is_auto_selected = (active_skill == "auto")
+                auto_label = "🤖 Автоопределение"
+                auto_display = f"✓ {auto_label}" if is_auto_selected else f"   {auto_label}"
+                act_auto = Action(auto_display, parent=skills_menu)
+                act_auto.setToolTip(
+                    "Автоматический выбор подходящего архетипа\n"
+                    "Триггер: Векторный подбор архетипа по смыслу задачи"
+                )
+                act_auto.triggered.connect(
+                    lambda checked=False: self._on_select_engineer_skill("auto", auto_label)
+                )
+                skills_menu.addAction(act_auto)
 
-                for skill_id, label, triggers in skills_data:
+                # Считывать список скиллов динамически из роутера
+                router = EngineerSkillRouter.get_instance()
+                all_skills = router.get_all_skills()
+
+                for skill_id, skill in all_skills.items():
+                    label = skill.get("title", skill_id)
                     is_selected = (active_skill == skill_id)
                     display_text = f"✓ {label}" if is_selected else f"   {label}"
 
                     act = Action(display_text, parent=skills_menu)
-                    act.setToolTip(triggers)
+
+                    # Если есть иконка на диске, подставлять её через QIcon
+                    icon_path = skill.get("icon_path", "")
+                    if icon_path and Path(icon_path).exists():
+                        act.setIcon(QIcon(str(icon_path)))
+
+                    # Человеческое описание + строка триггеров
+                    desc = skill.get("human_description", "")
+                    triggers = skill.get("triggers", "")
+                    tooltip_lines = []
+                    if desc:
+                        tooltip_lines.append(desc)
+                    if triggers:
+                        tooltip_lines.append(f"Триггеры: {triggers}")
+                    if tooltip_lines:
+                        act.setToolTip("\n".join(tooltip_lines))
+
                     act.triggered.connect(
                         lambda checked=False, s_id=skill_id, s_lbl=label: self._on_select_engineer_skill(s_id, s_lbl)
                     )
                     skills_menu.addAction(act)
+
+                menu.addMenu(skills_menu)
+
+            cur_mode = "assistant"
+            if hasattr(self, "current_session") and isinstance(self.current_session, dict):
+                cur_mode = str(self.current_session.get("mode") or "assistant").lower()
+
+            is_assistant_mode = (cur_mode in ("assistant", "") and not is_engineer and not is_rp)
+            if is_assistant_mode:
+                menu.addSeparator()
+
+                skills_menu = RoundMenu("✨ Скилл ассистента", parent=menu)
+                skills_menu.setToolTipsVisible(True)
+
+                # Определение текущего выбранного скилла
+                active_skill = getattr(self, "_active_assistant_skill", None)
+                if not active_skill:
+                    cur_sess = getattr(self, "current_session", {}) or {}
+                    sess_meta = cur_sess.get("metadata", {}) if isinstance(cur_sess, dict) else {}
+                    active_skill = sess_meta.get("active_assistant_skill", "auto")
+
+                # 1. Пункт "Автоопределение"
+                is_auto_selected = (active_skill == "auto")
+                auto_label = "🤖 Автоопределение"
+                auto_display = f"✓ {auto_label}" if is_auto_selected else f"   {auto_label}"
+                act_auto = Action(auto_display, parent=skills_menu)
+                act_auto.setToolTip("Автоматический подбор скилла по смыслу запроса пользователя")
+                act_auto.triggered.connect(
+                    lambda checked=False: self._on_select_assistant_skill("auto", auto_label)
+                )
+                skills_menu.addAction(act_auto)
+
+                # 2. Динамический список скиллов
+                from services.assistant_prompt_builder import AssistantPromptBuilder
+                builder = AssistantPromptBuilder.get_instance()
+                router = builder.router if hasattr(builder, "router") else None
+
+                if router and hasattr(router, "get_all_skills"):
+                    all_skills = router.get_all_skills()
+                    for skill_id, skill in all_skills.items():
+                        label = skill.get("title", skill_id)
+                        is_selected = (active_skill == skill_id)
+                        display_text = f"✓ {label}" if is_selected else f"   {label}"
+
+                        act = Action(display_text, parent=skills_menu)
+                        desc = skill.get("human_description", "")
+                        triggers = skill.get("triggers", "")
+                        tooltip_parts = []
+                        if desc:
+                            tooltip_parts.append(desc)
+                        if triggers:
+                            tooltip_parts.append(f"Триггеры: {triggers}")
+                        if tooltip_parts:
+                            act.setToolTip("\n".join(tooltip_parts))
+
+                        act.triggered.connect(
+                            lambda checked=False, s_id=skill_id, s_lbl=label: self._on_select_assistant_skill(s_id, s_lbl)
+                        )
+                        skills_menu.addAction(act)
 
                 menu.addMenu(skills_menu)
 
@@ -481,21 +572,34 @@ class AvatarControllerMixin:
             logger.error(f"[AvatarController] Ошибка контекстного меню аватара: {e}", exc_info=True)
 
     def _on_select_engineer_skill(self, skill_id: str, skill_label: str):
-        """Сохраняет выбранный скилл разработки в метаданные текущей сессии."""
+        """Сохраняет выбранный скилл разработки в оперативную память окна и сессию."""
         try:
-            if not hasattr(self, "current_session") or not isinstance(self.current_session, dict):
-                return
+            self._active_engineer_skill = skill_id
 
-            if "metadata" not in self.current_session:
-                self.current_session["metadata"] = {}
+            if hasattr(self, "current_session") and isinstance(self.current_session, dict):
+                if "metadata" not in self.current_session:
+                    self.current_session["metadata"] = {}
 
-            self.current_session["metadata"]["active_engineer_skill"] = skill_id
+                self.current_session["metadata"]["active_engineer_skill"] = skill_id
 
-            # Сохраняем сессию через SessionManager без сайдкаров
-            if hasattr(self, "session_manager") and hasattr(self.session_manager, "save_session"):
-                self.session_manager.save_session(self.current_session)
+                # Сохраняем сессию через SessionManager.save_session(self.current_session)
+                SessionManager.save_session(self.current_session)
+                if hasattr(self, "session_manager") and hasattr(self.session_manager, "save_session"):
+                    try:
+                        self.session_manager.save_session(self.current_session)
+                    except Exception:
+                        pass
 
-            clean_label = skill_label.replace("🤖 ", "").replace("🎮 ", "").replace("⚙️ ", "").replace("📊 ", "").replace("🌐 ", "").replace("💻 ", "")
+            clean_label = (
+                skill_label.replace("🤖 ", "")
+                .replace("🎮 ", "")
+                .replace("⚙️ ", "")
+                .replace("📊 ", "")
+                .replace("🌐 ", "")
+                .replace("💻 ", "")
+                .replace("✓ ", "")
+                .strip()
+            )
             InfoBar.success(
                 title="Скилл инженера обновлен",
                 content=f"Установлен режим: {clean_label}",
@@ -506,6 +610,48 @@ class AvatarControllerMixin:
             logger.info(f"[AvatarController] Установлен скилл инженера: {skill_id} ({skill_label})")
         except Exception as e:
             logger.error(f"[AvatarController] Ошибка смены скилла инженера: {e}", exc_info=True)
+
+    def _on_select_assistant_skill(self, skill_id: str, skill_label: str):
+        """Сохраняет выбранный скилл ассистента в состояние окна и метаданные сессии."""
+        try:
+            self._active_assistant_skill = skill_id
+
+            if hasattr(self, "current_session") and isinstance(self.current_session, dict):
+                if "metadata" not in self.current_session or not isinstance(self.current_session["metadata"], dict):
+                    self.current_session["metadata"] = {}
+
+                self.current_session["metadata"]["active_assistant_skill"] = skill_id
+
+                from services.session_manager import SessionManager
+                SessionManager.save_session(self.current_session)
+                if hasattr(self, "session_manager") and hasattr(self.session_manager, "save_session"):
+                    try:
+                        self.session_manager.save_session(self.current_session)
+                    except Exception:
+                        pass
+
+            clean_label = (
+                skill_label.replace("🤖 ", "")
+                .replace("📊 ", "")
+                .replace("💻 ", "")
+                .replace("✍️ ", "")
+                .replace("🎓 ", "")
+                .replace("🌿 ", "")
+                .replace("🎨 ", "")
+                .replace("⚙️ ", "")
+                .replace("✓ ", "")
+                .strip()
+            )
+            InfoBar.success(
+                title="Скилл ассистента обновлен",
+                content=f"Установлен режим: {clean_label}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3000
+            )
+            logger.info(f"[AvatarController] Выбран скилл ассистента: {skill_id} ({skill_label})")
+        except Exception as e:
+            logger.error(f"[AvatarController] Ошибка сохранения скилла ассистента: {e}", exc_info=True)
 
     def _open_anchor_dialog(self):
         """Открывает диалог инспекции и настройки Depth-0 якоря для текущей РП сессии."""

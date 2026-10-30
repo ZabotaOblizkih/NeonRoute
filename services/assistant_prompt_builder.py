@@ -1,4 +1,4 @@
-﻿"""
+"""
 Assistant Prompt Builder for NeonRoute.
 Single Source of Truth for Elaria assistant persona, user profile injection,
 LanceDB passive memory, dynamic micro-skills, and document specifications.
@@ -525,7 +525,33 @@ class AssistantPromptBuilder:
         score = 0.0
         reason = ""
 
-        if effective_query and hasattr(self, "router") and self.router:
+        # Учет зафиксированного скилла (active_assistant_skill)
+        session_metadata = kwargs.get("session_metadata")
+        if not session_metadata and kwargs.get("session_id"):
+            try:
+                from services.session_manager import SessionManager
+                sess = SessionManager._sessions_cache.get(str(kwargs.get("session_id"))) or SessionManager.load_session(str(kwargs.get("session_id")))
+                if sess and isinstance(sess, dict):
+                    session_metadata = sess.get("metadata", {})
+            except Exception:
+                pass
+
+        manual_skill = (
+            kwargs.get("active_assistant_skill")
+            or kwargs.get("manual_skill")
+            or (session_metadata.get("active_assistant_skill") if isinstance(session_metadata, dict) else None)
+        )
+
+        all_skills = self.router.get_all_skills() if (hasattr(self, "router") and self.router and hasattr(self.router, "get_all_skills")) else {}
+
+        if manual_skill and manual_skill != "auto":
+            skill_meta = all_skills.get(manual_skill)
+            if skill_meta:
+                skill_name = manual_skill
+                logger.info(f"[AssistantPrompt] Применен зафиксированный скилл: {manual_skill}")
+            else:
+                logger.warning(f"[AssistantPrompt] Зафиксированный скилл '{manual_skill}' не найден в реестре.")
+        elif effective_query and hasattr(self, "router") and self.router:
             skill_name, score, reason = self.router.route(effective_query)
             if skill_name:
                 logger.info(
@@ -542,6 +568,14 @@ class AssistantPromptBuilder:
         if skill_name and skill_name in self.SKILL_PROMPTS:
             formatted_skill = self.SKILL_PROMPTS[skill_name].format(user_name=target_user)
             skill_section = f"{formatted_skill.strip()}\n\n"
+        elif skill_name and skill_name in all_skills:
+            skill_meta = all_skills[skill_name]
+            raw_prompt = skill_meta.get("system_prompt", "")
+            if raw_prompt:
+                if "{user_name}" in raw_prompt:
+                    raw_prompt = raw_prompt.format(user_name=target_user)
+                title = skill_meta.get("title", skill_name)
+                skill_section = f"\n[АКТИВНЫЙ СКИЛЛ: {title}]\n{raw_prompt.strip()}\n\n"
 
         # 8. ROUTING_TAIL_PROTOCOL
         tail_section = self.ROUTING_TAIL_PROTOCOL.format(user_name=target_user)

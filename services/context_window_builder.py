@@ -228,7 +228,10 @@ class ContextWindowBuilder:
             knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
             matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
             enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False),
-            user_query=effective_query
+            user_query=effective_query,
+            session_id=session_id,
+            session_metadata=kwargs.get("session_metadata"),
+            active_assistant_skill=kwargs.get("active_assistant_skill")
         )
 
     @staticmethod

@@ -26,16 +26,23 @@ def qapp():
 class DummyAvatarWindow(AvatarControllerMixin, QWidget):
     """Тестовый контейнер для проверки контекстного меню аватара."""
 
-    def __init__(self, mode="engineer", active_skill="auto"):
+    def __init__(self, mode="engineer", active_skill="auto", session=None):
         super().__init__()
         self.current_mode = mode
-        self.current_session = {
-            "id": "test-session-eng-1",
-            "mode": mode,
-            "metadata": {
-                "active_engineer_skill": active_skill
+        if session is not None:
+            self.current_session = session
+            if "metadata" not in self.current_session:
+                self.current_session["metadata"] = {}
+            if "active_engineer_skill" not in self.current_session["metadata"]:
+                self.current_session["metadata"]["active_engineer_skill"] = active_skill
+        else:
+            self.current_session = {
+                "id": "test-session-eng-1",
+                "mode": mode,
+                "metadata": {
+                    "active_engineer_skill": active_skill
+                }
             }
-        }
         self.session_manager = MagicMock()
         self._open_model_sampling_dialog = MagicMock()
         self._on_search_clicked = MagicMock()
@@ -49,8 +56,22 @@ class DummyAvatarWindow(AvatarControllerMixin, QWidget):
 class TestAvatarControllerSkillMenu:
     """Проверка генерации Fluent-подменю скиллов разработки."""
 
-    def test_skills_menu_present_in_engineer_mode(self, qapp):
-        win = DummyAvatarWindow(mode="engineer", active_skill="auto")
+    @pytest.mark.parametrize("session_kwargs,desc", [
+        (
+            {"mode": "assistant", "session": {"id": "real-eng-1", "mode": "assistant", "type": "engineering"}},
+            "Реальный контракт боевой БД NeonRoute ({'mode': 'assistant', 'type': 'engineering'})"
+        ),
+        (
+            {"mode": "engineer", "session": {"id": "legacy-eng-1", "mode": "engineer"}},
+            "Искусственный контракт ({'mode': 'engineer'})"
+        ),
+        (
+            {"mode": "engineering", "session": {"id": "eng-type-1", "mode": "engineering"}},
+            "Контракт с mode='engineering'"
+        )
+    ])
+    def test_skills_menu_present_in_engineer_mode(self, qapp, session_kwargs, desc):
+        win = DummyAvatarWindow(active_skill="auto", **session_kwargs)
 
         added_menus = []
         with patch.object(QMenu, "addMenu", side_effect=lambda sm: added_menus.append(sm)):
@@ -59,9 +80,13 @@ class TestAvatarControllerSkillMenu:
 
         # Должно быть добавлено подменю скиллов
         skill_submenus = [m for m in added_menus if hasattr(m, "title") and "Скиллы разработки" in m.title()]
-        assert len(skill_submenus) == 1, "Подменю '⚡ Скиллы разработки' должно быть добавлено в режиме engineer"
+        assert len(skill_submenus) == 1, f"Подменю '⚡ Скиллы разработки' должно быть добавлено для: {desc}"
 
         sub = skill_submenus[0]
+        # Проверяем включение отображения всплывающих подсказок (setToolTipsVisible(True))
+        if hasattr(sub, "toolTipsVisible"):
+            assert sub.toolTipsVisible() is True, "Подменю скиллов должно иметь toolTipsVisible == True"
+
         actions = sub.actions()
         assert len(actions) == 6, f"В меню должно быть 6 пунктов (Авто + 5 скиллов), найдено {len(actions)}"
 
@@ -80,12 +105,16 @@ class TestAvatarControllerSkillMenu:
         gui_key = [k for k in tooltips if "Игры и GUI" in k][0]
         doc_key = [k for k in tooltips if "Документы и отчеты" in k][0]
 
-        assert "Векторный поиск" in tooltips[auto_key]
+        assert "Векторный подбор" in tooltips[auto_key]
         assert "pygame" in tooltips[gui_key].lower()
         assert "excel" in tooltips[doc_key].lower()
 
-    def test_active_skill_checkmark_indicator(self, qapp):
-        win = DummyAvatarWindow(mode="engineer", active_skill="batch_artifact")
+    @pytest.mark.parametrize("session_kwargs", [
+        {"mode": "engineer", "active_skill": "batch_artifact"},
+        {"mode": "assistant", "session": {"id": "real-1", "mode": "assistant", "type": "engineering"}, "active_skill": "batch_artifact"}
+    ])
+    def test_active_skill_checkmark_indicator(self, qapp, session_kwargs):
+        win = DummyAvatarWindow(**session_kwargs)
 
         added_menus = []
         with patch.object(QMenu, "addMenu", side_effect=lambda sm: added_menus.append(sm)):

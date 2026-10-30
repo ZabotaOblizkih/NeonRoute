@@ -1,0 +1,226 @@
+{
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-777\\test_start_llama_server_sync_s0\\model.gguf::1793216860.5092142::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-778\\test_start_llama_server_sync_s0\\model.gguf::1793216905.478907::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-780\\test_start_llama_server_sync_s0\\model.gguf::1793217011.8349638::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\lmstudio-community\\Qwen2.5-VL-7B-Instruct-GGUF\\Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf::1790468086.5887792::4683072032": {
+    "total_layers": 28,
+    "model_size_mb": 4466.13,
+    "architecture": "qwen2vl",
+    "is_moe": false,
+    "context_length": 128000
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\QuantFactory\\Qwen2.5-7B-Instruct-abliterated-v2-GGUF\\Qwen2.5-7B-Instruct-abliterated-v2.Q5_K_M.gguf::1791686128.2861192::5444831616": {
+    "total_layers": 28,
+    "model_size_mb": 5192.6,
+    "architecture": "qwen2",
+    "is_moe": false,
+    "context_length": 32768
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\Qwen\\Qwen2.5-Coder-7B-Instruct-GGUF\\qwen2.5-coder-7b-instruct-q5_k_m.gguf::1791772475.3537734::5444831232": {
+    "total_layers": 28,
+    "model_size_mb": 5192.6,
+    "architecture": "qwen2",
+    "is_moe": false,
+    "context_length": 131072
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-781\\test_start_llama_server_sync_s0\\model.gguf::1793217456.5595858::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-782\\test_start_llama_server_sync_s0\\model.gguf::1793218451.8616686::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-783\\test_start_llama_server_sync_s0\\model.gguf::1793218581.0326946::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-784\\test_start_llama_server_sync_s0\\model.gguf::1793218626.2347977::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-785\\test_start_llama_server_sync_s0\\model.gguf::1793218670.2628639::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-787\\test_start_llama_server_sync_s0\\model.gguf::1793218785.7284458::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-788\\test_start_llama_server_sync_s0\\model.gguf::1793218833.3654158::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-791\\test_start_llama_server_sync_s0\\model.gguf::1793219637.1854494::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-792\\test_start_llama_server_sync_s0\\model.gguf::1793219690.9208455::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-794\\test_start_llama_server_sync_s0\\model.gguf::1793219814.8244376::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-798\\test_start_llama_server_sync_s0\\model.gguf::1793219974.9072804::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-799\\test_start_llama_server_sync_s0\\model.gguf::1793221527.6160042::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-804\\test_start_llama_server_sync_s0\\model.gguf::1793222177.729222::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-805\\test_start_llama_server_sync_s0\\model.gguf::1793224165.5515897::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-806\\test_start_llama_server_sync_s0\\model.gguf::1793224893.380742::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\QuantFactory\\Meissa-Qwen2.5-7B-Instruct-GGUF\\Meissa-Qwen2.5-7B-Instruct.Q5_K_M.gguf::1793268907.8566706::5444829952": {
+    "total_layers": 28,
+    "model_size_mb": 5192.59,
+    "architecture": "qwen2",
+    "is_moe": false,
+    "context_length": 32768
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-810\\test_start_llama_server_sync_s0\\model.gguf::1793271901.8429267::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-815\\test_start_llama_server_sync_s0\\model.gguf::1793272335.238789::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-816\\test_start_llama_server_sync_s0\\model.gguf::1793273614.8255632::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-817\\test_start_llama_server_sync_s0\\model.gguf::1793276503.1253262::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-818\\test_start_llama_server_sync_s0\\model.gguf::1793277228.2505486::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-820\\test_start_llama_server_sync_s0\\model.gguf::1793287133.5678058::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-830\\test_start_llama_server_sync_s0\\model.gguf::1793289590.2877917::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-831\\test_start_llama_server_sync_s0\\model.gguf::1793293201.5884619::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-836\\test_start_llama_server_sync_s0\\model.gguf::1793316889.277673::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-887\\test_start_llama_server_sync_s0\\model.gguf::1793394771.2453156::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  }
+}

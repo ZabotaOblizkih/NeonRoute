@@ -12,7 +12,8 @@ from typing import Optional, List, Dict, Any, Callable
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QFrame, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QFrame, QLabel,
+    QStackedWidget, QSplitter, QListWidgetItem
 )
 from qframelesswindow import FramelessDialog
 from qfluentwidgets import (
@@ -32,6 +33,10 @@ from qfluentwidgets import (
     InfoBarPosition,
     MessageBox,
     IconWidget,
+    SegmentedWidget,
+    LineEdit,
+    TextEdit,
+    ListWidget,
     setTheme,
     Theme
 )
@@ -166,17 +171,71 @@ class DocumentCardWidget(SimpleCardWidget):
             root_layout.addWidget(no_trig)
 
 
+class SkillListItemWidget(QWidget):
+    """
+    Кастомный виджет элемента списка скиллов:
+    Иконка/эмодзи, название и бейдж [Базовый] или [Пользовательский].
+    """
+
+    def __init__(self, title: str, is_builtin: bool, icon_str: str = "", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(10)
+
+        self.icon_lbl = QLabel(self)
+        self.icon_lbl.setFixedSize(32, 32)
+        self.icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_lbl.setStyleSheet(
+            "border-radius: 6px; background-color: rgba(255, 255, 255, 0.04); "
+            "border: 1px solid rgba(255, 255, 255, 0.08); font-size: 16px;"
+        )
+        self.icon_lbl.setText(icon_str or ("⚡" if is_builtin else "✨"))
+        layout.addWidget(self.icon_lbl)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(3)
+
+        self.title_lbl = QLabel(title, self)
+        self.title_lbl.setStyleSheet("color: #F8FAFC; font-weight: 600; font-size: 12px;")
+        text_layout.addWidget(self.title_lbl)
+
+        badge_type = "Базовый" if is_builtin else "Пользовательский"
+        badge_style = (
+            "color: #94A3B8; background-color: rgba(148, 163, 184, 0.12); "
+            "border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 4px; "
+            "padding: 1px 6px; font-size: 10px; font-weight: 600;"
+            if is_builtin else
+            "color: #00F0FF; background-color: rgba(0, 240, 255, 0.12); "
+            "border: 1px solid rgba(0, 240, 255, 0.35); border-radius: 4px; "
+            "padding: 1px 6px; font-size: 10px; font-weight: 600;"
+        )
+        self.badge_lbl = QLabel(badge_type, self)
+        self.badge_lbl.setStyleSheet(badge_style)
+        self.badge_lbl.setFixedHeight(18)
+
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(0, 0, 0, 0)
+        badge_row.addWidget(self.badge_lbl)
+        badge_row.addStretch()
+        text_layout.addLayout(badge_row)
+
+        layout.addLayout(text_layout, stretch=1)
+
+
 class KnowledgeManagerDialog(FramelessDialog):
     """
-    Модальное окно управления базой знаний Эларии.
+    Модальное окно управления базой знаний и скиллами Эларии.
     Построено исключительно на компонентах PyQt-Fluent-Widgets (qfluentwidgets).
     """
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setWindowTitle("Знания Эларии")
-        self.resize(780, 560)
-        self.setMinimumSize(640, 460)
+        self.resize(860, 600)
+        self.setMinimumSize(700, 480)
+        self._current_selected_skill_id: Optional[str] = None
 
         # Стилизация темного Fluent-окна
         self.setStyleSheet("""
@@ -194,6 +253,7 @@ class KnowledgeManagerDialog(FramelessDialog):
 
         self._setup_ui()
         self.reload_documents()
+        self._load_skills_list()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -234,30 +294,43 @@ class KnowledgeManagerDialog(FramelessDialog):
 
         root_layout.addLayout(header_layout)
 
-        # 2. Тулбар действий
+        # 2. Переключатель вкладок SegmentedWidget
+        self.tab_bar = SegmentedWidget(self)
+        self.tab_bar.addItem("tab_docs", "📚 База знаний")
+        self.tab_bar.addItem("tab_skills", "⚡ Скиллы Эларии")
+        root_layout.addWidget(self.tab_bar)
+
+        self.stack = QStackedWidget(self)
+        root_layout.addWidget(self.stack, 1)
+
+        # ── Вкладка 1: «📚 База знаний» ──
+        self.docs_page = QWidget(self)
+        docs_layout = QVBoxLayout(self.docs_page)
+        docs_layout.setContentsMargins(0, 6, 0, 0)
+        docs_layout.setSpacing(10)
+
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setSpacing(10)
 
-        self.btn_add = PrimaryPushButton(FIF.ADD, "Добавить документ", self)
+        self.btn_add = PrimaryPushButton(FIF.ADD, "Добавить документ", self.docs_page)
         self.btn_add.setToolTip("Импортировать файл в базу знаний")
         self.btn_add.clicked.connect(self._on_add_document_clicked)
         toolbar_layout.addWidget(self.btn_add)
 
-        self.btn_open_folder = PushButton(FIF.FOLDER, "Открыть папку", self)
+        self.btn_open_folder = PushButton(FIF.FOLDER, "Открыть папку", self.docs_page)
         self.btn_open_folder.setToolTip("Открыть проводник с папкой knowledge_base/")
         self.btn_open_folder.clicked.connect(self._on_open_folder_clicked)
         toolbar_layout.addWidget(self.btn_open_folder)
 
-        self.btn_sync = TransparentToolButton(FIF.SYNC, self)
+        self.btn_sync = TransparentToolButton(FIF.SYNC, self.docs_page)
         self.btn_sync.setToolTip("Синхронизировать")
         self.btn_sync.clicked.connect(self._on_sync_clicked)
         toolbar_layout.addWidget(self.btn_sync)
 
         toolbar_layout.addStretch(1)
-        root_layout.addLayout(toolbar_layout)
+        docs_layout.addLayout(toolbar_layout)
 
-        # 3. Список документов (ScrollArea)
-        self.scroll_area = SingleDirectionScrollArea(self)
+        self.scroll_area = SingleDirectionScrollArea(self.docs_page)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet("""
             QScrollArea {
@@ -275,7 +348,399 @@ class KnowledgeManagerDialog(FramelessDialog):
         self.cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.scroll_area.setWidget(self.cards_container)
-        root_layout.addWidget(self.scroll_area, 1)
+        docs_layout.addWidget(self.scroll_area, 1)
+
+        self.stack.addWidget(self.docs_page)
+
+        # ── Вкладка 2: «⚡ Скиллы Эларии» ──
+        self.skills_page = QWidget(self)
+        self._setup_skills_ui()
+        self.stack.addWidget(self.skills_page)
+
+        def _on_tab_changed(k):
+            if k == "tab_docs":
+                self.stack.setCurrentIndex(0)
+                self.reload_documents()
+            else:
+                self.stack.setCurrentIndex(1)
+                self._load_skills_list()
+
+        self.tab_bar.currentItemChanged.connect(_on_tab_changed)
+        self.tab_bar.setCurrentItem("tab_docs")
+
+    def _setup_skills_ui(self):
+        skills_layout = QHBoxLayout(self.skills_page)
+        skills_layout.setContentsMargins(0, 6, 0, 0)
+        skills_layout.setSpacing(12)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal, self.skills_page)
+        splitter.setChildrenCollapsible(False)
+
+        # Левая панель: Список скиллов + кнопка Добавить
+        left_widget = QWidget(splitter)
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 6, 0)
+        left_layout.setSpacing(8)
+
+        lbl_list = StrongBodyLabel("Микро-скиллы Ассистента:", left_widget)
+        lbl_list.setStyleSheet("color: #94A3B8; font-size: 12px; font-weight: 600;")
+        left_layout.addWidget(lbl_list)
+
+        self.list_skills = ListWidget(left_widget)
+        self.list_skills.setStyleSheet("""
+            ListWidget {
+                background-color: rgba(15, 23, 42, 0.70);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                padding: 4px;
+            }
+            ListWidget::item {
+                border-radius: 6px;
+                margin-bottom: 2px;
+            }
+            ListWidget::item:selected {
+                background-color: rgba(0, 240, 255, 0.14);
+            }
+            ListWidget::item:hover:!selected {
+                background-color: rgba(255, 255, 255, 0.04);
+            }
+        """)
+        self.list_skills.currentRowChanged.connect(self._on_skill_row_changed)
+        left_layout.addWidget(self.list_skills, 1)
+
+        self.btn_add_skill = PushButton(FIF.ADD, "Добавить свой скилл", left_widget)
+        self.btn_add_skill.clicked.connect(self._on_add_skill_clicked)
+        left_layout.addWidget(self.btn_add_skill)
+
+        splitter.addWidget(left_widget)
+
+        # Правая панель: Форма просмотра / редактирования скилла
+        right_scroll = SingleDirectionScrollArea(splitter)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+                background-color: rgba(14, 19, 31, 0.6);
+            }
+        """)
+
+        right_container = QWidget()
+        right_container.setStyleSheet("background: transparent;")
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(12, 10, 12, 10)
+        right_layout.setSpacing(8)
+
+        # ID скилла
+        id_box = QVBoxLayout()
+        id_box.setSpacing(3)
+        lbl_id = CaptionLabel("ID скилла (системный идентификатор):", right_container)
+        lbl_id.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.line_skill_id = LineEdit(right_container)
+        self.line_skill_id.setPlaceholderText("например: sql_expert")
+        id_box.addWidget(lbl_id)
+        id_box.addWidget(self.line_skill_id)
+        right_layout.addLayout(id_box)
+
+        # Название скилла
+        title_box = QVBoxLayout()
+        title_box.setSpacing(3)
+        lbl_title = CaptionLabel("Название скилла:", right_container)
+        lbl_title.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.line_skill_title = LineEdit(right_container)
+        self.line_skill_title.setPlaceholderText("например: 💡 Эксперт по базам данных")
+        title_box.addWidget(lbl_title)
+        title_box.addWidget(self.line_skill_title)
+        right_layout.addLayout(title_box)
+
+        # Описание
+        desc_box = QVBoxLayout()
+        desc_box.setSpacing(3)
+        lbl_desc = CaptionLabel("Человеческое описание (фокус и специализация):", right_container)
+        lbl_desc.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.text_human_desc = TextEdit(right_container)
+        self.text_human_desc.setPlaceholderText("Краткое и емкое описание назначения скилла...")
+        self.text_human_desc.setFixedHeight(60)
+        desc_box.addWidget(lbl_desc)
+        desc_box.addWidget(self.text_human_desc)
+        right_layout.addLayout(desc_box)
+
+        # Триггеры
+        trig_box = QVBoxLayout()
+        trig_box.setSpacing(3)
+        lbl_trig = CaptionLabel("Ключевые фразы / триггеры (через запятую):", right_container)
+        lbl_trig.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.text_triggers = TextEdit(right_container)
+        self.text_triggers.setPlaceholderText("sql, postgres, индексы, оптимизация запросов, explain")
+        self.text_triggers.setFixedHeight(60)
+        trig_box.addWidget(lbl_trig)
+        trig_box.addWidget(self.text_triggers)
+        right_layout.addLayout(trig_box)
+
+        # Системный промпт
+        sys_box = QVBoxLayout()
+        sys_box.setSpacing(3)
+        lbl_sys = CaptionLabel("Системный промпт / инструкция скилла:", right_container)
+        lbl_sys.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.text_system_prompt = TextEdit(right_container)
+        self.text_system_prompt.setPlaceholderText("Инструкция для модели при активации этого скилла...")
+        self.text_system_prompt.setFixedHeight(95)
+        sys_box.addWidget(lbl_sys)
+        sys_box.addWidget(self.text_system_prompt)
+        right_layout.addLayout(sys_box)
+
+        # Кнопки Сохранить и Удалить
+        btn_box = QHBoxLayout()
+        btn_box.setSpacing(10)
+        self.btn_save_skill = PrimaryPushButton(FIF.SAVE, "Сохранить", right_container)
+        self.btn_save_skill.clicked.connect(self._on_save_skill_clicked)
+        btn_box.addWidget(self.btn_save_skill)
+
+        self.btn_delete_skill = PushButton(FIF.DELETE, "Удалить", right_container)
+        self.btn_delete_skill.clicked.connect(self._on_delete_skill_clicked)
+        btn_box.addWidget(self.btn_delete_skill)
+
+        btn_box.addStretch(1)
+        right_layout.addLayout(btn_box)
+
+        right_scroll.setWidget(right_container)
+        splitter.addWidget(right_scroll)
+
+        splitter.setStretchFactor(0, 36)
+        splitter.setStretchFactor(1, 64)
+
+        skills_layout.addWidget(splitter)
+
+    def _get_router(self):
+        """Получает активный экземпляр роутера скиллов Ассистента."""
+        try:
+            from services.assistant_prompt_builder import AssistantPromptBuilder
+            builder = AssistantPromptBuilder.get_instance()
+            if hasattr(builder, "router") and builder.router:
+                return builder.router
+        except Exception:
+            pass
+        from services.skill_router import SkillRouter
+        return SkillRouter.get_instance()
+
+    def _load_skills_list(self, select_skill_id: Optional[str] = None):
+        """Наполняет список скиллами из SkillRouter.get_all_skills()."""
+        self.list_skills.clear()
+        router = self._get_router()
+        all_skills = router.get_all_skills() if hasattr(router, "get_all_skills") else {}
+
+        target_row = -1
+        row_idx = 0
+        for sid, sdata in all_skills.items():
+            title = sdata.get("title", sid)
+            is_builtin = sdata.get("is_builtin", False)
+            first_token = title.split()[0] if title and title.split() else ""
+            icon_char = first_token if len(first_token) <= 2 else ("⚡" if is_builtin else "✨")
+
+            item = QListWidgetItem(self.list_skills)
+            item.setData(Qt.ItemDataRole.UserRole, sid)
+            item_widget = SkillListItemWidget(title, is_builtin, icon_char)
+            item.setSizeHint(item_widget.sizeHint())
+            self.list_skills.addItem(item)
+            self.list_skills.setItemWidget(item, item_widget)
+
+            if select_skill_id and sid == select_skill_id:
+                target_row = row_idx
+            row_idx += 1
+
+        if target_row >= 0:
+            self.list_skills.setCurrentRow(target_row)
+        elif self.list_skills.count() > 0:
+            self.list_skills.setCurrentRow(0)
+
+    def _on_skill_row_changed(self, row: int):
+        if row < 0:
+            return
+        item = self.list_skills.item(row)
+        if not item:
+            return
+        sid = item.data(Qt.ItemDataRole.UserRole)
+        self._on_skill_selected(sid)
+
+    def _on_skill_selected(self, skill_id: str):
+        """Заполняет поля данными выбранного скилла."""
+        router = self._get_router()
+        all_skills = router.get_all_skills() if hasattr(router, "get_all_skills") else {}
+        skill = all_skills.get(skill_id)
+        if not skill:
+            return
+
+        self._current_selected_skill_id = skill_id
+        is_builtin = skill.get("is_builtin", False)
+
+        self.line_skill_id.setText(skill_id)
+        self.line_skill_id.setEnabled(False)
+
+        self.line_skill_title.setText(skill.get("title", ""))
+        self.line_skill_title.setEnabled(not is_builtin)
+
+        self.text_human_desc.setPlainText(skill.get("human_description", ""))
+        self.text_human_desc.setEnabled(not is_builtin)
+
+        self.text_triggers.setPlainText(skill.get("triggers", ""))
+        self.text_triggers.setEnabled(not is_builtin)
+
+        self.text_system_prompt.setPlainText(skill.get("system_prompt", ""))
+        self.text_system_prompt.setEnabled(not is_builtin)
+
+        self.btn_save_skill.setEnabled(not is_builtin)
+        self.btn_delete_skill.setEnabled(not is_builtin)
+        if is_builtin:
+            self.btn_delete_skill.setToolTip("Базовые скиллы защищены от удаления")
+            self.btn_save_skill.setToolTip("Базовые скиллы защищены от изменений")
+        else:
+            self.btn_delete_skill.setToolTip("Удалить пользовательский скилл")
+            self.btn_save_skill.setToolTip("Сохранить изменения скилла")
+
+    def _on_add_skill_clicked(self):
+        """Подготавливает форму для создания нового кастомного скилла."""
+        self._current_selected_skill_id = None
+        self.list_skills.setCurrentRow(-1)
+
+        self.line_skill_id.clear()
+        self.line_skill_id.setEnabled(True)
+
+        self.line_skill_title.clear()
+        self.line_skill_title.setEnabled(True)
+
+        self.text_human_desc.clear()
+        self.text_human_desc.setEnabled(True)
+
+        self.text_triggers.clear()
+        self.text_triggers.setEnabled(True)
+
+        self.text_system_prompt.clear()
+        self.text_system_prompt.setEnabled(True)
+
+        self.btn_save_skill.setEnabled(True)
+        self.btn_save_skill.setToolTip("Сохранить новый скилл")
+        self.btn_delete_skill.setEnabled(False)
+        self.btn_delete_skill.setToolTip("")
+
+        self.line_skill_id.setFocus()
+
+    def _on_save_skill_clicked(self):
+        """Сохраняет кастомный скилл через роутер."""
+        s_id = self.line_skill_id.text().strip()
+        title = self.line_skill_title.text().strip()
+        desc = self.text_human_desc.toPlainText().strip()
+        triggers = self.text_triggers.toPlainText().strip()
+        sys_prompt = self.text_system_prompt.toPlainText().strip()
+
+        if not s_id:
+            InfoBar.warning(
+                title="Заполните ID",
+                content="Идентификатор скилла (ID) не может быть пустым.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000
+            )
+            self.line_skill_id.setFocus()
+            return
+
+        from services.skill_router import ASSISTANT_SKILLS
+        if s_id in ASSISTANT_SKILLS:
+            InfoBar.error(
+                title="Запрещено",
+                content=f"Нельзя перезаписать базовый скилл «{s_id}».",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000
+            )
+            return
+
+        if not title:
+            InfoBar.warning(
+                title="Заполните название",
+                content="Название скилла не может быть пустым.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000
+            )
+            self.line_skill_title.setFocus()
+            return
+
+        skill_dict = {
+            "skill_id": s_id,
+            "title": title,
+            "human_description": desc,
+            "triggers": triggers,
+            "system_prompt": sys_prompt,
+            "is_builtin": False
+        }
+
+        router = self._get_router()
+        ok = router.save_custom_skill(skill_dict)
+        if ok:
+            InfoBar.success(
+                title="Скилл сохранен",
+                content=f"Скилл «{title}» успешно сохранен в базе.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000
+            )
+            self._load_skills_list(select_skill_id=s_id)
+        else:
+            InfoBar.error(
+                title="Ошибка сохранения",
+                content="Не удалось сохранить скилл. Проверьте правильность данных.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3500
+            )
+
+    def _on_delete_skill_clicked(self):
+        """Удаляет выбранный кастомный скилл с подтверждением."""
+        s_id = self.line_skill_id.text().strip()
+        title = self.line_skill_title.text().strip() or s_id
+        if not s_id:
+            return
+
+        from services.skill_router import ASSISTANT_SKILLS
+        if s_id in ASSISTANT_SKILLS:
+            InfoBar.error(
+                title="Запрещено",
+                content="Нельзя удалять базовые скиллы.",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000
+            )
+            return
+
+        box = MessageBox(
+            "Удаление скилла",
+            f"Вы действительно хотите удалить скилл «{title}»?",
+            self
+        )
+        box.yesButton.setText("Удалить")
+        box.cancelButton.setText("Отмена")
+
+        if box.exec():
+            router = self._get_router()
+            ok = router.delete_custom_skill(s_id)
+            if ok:
+                InfoBar.success(
+                    title="Скилл удален",
+                    content=f"Скилл «{title}» успешно удален.",
+                    parent=self,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=2500
+                )
+                self._load_skills_list()
+                self._on_add_skill_clicked()
+            else:
+                InfoBar.error(
+                    title="Ошибка удаления",
+                    content=f"Не удалось удалить скилл «{s_id}».",
+                    parent=self,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=3000
+                )
 
     def reload_documents(self):
         """Перезагружает и отображает список карточек документов из реестра."""

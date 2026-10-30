@@ -273,6 +273,11 @@ class MenuBuilder:
         act_knowledge.triggered.connect(lambda *_: window._open_knowledge_manager_dialog())
         system_menu.addAction(act_knowledge)
 
+        act_engineer_skills = Action(FIF.CODE, "Знания инженера...", window)
+        act_engineer_skills.setToolTip("Управление архитектурными скиллами, кодогенерацией и тест роутера")
+        act_engineer_skills.triggered.connect(lambda *_: window._open_engineer_skills_dialog())
+        system_menu.addAction(act_engineer_skills)
+
         act_gallery = Action(FIF.PEOPLE, "Галерея персонажей...", window)
         act_gallery.triggered.connect(lambda *_: window._open_characters_gallery_dialog())
         system_menu.addAction(act_gallery)

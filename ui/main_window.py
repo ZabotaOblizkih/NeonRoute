@@ -208,6 +208,8 @@ class MainWindow(
         self.attached_files: List[Path] = []
         self.is_busy = False
         self.current_mode_is_art = False
+        self._active_assistant_skill: str = "auto"
+        self._active_engineer_skill: str = "auto"
         self._forge_launching = False
         self._is_refreshing_models = False
 
@@ -1063,6 +1065,12 @@ class MainWindow(
             return
         self._switch_to_session(session_id)
 
+    def _load_chat_history(self, session_data: Dict[str, Any]):
+        """Считывает метаданные и настройки сессии при загрузке диалога."""
+        sess_meta = session_data.get("metadata", {}) if isinstance(session_data, dict) else {}
+        self._active_assistant_skill = sess_meta.get("active_assistant_skill", "auto")
+        self._active_engineer_skill = sess_meta.get("active_engineer_skill", "auto")
+
     def _switch_to_session(self, session_id: str):
         """Loads and activates a saved session by ID with instant rendering and isolated context."""
         self._remove_greeting_cycler_chip()
@@ -1097,6 +1105,7 @@ class MainWindow(
 
             self.current_session = session_data
             self.chat_history = list(session_data.get("chat_history", []))
+            self._load_chat_history(session_data)
             mode = session_data.get("mode", "assistant")
 
             # Sync active session ID to SandboxManager & ToolEngine
