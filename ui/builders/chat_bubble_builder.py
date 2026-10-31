@@ -158,13 +158,19 @@ class ChatBubbleBuilderMixin:
                 pass
 
         eff_mode = getattr(self, "active_mode", getattr(self, "current_mode", "assistant"))
+        is_eng = (eff_mode in ("engineer", "engineering")) or (hasattr(self, "is_engineer_mode_active") and self.is_engineer_mode_active()) or (self.current_session.get("type") == "engineering" if getattr(self, "current_session", None) and isinstance(self.current_session, dict) else False)
         is_rp = (eff_mode == "roleplay") or bool(msg.get("is_roleplay", False))
         if is_rp:
             widget_cls = RPChatMessageWidget
+        elif is_eng and not is_user:
+            from ui.widgets.engineer_task_card import EngineerTaskCardWidget
+            widget_cls = EngineerTaskCardWidget
         elif eff_mode == "assistant" and not is_user:
             widget_cls = AssistantChatMessageWidget
         else:
             widget_cls = ChatMessageWidget
+
+        session_id_val = getattr(self, "current_session", {}).get("id") if hasattr(self, "current_session") and isinstance(self.current_session, dict) else None
 
         widget = widget_cls(
             sender=sender,
@@ -184,6 +190,7 @@ class ChatBubbleBuilderMixin:
             generation_params=msg.get("generation_params"),
             visual_intent=msg.get("visual_intent"),
             message_id=msg.get("id"),
+            session_id=session_id_val,
             parent=getattr(self, "chat_scroll_content", getattr(self, "chat_container", None))
         )
         if msg.get("visual_intent"):
@@ -208,10 +215,13 @@ class ChatBubbleBuilderMixin:
         widget.run_script_requested.connect(self._execute_workspace_script)
         widget.choice_selected.connect(self._on_rpg_choice_selected)
 
+        is_eng_canvas = (is_eng and not is_user) or widget.__class__.__name__ == "EngineerTaskCardWidget"
+        align = Qt.AlignmentFlag(0) if is_eng_canvas else Qt.AlignmentFlag.AlignTop
+
         if target_index is not None:
-            self.chat_layout.insertWidget(target_index, widget, alignment=Qt.AlignmentFlag.AlignTop)
+            self.chat_layout.insertWidget(target_index, widget, alignment=align)
         else:
-            self.chat_layout.insertWidget(self.chat_layout.count() - 1, widget, alignment=Qt.AlignmentFlag.AlignTop)
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, widget, alignment=align)
         return widget
 
     def _clear_chat_widgets(self):
@@ -449,12 +459,19 @@ class ChatBubbleBuilderMixin:
                 resolved_avatar = self._get_current_avatar_path()
 
         eff_mode = getattr(self, "active_mode", getattr(self, "current_mode", "assistant"))
+        is_eng = (eff_mode in ("engineer", "engineering")) or (hasattr(self, "is_engineer_mode_active") and self.is_engineer_mode_active())
+
         if eff_mode == "roleplay" or is_roleplay or (getattr(self, "current_mode", "") == "roleplay"):
             widget_cls = RPChatMessageWidget
+        elif is_eng and not is_user:
+            from ui.widgets.engineer_task_card import EngineerTaskCardWidget
+            widget_cls = EngineerTaskCardWidget
         elif eff_mode == "assistant" and not is_user:
             widget_cls = AssistantChatMessageWidget
         else:
             widget_cls = ChatMessageWidget
+
+        session_id_val = getattr(self, "current_session", {}).get("id") if hasattr(self, "current_session") and isinstance(self.current_session, dict) else None
 
         msg = widget_cls(
             sender=sender,
@@ -472,6 +489,7 @@ class ChatBubbleBuilderMixin:
             timestamp=timestamp,
             generation_params=generation_params,
             visual_intent=visual_intent,
+            session_id=session_id_val,
             parent=getattr(self, "chat_scroll_content", getattr(self, "chat_container", None)),
             **kwargs
         )
@@ -486,15 +504,18 @@ class ChatBubbleBuilderMixin:
         msg.run_script_requested.connect(self._execute_workspace_script)
         msg.choice_selected.connect(self._on_rpg_choice_selected)
 
+        is_eng_canvas = (is_eng and not is_user) or msg.__class__.__name__ == "EngineerTaskCardWidget"
+        align = Qt.AlignmentFlag(0) if is_eng_canvas else Qt.AlignmentFlag.AlignTop
+
         # Insert before typing_loader if present, else before bottom stretch
         if self.typing_loader is not None:
             idx = self.chat_layout.indexOf(self.typing_loader)
             if idx >= 0:
-                self.chat_layout.insertWidget(idx, msg, alignment=Qt.AlignmentFlag.AlignTop)
+                self.chat_layout.insertWidget(idx, msg, alignment=align)
             else:
-                self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg, alignment=Qt.AlignmentFlag.AlignTop)
+                self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg, alignment=align)
         else:
-            self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg, alignment=Qt.AlignmentFlag.AlignTop)
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg, alignment=align)
 
         # Record in active session and auto-save to history
         if self.current_session is not None and not self._is_switching_session:
@@ -526,12 +547,14 @@ class ChatBubbleBuilderMixin:
         """Redirects to new session creation."""
         self._on_new_chat_clicked()
 
-    def _get_chat_message_widgets(self) -> List[ChatMessageWidget]:
+    def _get_chat_message_widgets(self) -> List[Any]:
         widgets = []
         for i in range(self.chat_layout.count()):
             item = self.chat_layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), ChatMessageWidget):
-                widgets.append(item.widget())
+            if item and item.widget():
+                w = item.widget()
+                if isinstance(w, ChatMessageWidget) or w.__class__.__name__ == "EngineerTaskCardWidget":
+                    widgets.append(w)
         return widgets
 
 

@@ -489,6 +489,11 @@ class EngineerControllerMixin:
             self._turn_bubble = self._append_message(sender_name, "", is_user=False)
         else:
             try:
+                active_sid = self.current_session.get("id") if getattr(self, "current_session", None) else None
+                bubble_sid = getattr(self._turn_bubble, "session_id", None)
+                if bubble_sid and active_sid and bubble_sid != active_sid:
+                    logger.info("[EngineerController] Смена сессии: подавление обновления виджета фоновой задачи")
+                    return
                 self._turn_bubble.set_text("")
             except RuntimeError:
                 self._turn_bubble = self._append_message(sender_name, "", is_user=False)
@@ -502,6 +507,11 @@ class EngineerControllerMixin:
                 clean_fn = SandboxManager.clean_workspace_filename(raw_fn)
                 primary_file = clean_fn
                 f_path = SandboxManager.get_workspace_dir() / clean_fn
+                active_sid = self.current_session.get("id") if getattr(self, "current_session", None) else None
+                bubble_sid = getattr(self._turn_bubble, "session_id", None)
+                if bubble_sid and active_sid and bubble_sid != active_sid:
+                    logger.info("[EngineerController] Смена сессии: подавление обновления виджета фоновой задачи")
+                    return
                 self._turn_bubble.add_workspace_file_card(f_path, on_run=self._execute_workspace_script)
                 self._update_message_attachment(self._turn_bubble, f_path)
 
@@ -548,6 +558,12 @@ class EngineerControllerMixin:
                     "result": error_msg if not success and error_msg else raw_out,
                     "success": success
                 }]
+
+            active_sid = self.current_session.get("id") if getattr(self, "current_session", None) else None
+            bubble_sid = getattr(self._turn_bubble, "session_id", None)
+            if bubble_sid and active_sid and bubble_sid != active_sid:
+                logger.info("[EngineerController] Смена сессии: подавление обновления виджета фоновой задачи")
+                return
 
             # Отображение карточек файлов для артефактов при их наличии
             if artifacts:
@@ -637,6 +653,11 @@ class EngineerControllerMixin:
             fin_text = f"✅ Файл `{file_name}` успешно сохранён и готов к работе."
             if bubble is not None:
                 try:
+                    active_sid = self.current_session.get("id") if getattr(self, "current_session", None) else None
+                    bubble_sid = getattr(bubble, "session_id", None)
+                    if bubble_sid and active_sid and bubble_sid != active_sid:
+                        logger.info("[EngineerController] Смена сессии: подавление обновления виджета фоновой задачи")
+                        return
                     if hasattr(bubble, "add_workspace_file_card"):
                         bubble.add_workspace_file_card(artifact_path, on_run=self._execute_workspace_script)
                     if hasattr(self, "_update_message_attachment"):

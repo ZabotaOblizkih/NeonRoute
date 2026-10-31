@@ -7,13 +7,13 @@ from PyQt6.QtGui import QColor, QTextFormat, QPainter, QFont, QSyntaxHighlighter
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPlainTextEdit, QTextEdit, QTreeWidgetItem, QTreeWidget, QHeaderView, QLabel, QFrame,
-    QPushButton
+    QPushButton, QApplication
 )
 import qfluentwidgets
 from qfluentwidgets import (
     CardWidget, TransparentToolButton, ToolButton, FluentIcon, FluentIcon as FIF,
     TreeWidget, CaptionLabel, SubtitleLabel, SimpleCardWidget, BodyLabel, InfoBadge,
-    MessageBoxBase, LineEdit
+    MessageBoxBase, LineEdit, RoundMenu, Action
 )
 from services.sandbox_manager import SandboxManager
 
@@ -377,6 +377,8 @@ class WorkspaceInspectorWidget(CardWidget):
         self.file_tree = TreeWidget(self)
         self.file_tree.setHeaderHidden(True)
         self.file_tree.itemClicked.connect(self._on_tree_item_clicked)
+        self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_tree.customContextMenuRequested.connect(self._show_tree_context_menu)
         v_splitter.addWidget(self.file_tree)
 
         code_box = QWidget(self)
@@ -387,6 +389,9 @@ class WorkspaceInspectorWidget(CardWidget):
         editor_header = QHBoxLayout()
         self.file_name_lbl = CaptionLabel("Файл не выбран", self)
         self.file_name_lbl.setStyleSheet("color: #94A3B8; font-weight: bold;")
+        self.file_name_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.file_name_lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_name_lbl.customContextMenuRequested.connect(self._show_file_label_context_menu)
         self.lbl_current_file = self.file_name_lbl
 
         self.btn_save = TransparentToolButton(FIF.SAVE, self)
@@ -559,6 +564,80 @@ class WorkspaceInspectorWidget(CardWidget):
         path_str = item.data(0, Qt.ItemDataRole.UserRole)
         if path_str and Path(path_str).is_file():
             self.open_file(Path(path_str))
+
+    def _show_tree_context_menu(self, pos):
+        """Контекстное меню ПКМ по элементу дерева файлов песочницы."""
+        item = self.file_tree.itemAt(pos)
+        if not item:
+            return
+
+        self.file_tree.setCurrentItem(item)
+        path_str = item.data(0, Qt.ItemDataRole.UserRole)
+
+        file_path = None
+        if path_str:
+            file_path = Path(path_str)
+            file_name = file_path.name
+        else:
+            raw_text = item.text(0)
+            file_name = raw_text.split()[-1] if raw_text else ""
+
+        if not file_name:
+            return
+
+        menu = RoundMenu(parent=self.file_tree)
+
+        # 1. Открыть в редакторе (если это файл)
+        if file_path and file_path.is_file():
+            act_open = Action(FIF.EDIT, "Открыть в редакторе", self)
+            act_open.triggered.connect(lambda: self.open_file(file_path))
+            menu.addAction(act_open)
+            menu.addSeparator()
+
+        # 2. Скопировать имя файла
+        act_copy_name = Action(FIF.COPY, "Копировать имя файла", self)
+        act_copy_name.triggered.connect(lambda: QApplication.clipboard().setText(file_name))
+        menu.addAction(act_copy_name)
+
+        # 3. Скопировать относительный путь (workspace/...)
+        if file_path:
+            try:
+                ws_dir = SandboxManager.get_workspace_dir()
+                rel_path = str(file_path.relative_to(ws_dir)).replace("\\", "/")
+                act_copy_rel = Action(FIF.DOCUMENT, "Копировать относительный путь", self)
+                act_copy_rel.triggered.connect(lambda: QApplication.clipboard().setText(rel_path))
+                menu.addAction(act_copy_rel)
+            except Exception:
+                pass
+
+            # 4. Скопировать полный путь
+            act_copy_full = Action(FIF.FOLDER, "Копировать полный путь", self)
+            act_copy_full.triggered.connect(lambda: QApplication.clipboard().setText(str(file_path.resolve())))
+            menu.addAction(act_copy_full)
+
+        global_pos = self.file_tree.viewport().mapToGlobal(pos)
+        menu.exec(global_pos)
+
+    def _show_file_label_context_menu(self, pos):
+        """Контекстное меню ПКМ по названию файла над редактором."""
+        if not getattr(self, "active_file_path", None):
+            return
+
+        menu = RoundMenu(parent=self.file_name_lbl)
+        act_copy = Action(FIF.COPY, f"Копировать имя файла ({self.active_file_path.name})", self)
+        act_copy.triggered.connect(lambda: QApplication.clipboard().setText(self.active_file_path.name))
+        menu.addAction(act_copy)
+
+        try:
+            ws_dir = SandboxManager.get_workspace_dir()
+            rel_path = str(self.active_file_path.relative_to(ws_dir)).replace("\\", "/")
+            act_copy_rel = Action(FIF.DOCUMENT, "Копировать относительный путь", self)
+            act_copy_rel.triggered.connect(lambda: QApplication.clipboard().setText(rel_path))
+            menu.addAction(act_copy_rel)
+        except Exception:
+            pass
+
+        menu.exec(self.file_name_lbl.mapToGlobal(pos))
 
     def open_file(self, file_path: Path):
         self.active_file_path = file_path

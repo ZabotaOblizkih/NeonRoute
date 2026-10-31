@@ -8,9 +8,11 @@ from ui.components.chat_bubble import (
     WorkspaceFileCardWidget,
     ConsoleOutputSpoilerWidget
 )
+from ui.widgets.engineer_task_card import EngineerTaskCardWidget
 
 __all__ = [
     "ChatMessageWidget",
     "WorkspaceFileCardWidget",
-    "ConsoleOutputSpoilerWidget"
+    "ConsoleOutputSpoilerWidget",
+    "EngineerTaskCardWidget"
 ]
