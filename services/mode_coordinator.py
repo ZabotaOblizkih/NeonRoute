@@ -30,6 +30,7 @@ class ModeCoordinator:
     def __init__(self, main_window: Any):
         self.mw = main_window
         self._current_mode: AppMode = AppMode.ASSISTANT
+        self._is_transitioning: bool = False
 
     @property
     def current_mode(self) -> AppMode:
@@ -40,6 +41,10 @@ class ModeCoordinator:
         Главная точка входа смены режима.
         Выполняет полную изоляцию, зачистку воркеров и детерминированный запуск целевого режима.
         """
+        if self._is_transitioning:
+            logger.warning(f"[ModeCoordinator] Переход уже выполняется. Запрос {target_mode.value} отклонен во избежание гонки потоков.")
+            return False
+
         if self._current_mode == target_mode and session_data is None:
             curr_sess = getattr(self.mw, "current_session", None)
             if curr_sess:
@@ -57,6 +62,7 @@ class ModeCoordinator:
 
         logger.info(f"[ModeCoordinator] Инициация перехода: {self._current_mode.value} -> {target_mode.value}")
 
+        self._is_transitioning = True
         was_switching = getattr(self.mw, "_is_switching_session", False)
         self.mw._is_switching_session = True
         try:
@@ -106,6 +112,7 @@ class ModeCoordinator:
             return True
         finally:
             self.mw._is_switching_session = was_switching
+            self._is_transitioning = False
 
     def _teardown_current_mode(self):
         """Гарантированная остановка активных процессов уходящего режима и изоляция стейта."""
@@ -446,16 +453,19 @@ class ModeCoordinator:
             self.mw.btn_forge_toggle.setVisible(mode != AppMode.ENGINEER)
 
         # Синхронизация инспектора песочницы и размеров сплиттера
-        if hasattr(self.mw, "workspace_inspector"):
-            self.mw.workspace_inspector.setVisible(is_eng)
-            if is_eng:
-                self.mw.workspace_inspector.refresh_files()
+        if hasattr(self.mw, "_sync_splitter_layout"):
+            self.mw._sync_splitter_layout(is_eng)
+        else:
+            if hasattr(self.mw, "workspace_inspector"):
+                self.mw.workspace_inspector.setVisible(is_eng)
+                if is_eng:
+                    self.mw.workspace_inspector.refresh_files()
 
-        if hasattr(self.mw, "main_splitter"):
-            if is_eng:
-                self.mw.main_splitter.setSizes([260, 560, 380])
-            else:
-                self.mw.main_splitter.setSizes([280, 920, 0])
+            if hasattr(self.mw, "main_splitter"):
+                if is_eng:
+                    self.mw.main_splitter.setSizes([260, 560, 380])
+                else:
+                    self.mw.main_splitter.setSizes([280, 920, 0])
 
         # 4. Обновление шапки
         self.mw._update_header_for_current_state()

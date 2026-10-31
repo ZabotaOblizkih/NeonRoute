@@ -253,6 +253,14 @@ class MainWindow(
         self._lms_reload_timer: Optional[QTimer] = None
         self._pending_scene_art_request: Optional[Dict[str, Any]] = None
 
+        # Таймер дебаунса для переключения весов моделей
+        self._model_switch_timer = QTimer(self)
+        self._model_switch_timer.setSingleShot(True)
+        self._model_switch_timer.setInterval(400)  # 400 мс задержки
+        self._pending_switch_model: Optional[str] = None
+        self._pending_switch_mode: Optional[str] = None
+        self._model_switch_timer.timeout.connect(self._execute_debounced_model_switch)
+
         self._sig_reload_lms.connect(self._do_reload_active_lms_timer)
         self._sig_cancel_lms.connect(self._do_cancel_lms_reload)
         self._sig_engineer_plan_card.connect(self._on_engineer_plan_card)
@@ -1248,15 +1256,29 @@ class MainWindow(
         current_model = getattr(self.lm_client, "_last_loaded_model_id", None) or getattr(self, "active_lms_model", "")
         if target_model and current_model != target_model:
             self.active_lms_model = target_model
-            logger.info(f"[ModeSwitch] Переключение модели для режима '{target_mode}': '{current_model}' -> '{target_model}'")
-            if hasattr(self, "lm_client") and hasattr(self.lm_client, "ensure_model_loaded"):
-                import threading
-                def _switch_worker():
-                    try:
-                        self.lm_client.ensure_model_loaded(preferred_model=target_model)
-                    except Exception as err:
-                        logger.warning(f"[ModeSwitch] Ошибка фонового переключения модели: {err}")
-                threading.Thread(target=_switch_worker, daemon=True).start()
+            logger.info(f"[ModeSwitch] Запланировано переключение модели для '{target_mode}': '{current_model}' -> '{target_model}' (debounce 400ms)")
+            self._pending_switch_model = target_model
+            self._pending_switch_mode = target_mode
+            self._model_switch_timer.start()
+
+    def _execute_debounced_model_switch(self):
+        """Выполняет переключение модели только после стабилизации выбора пользователя."""
+        target_model = self._pending_switch_model
+        target_mode = self._pending_switch_mode
+        if not target_model:
+            return
+
+        if hasattr(self, "lm_client") and hasattr(self.lm_client, "ensure_model_loaded"):
+            import threading
+            def _switch_worker():
+                try:
+                    logger.info(f"[ModeSwitch] Старт загрузки модели: '{target_model}'")
+                    self.lm_client.ensure_model_loaded(preferred_model=target_model)
+                except Exception as err:
+                    logger.warning(f"[ModeSwitch] Ошибка фонового переключения модели: {err}")
+
+            t = threading.Thread(target=_switch_worker, name="ModelSwitchWorker", daemon=True)
+            t.start()
 
 
 
@@ -1411,17 +1433,39 @@ class MainWindow(
         self.mode_coordinator.transition_to(target)
 
 
+    def _sync_splitter_layout(self, is_engineer: bool):
+        """
+        Динамический расчет геометрии сплиттера под реальную ширину окна.
+        Предотвращает сжатие области чата и баги вёрстки.
+        """
+        if not hasattr(self, "main_splitter"):
+            return
+
+        total_w = self.main_splitter.width()
+        if total_w < 600:
+            total_w = self.width() or 1200
+
+        sidebar_w = 270
+
+        if is_engineer:
+            if hasattr(self, "workspace_inspector"):
+                self.workspace_inspector.setVisible(True)
+                if hasattr(self.workspace_inspector, "refresh_files"):
+                    self.workspace_inspector.refresh_files()
+            inspector_w = 380
+            chat_w = max(450, total_w - sidebar_w - inspector_w)
+            self.main_splitter.setSizes([sidebar_w, chat_w, inspector_w])
+        else:
+            if hasattr(self, "workspace_inspector"):
+                self.workspace_inspector.setVisible(False)
+            chat_w = max(600, total_w - sidebar_w)
+            self.main_splitter.setSizes([sidebar_w, chat_w, 0])
+
     def toggle_workspace_inspector(self):
-        """Ручное переключение видимости инспектора песочницы."""
         if not hasattr(self, "workspace_inspector"):
             return
         is_visible = not self.workspace_inspector.isVisible()
-        self.workspace_inspector.setVisible(is_visible)
-        if is_visible:
-            self.workspace_inspector.refresh_files()
-            self.main_splitter.setSizes([260, 560, 380])
-        else:
-            self.main_splitter.setSizes([280, 920, 0])
+        self._sync_splitter_layout(is_engineer=is_visible)
 
     def _update_mode_ui(self):
         is_eng = self.is_engineer_mode_active()
@@ -1430,23 +1474,13 @@ class MainWindow(
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(False)
             self.statusBar().showMessage("Режим: 🛠️ Инженер (Песочница C:\\NeonRoute\\workspace)")
-            if hasattr(self, "workspace_inspector"):
-                self.workspace_inspector.setVisible(True)
-                self.workspace_inspector.refresh_files()
-                self.main_splitter.setSizes([260, 560, 380])
         elif self.current_mode == "assistant":
             self.char_card_widget.setVisible(False)
-            if hasattr(self, "workspace_inspector"):
-                self.workspace_inspector.setVisible(False)
-                self.main_splitter.setSizes([280, 920, 0])
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
             self.statusBar().showMessage("Режим: 💬 Ассистент (Элария)")
         else:
             self.char_card_widget.setVisible(True)
-            if hasattr(self, "workspace_inspector"):
-                self.workspace_inspector.setVisible(False)
-                self.main_splitter.setSizes([280, 920, 0])
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
             has_user_messages = False
@@ -1482,6 +1516,9 @@ class MainWindow(
             self.btn_scene_bg.setVisible(self.current_mode == "roleplay" and not is_eng)
 
         self._update_header_for_current_state()
+
+        # Отложенный вызов через singleShot гарантирует, что Qt обновил visibility всех виджетов
+        QTimer.singleShot(0, lambda: self._sync_splitter_layout(is_eng))
 
     # =========================================================================
     # Font Zoom & Preference Controls

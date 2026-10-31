@@ -131,5 +131,29 @@ class TestModeIsolation(unittest.TestCase):
         self.mock_mw._remove_greeting_cycler_chip.assert_called_once()
 
 
+    def test_reentrancy_protection(self):
+        self.coordinator._is_transitioning = True
+        res = self.coordinator.transition_to(AppMode.ENGINEER)
+        self.assertFalse(res)
+        self.assertTrue(self.coordinator._is_transitioning)
+
+        # After reset, transition proceeds
+        self.coordinator._is_transitioning = False
+        res = self.coordinator.transition_to(AppMode.ROLEPLAY)
+        self.assertTrue(res)
+        self.assertFalse(self.coordinator._is_transitioning)
+        if self.mock_mw.current_session and self.mock_mw.current_session.get("id"):
+            SessionManager.delete_session(self.mock_mw.current_session["id"])
+
+    def test_sync_splitter_layout_called_by_boot(self):
+        self.mock_mw._sync_splitter_layout = MagicMock()
+        self.coordinator._boot_target_mode(AppMode.ENGINEER)
+        self.mock_mw._sync_splitter_layout.assert_called_with(True)
+
+        self.mock_mw._sync_splitter_layout.reset_mock()
+        self.coordinator._boot_target_mode(AppMode.ASSISTANT)
+        self.mock_mw._sync_splitter_layout.assert_called_with(False)
+
+
 if __name__ == "__main__":
     unittest.main()
