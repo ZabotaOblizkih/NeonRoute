@@ -485,11 +485,14 @@ class AssistantPromptBuilder:
 
         # 3. SYSTEM_PERSONA_TEMPLATE
         current_dt_str = AssistantPromptBuilder.get_current_datetime_str(kwargs.get("dt"))
-        base_template = custom_prompt or SYSTEM_PERSONA_TEMPLATE
+        base_template = (custom_prompt and custom_prompt.strip()) or AssistantPromptBuilder.SYSTEM_PERSONA_TEMPLATE
         if "{current_dt_str}" in base_template:
-            persona_body = base_template.format(current_dt_str=current_dt_str)
+            try:
+                persona_body = base_template.format(current_dt_str=current_dt_str)
+            except Exception:
+                persona_body = base_template.replace("{current_dt_str}", current_dt_str)
         else:
-            persona_body = f"{base_template}\n\nтекущая дата и время: {current_dt_str}."
+            persona_body = f"{base_template}\n\nТекущая дата и время: {current_dt_str}."
 
         persona_block = f"[identity & persona]\n{persona_body.strip()}\n\n"
 

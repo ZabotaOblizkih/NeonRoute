@@ -203,6 +203,17 @@ class ContextWindowBuilder:
         # -------------------------------------------------------------
         logger.info("[SysPrompt.Origin] Режим: assistant | Источник: Базовая персона Эларии + LanceDB Memory")
 
+        if not custom_system_prompt:
+            custom_system_prompt = kwargs.get("custom_system_prompt")
+        if not custom_system_prompt and session_id:
+            try:
+                from services.session_manager import SessionManager
+                sess = SessionManager._sessions_cache.get(str(session_id)) or SessionManager.load_session(str(session_id))
+                if sess:
+                    custom_system_prompt = sess.get("custom_system_prompt")
+            except Exception:
+                pass
+
         active_persona = UserProfileManager.get_active_user_persona(
             is_roleplay=False,
             session_persona_id=session_persona_id
@@ -231,7 +242,8 @@ class ContextWindowBuilder:
             user_query=effective_query,
             session_id=session_id,
             session_metadata=kwargs.get("session_metadata"),
-            active_assistant_skill=kwargs.get("active_assistant_skill")
+            active_assistant_skill=kwargs.get("active_assistant_skill"),
+            custom_prompt=custom_system_prompt
         )
 
     @staticmethod
@@ -770,7 +782,8 @@ class ContextWindowBuilder:
                 user_query=kwargs.get("user_query") or last_query,
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
                 matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
-                enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False)
+                enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False),
+                custom_system_prompt=kwargs.get("custom_system_prompt")
             )
             safe_user_name = str(user_name).strip() if user_name else "пользователь"
             system_content = system_prompt.replace("{user_name}", safe_user_name)

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QFrame, QLabel,
     QStackedWidget, QSplitter, QListWidgetItem
@@ -254,6 +254,7 @@ class KnowledgeManagerDialog(FramelessDialog):
         self._setup_ui()
         self.reload_documents()
         self._load_skills_list()
+        self._load_system_prompt()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -298,6 +299,7 @@ class KnowledgeManagerDialog(FramelessDialog):
         self.tab_bar = SegmentedWidget(self)
         self.tab_bar.addItem("tab_docs", "📚 База знаний")
         self.tab_bar.addItem("tab_skills", "⚡ Скиллы Эларии")
+        self.tab_bar.addItem("tab_prompt", "⚙️ Системный промпт")
         root_layout.addWidget(self.tab_bar)
 
         self.stack = QStackedWidget(self)
@@ -357,13 +359,21 @@ class KnowledgeManagerDialog(FramelessDialog):
         self._setup_skills_ui()
         self.stack.addWidget(self.skills_page)
 
-        def _on_tab_changed(k):
-            if k == "tab_docs":
-                self.stack.setCurrentIndex(0)
+        # ── Вкладка 3: «⚙️ Системный промпт» ──
+        self.prompt_page = QWidget(self)
+        self._setup_prompt_ui()
+        self.stack.addWidget(self.prompt_page)
+
+        def _on_tab_changed(key: str):
+            idx_map = {"tab_docs": 0, "tab_skills": 1, "tab_prompt": 2}
+            idx = idx_map.get(key, 0)
+            self.stack.setCurrentIndex(idx)
+            if idx == 0:
                 self.reload_documents()
-            else:
-                self.stack.setCurrentIndex(1)
+            elif idx == 1:
                 self._load_skills_list()
+            elif idx == 2:
+                self._load_system_prompt()
 
         self.tab_bar.currentItemChanged.connect(_on_tab_changed)
         self.tab_bar.setCurrentItem("tab_docs")
@@ -510,6 +520,116 @@ class KnowledgeManagerDialog(FramelessDialog):
         splitter.setStretchFactor(1, 64)
 
         skills_layout.addWidget(splitter)
+
+    def _setup_prompt_ui(self):
+        """Построение интерфейса 3-й вкладки: редактор системного промпта Эларии."""
+        prompt_layout = QVBoxLayout(self.prompt_page)
+        prompt_layout.setContentsMargins(0, 6, 0, 0)
+        prompt_layout.setSpacing(10)
+
+        # 1. Заголовок и пояснение
+        header_vbox = QVBoxLayout()
+        header_vbox.setSpacing(4)
+
+        lbl_prompt_title = StrongBodyLabel("Базовый системный промпт Эларии", self.prompt_page)
+        lbl_prompt_title.setStyleSheet("color: #F8FAFC; font-weight: 600; font-size: 14px;")
+        header_vbox.addWidget(lbl_prompt_title)
+
+        lbl_prompt_desc = CaptionLabel(
+            "Настройка базовой личности и инструкций. Изменения сохраняются в конфигурацию и применяются только к новым сессиям, не затрагивая историю существующих чатов.",
+            self.prompt_page
+        )
+        lbl_prompt_desc.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        lbl_prompt_desc.setWordWrap(True)
+        header_vbox.addWidget(lbl_prompt_desc)
+
+        prompt_layout.addLayout(header_vbox)
+
+        # 2. Редактор текста
+        self.prompt_editor = TextEdit(self.prompt_page)
+        self.prompt_editor.setMinimumHeight(320)
+        self.prompt_editor.setPlaceholderText("Введите системный промпт персоны...")
+        self.prompt_editor.setFont(QFont("Consolas", 10))
+        self.prompt_editor.setStyleSheet("""
+            TextEdit {
+                background-color: rgba(14, 19, 31, 0.75);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                color: #F8FAFC;
+                font-family: 'Consolas', 'Cascadia Code', 'Segoe UI', monospace;
+                font-size: 13px;
+                padding: 10px;
+            }
+            TextEdit:focus {
+                border: 1px solid rgba(0, 240, 255, 0.50);
+                background-color: rgba(18, 24, 38, 0.90);
+            }
+        """)
+        prompt_layout.addWidget(self.prompt_editor, 1)
+
+        # 3. Нижняя панель кнопок
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.btn_reset_prompt = PushButton(FIF.SYNC, "Сбросить к заводскому", self.prompt_page)
+        self.btn_reset_prompt.clicked.connect(self._on_reset_prompt_clicked)
+        btn_layout.addWidget(self.btn_reset_prompt)
+
+        btn_layout.addStretch(1)
+
+        self.btn_save_prompt = PrimaryPushButton(FIF.SAVE, "Сохранить для новых сессий", self.prompt_page)
+        self.btn_save_prompt.clicked.connect(self._on_save_prompt_clicked)
+        btn_layout.addWidget(self.btn_save_prompt)
+
+        prompt_layout.addLayout(btn_layout)
+
+    def _load_system_prompt(self):
+        """Загрузка системного промпта из конфига или заводского шаблона."""
+        from utils.config_manager import ConfigManager
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        cfg = ConfigManager.load_config()
+        custom_tmpl = cfg.get("assistant_custom_prompt_template", "")
+        if custom_tmpl and custom_tmpl.strip():
+            self.prompt_editor.setPlainText(custom_tmpl.strip())
+        else:
+            self.prompt_editor.setPlainText(AssistantPromptBuilder.SYSTEM_PERSONA_TEMPLATE.strip())
+
+    def _on_save_prompt_clicked(self):
+        """Сохранение отредактированного системного промпта для новых сессий."""
+        from utils.config_manager import ConfigManager
+        new_text = self.prompt_editor.toPlainText().strip()
+        cfg = ConfigManager.load_config()
+        cfg["assistant_custom_prompt_template"] = new_text
+        ConfigManager.save_config(cfg)
+
+        # Обновляем память окна, если доступно
+        parent_win = self.parent()
+        if parent_win and hasattr(parent_win, "app_config") and isinstance(parent_win.app_config, dict):
+            parent_win.app_config["assistant_custom_prompt_template"] = new_text
+
+        InfoBar.success(
+            title="Сохранено",
+            content="Системный промпт обновлен. Он будет применяться ко всем вновь создаваемым диалогам.",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=3000,
+            parent=self
+        )
+
+    def _on_reset_prompt_clicked(self):
+        """Сброс системного промпта в редакторе к заводскому шаблону."""
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        self.prompt_editor.setPlainText(AssistantPromptBuilder.SYSTEM_PERSONA_TEMPLATE.strip())
+        InfoBar.info(
+            title="Восстановлен шаблон",
+            content="Отображен заводской промпт. Нажмите «Сохранить для новых сессий», чтобы применить.",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2500,
+            parent=self
+        )
 
     def _get_router(self):
         """Получает активный экземпляр роутера скиллов Ассистента."""

@@ -162,7 +162,8 @@ class SessionManager:
         model_id: str = "",
         is_model_locked: bool = False,
         user_persona_id: Optional[str] = None,
-        background_image: Optional[str] = None
+        background_image: Optional[str] = None,
+        custom_system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         now = datetime.now()
         now_iso = now.isoformat()
@@ -205,6 +206,15 @@ class SessionManager:
         if not is_custom_titled:
             title = "Новый диалог"
 
+        if str(mode).lower() in ("assistant", ""):
+            if custom_system_prompt is None:
+                try:
+                    from utils.config_manager import ConfigManager
+                    cfg = ConfigManager.load_config()
+                    custom_system_prompt = cfg.get("assistant_custom_prompt_template", "")
+                except Exception:
+                    custom_system_prompt = ""
+
         new_sess = {
             "id": session_id,
             "character_id": char_id,
@@ -223,7 +233,8 @@ class SessionManager:
             "world_facts": [],
             "sampling_params": sampling,
             "is_custom_sampling": False,
-            "is_dm_mode": is_card_dm
+            "is_dm_mode": is_card_dm,
+            "custom_system_prompt": custom_system_prompt or ""
         }
         SessionManager.set_active_session(new_sess)
         return new_sess

@@ -27,6 +27,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "compute_device_mode": "Auto",
     "background_path": "",
     "background_dim_opacity": 140,
+    "assistant_custom_prompt_template": "",
 
     # 2. LM Studio Context & Architecture (Честные контексты по режимам)
     "context_length": 24576,
@@ -89,6 +90,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "kv_cache_type": "q8_0",             # Допустимые: "q8_0", "q4_0", "f16"
     "flash_attention_enabled": True
 }
+
+
+DEFAULT_CONFIG = DEFAULT_SETTINGS
 
 
 def _deep_merge_dicts(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
