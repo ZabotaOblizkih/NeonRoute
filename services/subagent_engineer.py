@@ -42,57 +42,7 @@ from services.engineer_context import (
 logger = logging.getLogger("NeonRoute.SubagentEngineer")
 
 
-class CodeStreamExtractor:
-    """Извлекает чистый Python-код из входящего потока Markdown/Tool тегов."""
-    def __init__(self, on_code_chunk_callback):
-        self.callback = on_code_chunk_callback
-        self.in_code_block = False
-        self.buffer = ""
-
-    def feed(self, token: str):
-        self.buffer += token
-        if not self.in_code_block:
-            # Поиск маркера начала блока кода python
-            match = re.search(r'```(?:python|py)?\s*[\r\n]+', self.buffer, re.IGNORECASE)
-            if match:
-                self.in_code_block = True
-                remaining = self.buffer[match.end():]
-                self.buffer = ""
-                if remaining and self.callback:
-                    self.callback(remaining)
-        else:
-            # Обработка закрывающего маркера
-            if "```" in self.buffer:
-                clean_chunk = self.buffer.split("```")[0]
-                if clean_chunk and self.callback:
-                    self.callback(clean_chunk)
-                self.in_code_block = False
-                self.buffer = ""
-            else:
-                # Отправка порции кода, удерживая хвост на случай разорванного маркера
-                if len(self.buffer) > 3:
-                    to_send = self.buffer[:-3]
-                    self.buffer = self.buffer[-3:]
-                    if self.callback:
-                        self.callback(to_send)
-
-    def finalize(self):
-        if self.in_code_block and self.buffer and self.callback:
-            if not self.buffer.startswith("```"):
-                self.callback(self.buffer)
-        self.buffer = ""
-        self.in_code_block = False
-
-
-def extract_clean_code(full_generated_text: str) -> str:
-    """Извлекает чистый блок кода Python из ответа модели."""
-    pure = EngineerContext.extract_pure_py(full_generated_text)
-    if not pure:
-        m = re.search(r'```(?:python|py)?\s*[\r\n]+([\s\S]*?)```', full_generated_text, re.IGNORECASE)
-        if m:
-            pure = m.group(1).strip()
-    return pure or full_generated_text
-
+from services.engineer_stream import CodeStreamExtractor, extract_clean_code
 
 class SubagentEngineer:
     """Изолированный исполнитель инженерных задач."""
