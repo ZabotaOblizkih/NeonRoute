@@ -43,6 +43,7 @@ logger = logging.getLogger("NeonRoute.SubagentEngineer")
 
 
 from services.engineer_stream import CodeStreamExtractor, extract_clean_code
+from services.engineer_review import ReviewPipeline
 
 class SubagentEngineer:
     """Изолированный исполнитель инженерных задач."""
@@ -395,158 +396,18 @@ class SubagentEngineer:
         has_sent_start_status = False
 
         # === ВЕТКА ИНСПЕКЦИИ / REVIEW / GIT (БЕЗ ПЕРЕЗАПИСИ КОДА) ===
+        # === ВЕТКА ИНСПЕКЦИИ / REVIEW / GIT (Делегировано в ReviewPipeline) ===
         if plan.intent == "review":
-            import subprocess
-            from services.git_sandbox import GitSandbox
-
-            ws_dir = SandboxManager.get_workspace_dir()
-            target_fn = plan.target_artifact or "main.py"
-            target_file = ws_dir / target_fn
-
-            # 0. Перехват прямых запросов на создание Git-коммита
-            task_lower = (task_prompt or "").lower()
-            commit_keywords = [
-                "коммит", "комит", "закоммит", "закомит", "commit",
-                "зафиксируй в гит", "сохрани в гит", "чекпоинт", "сделай гит"
-            ]
-            if any(k in task_lower for k in commit_keywords):
-                logger.info(f"⚡ [SubagentEngineer] Запрос на создание Git-коммита: '{task_prompt}'")
-                
-                # Извлечение комментария коммита (в кавычках или из текста)
-                m_msg = re.search(r"['\"]([^'\"]+)['\"]", task_prompt)
-                if m_msg:
-                    commit_msg = m_msg.group(1).strip()
-                else:
-                    commit_msg = plan.plan_content or "Manual checkpoint via chat"
-                    for prefix in ("Сделать коммит к игре", "Сделать коммит текущего файла в Git", "Сделать коммит"):
-                        if commit_msg.startswith(prefix):
-                            commit_msg = commit_msg.replace(prefix, "").strip(": ").strip()
-                    if not commit_msg or len(commit_msg) < 3:
-                        commit_msg = f"Checkpoint: update {target_fn}"
-
-                # Создание коммита через нативный GitSandbox
-                ok = GitSandbox.checkpoint(ws_dir, commit_msg)
-
-                # Определение короткого хэша
-                commit_hash = "HEAD"
-                try:
-                    res_hash = subprocess.run(
-                        ["git", "rev-parse", "--short", "HEAD"],
-                        cwd=str(ws_dir),
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8"
-                    )
-                    if res_hash.returncode == 0 and res_hash.stdout.strip():
-                        commit_hash = res_hash.stdout.strip()
-                except Exception:
-                    pass
-
-                if ok:
-                    report_msg = (
-                        f"✅ **Git-чекпоинт успешно зафиксирован**\n\n"
-                        f"- **Комментарий:** `{commit_msg}`\n"
-                        f"- **Коммит:** `{commit_hash}`\n"
-                        f"- **Песочница:** `{ws_dir.name}`\n\n"
-                        f"Все файлы рабочей области сохранены в истории репозитория."
-                    )
-                else:
-                    report_msg = (
-                        f"ℹ️ **Git**: Рабочая область чиста. Нет новых изменений для коммита "
-                        f"(текущий коммит: `{commit_hash}`)."
-                    )
-
-                _safe_send_message("assistant", report_msg)
-                return {
-                    "success": True,
-                    "target_artifact": target_fn,
-                    "verification_passed": True,
-                    "turns": 1,
-                    "message": report_msg
-                }
-
-            # 1. Получаем Git Diff текущей рабочей области
-            git_diff_text = ""
-            try:
-                res_diff = subprocess.run(
-                    ["git", "diff", "HEAD", "--", target_fn],
-                    cwd=str(ws_dir),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="ignore"
-                )
-                git_diff_text = res_diff.stdout.strip()
-                if not git_diff_text:
-                    # Если незакоммиченных правок нет, берём diff последнего коммита
-                    res_last = subprocess.run(
-                        ["git", "diff", "HEAD~1", "HEAD", "--", target_fn],
-                        cwd=str(ws_dir),
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore"
-                    )
-                    git_diff_text = res_last.stdout.strip()
-            except Exception as e:
-                git_diff_text = f"Ошибка получения git diff: {e}"
-
-            # 2. Читаем текущее содержимое файла, если он существует
-            file_code = ""
-            if target_file.is_file():
-                try:
-                    file_code = target_file.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    file_code = ""
-
-            # 3. Формируем контекст для аналитического ответа
-            review_system_prompt = (
-                "Ты — старший инженер-наставник и системный аналитик NeonRoute. "
-                "Твоя задача — внимательно изучить запрос пользователя, текущее состояние файла и данные Git Diff, "
-                "после чего дать точный, профессиональный и исчерпывающий ответ на русском языке. "
-                "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать служебные теги <<TOOL:write_file>> или <<TOOL:run_script>>. "
-                "Код проекта менять НЕ требуется. Отвечай прямо по существу вопроса."
+            return ReviewPipeline.run(
+                plan=plan,
+                task_prompt=task_prompt,
+                ws_dir=ws_dir,
+                client=client,
+                target_model=target_model,
+                safe_send_message=_safe_send_message,
+                context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
+                gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO
             )
-
-            diff_block = f"```diff\n{git_diff_text}\n```" if git_diff_text else "Текущих изменений в Git не обнаружено (рабочая область чиста)."
-            code_block = f"```python\n{file_code[:3500]}\n```" if file_code else "Файл не найден на диске."
-
-            review_user_prompt = (
-                f"Вопрос пользователя: «{task_prompt}»\n\n"
-                f"Целевой файл: {target_fn}\n\n"
-                f"--- ДАННЫЕ GIT DIFF ---\n{diff_block}\n\n"
-                f"--- ТЕКУЩИЙ КОД ФАЙЛА (фрагмент) ---\n{code_block}\n\n"
-                f"Проанализируй эти данные и ответь пользователю на его вопрос."
-            )
-
-            try:
-                review_messages = [
-                    {"role": "system", "content": review_system_prompt},
-                    {"role": "user", "content": review_user_prompt}
-                ]
-                ans_resp = client.chat_completion(
-                    messages=review_messages,
-                    model=target_model,
-                    temperature=0.3,
-                    max_tokens=1500,
-                    context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
-                    gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
-                    stream=False,
-                    emit_signal=False
-                )
-                ans_text = str(ans_resp or "").strip()
-                _safe_send_message("assistant", ans_text)
-                return {
-                    "success": True,
-                    "target_artifact": target_fn,
-                    "verification_passed": True,
-                    "turns": 1,
-                    "message": "Инспекция завершена успешно."
-                }
-            except Exception as e:
-                logger.error(f"Review cycle error: {e}")
-                _safe_send_message("assistant", f"⚠️ Произошла ошибка при анализе: {e}")
-                return {"success": False, "error": str(e)}
 
         # === ДВУХФАЗНЫЙ CODE-FIRST TDD ПАЙПЛАЙН (NEW_MODULE / INCREMENTAL_FEATURE) ===
         # Управление режимом TDD через архетип (вместо старого блэклиста):
