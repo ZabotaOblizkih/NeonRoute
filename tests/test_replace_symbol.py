@@ -247,6 +247,22 @@ def test_subagent_engineer_fallback_interceptor_markdown(tmp_path, monkeypatch):
     monkeypatch.setattr(SandboxManager, "get_workspace_dir", lambda: ws_dir)
     monkeypatch.setattr(SandboxManager, "validate_read_file_path", lambda fn, **kwargs: ws_dir / Path(fn).name)
 
+    mock_plan = ArchitectPlan(
+        artifact_format="module",
+        artifact_type="module",
+        target_artifact="service_core.py",
+        target_file="service_core.py",
+        verification_script=None,
+        target_entry_file=None,
+        is_maintenance=True,
+        is_ast_modification=True,
+        target_symbol="buggy_node",
+        plan_content="Исправь buggy_node в service_core.py",
+        skill_id="pure_logic_tdd",
+        task_type="INCREMENTAL_FEATURE",
+    )
+    monkeypatch.setattr(EngineerPlanner, "plan_architecture", lambda *args, **kwargs: mock_plan)
+
     large_target = ws_dir / "service_core.py"
     lines = ["import math\n", "\n", "class Core:\n"]
     for i in range(1, 70):
@@ -291,10 +307,27 @@ def test_subagent_engineer_fallback_interceptor_markdown(tmp_path, monkeypatch):
 
 def test_subagent_engineer_fallback_interceptor_deleted(tmp_path, monkeypatch):
     from services.subagent_engineer import SubagentEngineer
+    from services.engineer_planner import ArchitectPlan
 
     ws_dir = tmp_path
     monkeypatch.setattr(SandboxManager, "get_workspace_dir", lambda: ws_dir)
     monkeypatch.setattr(SandboxManager, "validate_read_file_path", lambda fn, **kwargs: ws_dir / Path(fn).name)
+
+    mock_plan = ArchitectPlan(
+        artifact_format="module",
+        artifact_type="module",
+        target_artifact="service_core.py",
+        target_file="service_core.py",
+        verification_script=None,
+        target_entry_file=None,
+        is_maintenance=True,
+        is_ast_modification=True,
+        target_symbol="obsolete_node",
+        plan_content="Удали obsolete_node в service_core.py",
+        skill_id="pure_logic_tdd",
+        task_type="INCREMENTAL_FEATURE",
+    )
+    monkeypatch.setattr(EngineerPlanner, "plan_architecture", lambda *args, **kwargs: mock_plan)
 
     large_target = ws_dir / "service_core.py"
     lines = ["import math\n", "\n", "class Core:\n"]

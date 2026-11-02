@@ -22,6 +22,46 @@ from config import OUTPUTS_DIR, DEFAULT_SD_SETTINGS, FORGE_ENABLE_VAE_TILING, FO
 
 logger = logging.getLogger("NeonRoute.ForgeClient")
 
+SDXL_MARKERS = ("xl", "sdxl", "pony", "dmd", "insta", "mop")
+
+
+def is_sdxl_checkpoint(model_name: str) -> bool:
+    """
+    Определяет, относится ли чекпоинт к архитектуре SDXL.
+    Проверяет маркеры в имени файла: 'xl', 'sdxl', 'pony', 'dmd', 'insta', 'mop' (без учета регистра)
+    либо сверяет размер/метаданные, если модель присутствует в реестре.
+    """
+    if not model_name:
+        return False
+    name_str = str(model_name).strip()
+    if not name_str:
+        return False
+    name_lower = name_str.lower()
+
+    if any(m in name_lower for m in SDXL_MARKERS):
+        return True
+
+    try:
+        from services.art_director_config import load_art_director_models
+        for m in load_art_director_models():
+            ckpt = str(m.get("checkpoint", "")).lower()
+            m_id = str(m.get("id", "")).lower()
+            m_name = str(m.get("name", "")).lower()
+            if name_lower in (ckpt, m_id, m_name) or (ckpt and ckpt in name_lower):
+                arch = str(m.get("architecture", "")).lower()
+                base_model = str(m.get("base_model", "")).lower()
+                if "sdxl" in arch or "sdxl" in base_model or "pony" in arch:
+                    return True
+                if any(m_marker in ckpt for m_marker in SDXL_MARKERS):
+                    return True
+                size_gb = m.get("size_gb") or m.get("size")
+                if size_gb and isinstance(size_gb, (int, float)) and size_gb > 5.0:
+                    return True
+    except Exception:
+        pass
+
+    return False
+
 STAGE_DETECTORS = [
     ("hand_yolov8", "✋ Улучшение рук"),
     ("face_mesh_eyes", "👁️ Детализация взгляда"),
@@ -253,6 +293,17 @@ class ForgeClient(QObject):
 
         return checkpoints
 
+    def refresh_checkpoints(self) -> bool:
+        """
+        Triggers POST /sdapi/v1/refresh-checkpoints to re-scan Forge models folder.
+        """
+        try:
+            resp = requests.post(f"{self.base_url}/sdapi/v1/refresh-checkpoints", timeout=10.0)
+            return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Failed to refresh Forge checkpoints via API: {e}")
+            return False
+
     @staticmethod
     def launch_forge_process_silently(launcher_path: Optional[Path] = None):
         """
@@ -370,9 +421,20 @@ class ForgeClient(QObject):
 
             # В пропатченном Forge 2.0 POST /options обновляет shared.opts и запускает
             # refresh_model_loading_parameters(). Сама модель загрузится в VRAM на следующем txt2img.
+            from utils.config_manager import ConfigManager
+            config = ConfigManager.load_config()
+            sdxl_fp8_enabled = config.get("forge_sdxl_fp8_enabled", True)
+
+            target_dtype = "fp8e4" if (is_sdxl_checkpoint(target_title) and sdxl_fp8_enabled) else "Auto"
+            opt_payload = {
+                "sd_model_checkpoint": target_title,
+                "forge_unet_storage_dtype": target_dtype
+            }
+            logger.info(f"[ForgeClient] Чекпоинт '{target_title}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
+
             resp_opt = requests.post(
                 f"{self.base_url}/sdapi/v1/options",
-                json={"sd_model_checkpoint": target_title},
+                json=opt_payload,
                 timeout=30.0
             )
             if resp_opt.status_code != 200:
@@ -385,6 +447,8 @@ class ForgeClient(QObject):
         except Exception as e:
             logger.error(f"Failed to set model in Forge: {e}")
             return False
+
+    set_active_checkpoint = set_model
 
     def unload_checkpoint(self) -> bool:
         """Unloads checkpoint from VRAM to RAM (~3.2GB) and purges PyTorch CUDA cache."""
@@ -450,10 +514,14 @@ class ForgeClient(QObject):
     def _detect_adetailer_needed(self, prompt: str, target_model_name: str = "") -> bool:
         """
         Автоопределение необходимости ADetailer на основе промпта и модели:
+        - Отключает для SDXL архитектуры (аппаратный ADetailer Guard на 8GB VRAM)
         - Отключает для динамических/интимных поз
         - Отключает для чистого 2D-аниме (MeinaHentai)
         - Отключает при отсутствии маркеров человека/персонажа (пейзажи, техника, интерьеры)
         """
+        if is_sdxl_checkpoint(target_model_name):
+            logger.info(f"[ForgeClient] ADetailer Guard: ADetailer аппаратно отключен для SDXL модели '{target_model_name}' на 8GB GPU во избежание OOM.")
+            return False
         if has_intimate_or_dynamic_triggers(prompt):
             logger.info("ADetailer automatically disabled for dynamic/intimate scene.")
             return False
@@ -564,16 +632,6 @@ class ForgeClient(QObject):
             requested_denoising=denoising_strength if denoising_strength is not None else DEFAULT_SD_SETTINGS.get("denoising_strength", 0.35)
         )
 
-        if is_mop:
-            clip_skip = 1
-            is_hr_enabled = False
-            enable_adetailer = False
-            # Аппаратный профиль сэмплера для DMD2 (промпты остаются нетронутыми)
-            steps = 8
-            cfg_scale = 1.0
-            sampler_name = "Euler"
-            scheduler = "sgm_uniform"
-            logger.info(f"MoP DMD SDXL mode: tuned for DMD2 (steps={steps}, cfg={cfg_scale}, sampler={sampler_name} {scheduler}).")
 
         # Строгая валидация числовых типов параметров сэмплинга
         clean_seed = int(seed) if seed is not None else -1
@@ -642,6 +700,14 @@ class ForgeClient(QObject):
                     break
             override_dict["sd_model_checkpoint"] = target_model_title
 
+        from utils.config_manager import ConfigManager
+        config = ConfigManager.load_config()
+        sdxl_fp8_enabled = config.get("forge_sdxl_fp8_enabled", True)
+        active_target = target_model_title if checkpoint else target_model_name
+        target_dtype = "fp8e4" if (is_sdxl_checkpoint(active_target) and sdxl_fp8_enabled) else "Auto"
+        override_dict["forge_unet_storage_dtype"] = target_dtype
+        logger.info(f"[ForgeClient] Чекпоинт '{active_target}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
+
         if override_dict:
             payload["override_settings"] = override_dict
             # Отключаем откат настроек, чтобы Forge не тратил VRAM на обратную загрузку старой модели
@@ -656,15 +722,8 @@ class ForgeClient(QObject):
 
         if "alwayson_scripts" in kwargs and kwargs["alwayson_scripts"]:
             payload["alwayson_scripts"] = copy.deepcopy(kwargs["alwayson_scripts"])
-            if "ADetailer" in payload["alwayson_scripts"]:
-                if not self._detect_adetailer_needed(clean_prompt, target_model_name):
-                    payload["alwayson_scripts"].pop("ADetailer", None)
-                    if not payload["alwayson_scripts"]:
-                        payload.pop("alwayson_scripts", None)
-                    logger.info("[ForgeClient] ADetailer Guard: ADetailer отключен для этой позы/сцены/модели.")
-            has_ad = bool("alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"])
-        else:
-            has_ad = False
+
+        has_ad = bool("alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"])
 
         logger.info(
             f"[SD Forge] Старт txt2img: {clean_width}x{clean_height}, шаги={clean_steps}, CFG={clean_cfg}, "

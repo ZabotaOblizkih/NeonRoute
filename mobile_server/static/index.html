@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>NeonRoute Mobile</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0b10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="NeonRoute">
+
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/assets/icon-192.svg">
+  <link rel="apple-touch-icon" href="/static/assets/icon-192.svg">
+
+  <link rel="stylesheet" href="/static/css/theme.css">
+  <link rel="stylesheet" href="/static/css/layout.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header (3 Functional Zones) -->
+    <header class="app-header">
+      <!-- Zone 1: Left (Menu + Avatar + Companion Info) -->
+      <div class="header-slot-left">
+        <button id="btnHamburger" class="btn-icon" aria-label="Открыть меню">
+          <svg viewBox="0 0 24 24">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+          <span id="badgeCounter" class="badge-counter">0</span>
+        </button>
+
+        <div class="companion-profile" id="companionProfile">
+          <button id="btnHeaderAvatar" class="avatar-interactive" aria-label="Открыть фото">
+            <img id="headerAvatarImg" src="/media/avatar/current" alt="Avatar" class="avatar-img">
+          </button>
+          <div class="companion-meta">
+            <div id="headerCompanionName" class="companion-name">Элария</div>
+            <div id="headerCompanionStatus" class="companion-status">В сети</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Zone 2: Right Controls (Forge Model + World Status + VRAM Pill) -->
+      <div class="header-slot-right">
+        <!-- Forge Model Selector Chip -->
+        <button id="btnForgeModel" class="chip-forge" title="Выбор модели генерации">
+          <span class="chip-forge-icon">🎨</span>
+          <span id="forgeModelName" class="chip-forge-text">Авто</span>
+          <span class="chip-forge-arrow">▾</span>
+        </button>
+
+        <!-- World Campaign Status Button (Roleplay Only) -->
+        <button id="btnWorldStatus" class="btn-icon btn-world-status" title="Статус мира и инвентарь" style="display: none;">
+          <svg viewBox="0 0 24 24">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            <line x1="9" y1="7" x2="15" y2="7"></line>
+            <line x1="9" y1="11" x2="13" y2="11"></line>
+          </svg>
+        </button>
+
+        <!-- Gallery Button -->
+        <button id="btnHeaderGallery" class="btn-icon" title="Галерея артов">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>
+        </button>
+
+        <!-- Compact Hardware Telemetry Pill -->
+        <div id="hardwarePill" class="hardware-pill" title="Нажмите для управления VRAM">
+          <div class="service-dots">
+            <span id="dotLlm" class="service-dot" title="LM Studio (1234)"></span>
+            <span id="dotForge" class="service-dot" title="SD Forge (7860)"></span>
+            <span id="dotTts" class="service-dot" title="F5-TTS (5010)"></span>
+          </div>
+          <span id="vramText" class="vram-text">-- / -- GB</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Chat Viewport -->
+    <main id="chatViewport" class="chat-viewport"></main>
+
+    <!-- Floating Scroll-to-Bottom Button -->
+    <button id="btnScrollBottom" class="btn-scroll-bottom" aria-label="Вниз">
+      <svg viewBox="0 0 24 24">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </button>
+
+    <!-- Floating Input Capsule -->
+    <div class="input-capsule-container">
+      <div class="input-capsule">
+        <textarea
+          id="inputTextarea"
+          class="input-textarea"
+          placeholder="Спросить или дать команду..."
+          rows="1"
+        ></textarea>
+        <button id="btnSend" class="btn-send" title="Отправить" disabled>
+          <svg viewBox="0 0 24 24">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Sliding Drawer Backdrop & Panel -->
+    <div id="drawerBackdrop" class="drawer-backdrop"></div>
+    <aside id="drawerPanel" class="drawer-panel">
+      <div class="drawer-header">
+        <div class="drawer-brand">
+          <svg viewBox="0 0 192 192" width="28" height="28">
+            <path d="M54 138 V54 L114 138 V54" fill="none" stroke="#00e5ff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="138" cy="62" r="8" fill="#ff007f"/>
+          </svg>
+          <span>NeonRoute</span>
+        </div>
+        <button id="btnDrawerClose" class="btn-icon" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Quick New Session Actions -->
+      <div class="drawer-quick-actions">
+        <button class="btn-quick-new" data-mode="assistant">💬 Ассистент</button>
+        <button class="btn-quick-new" data-mode="roleplay">🎭 РП Чат</button>
+        <button class="btn-quick-new" data-mode="engineer">🛠️ Инженер</button>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div class="drawer-tabs">
+        <button id="tabBtnSessions" class="drawer-tab active" data-tab="sessions">💬 Диалоги</button>
+        <button id="tabBtnCharacters" class="drawer-tab" data-tab="characters">🎭 Персонажи</button>
+      </div>
+
+      <!-- Tab Content: Sessions List -->
+      <div id="tabContentSessions" class="drawer-tab-content active">
+        <div id="drawerSessionsList" class="drawer-sessions-list"></div>
+      </div>
+
+      <!-- Tab Content: Characters Gallery Grid -->
+      <div id="tabContentCharacters" class="drawer-tab-content">
+        <div id="drawerCharactersGrid" class="drawer-characters-grid"></div>
+      </div>
+    </aside>
+
+    <!-- Bottom Sheet / Modal: Forge Model Selector -->
+    <div id="forgeModal" class="modal-backdrop">
+      <div class="modal-card bottom-sheet">
+        <div class="modal-header-row">
+          <div class="modal-title">🎨 Модель генерации изображений</div>
+          <button id="btnForgeModalClose" class="btn-icon-sm">✕</button>
+        </div>
+        <div class="modal-subtitle">SD Forge WebUI • Назначение на текущую сессию</div>
+        <div id="forgeModelsList" class="forge-models-list"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Sheet / Modal: World Status & Campaign -->
+    <div id="worldStatusModal" class="modal-backdrop">
+      <div class="modal-card bottom-sheet">
+        <div class="modal-header-row">
+          <div class="modal-title">📜 Состояние мира и кампании</div>
+          <button id="btnWorldModalClose" class="btn-icon-sm">✕</button>
+        </div>
+        <div id="worldStatusBody" class="world-status-body"></div>
+      </div>
+    </div>
+
+    <!-- Modal: VRAM & Hardware Details -->
+    <div id="hardwareModal" class="modal-backdrop">
+      <div class="modal-card">
+        <div class="modal-header-row">
+          <div class="modal-title">⚡ Аппаратные ресурсы</div>
+          <button id="btnHardwareModalClose" class="btn-icon-sm">✕</button>
+        </div>
+        <div id="hardwareModalBody" class="hardware-modal-body"></div>
+        <div class="modal-actions" style="margin-top: 14px;">
+          <button id="btnUnloadVram" class="btn-danger" style="width: 100%;">🧹 Освободить VRAM</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Art Gallery Grid -->
+    <div id="artGalleryModal" class="modal-backdrop">
+      <div class="modal-card bottom-sheet" style="max-height: 85vh;">
+        <div class="modal-header-row">
+          <div class="modal-title">🖼️ Галерея сгенерированных артов</div>
+          <button id="btnArtGalleryClose" class="btn-icon-sm">✕</button>
+        </div>
+        <div class="modal-subtitle">Все изображения сессии и архива NeonRoute</div>
+        <div id="artGalleryGrid" class="art-gallery-grid"></div>
+      </div>
+    </div>
+
+    <!-- Lightbox Modal for Fullscreen Avatars & Art -->
+    <div id="lightboxModal" class="lightbox-modal">
+      <div class="lightbox-content">
+        <img id="lightboxImg" src="" alt="Fullscreen Media" class="lightbox-img">
+        <div id="lightboxTitle" class="lightbox-title"></div>
+        <div style="display: flex; gap: 8px; margin-top: 4px;">
+          <a id="btnLightboxDownload" class="btn-action-chip" href="#" download="neonroute_art.png">📥 Скачать</a>
+        </div>
+        <button id="btnLightboxClose" class="lightbox-close">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

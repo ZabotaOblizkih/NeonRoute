@@ -1,5 +1,6 @@
 import re
 import logging
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple, Union
 
 from services.forge_models import (
@@ -539,11 +540,26 @@ class ArtDirector:
             chosen_style = best_id
 
         # Определение чекпоинта и профиля
-        router_profile = self.router.get_profile(chosen_style) if (chosen_style and hasattr(self.router, "get_profile")) else None
-        if not isinstance(router_profile, dict):
-            router_profile = None
+        router_profile = None
+        if chosen_style and hasattr(self, "router") and self.router:
+            # 1. Сначала точное совпадение по name == chosen_style или id == chosen_style
+            if hasattr(self.router, "profiles"):
+                cs_clean = str(chosen_style).strip().lower()
+                for p in self.router.profiles:
+                    p_name = str(p.get("name", "")).strip().lower()
+                    p_id = str(p.get("id", "")).strip().lower()
+                    if cs_clean and (cs_clean == p_name or cs_clean == p_id):
+                        router_profile = p
+                        break
+
+            # 2. Если не найдено — поиск через get_profile
+            if not router_profile and hasattr(self.router, "get_profile"):
+                prof = self.router.get_profile(chosen_style)
+                if isinstance(prof, dict):
+                    router_profile = prof
+
         actual_model_ckpt = router_profile.get("checkpoint") if router_profile else None
-        if not actual_model_ckpt and chosen_style:
+        if not actual_model_ckpt and chosen_style and hasattr(self, "router") and self.router:
             actual_model_ckpt = self.router.get_checkpoint_for_model(chosen_style)
 
         if chosen_style and chosen_style.lower() in MODEL_REGISTRY:
@@ -560,10 +576,21 @@ class ArtDirector:
                 router_profile = None
         if not router_profile and hasattr(self, "router") and self.router and hasattr(self.router, "profiles"):
             target_ids = {chosen_style, getattr(selected_profile, "id", None)}
+            target_names = {str(chosen_style).lower(), str(getattr(selected_profile, "title", "")).lower()}
             for p in self.router.profiles:
                 if (p.get("id") in target_ids) or (target_ckpt and p.get("checkpoint") == target_ckpt):
                     router_profile = p
                     break
+                p_name = p.get("name", "").lower()
+                if p_name and p_name in target_names:
+                    router_profile = p
+                    break
+                if target_ckpt and p.get("checkpoint"):
+                    t_stem = Path(target_ckpt).stem.lower().replace("final", "").replace("_v5", "").replace("v5", "")
+                    p_stem = Path(p["checkpoint"]).stem.lower().replace("final", "").replace("_v5", "").replace("v5", "")
+                    if t_stem and p_stem and (t_stem in p_stem or p_stem in t_stem):
+                        router_profile = p
+                        break
 
         # 2. Формирование позитивного промпта и явного негатива с перехватом отрицаний
         raw_intent_prompt = (intent.prompt or "").strip()
@@ -672,7 +699,8 @@ class ArtDirector:
         lora_tags, act_tags = LoraManager.resolve_loras(
             prompt=full_positive,
             character_name=lora_char_arg,
-            style_id=selected_profile.id
+            style_id=selected_profile.id,
+            target_model_name=target_ckpt
         )
         tokens = [full_positive]
         if act_tags:
@@ -766,16 +794,23 @@ class ArtDirector:
             else:
                 archetype = "solo"
 
-        model_identity = f"{target_ckpt} {selected_profile.id} {selected_profile.title}"
-        arch_cfg = get_archetype_config(model_identity, archetype)
+        if router_profile and isinstance(router_profile, dict):
+            model_target = dict(router_profile)
+            if target_ckpt and not model_target.get("checkpoint"):
+                model_target["checkpoint"] = target_ckpt
+        else:
+            model_target = router_profile or f"{target_ckpt} {selected_profile.id} {selected_profile.title}"
+        arch_cfg = get_archetype_config(model_target, archetype)
         width = arch_cfg["width"]
         height = arch_cfg["height"]
 
         # Настройка Hi-Res Fix и защита SDXL от Hires.fix OOM
         is_bg = bool(intent.is_scene_background)
-        # ADetailer активен всегда, если модель/чекпоинт не запрещает его прямо в canon
-        allow_by_model = getattr(canon, "allow_adetailer", True)
-        enable_ad = allow_by_model and not is_bg
+        if "enable_adetailer" in model_pipeline and model_pipeline["enable_adetailer"] is not None:
+            enable_ad = bool(model_pipeline["enable_adetailer"]) and not is_bg
+        else:
+            allow_by_model = getattr(canon, "allow_adetailer", True)
+            enable_ad = allow_by_model and not is_bg
         hands_enabled = enable_ad
 
         # Аппаратный барьер 8 ГБ VRAM:
@@ -783,12 +818,16 @@ class ArtDirector:
         # Hires.fix 1.5x принудительно отключается во избежание вылета CUDA OOM.
         is_large_canvas = (width * height) >= 640000
 
-        if arch_cfg.get("is_xl") or is_large_canvas:
-            hr_scale = 1.0
-            enable_hr = False
+        if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
+            enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
+            hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
         else:
             hr_scale = float(model_pipeline.get("hr_scale", 1.5))
             enable_hr = True if not is_bg else False
+
+        if arch_cfg.get("is_xl") or is_large_canvas:
+            enable_hr = False
+            hr_scale = 1.0
 
         hr_upscaler = model_pipeline.get("hires_upscaler", canon.hr_upscaler or "R-ESRGAN 4x+")
         denoising_strength = float(model_pipeline.get("hires_denoise", 0.35))
@@ -1003,8 +1042,18 @@ class ArtDirector:
                 style_id = detect_style_from_checkpoint(preferred_style)
                 selected_profile = MODEL_REGISTRY.get(style_id)
 
-        actual_model_ckpt = None
-        if preferred_style:
+        router_profile_pref = None
+        if preferred_style and hasattr(self, "router") and self.router and hasattr(self.router, "profiles"):
+            ps_clean = str(preferred_style).strip().lower()
+            for p in self.router.profiles:
+                p_name = str(p.get("name", "")).strip().lower()
+                p_id = str(p.get("id", "")).strip().lower()
+                if ps_clean and (ps_clean == p_name or ps_clean == p_id):
+                    router_profile_pref = p
+                    break
+
+        actual_model_ckpt = router_profile_pref.get("checkpoint") if router_profile_pref else None
+        if not actual_model_ckpt and preferred_style and hasattr(self, "router") and self.router:
             actual_model_ckpt = self.router.get_checkpoint_for_model(preferred_style)
 
         best_model_id = None
@@ -1040,10 +1089,21 @@ class ArtDirector:
             router_profile = self.router.get_profile(target_ckpt)
         if not router_profile and hasattr(self, "router") and self.router and hasattr(self.router, "profiles"):
             target_ids = {selected_profile.id, preferred_style, best_model_id}
+            target_names = {str(preferred_style).lower(), str(best_model_id).lower(), str(getattr(selected_profile, "title", "")).lower()}
             for p in self.router.profiles:
                 if (p.get("id") in target_ids) or (target_ckpt and p.get("checkpoint") == target_ckpt):
                     router_profile = p
                     break
+                p_name = p.get("name", "").lower()
+                if p_name and p_name in target_names:
+                    router_profile = p
+                    break
+                if target_ckpt and p.get("checkpoint"):
+                    t_stem = Path(target_ckpt).stem.lower().replace("final", "").replace("_v5", "").replace("v5", "")
+                    p_stem = Path(p["checkpoint"]).stem.lower().replace("final", "").replace("_v5", "").replace("v5", "")
+                    if t_stem and p_stem and (t_stem in p_stem or p_stem in t_stem):
+                        router_profile = p
+                        break
 
         # 4. Формирование позитивного промпта с учетом режима
         eff_mode = mode or ("roleplay" if (character is not None or (character_name and character_name.lower() not in ("элария", "elaria"))) else "assistant")
@@ -1121,7 +1181,8 @@ class ArtDirector:
         lora_tags, act_tags = LoraManager.resolve_loras(
             prompt=clean_prompt,
             character_name=lora_char_arg,
-            style_id=selected_profile.id
+            style_id=selected_profile.id,
+            target_model_name=target_ckpt
         )
 
         final_tokens = [clean_prompt]
@@ -1193,12 +1254,27 @@ class ArtDirector:
             else:
                 archetype = "solo"
 
-        model_identity = f"{target_ckpt} {selected_profile.id} {selected_profile.title}"
-        arch_cfg = get_archetype_config(model_identity, archetype)
+        # 6. Конфигурация пайплайна модели
+        model_pipeline = router_profile.get("pipeline", {}) if router_profile else {}
+        if not model_pipeline and hasattr(self, "router") and self.router and hasattr(self.router, "profiles"):
+            target_model_id = selected_profile.id
+            target_checkpoint = target_ckpt
+            for m in self.router.profiles:
+                if m.get("id") == target_model_id or m.get("checkpoint") == target_checkpoint:
+                    model_pipeline = m.get("pipeline", {})
+                    break
+
+        if router_profile and isinstance(router_profile, dict):
+            model_target = dict(router_profile)
+            if target_ckpt and not model_target.get("checkpoint"):
+                model_target["checkpoint"] = target_ckpt
+        else:
+            model_target = router_profile or f"{target_ckpt} {selected_profile.id} {selected_profile.title}"
+        arch_cfg = get_archetype_config(model_target, archetype)
         width = arch_cfg["width"]
         height = arch_cfg["height"]
 
-        # 6. Сборка негатива
+        # 7. Сборка негатива
         custom_neg_from_profile = ""
         if router_profile:
             custom_neg_from_profile = (
@@ -1227,20 +1303,13 @@ class ArtDirector:
             plan_negative = f"clothes, dress, armor, skirt, gloves, boots, fabric, {plan_negative}".strip(" ,")
         final_negative = plan_negative
 
-        # 7. Конфигурация пайплайна модели
-        model_pipeline = router_profile.get("pipeline", {}) if router_profile else {}
-        if not model_pipeline and hasattr(self, "router") and self.router and hasattr(self.router, "profiles"):
-            target_model_id = selected_profile.id
-            target_checkpoint = target_ckpt
-            for m in self.router.profiles:
-                if m.get("id") == target_model_id or m.get("checkpoint") == target_checkpoint:
-                    model_pipeline = m.get("pipeline", {})
-                    break
-
         is_bg = bool(is_scene_background)
-        # ADetailer активен всегда, если модель/чекпоинт не запрещает его прямо в canon
-        allow_by_model = getattr(canon, "allow_adetailer", True)
-        enable_ad = allow_by_model and not is_bg
+        # ADetailer
+        if "enable_adetailer" in model_pipeline and model_pipeline["enable_adetailer"] is not None:
+            enable_ad = bool(model_pipeline["enable_adetailer"]) and not is_bg
+        else:
+            allow_by_model = getattr(canon, "allow_adetailer", True)
+            enable_ad = allow_by_model and not is_bg
         hands_enabled = enable_ad
 
         # Аппаратный барьер 8 ГБ VRAM:
@@ -1248,16 +1317,35 @@ class ArtDirector:
         # Hires.fix 1.5x принудительно отключается во избежание вылета CUDA OOM.
         is_large_canvas = (width * height) >= 640000
 
-        if arch_cfg.get("is_xl") or is_large_canvas:
-            hr_scale = 1.0
-            enable_hr = False
+        if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
+            enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
+            hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
         else:
             hr_scale = float(model_pipeline.get("hr_scale", 1.5))
             enable_hr = True if not is_bg else False
 
+        if arch_cfg.get("is_xl") or is_large_canvas:
+            enable_hr = False
+            hr_scale = 1.0
+
         hr_upscaler = model_pipeline.get("hires_upscaler", canon.hr_upscaler or "R-ESRGAN 4x+")
         hr_denoise = float(model_pipeline.get("hires_denoise", 0.35))
         hr_second_pass_steps = int(model_pipeline.get("hr_second_pass_steps", canon.hr_second_pass_steps or 14))
+
+        raw_sampler = model_pipeline.get("sampler", canon.sampler_name if canon else "DPM++ 2M")
+        custom_scheduler = model_pipeline.get("scheduler")
+        if isinstance(raw_sampler, str) and raw_sampler.endswith(" Karras"):
+            sampler_name = raw_sampler[:-7].strip()
+            scheduler = "Karras"
+        elif custom_scheduler:
+            sampler_name = raw_sampler
+            scheduler = custom_scheduler
+        elif any(k in str(raw_sampler) for k in ("Euler a", "Euler", "DDIM")):
+            sampler_name = raw_sampler
+            scheduler = "Automatic"
+        else:
+            sampler_name = raw_sampler
+            scheduler = canon.scheduler if canon else "Karras"
 
         plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
         plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
@@ -1274,8 +1362,8 @@ class ArtDirector:
             height=height,
             steps=int(model_pipeline.get("steps", canon.recommended_steps)),
             cfg_scale=float(model_pipeline.get("cfg_scale", canon.default_cfg)),
-            sampler_name=canon.sampler_name,
-            scheduler=canon.scheduler,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
             enable_hr=enable_hr,
             hr_scale=hr_scale,
             hr_upscaler=hr_upscaler,

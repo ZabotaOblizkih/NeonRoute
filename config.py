@@ -72,6 +72,7 @@ LM_STUDIO_CLI_CMD = "lms"
 # Hardware optimization flags for Forge (RTX 5050 8GB VRAM)
 FORGE_EXTRA_ARGS = []
 FORGE_ENABLE_VAE_TILING = True
+FORGE_SDXL_FP8_ENABLED = True
 
 # Strict 8 GB VRAM Safety Controls
 # Maximum heavy tasks executed at once: strictly 1

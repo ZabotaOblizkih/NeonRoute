@@ -457,3 +457,231 @@ class TestArtDirectorRefactoring:
             # Canvas < 640000 px and not XL -> hires.fix enabled
             assert plan_sd15.enable_hr is True
             assert plan_sd15.hr_scale == 1.5
+
+
+
+class TestLoraManagerArchitectureIsolation:
+    """Проверка архитектурной изоляции LoRA для предотвращения сбоев SDXL."""
+
+    def test_resolve_loras_skips_add_detail_for_sdxl(self):
+        from services.art_director.lora_manager import LoraManager
+        with patch.object(LoraManager, "get_available_lora_stems", return_value=["add_detail", "ciri"]):
+            lora_tags, _ = LoraManager.resolve_loras(
+                prompt="photo of beautiful woman",
+                style_id="realistic",
+                target_model_name="copaxTimelessxlSDXL1_v8.safetensors"
+            )
+            assert not any("add_detail" in tag for tag in lora_tags)
+
+            # Проверка для MoP DMD SDXL чекпоинта
+            mop_tags, _ = LoraManager.resolve_loras(
+                prompt="photo of beautiful woman",
+                style_id="realistic",
+                target_model_name="mopMixtureOfPerverts_instaV10DMD.safetensors"
+            )
+            assert not any("add_detail" in tag for tag in mop_tags)
+
+    def test_resolve_loras_includes_add_detail_for_sd15(self):
+        from services.art_director.lora_manager import LoraManager
+        with patch.object(LoraManager, "get_available_lora_stems", return_value=["add_detail", "ciri"]):
+            lora_tags, _ = LoraManager.resolve_loras(
+                prompt="photo of beautiful woman",
+                style_id="realistic",
+                target_model_name="realisticVisionV60B1_v51HyperVAE_pruned_fp16.safetensors"
+            )
+            assert any("<lora:add_detail:0.35>" in tag for tag in lora_tags)
+
+class TestPipelineEndToEndPropagation:
+    """Тесты сквозной передачи параметров пайплайна (JSON/UI -> Director -> ForgeClient)."""
+
+    def test_is_xl_model_distilled_and_fp8_markers(self):
+        from services.art_director.geometry import is_xl_model
+        assert is_xl_model("dmd2_sdxl_4step.safetensors") is True
+        assert is_xl_model("mopMixtureOfPerverts_v10.safetensors") is True
+        assert is_xl_model("model_fp8e4.safetensors") is True
+        assert is_xl_model("sdxl_lightning_8step.safetensors") is True
+        assert is_xl_model("hyper_sdxl_checkpoint.safetensors") is True
+
+    def test_plan_generation_model_pipeline_enable_adetailer_override(self):
+        from services.art_director.director import ArtDirector
+        with patch("services.art_director.director.ModelRouter"):
+            d = ArtDirector()
+            d.router = MagicMock()
+            d.router.match_prompt.return_value = ("custom_model", 0.95)
+            d.router.get_checkpoint_for_model.return_value = "custom.safetensors"
+
+            # 1. Явный enable_adetailer: False
+            d.router.get_profile.return_value = {
+                "id": "custom_model",
+                "name": "Custom",
+                "checkpoint": "custom.safetensors",
+                "pipeline": {"enable_adetailer": False, "enable_hr": True}
+            }
+            plan = d.plan_generation("1girl, portrait")
+            assert plan.enable_adetailer is False
+
+            # 2. Явный enable_adetailer: True
+            d.router.get_profile.return_value = {
+                "id": "custom_model",
+                "name": "Custom",
+                "checkpoint": "custom.safetensors",
+                "pipeline": {"enable_adetailer": True, "enable_hr": True}
+            }
+            plan2 = d.plan_generation("1girl, portrait")
+            assert plan2.enable_adetailer is True
+
+    def test_plan_generation_model_pipeline_enable_hr_override(self):
+        from services.art_director.director import ArtDirector
+        with patch("services.art_director.director.ModelRouter"):
+            d = ArtDirector()
+            d.router = MagicMock()
+            d.router.match_prompt.return_value = ("xl_model", 0.95)
+            d.router.get_checkpoint_for_model.return_value = "animagine_xl.safetensors"
+
+            # 1. SDXL модель с явным включением Hires.fix
+            d.router.get_profile.return_value = {
+                "id": "xl_model",
+                "name": "SDXL Custom",
+                "architecture": "sdxl",
+                "checkpoint": "animagine_xl.safetensors",
+                "pipeline": {"enable_hr": True, "hr_scale": 1.4}
+            }
+            plan_xl = d.plan_generation("1girl, portrait")
+            assert plan_xl.enable_hr is True
+            assert plan_xl.hr_scale == 1.4
+
+            # 2. SD 1.5 модель с явным отключением Hires.fix
+            d.router.get_checkpoint_for_model.return_value = "realistic_vision_v51.safetensors"
+            d.router.get_profile.return_value = {
+                "id": "sd15_model",
+                "name": "SD15 Custom",
+                "architecture": "sd15",
+                "checkpoint": "realistic_vision_v51.safetensors",
+                "pipeline": {"enable_hr": False}
+            }
+            plan_sd15 = d.plan_generation("1girl, portrait")
+            assert plan_sd15.enable_hr is False
+            assert plan_sd15.hr_scale == 1.0
+
+    def test_forge_client_dmd2_no_override(self):
+        import requests
+        from services.forge_client import ForgeClient
+        client = ForgeClient()
+        with patch.object(client, "is_server_ready", return_value=True), \
+             patch.object(client, "set_model", return_value=True), \
+             patch.object(client, "get_models", return_value=[]), \
+             patch.object(requests.Session, "post") as mock_post:
+
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            import base64
+            tiny_png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 150).decode()
+            mock_resp.json.return_value = {"images": [tiny_png_b64], "info": "{}"}
+            mock_post.return_value = mock_resp
+
+            client.txt2img(
+                prompt="test prompt",
+                checkpoint="mop_dmd_v10.safetensors",
+                steps=14,
+                cfg_scale=2.5,
+                sampler_name="LCM",
+                scheduler="Karras",
+                enable_hr=True
+            )
+
+            # Проверяем, что ForgeClient не перезаписал steps=8, cfg=1.0, sampler=Euler, scheduler=sgm_uniform
+            assert mock_post.called
+            call_kwargs = mock_post.call_args[1]
+            payload = call_kwargs.get("json", {})
+            assert payload.get("steps") == 14
+            assert payload.get("cfg_scale") == 2.5
+            assert payload.get("sampler_name") == "LCM"
+            assert payload.get("scheduler") == "Karras"
+            assert payload.get("enable_hr") is True
+    def test_flexible_profile_matching_stem_and_name(self):
+        from services.art_director.director import ArtDirector
+        from services.art_director.contracts import VisualIntent
+        with patch("services.art_director.director.ModelRouter"):
+            d = ArtDirector()
+            d.router = MagicMock()
+            d.router.get_profile.return_value = None  # Exact lookup misses
+            d.router.match_prompt.return_value = ("generic_anime", 0.95)
+            d.router.get_checkpoint_for_model.return_value = "meinahentai_v5Final.safetensors"
+
+            # Profile in router.profiles has different suffix 'meinahentai_v5.safetensors'
+            target_profile = {
+                "id": "meina_custom_id",
+                "name": "MeinaHentai",
+                "checkpoint": "meinahentai_v5.safetensors",
+                "llm_guidance": "anime_masterpiece, vivid colors",
+                "negative_prompt": "custom_user_negative_tag, bad anatomy",
+                "pipeline": {"steps": 28, "cfg_scale": 6.5}
+            }
+            d.router.profiles = [target_profile]
+
+            intent = VisualIntent(
+                prompt="1girl in classroom",
+                suggested_model="MeinaHentai"
+            )
+            plan = d.plan_from_visual_intent(intent)
+
+            # Check that flexible matching matched target_profile:
+            # 1. llm_guidance mixed into positive
+            assert "anime_masterpiece" in plan.positive_prompt or "vivid colors" in plan.positive_prompt
+            # 2. negative_prompt uses custom_base_neg from profile
+            assert "custom_user_negative_tag" in plan.negative_prompt
+
+    def test_exact_name_matching_priority_in_director(self):
+        from services.art_director.director import ArtDirector
+        from services.art_director.contracts import VisualIntent
+        with patch("services.art_director.director.ModelRouter"):
+            d = ArtDirector()
+            d.router = MagicMock()
+            target_profile = {
+                "id": "m_123",
+                "name": "MeinaHentai",
+                "checkpoint": "meinahentai_v5.safetensors",
+                "llm_guidance": "masterpiece, anime style",
+                "negative_prompt": "monochrome, lowres",
+                "pipeline": {"steps": 28, "cfg_scale": 6.0}
+            }
+            d.router.profiles = [target_profile]
+
+            intent = VisualIntent(
+                prompt="1girl portrait",
+                suggested_model="MeinaHentai"
+            )
+            plan = d.plan_from_visual_intent(intent)
+            assert plan.target_checkpoint == "meinahentai_v5.safetensors"
+            assert "monochrome" in plan.negative_prompt
+            assert "masterpiece" in plan.positive_prompt or "anime style" in plan.positive_prompt
+
+    def test_hardware_engine_discovered_models_ssot(self):
+        from unittest.mock import MagicMock
+        from ui.controllers.hardware_engine import HardwareEngineMixin
+
+        class DummyWindow(HardwareEngineMixin):
+            def __init__(self):
+                self.art_director = MagicMock()
+                self.art_director.router.profiles = [
+                    {"name": "DreamShaper 8", "active": True},
+                    {"name": "Inactive Model", "active": False},
+                    {"name": "CyberRealistic Classic", "active": True}
+                ]
+                self.forge_combo = MagicMock()
+                self.forge_combo.currentText.return_value = "DreamShaper 8"
+                self.forge_combo.findText.return_value = 1
+                self.available_forge_checkpoints = []
+
+        window = DummyWindow()
+        # Call with raw discovered items
+        raw_items = ["v1-5-pruned.safetensors", "anything-v5.safetensors"]
+        window._on_forge_models_discovered(raw_items)
+
+        # SSOT: Combined list must NOT contain raw items or inactive models
+        assert "✨ Арт-директор (Авто)" in window.available_forge_checkpoints
+        assert "DreamShaper 8" in window.available_forge_checkpoints
+        assert "CyberRealistic Classic" in window.available_forge_checkpoints
+        assert "Inactive Model" not in window.available_forge_checkpoints
+        assert "v1-5-pruned.safetensors" not in window.available_forge_checkpoints
+        assert "anything-v5.safetensors" not in window.available_forge_checkpoints

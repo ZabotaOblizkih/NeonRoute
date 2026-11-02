@@ -1,30 +1,30 @@
 {
   "version": 1,
-  "last_synced_at": "2026-10-31T14:07:15.465348",
+  "last_synced_at": "2026-11-02T21:32:47.383476",
   "total_documents": 1,
   "documents": {
-    "architecture.md": {
-      "filename": "architecture.md",
-      "relative_path": "architecture.md",
-      "path": "C:\\NeonRoute\\knowledge_base\\architecture.md",
-      "mtime": 1793178092.3530068,
-      "hash": "3b6f8a03a67abe07f3c74e13628b53a720e3bb98b025f4a6a234191c0220a451",
-      "size_bytes": 82103,
-      "size_kb": 80.18,
-      "line_count": 897,
+    "ARCHITECTURE.md": {
+      "filename": "ARCHITECTURE.md",
+      "relative_path": "ARCHITECTURE.md",
+      "path": "C:\\NeonRoute\\knowledge_base\\ARCHITECTURE.md",
+      "mtime": 1793457140.820326,
+      "hash": "6a61ccbd15da4d276fa326909aa4c47719250342471721fabf91f583afd9b099",
+      "size_bytes": 111786,
+      "size_kb": 109.17,
+      "line_count": 964,
       "page_count": null,
-      "updated_at": "2026-10-28T13:12:00.694136",
+      "updated_at": "2026-11-01T00:54:31.383388",
       "triggers": [
-        "строк",
         "строки",
-        "базы",
+        "строк",
         "NeonRoute",
         "VRAM",
         "кодовой",
-        "CPU",
-        "файлов",
-        "инициализация",
-        "парсер"
+        "базы",
+        "GPU",
+        "RAM",
+        "LayerBudgeter",
+        "файлов"
       ],
       "status": "parsed"
     }

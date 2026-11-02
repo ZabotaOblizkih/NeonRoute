@@ -602,6 +602,10 @@ class MainWindow(
         if hasattr(self, "lm_combo") and self.lm_combo:
             self.lm_combo.activated[int].connect(self._on_lms_model_activated)
 
+        # Character Gallery signal from Sidebar
+        if hasattr(self, "sidebar") and hasattr(self.sidebar, "character_gallery_requested"):
+            self.sidebar.character_gallery_requested.connect(self._import_character)
+
     def _start_background_services(self):
         self.task_queue.start()
         self.system_monitor.start()
@@ -1469,55 +1473,38 @@ class MainWindow(
 
     def _update_mode_ui(self):
         is_eng = self.is_engineer_mode_active()
+        is_rp = (self.current_mode == "roleplay" and not is_eng)
+
+        # Делегируем сайдбару отображение состояния компаньона
+        has_user_messages = False
+        if self.current_session and self.current_session.get("messages"):
+            has_user_messages = any(m.get("is_user") for m in self.current_session["messages"])
+
+        if hasattr(self, "sidebar") and hasattr(self.sidebar, "update_companion_state"):
+            self.sidebar.update_companion_state(
+                is_roleplay=is_rp,
+                active_character=getattr(self, "active_character", None),
+                has_user_messages=has_user_messages
+            )
+
         if is_eng:
-            self.char_card_widget.setVisible(False)
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(False)
             self.statusBar().showMessage("Режим: 🛠️ Инженер (Песочница C:\\NeonRoute\\workspace)")
         elif self.current_mode == "assistant":
-            self.char_card_widget.setVisible(False)
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
             self.statusBar().showMessage("Режим: 💬 Ассистент (Элария)")
         else:
-            self.char_card_widget.setVisible(True)
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
-            has_user_messages = False
-            if self.current_session and self.current_session.get("messages"):
-                has_user_messages = any(m.get("is_user") for m in self.current_session["messages"])
-
-            if self.active_character:
-                self.char_name_lbl.setText(f"🎭 {self.active_character.name}")
-                if hasattr(self, "btn_campaign_info"):
-                    self.btn_campaign_info.setEnabled(True)
-                    self.btn_campaign_info.setText("📜 Правила мира и Лор ↗")
-                if hasattr(self, "btn_load_character"):
-                    if has_user_messages:
-                        self.btn_load_character.setEnabled(False)
-                        self.btn_load_character.setText("🔒 Компаньон зафиксирован")
-                        self.btn_load_character.setToolTip("Смена персонажа заблокирована после старта диалога. Для выбора другого начните новый чат (Новый чат).")
-                    else:
-                        self.btn_load_character.setEnabled(True)
-                        self.btn_load_character.setText("🎴 Выбор компаньона")
-                        self.btn_load_character.setToolTip("Выбрать карточку персонажа из галереи")
-            else:
-                self.char_name_lbl.setText("Компаньон не выбран")
-                if hasattr(self, "btn_campaign_info"):
-                    self.btn_campaign_info.setEnabled(False)
-                    self.btn_campaign_info.setText("📜 Модуль не загружен")
-                if hasattr(self, "btn_load_character"):
-                    self.btn_load_character.setEnabled(True)
-                    self.btn_load_character.setText("🎴 Выбор компаньона")
-                    self.btn_load_character.setToolTip("Открыть галерею персонажей")
             self.statusBar().showMessage("Режим: Ролевой чат (Импорт Chub/Tavern JSON)")
 
         if hasattr(self, "btn_scene_bg"):
-            self.btn_scene_bg.setVisible(self.current_mode == "roleplay" and not is_eng)
+            self.btn_scene_bg.setVisible(is_rp)
 
         self._update_header_for_current_state()
-
-        # Отложенный вызов через singleShot гарантирует, что Qt обновил visibility всех виджетов
+        # singleShot гарантирует, что sizeHint кнопок и visibility всех виджетов применились
         QTimer.singleShot(0, lambda: self._sync_splitter_layout(is_eng))
 
     # =========================================================================

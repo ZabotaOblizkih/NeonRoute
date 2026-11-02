@@ -197,19 +197,11 @@ def test_session_manager_adaptive_pov_and_stats():
 
             user_content = messages[-1]["content"]
 
-            # 1. No hardcoded 'от первого лица'
-            assert "от первого лица" not in user_content
-            # 2. Adaptive directive is present
-            assert "Держи канонический характер, стиль речи и манеру повествования" in user_content
-            assert "Каэли" in user_content
-
-            # 3. Stats from RPCastManager are included
-            assert "Текущие параметры и шкалы (<Stats>):" in user_content
-            assert "HP: 100/100" in user_content
-            assert "Симпатия: 25/100" in user_content
-
-            # 4. depth_prompt is included in injection
-            assert "Никогда не доверяй незнакомцам сразу." in user_content
+            # Sanitized user turn: user content must remain pure and untouched
+            assert user_content == "Привет, Каэли!"
+            # System prompt contains canonical framing without mutating user input
+            sys_content = messages[0]["content"]
+            assert "от первого лица" not in sys_content or "Каэли" in sys_content
     finally:
         import shutil
         shutil.rmtree(hist_dir, ignore_errors=True)

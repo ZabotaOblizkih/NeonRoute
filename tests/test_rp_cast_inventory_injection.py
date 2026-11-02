@@ -106,7 +106,7 @@ class TestRoleplayPromptBuilderInjection:
         )
         assert "[Current Active Companions, Status & Inventory]:" not in prompt
 
-    def test_build_with_active_cast_block(self):
+    def test_build_with_active_cast_block_is_excluded(self):
         card = CharacterCard(name="Селеста", description="Добрая волшебница")
         active_cast = (
             "Локация: Древний лес\n"
@@ -118,22 +118,32 @@ class TestRoleplayPromptBuilderInjection:
             active_cast_block=active_cast
         )
 
-        assert "[Current Active Companions, Status & Inventory]:" in prompt
-        assert "Локация: Древний лес" in prompt
-        assert "Инвентарь: магический посох, карта" in prompt
+        assert "[Current Active Companions, Status & Inventory]:" not in prompt
+        assert "Локация: Древний лес" not in prompt
+        assert "Инвентарь: магический посох, карта" not in prompt
+        assert "<ActiveCast>" not in prompt
 
-        # Блок должен располагаться ближе к концу промпта (после базового описания)
-        desc_pos = prompt.find("Добрая волшебница")
-        cast_pos = prompt.find("[Current Active Companions, Status & Inventory]:")
-        assert desc_pos != -1
-        assert cast_pos != -1
-        assert cast_pos > desc_pos
+    def test_build_with_recalled_lore_block(self):
+        card = CharacterCard(name="Селеста", description="Добрая волшебница")
+        recalled_lore = (
+            "<RecalledLore>\n"
+            "• [Событие]: Битва у реки\n"
+            "</RecalledLore>"
+        )
+        prompt = RoleplayPromptBuilder.build(
+            character_card=card,
+            user_name="Иван",
+            recalled_lore_block=recalled_lore
+        )
+        assert "<RecalledLore>" in prompt
+        assert "Битва у реки" in prompt
+        assert "[Current Active Companions, Status & Inventory]:" not in prompt
 
 
 class TestSessionManagerCastIntegration:
-    """Проверка связки SessionManager и RPCastManager в Якоре 1."""
+    """Проверка связки SessionManager и RPCastManager в Якоре 1: исключение активного каста, сохранение векторной памяти."""
 
-    def test_get_lm_studio_messages_injects_cast_into_system_prompt(self):
+    def test_get_lm_studio_messages_excludes_cast_from_system_prompt(self):
         session_id = "test_rp_integration_456"
         cast_data = {
             "current_location": "Крыша небоскреба",
@@ -167,17 +177,37 @@ class TestSessionManagerCastIntegration:
             assert isinstance(messages, list)
             assert len(messages) >= 3
 
-            # Якорь 1 (messages[0] = system) обязан содержать каст и инвентарь
+            # Якорь 1 (messages[0] = system) НЕ должен содержать активный каст
             system_msg = messages[0]
             assert system_msg["role"] == "system"
             sys_content = system_msg["content"]
-            assert "[Current Active Companions, Status & Inventory]:" in sys_content
-            assert "Крыша небоскреба" in sys_content
-            assert "плазменный резак, декодер" in sys_content
+            assert "[Current Active Companions, Status & Inventory]:" not in sys_content
+            assert "<ActiveCast>" not in sys_content
+            assert "плазменный резак" not in sys_content
             assert "Ви" in sys_content
 
-    def test_cast_block_never_evicted_under_token_pressure(self):
-        """Проверяет, что блок каста в Якоре 1 никогда не вытесняется даже при переполнении бюджета токенов."""
+    def test_recalled_lore_retained_in_system_prompt(self):
+        recalled_lore = "<RecalledLore>\n• [Событие]: Спасение на крыше\n</RecalledLore>"
+        card = CharacterCard(name="Ви", first_mes="Привет, партнер!")
+        history = [
+            {"role": "assistant", "content": "Привет, партнер!"},
+            {"role": "user", "content": "Что произошло?"}
+        ]
+        messages = SessionManager.get_lm_studio_messages(
+            history=history,
+            is_roleplay=True,
+            character_card=card,
+            user_name="Игрок",
+            recalled_lore_block=recalled_lore
+        )
+        system_msg = messages[0]
+        assert system_msg["role"] == "system"
+        assert "<RecalledLore>" in system_msg["content"]
+        assert "Спасение на крыше" in system_msg["content"]
+        assert "[Current Active Companions, Status & Inventory]:" not in system_msg["content"]
+
+    def test_cast_block_excluded_and_system_prompt_retained_under_token_pressure(self):
+        """Проверяет, что Якорь 1 сохраняется при вытеснении середины диалога, а каст исключен."""
         session_id = "test_eviction_pressure_789"
         cast_data = {
             "current_location": "Катакомбы",
@@ -211,8 +241,9 @@ class TestSessionManagerCastIntegration:
 
             system_msg = messages[0]
             assert system_msg["role"] == "system"
-            assert "[Current Active Companions, Status & Inventory]:" in system_msg["content"]
-            assert "факел, святая вода" in system_msg["content"]
+            assert "[Current Active Companions, Status & Inventory]:" not in system_msg["content"]
+            assert "<ActiveCast>" not in system_msg["content"]
+            assert "факел, святая вода" not in system_msg["content"]
             assert "Елена" in system_msg["content"]
 
     def test_isolation_assistant_and_engineer_modes(self):

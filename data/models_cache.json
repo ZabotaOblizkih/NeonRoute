@@ -222,5 +222,75 @@
     "architecture": "unknown",
     "is_moe": false,
     "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-909\\test_start_llama_server_sync_s0\\model.gguf::1793468675.6962051::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\mradermacher\\EVA-Qwen2.5-14B-v0.2-i1-GGUF\\EVA-Qwen2.5-14B-v0.2.i1-Q3_K_S.gguf::1793470777.7660441::6659594944": {
+    "total_layers": 48,
+    "model_size_mb": 6351.08,
+    "architecture": "qwen2",
+    "is_moe": false,
+    "context_length": 131072
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-911\\test_start_llama_server_sync_s0\\model.gguf::1793476580.687751::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\ArliAI\\Mistral-Nemo-12B-ArliAI-RPMax-v1.3-GGUF\\Mistral-Nemo-12B-ArliAI-RPMax-v1.3-Q3_K_S.gguf::1793477880.6054559::5534225280": {
+    "total_layers": 40,
+    "model_size_mb": 5277.85,
+    "architecture": "llama",
+    "is_moe": false,
+    "context_length": 131072
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-915\\test_start_llama_server_sync_s0\\model.gguf::1793481975.8365297::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-918\\test_start_llama_server_sync_s0\\model.gguf::1793487689.3947592::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-923\\test_start_llama_server_sync_s0\\model.gguf::1793488768.1990376::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-966\\test_start_llama_server_sync_s0\\model.gguf::1793617070.078812::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-970\\test_start_llama_server_sync_s0\\model.gguf::1793619542.7381546::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-994\\test_start_llama_server_sync_s0\\model.gguf::1793630013.1892095::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
   }
 }

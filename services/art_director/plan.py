@@ -1,3 +1,43 @@
+SDXL_MARKERS = ("xl", "sdxl", "pony", "dmd", "insta", "mop")
+
+
+def is_sdxl_checkpoint(model_name: str) -> bool:
+    """
+    Определяет, относится ли чекпоинт к архитектуре SDXL.
+    Проверяет маркеры в имени файла: 'xl', 'sdxl', 'pony', 'dmd', 'insta', 'mop' (без учета регистра)
+    либо сверяет размер/метаданные, если модель присутствует в реестре.
+    """
+    if not model_name:
+        return False
+    name_str = str(model_name).strip()
+    if not name_str:
+        return False
+    name_lower = name_str.lower()
+
+    if any(m in name_lower for m in SDXL_MARKERS):
+        return True
+
+    try:
+        from services.art_director_config import load_art_director_models
+        for m in load_art_director_models():
+            ckpt = str(m.get("checkpoint", "")).lower()
+            m_id = str(m.get("id", "")).lower()
+            m_name = str(m.get("name", "")).lower()
+            if name_lower in (ckpt, m_id, m_name) or (ckpt and ckpt in name_lower):
+                arch = str(m.get("architecture", "")).lower()
+                base_model = str(m.get("base_model", "")).lower()
+                if "sdxl" in arch or "sdxl" in base_model or "pony" in arch:
+                    return True
+                if any(m_marker in ckpt for m_marker in SDXL_MARKERS):
+                    return True
+                size_gb = m.get("size_gb") or m.get("size")
+                if size_gb and isinstance(size_gb, (int, float)) and size_gb > 5.0:
+                    return True
+    except Exception:
+        pass
+
+    return False
+
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
@@ -142,3 +182,7 @@ class GenerationPlan:
 
         payload["alwayson_scripts"] = alwayson
         return payload
+
+
+# Alias for compatibility
+RenderPlan = GenerationPlan

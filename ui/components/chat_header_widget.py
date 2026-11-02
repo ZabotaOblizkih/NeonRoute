@@ -201,15 +201,30 @@ class ChatHeaderWidget(QFrame):
             ToolTipFilter(self.forge_combo, showDelay=300, position=ToolTipPosition.TOP)
         )
 
-        base_models = [
-            "✨ Арт-директор (Авто)",
-            "DreamShaper 8",
-            "Realistic Vision v6.0",
-            "CyberRealistic Classic",
-            "MeinaHentai v5"
-        ]
-        self.window.available_forge_checkpoints = base_models
-        self.forge_combo.addItems(base_models)
+        combined = ["✨ Арт-директор (Авто)"]
+        try:
+            from services.art_director_config import load_art_director_models
+            models_list = load_art_director_models()
+        except Exception:
+            import json
+            json_path = Path("C:/NeonRoute/data/art_director_models.json")
+            models_list = []
+            if json_path.exists():
+                try:
+                    with open(json_path, "r", encoding="utf-8-sig") as f:
+                        data = json.load(f)
+                    models_list = data if isinstance(data, list) else data.get("models", [])
+                except Exception:
+                    models_list = []
+
+        for prof in models_list:
+            if isinstance(prof, dict) and prof.get("active", True) is not False and prof.get("name"):
+                name = prof["name"]
+                if name not in combined:
+                    combined.append(name)
+
+        self.window.available_forge_checkpoints = combined
+        self.forge_combo.addItems(combined)
         self.forge_combo.currentTextChanged.connect(self.window._on_forge_model_changed)
         header_layout.addWidget(self.forge_combo)
 

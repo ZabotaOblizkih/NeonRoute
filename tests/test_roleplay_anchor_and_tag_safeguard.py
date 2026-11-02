@@ -94,13 +94,19 @@ def test_depth_anchor_injection_in_flow():
     task = controller.task_queue.enqueue.call_args[0][0]
     enqueued_messages = task.kwargs["messages"]
 
-    # Last user message should contain depth anchor
-    last_user_msg = None
-    for m in reversed(enqueued_messages):
-        if m.get("role") == "user":
-            last_user_msg = m.get("content")
+    # User message must remain pure user text; Depth-1 system anchor is injected immediately before it
+    user_idx = None
+    for idx in reversed(range(len(enqueued_messages))):
+        if enqueued_messages[idx].get("role") == "user":
+            user_idx = idx
             break
 
-    assert last_user_msg is not None
-    assert "[Системная директива сцены:" in last_user_msg
-    assert "<stats>```...```</stats>" in last_user_msg
+    assert user_idx is not None
+    assert enqueued_messages[user_idx]["content"] == "Привет, Система"
+
+    # Depth-1 system anchor immediately preceding the user turn
+    assert user_idx > 0
+    anchor_msg = enqueued_messages[user_idx - 1]
+    assert anchor_msg.get("role") == "system"
+    assert "[Системная директива сцены:" in anchor_msg["content"]
+    assert "<stats>```...```</stats>" in anchor_msg["content"]

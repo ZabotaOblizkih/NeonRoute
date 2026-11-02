@@ -1,0 +1,274 @@
+/**
+ * NeonRoute Mobile Layout
+ * Responsive safe-area shell, header, drawer, chat viewport, and floating input capsule.
+ */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 0%, rgba(0, 229, 255, 0.05) 0%, transparent 65%),
+              linear-gradient(180deg, #090a10 0%, #0d0f18 100%);
+}
+
+/* ─── 1. Header (3 Zones) ─── */
+.app-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: calc(58px + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+  background: var(--bg-surface);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.header-slot-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.companion-profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.avatar-interactive {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  border-radius: 50%;
+  padding: 0;
+  border: 2px solid var(--neon-cyan);
+  background: #141726;
+  box-shadow: 0 0 10px var(--neon-cyan-glow);
+  cursor: pointer;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.avatar-interactive:active {
+  transform: scale(0.94);
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.companion-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.companion-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.companion-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-slot-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ─── 2. Chat Viewport ─── */
+.chat-viewport {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-top: calc(68px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+}
+
+.chat-viewport::-webkit-scrollbar {
+  width: 4px;
+}
+.chat-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-pill);
+}
+
+/* Floating Scroll Down Button */
+.btn-scroll-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: calc(80px + max(10px, env(safe-area-inset-bottom, 0px)) + var(--keyboard-offset, 0px));
+  z-index: 45;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--bg-surface-elevated);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-accent);
+  color: var(--neon-cyan);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), var(--shadow-neon-cyan);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.btn-scroll-bottom.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.btn-scroll-bottom svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  fill: none;
+}
+
+/* ─── 3. Floating Input Capsule ─── */
+.input-capsule-container {
+  position: absolute;
+  bottom: var(--keyboard-offset, 0px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+  transition: bottom 0.15s ease-out;
+}
+
+.input-capsule {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--bg-surface-elevated);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-lg);
+  padding: 8px 10px 8px 14px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), var(--shadow-neon-cyan);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.input-capsule:focus-within {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 6px 30px rgba(0, 0, 0, 0.5), 0 0 20px var(--neon-cyan-glow);
+}
+
+.input-textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text-primary);
+  font-size: 16px; /* Prevents auto-zoom on iOS */
+  line-height: 1.4;
+  min-height: 38px;
+  max-height: 140px;
+  padding: 8px 0;
+  overflow-y: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.input-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* ─── 4. Sliding Drawer & Backdrop ─── */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--bg-overlay);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-drawer);
+}
+
+.drawer-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer-panel {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(88vw, 360px);
+  z-index: 100;
+  background: var(--bg-surface-elevated);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-right: 1px solid var(--border-subtle);
+  transform: translateX(-100%);
+  transition: transform var(--transition-drawer);
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: 12px 0 36px rgba(0, 0, 0, 0.6);
+}
+
+.drawer-panel.open {
+  transform: translateX(0);
+}

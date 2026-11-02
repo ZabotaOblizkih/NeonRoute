@@ -98,7 +98,7 @@ class RoleplayPromptBuilder:
         # 1. Исекай / ЛитРПГ (<stats>)
         if is_sys:
             return (
-                f"\n\n[Системная директива сцены: Отреагируй на действия, слова или присутствие {user_name}. "
+                f"[Системная директива сцены: Отреагируй на действия, слова или присутствие {user_name}. "
                 f"Веди повествование строго в 3-м лице. Опиши кинематографичный отклик окружения и реакцию мира. "
                 f"Запрещено действовать, мыслить или говорить за {user_name}. "
                 f"Заверши сцену обращением или событием, требующим реакции игрока. "
@@ -107,7 +107,7 @@ class RoleplayPromptBuilder:
         # 2. Детектив / Расследование (<stats>)
         elif is_detective:
             return (
-                f"\n\n[Системная директива сцены: Отреагируй на действия, слова или расследование {user_name}. "
+                f"[Системная директива сцены: Отреагируй на действия, слова или расследование {user_name}. "
                 f"Веди повествование строго в жанре детектива в 3-м лице. Опиши осязаемые улики, поведение окружения и невербальные детали. "
                 f"Запрещено делать выводы, действовать или говорить за {user_name}. "
                 f"Заверши сцену тревожной деталью или вопросом, передав ход игроку. "
@@ -117,7 +117,7 @@ class RoleplayPromptBuilder:
         elif is_dating or is_horror:
             metric_type = "симпатии и доверия" if is_dating else "рассудка и стресса"
             return (
-                f"\n\n[Системная директива сцены: Отреагируй на слова, язык тела или действия {user_name} в адрес {char_name}. "
+                f"[Системная директива сцены: Отреагируй на слова, язык тела или действия {user_name} в адрес {char_name}. "
                 f"Опиши эмоциональный отклик, микромимику и внутреннее напряжение {char_name}. "
                 f"Запрещено действовать, чувствовать или говорить за {user_name}. "
                 f"Заверши ход репликой или жестом {char_name}, требующим реакции {user_name}. "
@@ -126,37 +126,34 @@ class RoleplayPromptBuilder:
         # 4. DM / Интерактивная новелла (<choices>)
         elif is_dm or is_cyoa:
             return (
-                f"\n\n[Системная директива сцены: Отреагируй на решение, слова или действия {user_name}. "
-                f"Опиши последствия для мира в 3-м лице без подыгрывания игроку. "
-                f"Запрещено принимать решения, действовать или говорить за {user_name}. "
-                f"В финале предложи варианты дальнейших действий внутри тегов <choices>...</choices>.]"
+                f"[Стиль сцены: интерактивное повествование мира. Отреагируй на решение и действия {user_name}. "
+                f"Опиши последствия для мира в 3-м лице. Запрещено действовать за {user_name}. "
+                f"В финале предложи варианты действий внутри <choices>...</choices>.]"
             )
         # 5. Групповой чат
         elif is_grp:
             return (
-                f"\n\n[Системная директива сцены: Отреагируй на действия, слова или присутствие {user_name} перед группой. "
-                f"Выдели одного конкретного персонажа группы как инициатора ответа, остальных покажи краткой фоновой реакцией. "
-                f"Запрещено действовать, мыслить или говорить за {user_name}. "
-                f"Заверши сцену прямым обращением выбранного спутника к {user_name}.]"
+                f"[Стиль сцены: кинематографичное повествование группы спутников. Отреагируй на слова и действия {user_name}. "
+                f"Выдели одного спутника как инициатора ответа, остальных покажи краткой фоновой реакцией. "
+                f"Строго запрещено действовать, мыслить или говорить за {user_name}. "
+                f"Заверши сцену прямым обращением к {user_name}.]"
             )
         # 6. Одиночный персонаж (Solo)
         else:
             return (
-                f"\n\n[Системная директива сцены: Отреагируй на слова, действия или присутствие {user_name}. "
-                f"Сфокусируйся на мимике, подтексте и эмоциональной реакции {char_name}. "
-                f"Запрещено предпринимать действия, озвучивать мысли или говорить за {user_name}. "
+                f"[Стиль сцены: кинематографичное повествование от лица {char_name}. Отреагируй на слова, действия или присутствие {user_name}, "
+                f"передай мимику, жесты и подтекст. Строго запрещено действовать, мыслить или говорить за {user_name}. "
                 f"Заверши ход репликой или действием {char_name}, требующим реакции {user_name}.]"
             )
 
     @staticmethod
     def build_depth_anchor(character_card, user_name: str, user_query: str = "", custom_anchor: str = None) -> str:
         """
-        Формирует Depth-0 якорь: возвращает переопределённый якорь сессии (если задан)
+        Формирует Depth-1 якорь: возвращает переопределённый якорь сессии (если задан)
         или абстрактный якорь по умолчанию.
         """
         if custom_anchor and custom_anchor.strip():
-            text = custom_anchor.strip()
-            return f"\n\n{text}" if not text.startswith("\n\n") else text
+            return custom_anchor.strip()
 
         return RoleplayPromptBuilder.get_default_depth_anchor(character_card, user_name)
 
@@ -474,22 +471,11 @@ class RoleplayPromptBuilder:
         prompt_parts.append(user_info_block)
         prompt_parts.append(engine_guardrails)
 
-        if active_cast_block and active_cast_block.strip():
-            formatted_cast = (
-                "\n[Current Active Companions, Status & Inventory]:\n"
-                f"{active_cast_block.strip()}\n"
-            )
-            # Размещаем в самом конце системного промпта (перед примерами диалога mes_example, если они есть в конце)
-            example_idx = None
-            for i in range(len(prompt_parts) - 1, -1, -1):
-                p_lower = prompt_parts[i].lower()
-                if "примеры реплик" in p_lower or "<start>" in p_lower or "пример сцены" in p_lower:
-                    example_idx = i
-                    break
-            if example_idx is not None and example_idx == len(prompt_parts) - 1:
-                prompt_parts.insert(example_idx, formatted_cast)
-            else:
-                prompt_parts.append(formatted_cast)
+        # Хирургическое исключение динамического каста из системного диалогового промпта
+        # для защиты от галлюцинаций экстрактора и регургитации промпта.
+        # Векторная память (recalled_lore_block с <RecalledLore>) сохраняется и подключается.
+        if recalled_lore_block and recalled_lore_block.strip():
+            prompt_parts.append(recalled_lore_block.strip())
 
         assembled_prompt = "\n\n".join(p for p in prompt_parts if p.strip())
         return MacroEngine.process(assembled_prompt, user_name=u_name, char_name=companion_name)

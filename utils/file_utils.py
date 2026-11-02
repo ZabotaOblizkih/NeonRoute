@@ -4,17 +4,18 @@ import uuid
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger("NeonRoute.Utils")
 
-def atomic_write_json(target_path: Path, data: Any, retries: int = 5) -> bool:
+def atomic_write_json(target_path: Path, data: Any, retries: int = 5, encoding: Optional[str] = None) -> bool:
     """Атомарная запись JSON с уникальным .tmp, fsync и защитой от WinError 32."""
     target_path = Path(target_path).resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_name(f"{target_path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    file_encoding = encoding or ("utf-8-sig" if target_path.name == "art_director_models.json" else "utf-8")
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with open(temp_path, "w", encoding=file_encoding) as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())

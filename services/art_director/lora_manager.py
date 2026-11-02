@@ -1,3 +1,4 @@
+from services.art_director.plan import is_sdxl_checkpoint
 """
 LoraManager: Safe CPU Metadata & Trigger Phrase Extractor for LoRA Weights in NeonRoute.
 Reads binary header of .safetensors (0 MB VRAM) to automatically harvest top-3 trigger words.
@@ -164,7 +165,8 @@ class LoraManager:
         prompt: str,
         character_name: Optional[str] = None,
         style_id: str = "realistic",
-        lora_dir: Optional[Path] = None
+        lora_dir: Optional[Path] = None,
+        target_model_name: Optional[str] = None
     ) -> Tuple[List[str], List[str]]:
         """
         Возвращает:
@@ -229,13 +231,16 @@ class LoraManager:
         allowed_styles = util_conf.get("allowed_styles", ["realistic", "cyberrealistic", "artistic"])
 
         if style_id in allowed_styles:
-            fname = util_conf.get("file_name", "add_detail")
-            w = util_conf.get("weight", 0.35)
-            if available_stems and any(fname.lower() in s for s in available_stems):
-                if not any(fname.lower() in tag.lower() for tag in selected_lora_tags):
-                    tag_with_triggers = cls.build_lora_tag(fname, w, prompt)
-                    selected_lora_tags.append(tag_with_triggers)
-                    logger.info(f"[LoraManager] Подключена сервисная LoRA: {tag_with_triggers}")
+            if target_model_name and is_sdxl_checkpoint(target_model_name):
+                logger.info(f"[LoraManager] Пропуск сервисной LoRA 'add_detail': несовместимость с архитектурой SDXL модели '{target_model_name}'.")
+            else:
+                fname = util_conf.get("file_name", "add_detail")
+                w = util_conf.get("weight", 0.35)
+                if available_stems and any(fname.lower() in s for s in available_stems):
+                    if not any(fname.lower() in tag.lower() for tag in selected_lora_tags):
+                        tag_with_triggers = cls.build_lora_tag(fname, w, prompt)
+                        selected_lora_tags.append(tag_with_triggers)
+                        logger.info(f"[LoraManager] Подключена сервисная LoRA: {tag_with_triggers}")
 
         return selected_lora_tags, activation_tags
 

@@ -76,7 +76,7 @@ def load_art_director_models() -> List[Dict[str, Any]]:
         return list(DEFAULT_ART_DIRECTOR_MODELS["models"])
 
     try:
-        with open(ART_DIRECTOR_MODELS_PATH, "r", encoding="utf-8") as f:
+        with open(ART_DIRECTOR_MODELS_PATH, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
 
         models = data.get("models")
@@ -95,14 +95,14 @@ def load_art_director_models() -> List[Dict[str, Any]]:
 def save_art_director_models(models: List[Dict[str, Any]]) -> bool:
     """
     Saves registered models list to data/art_director_models.json atomically.
-    Strictly UTF-8 without BOM.
+    Uses UTF-8-sig to prevent Windows BOM issues.
     """
     ART_DIRECTOR_MODELS_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_path = ART_DIRECTOR_MODELS_PATH.with_suffix(".tmp")
     data = {"models": models}
 
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with open(temp_path, "w", encoding="utf-8-sig") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())

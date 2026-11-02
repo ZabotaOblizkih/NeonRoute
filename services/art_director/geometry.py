@@ -37,7 +37,9 @@ def is_xl_model(identifier: Any) -> bool:
         return False
 
     if isinstance(identifier, dict):
-        arch = str(identifier.get("architecture") or "").lower()
+        arch = str(identifier.get("architecture") or (identifier.get("pipeline") or {}).get("architecture") or "").lower()
+        if arch in ("sd15", "sd1", "sd_15"):
+            return False
         if arch in ("sdxl", "pony", "flux", "illustrious", "sd3"):
             return True
         text = f"{identifier.get('checkpoint', '')} {identifier.get('name', '')} {identifier.get('id', '')}"
@@ -47,7 +49,8 @@ def is_xl_model(identifier: Any) -> bool:
         text = str(identifier)
 
     clean_text = re.sub(r'(?i)\b(pixel|complex|duplex|reflex|flexible|relax)\b', '', text)
-    return bool(XL_DELIMITED_PATTERN.search(clean_text) or XL_TOKEN_PATTERN.search(clean_text))
+    is_distilled_xl = any(k in clean_text.lower() for k in ("dmd", "mop", "_fp8", "lightning", "hyper-sd", "hyper_sd", "hypersd"))
+    return bool(XL_DELIMITED_PATTERN.search(clean_text) or XL_TOKEN_PATTERN.search(clean_text)) or is_distilled_xl
 
 def get_archetype_config(model_key: Any, archetype: str) -> Dict[str, Any]:
     is_xl = is_xl_model(model_key)

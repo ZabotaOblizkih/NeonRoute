@@ -177,13 +177,31 @@ class RoleplayControllerMixin:
             logger.error(f"Ошибка открытия сводки кампании: {e}", exc_info=True)
 
     def _open_characters_gallery_dialog(self):
-        """Opens Characters Gallery dialog for roleplay tavern."""
+        """Открытие галереи персонажей с защитой от повторного открытия экземпляров."""
+        if hasattr(self, "_active_gallery_dialog") and self._active_gallery_dialog is not None:
+            try:
+                if self._active_gallery_dialog.isVisible():
+                    self._active_gallery_dialog.activateWindow()
+                    self._active_gallery_dialog.raise_()
+                    return
+            except (RuntimeError, ReferenceError):
+                self._active_gallery_dialog = None
+
         from ui.dialogs.characters_gallery_dialog import CharactersGalleryDialog
-        dlg = CharactersGalleryDialog(parent=self)
-        dlg.card_saved.connect(self._on_character_card_updated)
-        res = dlg.exec()
+        dialog = CharactersGalleryDialog(parent=self)
+        self._active_gallery_dialog = dialog
+
+        # Гарантируем пересчет геометрии сплиттера после закрытия диалога
+        def _on_dialog_closed():
+            self._active_gallery_dialog = None
+            if hasattr(self, "_sync_splitter_layout"):
+                QTimer.singleShot(0, lambda: self._sync_splitter_layout(self.is_engineer_mode_active()))
+
+        dialog.finished.connect(_on_dialog_closed)
+        dialog.card_saved.connect(self._on_character_card_updated)
+        res = dialog.exec()
         if res:
-            card = getattr(dlg, "selected_card", None)
+            card = getattr(dialog, "selected_card", None)
             if card:
                 self._create_new_session(mode="roleplay", character_card=card)
 

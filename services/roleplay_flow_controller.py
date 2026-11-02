@@ -29,47 +29,8 @@ class RoleplayFlowControllerMixin:
 
     @staticmethod
     def _should_trigger_roleplay_art(user_query: str) -> bool:
-        """Проверяет явные и чувственные триггеры визуализации в контексте ролевой игры."""
-        q = (user_query or "").strip().lower()
-        if not q:
-            return False
-
-        exclusions = (
-            "excel", "эксель", "таблиц", ".xlsx", "docx", "ворд", "word",
-            "код", "скрипт", "pygame", "matplotlib", "график", "диаграмм",
-            "баз данных", "sql", "функци", "класс", ".py"
-        )
-        if any(w in q for w in exclusions):
-            return False
-
-        explicit_triggers = (
-            "нарисуй", "нарисуешь", "нарисовать", "сфотографируй", "сфоткай",
-            "сделай фото", "сделай снимок", "сделай кадр", "сгенерируй",
-            "сгенерируешь", "генерация арта", "изобрази", "изобразишь",
-            "начерти", "иллюстрируй", "проиллюстрируй", "отрисуй", "зарисуй",
-            "набросай", "визуализируй", "сделай арт", "создай арт", "сделай картинку",
-            "создай картинку", "покажи картинку", "покажи рисунок", "покажи арт",
-            "нарисуй мне", "сделай портрет", "draw", "paint", "sketch", "render", "take a photo", "generate art"
-        )
-        if any(w in q for w in explicit_triggers):
-            return True
-
-        sensual_triggers = (
-            "хочу тебя видеть", "хочу увидеть тебя", "дай мне тебя увидеть", "дай взглянуть на тебя",
-            "позволь увидеть тебя", "хочу посмотреть на тебя", "покажи себя", "покажись", "покажись мне",
-            "предстань передо мной", "явись мне", "как ты выглядишь", "как ты сейчас выглядишь",
-            "какая ты сейчас", "опиши свой вид", "в чем ты сейчас", "в чём ты сейчас", "в чем ты одета",
-            "в чём ты одета", "что на тебе надето", "что на тебе сейчас", "в каком ты виде",
-            "покажи свой наряд", "покажи свое платье", "покажи своё платье", "покажи свой образ",
-            "покажи свой костюм", "покажи белье", "покажи бельё", "сними это", "сними с себя",
-            "разденься", "сбрось одежду", "хочу увидеть твое тело", "хочу увидеть твоё тело",
-            "покажи свое тело", "покажи своё тело", "покажи фигуру", "покажи свою фигуру",
-            "покажи ножки", "покажи свои ножки", "хочу увидеть твою улыбку", "хочу увидеть твои глаза",
-            "хочу увидеть твой взгляд", "посмотри на меня", "покажи свое лицо", "покажи своё лицо",
-            "сделай селфи", "скинь селфи", "пришли селфи", "покажи селфи", "твое селфи", "твоё селфи",
-            "пришли фото", "скинь фото", "в какой ты позе", "покажи эту позу", "встань в позу", "подойди ближе"
-        )
-        return any(w in q for w in sensual_triggers)
+        """Deprecated: obsolete auto-art dialogue trigger."""
+        return False
 
     @staticmethod
     def _get_roleplay_art_directive(
@@ -79,50 +40,8 @@ class RoleplayFlowControllerMixin:
         is_environment: bool = False,
         has_minor: bool = False
     ) -> str:
-        if not target_model_desc and target_model_id:
-            try:
-                from services.model_router import ModelRouter
-                router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-                for m in getattr(router, "profiles", []):
-                    if m.get("id") == target_model_id:
-                        guidance = (m.get("llm_guidance") or "").strip()
-                        target_model_desc = guidance if guidance else (m.get("routing_description") or m.get("name") or "")
-                        break
-            except Exception:
-                pass
-        model_hint = f"{target_model_id} ({target_model_desc})" if target_model_desc else target_model_id
-        if has_minor:
-            rules_text = (
-                "ПРАВИЛА ТЕГА:\n"
-                "- В СЦЕНЕ ПРИСУТСТВУЕТ НЕСОВЕРШЕННОЛЕТНИЙ. Категорически ЗАПРЕЩЕНЫ любые теги наготы, белья или сексуализации (nude, topless, lewd, erotic и т.д.).\n"
-                "- Персонаж обязан быть полностью одет согласно канону (платье, туника, лохмотья рабыни: 'tattered clothes', 'ragged dress' и т.д.).\n"
-                "- Используй только утвердительные английские Danbooru-теги через запятую."
-            )
-        else:
-            rules_text = (
-                "ПРАВИЛА ТЕГА:\n"
-                "- Используй только утвердительные английские Danbooru-теги через запятую.\n"
-                "- Для наготы или снятой одежды используй прямые теги: 'nude', 'topless', 'bottomless', 'bare legs', 'bare skin', 'barefoot', 'bareheaded'.\n"
-                "- ЗАПРЕЩЕНО использовать 'no' или 'without'. Флаг '--neg <tags>' добавляй только если запрошено исключить конкретный фон/деталь."
-            )
-        if is_environment:
-            who_hint = " окружение и обстановку сцены"
-            reaction_rule = "1. Опиши отклик окружения и обстановку сцены на красивом литературном русском языке."
-        else:
-            who_hint = f" или образ персонажа {companion_name}" if companion_name else " или твой образ"
-            reaction_rule = "1. Отыграй реакцию от первого лица в своем характере на красивом литературном русском языке."
-
-        return (
-            f"\n\n[РЕЖИССУРА СЦЕНЫ: Пользователь хочет видеть происходящее{who_hint}.\n"
-            f"{reaction_rule}\n"
-            f"2. Модель генерации: {model_hint}.\n"
-            f"3. В самом конце ответа с новой строки добавь обязательный визуальный тег:\n"
-            f"[IMAGE_PROMPT: <english_danbooru_tags> --model {target_model_id}]\n"
-            f"{rules_text}\n"
-            f"ОБРАЗЕЦ:\n"
-            f"Я улыбнулась прохладному ветру...\n"
-            f"[IMAGE_PROMPT: 1girl, solo, outdoors, smile, cinematic lighting --model {target_model_id}]"
-        )
+        """Deprecated: dialogue messages must not contain image prompt directives."""
+        return ""
 
     def _enqueue_roleplay_llm_task(
         self,
@@ -154,7 +73,6 @@ class RoleplayFlowControllerMixin:
                         _req = str(c or "").strip()
                     break
 
-        _should_art = (not vision_content and self._should_trigger_roleplay_art(_req))
 
         # Управление контекстом делегировано динамическому бюджету SessionManager (SSOT)
         curr_sess_id = self.current_session.get("id") if self.current_session else None
@@ -202,7 +120,7 @@ class RoleplayFlowControllerMixin:
             is_engineer=False,
             world_facts=effective_world_facts,
             art_guidance=art_guidance,
-            active_cast_block=active_cast_block,
+            active_cast_block="",
             recalled_lore_block=recalled_lore_block,
             meta_context_block=meta_context_block,
             is_dm_mode=is_dm,
@@ -215,55 +133,7 @@ class RoleplayFlowControllerMixin:
                 custom_sys_prompt, user_name=effective_user_name, char_name=c_name
             )
 
-        # Подмешивание режиссуры сцены при арт-триггере
-        if _should_art:
-            best_model_id = "realistic"
-            best_desc = ""
-            try:
-                router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-                matched_id, score = router.match_prompt(_req)
-                if matched_id:
-                    best_model_id = matched_id
-                    for m in router.profiles:
-                        if m.get("id") == matched_id:
-                            guidance = (m.get("llm_guidance") or "").strip()
-                            best_desc = guidance if guidance else (m.get("routing_description") or m.get("name") or "")
-                            break
-            except Exception:
-                pass
-
-            has_minor = False
-            if self.active_character and getattr(self.active_character, "is_minor", False):
-                has_minor = True
-            elif hasattr(self, "rp_cast_mgr") and self.rp_cast_mgr:
-                for ent in self.rp_cast_mgr.get_active_companions():
-                    if ent.get("is_minor"):
-                        has_minor = True
-                        break
-            elif curr_sess_id:
-                for ent in RPCastManager.get_active_companions(session_id=curr_sess_id):
-                    if ent.get("is_minor"):
-                        has_minor = True
-                        break
-
-            _directive = self._get_roleplay_art_directive(
-                target_model_id=best_model_id, 
-                target_model_desc=best_desc, 
-                companion_name=c_name,
-                is_environment=is_env,
-                has_minor=has_minor
-            )
-            if _directive and messages:
-                for idx in reversed(range(len(messages))):
-                    if messages[idx].get("role") == "user":
-                        user_msg_copy = dict(messages[idx])
-                        _c = user_msg_copy.get("content")
-                        if isinstance(_c, str):
-                            user_msg_copy["content"] = _c + _directive
-                        messages[idx] = user_msg_copy
-                        break
-
-        # Точка инъекции: Depth-0 якорь active_character к последнему user сообщению (Задача 4)
+        # Точка инъекции: Depth-1 системный якорь active_character перед последним user сообщением
         if hasattr(self, "active_character") and self.active_character and messages:
             from services.roleplay_prompt_builder import RoleplayPromptBuilder
             # Извлечение сохраненного якоря сессии (если был настроен пользователем):
@@ -274,14 +144,12 @@ class RoleplayFlowControllerMixin:
                 user_query=_req,
                 custom_anchor=custom_anchor
             )
-            if depth_anchor:
+            logger.info(f"[RPFlow.DepthAnchor] ⚓ Активный Depth-1 якорь (кастомный={bool(custom_anchor)}):\n{depth_anchor.strip()}")
+            if depth_anchor and depth_anchor.strip():
                 for idx in reversed(range(len(messages))):
                     if messages[idx].get("role") == "user":
-                        user_msg_copy = dict(messages[idx])
-                        _c = user_msg_copy.get("content")
-                        if isinstance(_c, str):
-                            user_msg_copy["content"] = _c + depth_anchor
-                        messages[idx] = user_msg_copy
+                        anchor_msg = {"role": "system", "content": depth_anchor.strip()}
+                        messages.insert(idx, anchor_msg)
                         break
 
         # Параметры сэмплинга ролевого режима (SSOT с защитой мастер-предохранителем)

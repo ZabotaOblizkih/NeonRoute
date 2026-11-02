@@ -50,6 +50,7 @@ IGNORE_FILE_PATTERNS = [
     "test_",
     "_test.py",
     "conftest.py",
+    "collect_codeMINI.py",
 ]
 
 def should_skip_file(file_name: str) -> bool:

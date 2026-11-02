@@ -415,7 +415,7 @@ class SubagentEngineer:
         is_ephemeral = plan.is_ephemeral
         planned_files = plan.planned_files
 
-        declared_entry_file = plan.verification_script if plan.verification_script else plan.target_artifact
+        declared_entry_file = plan.verification_script if plan.verification_script else (None if getattr(plan, "artifact_format", None) == "module" else plan.target_artifact)
         verification_passed = False
         target_artifact_passed = False
 
@@ -794,6 +794,84 @@ class SubagentEngineer:
                     "verification_passed": False
                 }
 
+            # 1.5. Fallback-перехватчик точечной правки AST (replace_symbol) для файлов > 250 строк
+            if not write_blocks and not patch_blocks and not replace_blocks:
+                cand_target = target_artifact or getattr(plan, "target_file", None) or getattr(plan, "target_artifact", None) or context_hint
+                if not cand_target:
+                    m_pys = re.findall(r'\b([\w\-]+\.pyw?)\b', f"{task_prompt} {context_hint}")
+                    if m_pys:
+                        cand_target = m_pys[0]
+
+                if cand_target:
+                    cand_path = ws_dir / Path(cand_target).name
+                    if cand_path.is_file():
+                        file_content = cand_path.read_text(encoding="utf-8", errors="ignore")
+                        file_lines = file_content.splitlines()
+                        if len(file_lines) > 250:
+                            is_deleted = bool(re.search(r'\bDELETED\b', response_text))
+                            if is_deleted:
+                                target_sym = getattr(plan, "target_symbol", None)
+                                if not target_sym:
+                                    try:
+                                        tree_del = ast.parse(file_content)
+                                        sym_names = [n.name for n in ast.walk(tree_del) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+                                        for s_name in sym_names:
+                                            if re.search(r'\b' + re.escape(s_name) + r'\b', task_prompt) or re.search(r'\b' + re.escape(s_name) + r'\b', response_text):
+                                                target_sym = s_name
+                                                break
+                                    except Exception:
+                                        pass
+                                if target_sym:
+                                    if cand_path.name not in file_backups:
+                                        file_backups[cand_path.name] = file_content
+                                    res = ToolEngine.replace_symbol(filename=cand_path.name, symbol_name=target_sym, new_code="DELETED")
+                                    if res.success:
+                                        logger.info(f"[SubagentEngineer] Fallback-перехватчик replace_symbol (DELETED): {res.output}")
+                                        replace_blocks.append(cand_path.name)
+                                    else:
+                                        last_error = res.output
+                                        logger.warning(f"[SubagentEngineer] Fallback-перехватчик replace_symbol (DELETED) сбой: {last_error}")
+                            else:
+                                m_blocks = re.findall(r'```(?:python|py)?\s*[\r\n]+([\s\S]*?)```', response_text, re.IGNORECASE)
+                                code_body = m_blocks[0].strip() if m_blocks else ""
+                                if not code_body:
+                                    code_body = SubagentEngineer._extract_pure_py(response_text, orig_content=file_content)
+                                if code_body:
+                                    sym_name = None
+                                    import textwrap
+                                    try:
+                                        tree_snip = ast.parse(textwrap.dedent(code_body))
+                                        for n in tree_snip.body:
+                                            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                                                sym_name = n.name
+                                                break
+                                    except Exception:
+                                        pass
+                                    if not sym_name:
+                                        m_s = re.search(r'^\s*(?:def|class)\s+([a-zA-Z_]\w*)', code_body, re.MULTILINE)
+                                        if m_s:
+                                            sym_name = m_s.group(1)
+                                    if not sym_name and getattr(plan, "target_symbol", None):
+                                        sym_name = plan.target_symbol
+
+                                    if sym_name:
+                                        try:
+                                            tree_orig = ast.parse(file_content)
+                                            existing_syms = {n.name for n in ast.walk(tree_orig) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+                                        except Exception:
+                                            existing_syms = set()
+
+                                        if sym_name in existing_syms:
+                                            if cand_path.name not in file_backups:
+                                                file_backups[cand_path.name] = file_content
+                                            res = ToolEngine.replace_symbol(filename=cand_path.name, symbol_name=sym_name, new_code=code_body)
+                                            if res.success:
+                                                logger.info(f"[SubagentEngineer] Fallback-перехватчик replace_symbol (Markdown): {res.output}")
+                                                replace_blocks.append(cand_path.name)
+                                            else:
+                                                last_error = res.output
+                                                logger.warning(f"[SubagentEngineer] Fallback-перехватчик replace_symbol (Markdown) сбой: {last_error}")
+
             # 2. Полный Fallback-парсер (если модель опустила теги инструментов)
             if not write_blocks and not patch_blocks and not replace_blocks:
                 def _has_py_indicators(code: str) -> bool:
@@ -1076,6 +1154,8 @@ class SubagentEngineer:
 
                     if self.verification_script:
                         is_entry = (fn_lower == Path(self.verification_script).name.lower())
+                    elif getattr(self, "artifact_format", None) == "module" or getattr(plan, "artifact_format", None) == "module":
+                        is_entry = False
                     elif declared_entry_file:
                         is_entry = (fn_lower == Path(declared_entry_file).name.lower())
                     else:

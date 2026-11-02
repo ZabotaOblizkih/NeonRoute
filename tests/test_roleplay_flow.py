@@ -69,76 +69,28 @@ class DummyHost(RoleplayFlowControllerMixin):
 
 
 class TestRoleplayArtTriggers:
-    """Проверка явных, чувственных триггеров и списка технических исключений."""
+    """Проверка депрекации устаревших триггеров визуализации в диалоге."""
 
-    def test_empty_query_returns_false(self):
+    def test_all_triggers_deprecated_and_return_false(self):
         assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("") is False
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("   ") is False
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art(None) is False
-
-    def test_ordinary_dialogue_returns_false(self):
         assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("Привет, как прошел твой день?") is False
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("Расскажи мне сказку перед сном.") is False
-
-    def test_technical_exclusions_override_art_verbs(self):
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("нарисуй график в matplotlib") is False
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("сделай таблицу excel с расчетами") is False
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("сгенерируй код скрипта на python") is False
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("создай класс базы данных sql") is False
-
-    def test_explicit_triggers(self):
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("нарисуй красивый замок на скале") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("сделай фото заката") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("визуализируй нашу встречу") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("take a photo of the library") is True
-
-    def test_sensual_and_clothing_triggers(self):
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("покажи себя") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("в чем ты сейчас одета?") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("сними с себя это платье") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("скинь селфи") is True
-        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("хочу увидеть твою улыбку") is True
+        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("нарисуй красивый замок на скале") is False
+        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("сделай фото заката") is False
+        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("покажи себя") is False
+        assert RoleplayFlowControllerMixin._should_trigger_roleplay_art("в чем ты сейчас одета?") is False
 
 
 class TestRoleplayArtDirectiveGeneration:
-    """Проверка генерации подсказок режиссуры сцены для LLM."""
+    """Проверка депрекации директив режиссуры арт-промптов в диалоге."""
 
-    def test_standard_companion_directive(self):
+    def test_dialogue_directive_returns_empty_to_prevent_prompt_corruption(self):
         directive = RoleplayFlowControllerMixin._get_roleplay_art_directive(
             target_model_id="anime",
             companion_name="Селеста",
             is_environment=False,
             has_minor=False
         )
-
-        assert "[РЕЖИССУРА СЦЕНЫ:" in directive
-        assert "или образ персонажа Селеста" in directive
-        assert "Отыграй реакцию от первого лица в своем характере" in directive
-        assert "[IMAGE_PROMPT: <english_danbooru_tags> --model anime]" in directive
-        assert "Для наготы или снятой одежды используй прямые теги" in directive
-        assert "В СЦЕНЕ ПРИСУТСТВУЕТ НЕСОВЕРШЕННОЛЕТНИЙ" not in directive
-
-    def test_environment_scene_directive(self):
-        directive = RoleplayFlowControllerMixin._get_roleplay_art_directive(
-            target_model_id="realistic",
-            is_environment=True,
-            has_minor=False
-        )
-
-        assert "окружение и обстановку сцены" in directive
-        assert "Опиши отклик окружения и обстановку сцены" in directive
-
-    def test_minor_safety_hard_guardrails(self):
-        directive = RoleplayFlowControllerMixin._get_roleplay_art_directive(
-            target_model_id="anime",
-            companion_name="Ирис",
-            has_minor=True
-        )
-
-        assert "В СЦЕНЕ ПРИСУТСТВУЕТ НЕСОВЕРШЕННОЛЕТНИЙ" in directive
-        assert "Категорически ЗАПРЕЩЕНЫ любые теги наготы, белья или сексуализации" in directive
-        assert "Персонаж обязан быть полностью одет" in directive
-        assert "Для наготы или снятой одежды используй прямые теги" not in directive
+        assert directive == ""
 
 
 class TestResponseProcessingAndAmbiguityGate:

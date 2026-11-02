@@ -356,24 +356,23 @@ class HardwareEngineMixin:
             self.statusBar().showMessage(f"Модель для генерации зафиксирована: {text}", 4000)
 
     def _on_forge_models_discovered(self, items: list):
-        base_choices = [
-            "✨ Арт-директор (Авто)",
-            "DreamShaper 8",
-            "Realistic Vision v6.0",
-            "CyberRealistic Classic",
-            "MeinaHentai v5"
-        ]
-        combined = list(base_choices)
+        combined = ["✨ Арт-директор (Авто)"]
+        profiles = []
         if hasattr(self, "art_director") and self.art_director and hasattr(self.art_director, "router") and self.art_director.router:
-            for prof in getattr(self.art_director.router, "profiles", []):
-                if isinstance(prof, dict) and prof.get("active", True):
-                    m_name = prof.get("name")
-                    if m_name and m_name not in combined and not str(m_name).startswith("✨"):
-                        combined.append(m_name)
-        if items:
-            for it in items:
-                if it not in combined and not it.startswith("✨"):
-                    combined.append(it)
+            profiles = getattr(self.art_director.router, "profiles", [])
+        if not profiles:
+            try:
+                from services.art_director_config import load_art_director_models
+                profiles = load_art_director_models()
+            except Exception:
+                profiles = []
+
+        for prof in profiles:
+            if isinstance(prof, dict) and prof.get("active", True) and prof.get("name"):
+                name = prof["name"]
+                if name not in combined:
+                    combined.append(name)
+
         self.available_forge_checkpoints = combined
         if hasattr(self, "forge_combo"):
             cur = self.forge_combo.currentText()
@@ -386,17 +385,9 @@ class HardwareEngineMixin:
             self.forge_combo.blockSignals(False)
 
     def _select_forge_model_dialog(self):
-        base_choices = [
-            "✨ Арт-директор (Авто)",
-            "DreamShaper 8",
-            "Realistic Vision v6.0",
-            "CyberRealistic Classic",
-            "MeinaHentai v5"
-        ]
-        items = list(getattr(self, "available_forge_checkpoints", base_choices))
-        for bc in base_choices:
-            if bc not in items:
-                items.append(bc)
+        items = list(getattr(self, "available_forge_checkpoints", ["✨ Арт-директор (Авто)"]))
+        if "✨ Арт-директор (Авто)" not in items:
+            items.insert(0, "✨ Арт-директор (Авто)")
 
         current_idx = 0
         if hasattr(self, "selected_forge_checkpoint") and self.selected_forge_checkpoint in items:
@@ -423,10 +414,12 @@ class HardwareEngineMixin:
 
     def _open_models_manager_dialog(self):
         dialog = ModelsManagerDialog(self.forge_client, self)
-        if dialog.exec():
-            self.art_director.reload_models()
-            self._refresh_forge_models()
-            self.statusBar().showMessage("Конфигурация моделей Арт-директора обновлена.", 4000)
+        if hasattr(dialog, "models_updated"):
+            dialog.models_updated.connect(self._refresh_forge_models)
+        dialog.exec()
+        self.art_director.reload_models()
+        self._refresh_forge_models()
+        self.statusBar().showMessage("Конфигурация моделей Арт-директора обновлена.", 4000)
 
     def _open_llm_engine_settings_dialog(self):
         """Открывает диалог настройки движка LLM (llama-server)."""
@@ -593,17 +586,16 @@ class HardwareEngineMixin:
             logger.info(f"Scene Art selected checkpoint: '{plan.target_checkpoint}'")
 
             kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
-            img_path = self.forge_client.text_to_image(**kwargs)
-
-            # text_to_image() guarantees cleanup in finally. Idempotent guard prevents duplicate requests.
+            img_path = None
             try:
-                self.forge_client.unload_checkpoint()
-                self.forge_client.free_vram()
-            except Exception as _e_unl:
-                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
-
-            # Быстрый тихий возврат активной модели режима в VRAM
-            self._reload_active_lms_model_async(delay=1.2)
+                img_path = self.forge_client.text_to_image(**kwargs)
+            finally:
+                try:
+                    self.forge_client.unload_checkpoint()
+                    self.forge_client.free_vram()
+                except Exception as _e_unl:
+                    logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
+                self._reload_active_lms_model_async(delay=1.2)
             return {"image_path": img_path, "plan": plan, "checkpoint": plan.target_checkpoint}
 
         if widget and hasattr(widget, "set_scene_art_busy"):

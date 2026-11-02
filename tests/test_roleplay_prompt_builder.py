@@ -35,7 +35,7 @@ class TestRoleplayPromptBuilderMacrosAndPersona:
         assert "Характер и повадки: Спокойный наемник" in prompt
         assert "Предыстория и статус: Бывший капитан стражи" in prompt
         assert "Обращайся к игроку по имени — Роман." in prompt
-        assert "Игрок (Роман) — мужчина. В прямой речи обращайся к Роман в мужском роде." in prompt
+        assert "Игрок (Роман) — мужчина. Обращайся к игроку в мужском роде" in prompt
 
 
 class TestGrammarAndPOVAgreement:
@@ -56,7 +56,7 @@ class TestGrammarAndPOVAgreement:
         )
 
         # Проверка пола игрока
-        assert "Игрок (Анна) — женщина. В прямой речи обращайся к Анна в женском роде." in prompt
+        assert "Игрок (Анна) — женщина. Обращайся к игроку в женском роде" in prompt
         # Проверка пола бота и POV
         assert "Алекс — мужской персонаж (глаголы и причастия в мужском роде)." in prompt
         assert "Манера повествования действий: от первого лица («я»)." in prompt
@@ -75,7 +75,7 @@ class TestGrammarAndPOVAgreement:
             active_persona=persona
         )
 
-        assert "Игрок (Роман) — мужчина. В прямой речи обращайся к Роман в мужском роде." in prompt
+        assert "Игрок (Роман) — мужчина. Обращайся к игроку в мужском роде" in prompt
         assert "Селеста — женский персонаж (глаголы и причастия в женском роде)." in prompt
         assert "Манера повествования действий: от третьего лица («Селеста», «он/она»)." in prompt
 
@@ -87,7 +87,7 @@ class TestGrammarAndPOVAgreement:
             user_name="Анна",
             active_persona=persona_f
         )
-        assert "Повествование о действиях игрока (Анна) ведётся строго в третьем лице в женском роде («Анна сделала», «она пошла»)." in prompt_f
+        assert "Игрок (Анна) — женщина. Обращайся к игроку в женском роде" in prompt_f
 
         persona_m = {"gender": "male"}
         prompt_m = RoleplayPromptBuilder.build(
@@ -95,7 +95,7 @@ class TestGrammarAndPOVAgreement:
             user_name="Роман",
             active_persona=persona_m
         )
-        assert "Повествование о действиях игрока (Роман) ведётся строго в третьем лице в мужском роде («Роман сделал», «он пошел»)." in prompt_m
+        assert "Игрок (Роман) — мужчина. Обращайся к игроку в мужском роде" in prompt_m
 
     def test_depth_anchor_generation(self):
         # 1. LitRPG / System -> <stats>
@@ -126,12 +126,12 @@ class TestGrammarAndPOVAgreement:
         # 6. Group
         card_grp = CharacterCard(name="Отряд", is_group=True)
         anchor_grp = RoleplayPromptBuilder.build_depth_anchor(card_grp, user_name="Командир", user_query="В атаку!")
-        assert "Выдели одного конкретного персонажа группы" in anchor_grp
+        assert "Выдели одного спутника как инициатора ответа" in anchor_grp
 
         # 7. Solo
         card_solo = CharacterCard(name="Селеста")
         anchor_solo = RoleplayPromptBuilder.build_depth_anchor(card_solo, user_name="Игрок", user_query="Привет")
-        assert "Сфокусируйся на мимике" in anchor_solo
+        assert "передай мимику, жесты и подтекст" in anchor_solo
 
 
 

@@ -70,6 +70,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 
     # 4. SD WebUI Forge / Art Director Defaults
     "auto_generate_art": False,
+    "forge_sdxl_fp8_enabled": True,
     "visualizer_settings": {
         "auto_generate_art": False,
         "steps": 28,

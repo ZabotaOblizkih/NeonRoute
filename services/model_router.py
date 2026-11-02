@@ -187,7 +187,7 @@ class ModelRouter:
             return self.profiles
 
         try:
-            with open(self.data_path, "r", encoding="utf-8") as f:
+            with open(self.data_path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             models = data.get("models")
             if isinstance(models, list) and models:
