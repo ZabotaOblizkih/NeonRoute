@@ -290,7 +290,7 @@ class DialogControllerMixin:
             if not hasattr(self, "app_config") or self.app_config is None:
                 self.app_config = {}
             self.app_config[cfg_key] = new_params
-            from services.config_manager import ConfigManager
+            from utils.config_manager import ConfigManager
             ConfigManager.save_config(self.app_config)
             if hasattr(self, "chat_controller"):
                 self.chat_controller.update_config(self.app_config)

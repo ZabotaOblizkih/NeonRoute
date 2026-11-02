@@ -1736,7 +1736,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
             # 2.5 Очистка остаточных записей из реестра LoRA
             try:
-                from services.lora_manager import LoraManager, LORA_REGISTRY_PATH
+                from services.art_director.lora_manager import LoraManager, LORA_REGISTRY_PATH
                 reg = LoraManager.load_registry()
                 chars = reg.get("characters", {})
                 c_key = char_name.lower().replace(" ", "_")

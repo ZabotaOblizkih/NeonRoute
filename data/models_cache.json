@@ -292,5 +292,12 @@
     "architecture": "unknown",
     "is_moe": false,
     "context_length": null
+  },
+  "C:\\Users\\user\\AppData\\Local\\Temp\\pytest-of-user\\pytest-1052\\test_start_llama_server_sync_s0\\model.gguf::1793663377.8962953::0": {
+    "total_layers": 28,
+    "model_size_mb": 0.0,
+    "architecture": "unknown",
+    "is_moe": false,
+    "context_length": null
   }
 }

@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QFrame, QSplitter, QMessageBox, QProgressBar, QWidget
 )
 
-from services.lora_manager import LoraManager, DEFAULT_FORGE_LORA_DIR
+from services.art_director.lora_manager import LoraManager, DEFAULT_FORGE_LORA_DIR
 from ui.dialogs.civitai_catalog_dialog import (
     render_civitai_poster,
     CivitaiSearchWorker,
