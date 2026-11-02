@@ -538,7 +538,7 @@ class TestPipelineEndToEndPropagation:
             d.router.match_prompt.return_value = ("xl_model", 0.95)
             d.router.get_checkpoint_for_model.return_value = "animagine_xl.safetensors"
 
-            # 1. SDXL модель с явным включением Hires.fix
+            # 1. SDXL модель с явным включением Hires.fix блокируется аппаратным предохранителем
             d.router.get_profile.return_value = {
                 "id": "xl_model",
                 "name": "SDXL Custom",
@@ -547,8 +547,21 @@ class TestPipelineEndToEndPropagation:
                 "pipeline": {"enable_hr": True, "hr_scale": 1.4}
             }
             plan_xl = d.plan_generation("1girl, portrait")
-            assert plan_xl.enable_hr is True
-            assert plan_xl.hr_scale == 1.4
+            assert plan_xl.enable_hr is False
+            assert plan_xl.hr_scale == 1.0
+
+            # 2. SD 1.5 модель с явным включением Hires.fix разрешена
+            d.router.get_checkpoint_for_model.return_value = "realistic_vision_v51.safetensors"
+            d.router.get_profile.return_value = {
+                "id": "sd15_model_hr",
+                "name": "SD15 Custom HR",
+                "architecture": "sd15",
+                "checkpoint": "realistic_vision_v51.safetensors",
+                "pipeline": {"enable_hr": True, "hr_scale": 1.4}
+            }
+            plan_sd15_hr = d.plan_generation("1girl, portrait")
+            assert plan_sd15_hr.enable_hr is True
+            assert plan_sd15_hr.hr_scale == 1.4
 
             # 2. SD 1.5 модель с явным отключением Hires.fix
             d.router.get_checkpoint_for_model.return_value = "realistic_vision_v51.safetensors"

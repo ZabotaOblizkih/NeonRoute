@@ -12,6 +12,8 @@ from services.forge_models import (
 )
 from services.direct_command_parser import parse_direct_command_params
 from services.art_director.lora_manager import LoraManager, extract_lora_metadata
+from services.art_director.vram_policy import is_hires_safe, resolve_hardware_vram_budget, calculate_max_hires_canvas_area
+from services.forge_client import is_sdxl_checkpoint
 from services.model_router import ModelRouter
 
 from .contracts import TargetSubject, VisualIntent
@@ -495,6 +497,55 @@ class ArtDirector:
             return model_id, score
         return ("realistic", 1.0)
 
+    def _is_resolution_safe_for_hires(
+        self,
+        width: int,
+        height: int,
+        architecture: str,
+        checkpoint: str = "",
+        enable_adetailer: bool = False
+    ) -> bool:
+        """Динамическая проверка безопасности второго прохода Hires.fix."""
+        from utils.config_manager import ConfigManager
+        config = ConfigManager.load_config()
+        sdxl_fp8_enabled = config.get("forge_sdxl_fp8_enabled", True)
+        is_fp8 = is_sdxl_checkpoint(checkpoint) and sdxl_fp8_enabled
+
+        monitor = getattr(self, "system_monitor", None)
+        total_vram_gb, os_reserve_mb = resolve_hardware_vram_budget(monitor)
+
+        max_area = calculate_max_hires_canvas_area(
+            architecture=architecture,
+            is_fp8=is_fp8,
+            total_vram_gb=total_vram_gb,
+            os_reserve_mb=os_reserve_mb,
+            enable_adetailer=enable_adetailer
+        )
+
+        ratio = max(width / height, height / width) if (height > 0 and width > 0) else 1.0
+        effective_area = int((width * height) * (1.0 + (ratio - 1.5) * 0.3)) if ratio > 1.5 else (width * height)
+
+        hires_safe = is_hires_safe(
+            width=width,
+            height=height,
+            architecture=architecture,
+            is_fp8=is_fp8,
+            total_vram_gb=total_vram_gb,
+            os_reserve_mb=os_reserve_mb,
+            enable_adetailer=enable_adetailer
+        )
+
+        arch_str = str(architecture).upper() if architecture else "SD15"
+        logger.info(
+            f"[Forge VRAM Policy Diagnostic Passport]\n"
+            f"  ├── 1. Аппаратный профиль : Total VRAM = {total_vram_gb:.1f} GB | Резерв ОС = {os_reserve_mb} MB\n"
+            f"  ├── 2. Пайплайн и модель  : Arch = {arch_str} | FP8 = {is_fp8} | ADetailer = {enable_adetailer}\n"
+            f"  ├── 3. Геометрия холста   : {width}x{height} ({width * height:,} px) | Ratio = {ratio:.2f} (Eff Area: {effective_area:,} px)\n"
+            f"  └── 4. Вердикт Hires.fix  : Allowed = {hires_safe} | Потолок площади = {max_area:,} px"
+        )
+
+        return hires_safe
+
     def plan_from_visual_intent(
         self,
         visual_intent: Union[Dict[str, Any], VisualIntent],
@@ -813,19 +864,30 @@ class ArtDirector:
             enable_ad = allow_by_model and not is_bg
         hands_enabled = enable_ad
 
-        # Аппаратный барьер 8 ГБ VRAM:
-        # Если площадь кадра >= 640 000 px (SDXL нативно 1024x1024 = 1.05M px),
-        # Hires.fix 1.5x принудительно отключается во избежание вылета CUDA OOM.
-        is_large_canvas = (width * height) >= 640000
+        plan_enable_ad = enable_ad
+        # Определение доступности Hires.fix через динамическую политику VRAM
+        hires_safe = self._is_resolution_safe_for_hires(
+            width=width,
+            height=height,
+            architecture=arch_cfg.get("architecture") or ("sdxl" if arch_cfg.get("is_xl") else "sd15"),
+            checkpoint=target_ckpt,
+            enable_adetailer=bool(plan_enable_ad)  # флаг активности ADetailer для кадра
+        )
 
         if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
             enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
             hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
         else:
-            hr_scale = float(model_pipeline.get("hr_scale", 1.5))
-            enable_hr = True if not is_bg else False
+            if arch_cfg.get("is_xl"):
+                hr_scale = 1.0
+                enable_hr = False
+            else:
+                hr_scale = float(model_pipeline.get("hr_scale", 1.5))
+                enable_hr = True if not is_bg else False
 
-        if arch_cfg.get("is_xl") or is_large_canvas:
+        # Аппаратный предохранитель VRAM: если разрешение небезопасно для текущей топологии GPU,
+        # Hires.fix принудительно отключается со сбросом множителя до 1.0
+        if not hires_safe:
             enable_hr = False
             hr_scale = 1.0
 
@@ -1312,19 +1374,30 @@ class ArtDirector:
             enable_ad = allow_by_model and not is_bg
         hands_enabled = enable_ad
 
-        # Аппаратный барьер 8 ГБ VRAM:
-        # Если площадь кадра >= 640 000 px (SDXL нативно 1024x1024 = 1.05M px),
-        # Hires.fix 1.5x принудительно отключается во избежание вылета CUDA OOM.
-        is_large_canvas = (width * height) >= 640000
+        plan_enable_ad = enable_ad
+        # Определение доступности Hires.fix через динамическую политику VRAM
+        hires_safe = self._is_resolution_safe_for_hires(
+            width=width,
+            height=height,
+            architecture=arch_cfg.get("architecture") or ("sdxl" if arch_cfg.get("is_xl") else "sd15"),
+            checkpoint=target_ckpt,
+            enable_adetailer=bool(plan_enable_ad)  # флаг активности ADetailer для кадра
+        )
 
         if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
             enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
             hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
         else:
-            hr_scale = float(model_pipeline.get("hr_scale", 1.5))
-            enable_hr = True if not is_bg else False
+            if arch_cfg.get("is_xl"):
+                hr_scale = 1.0
+                enable_hr = False
+            else:
+                hr_scale = float(model_pipeline.get("hr_scale", 1.5))
+                enable_hr = True if not is_bg else False
 
-        if arch_cfg.get("is_xl") or is_large_canvas:
+        # Аппаратный предохранитель VRAM: если разрешение небезопасно для текущей топологии GPU,
+        # Hires.fix принудительно отключается со сбросом множителя до 1.0
+        if not hires_safe:
             enable_hr = False
             hr_scale = 1.0
 

@@ -809,6 +809,15 @@ class MainWindow(
             new_sess["type"] = "engineering"
             new_sess["mode"] = "engineer"
 
+        # 1. ЗАЩИТА: Сначала гарантированно сохраняем старый диалог на диск
+        if getattr(self, "current_session", None):
+            self._save_current_session()
+
+        # 2. Мгновенно зачищаем старый контекст и виджеты ленты
+        self.chat_history.clear()
+        self._clear_chat_widgets()
+
+        # 3. Переход координатора в целевой режим с уже чистым лейаутом
         from services.mode_coordinator import AppMode
         target_app_mode = AppMode.from_string(mode, is_engineer_checked=(mode in ("engineer", "engineering")))
         self.mode_coordinator.transition_to(target_app_mode, session_data=new_sess)
@@ -822,14 +831,12 @@ class MainWindow(
         new_sess["sampling_params"] = initial_sampling
         new_sess["is_custom_sampling"] = False
         logger.info(f"[SessionManager] [NEW-CHAT] Создан диалог в режиме '{effective_mode}' с дефолтами из config.json: temp={initial_sampling.get('temperature')}")
+
         self.current_session = new_sess
         self.active_character = character_card if mode == "roleplay" else None
-        self.chat_history.clear()
+
         self._update_mode_ui()
         self._unlock_mode_selector()
-
-        # Clear existing message widgets
-        self._clear_chat_widgets()
         self._apply_chat_background()
 
         # Unlock model selector for a fresh dialog

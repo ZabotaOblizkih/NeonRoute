@@ -27,10 +27,10 @@ class TestGroup1AreaBoundaries:
     @pytest.mark.parametrize(
         "width,height,expected_scale,description",
         [
-            (800, 800, 1.0, "Ровно на границе: 800x800 = 640 000 px -> hr_scale == 1.0"),
-            (640, 960, 1.5, "На один шаг ниже границы: 640x960 = 614 400 px -> hr_scale == 1.5"),
-            (640, 1024, 1.0, "На один шаг выше границы: 640x1024 = 655 360 px -> hr_scale == 1.0"),
-            (1280, 512, 1.0, "Экстремальная панорама: 1280x512 = 655 360 px -> hr_scale == 1.0"),
+            (512, 768, 1.5, "Штатный портрет SD 1.5: 512x768 = 393 216 px -> hr_scale == 1.5"),
+            (768, 1024, 1.5, "Разрешенный портрет: 768x1024 = 786 432 px -> hr_scale == 1.5"),
+            (1024, 1024, 1.0, "Превышение динамического бюджета VRAM: 1024x1024 = 1 048 576 px -> hr_scale == 1.0"),
+            (448, 1792, 1.0, "Экстремальная панорама: 448x1792 -> hr_scale == 1.0"),
         ],
     )
     def test_resolution_640k_threshold_hr_scale(self, width, height, expected_scale, description):
@@ -41,6 +41,7 @@ class TestGroup1AreaBoundaries:
             "is_xl": False,
             "extra_negative": "",
             "force_adetailer": True,
+            "architecture": "sd15",
         }
 
         with patch("services.art_director.director.get_archetype_config", return_value=arch_config):
@@ -50,7 +51,7 @@ class TestGroup1AreaBoundaries:
             )
 
         assert plan.hr_scale == expected_scale, (
-            f"Не соблюден барьер 640k px ({description}): "
+            f"Не соблюден динамический барьер VRAM ({description}): "
             f"ожидался hr_scale == {expected_scale}, получен {plan.hr_scale} для {width}x{height} "
             f"({width * height} px)"
         )
@@ -92,16 +93,17 @@ class TestGroup2ArchitectureResolutionConflict:
 
     def test_sd15_large_frame_disables_hires(self):
         """
-        Большой кадр SD 1.5 (1024x768 = 786 432 px): флаг is_xl: False,
-        но превышение площади 640k обязано сбросить hr_scale == 1.0.
+        Большой кадр SD 1.5 (1024x1024 = 1 048 576 px): флаг is_xl: False,
+        но превышение динамического бюджета VRAM обязано сбросить hr_scale == 1.0.
         """
         director = ArtDirector()
         arch_config = {
             "width": 1024,
-            "height": 768,
+            "height": 1024,
             "is_xl": False,
             "extra_negative": "",
             "force_adetailer": True,
+            "architecture": "sd15",
         }
 
         with patch("services.art_director.director.get_archetype_config", return_value=arch_config):
@@ -111,10 +113,10 @@ class TestGroup2ArchitectureResolutionConflict:
             )
 
         assert plan.hr_scale == 1.0, (
-            f"Барьер 640k px нарушен для SD 1.5: для кадра 1024x768 (786k px) "
+            f"Динамический барьер VRAM нарушен для SD 1.5: для кадра 1024x1024 (1M px) "
             f"hr_scale должен быть 1.0, получен {plan.hr_scale}"
         )
-        assert plan.enable_hr is False, "enable_hr должен быть False для SD 1.5 при > 640k px"
+        assert plan.enable_hr is False, "enable_hr должен быть False для SD 1.5 при превышении динамического бюджета"
 
 
 # =============================================================================
@@ -199,13 +201,14 @@ class TestGroup3UserJsonPriority:
             f"Кастомный множитель 2.0 должен сохраняться для кадра 512x768, получен {plan_normal.hr_scale}"
         )
 
-        # 2. Превышение 640k (1024x768 = 786 432 px) -> сброс в 1.0
+        # 2. Превышение динамического барьера VRAM (1024x1024 = 1 048 576 px) -> сброс в 1.0
         arch_config_large = {
             "width": 1024,
-            "height": 768,
+            "height": 1024,
             "is_xl": False,
             "extra_negative": "",
             "force_adetailer": True,
+            "architecture": "sd15",
         }
         with patch("services.art_director.director.get_archetype_config", return_value=arch_config_large):
             plan_large = director.plan_from_visual_intent(
@@ -214,7 +217,7 @@ class TestGroup3UserJsonPriority:
             )
 
         assert plan_large.hr_scale == 1.0, (
-            f"При превышении барьера 640k px кастомный множитель hr_scale=2.0 обязан сбрасываться в 1.0, "
+            f"При превышении динамического барьера VRAM кастомный множитель hr_scale=2.0 обязан сбрасываться в 1.0, "
             f"получен {plan_large.hr_scale}"
         )
 

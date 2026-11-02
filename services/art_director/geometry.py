@@ -61,7 +61,8 @@ def get_archetype_config(model_key: Any, archetype: str) -> Dict[str, Any]:
         "height": bucket["height"],
         "extra_negative": bucket.get("extra_neg", ""),
         "force_adetailer": bucket.get("force_ad", True),
-        "is_xl": is_xl
+        "is_xl": is_xl,
+        "architecture": "sdxl" if is_xl else "sd15"
     }
 
 def detect_scene_archetype(prompt: str) -> str:

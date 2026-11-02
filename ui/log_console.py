@@ -172,7 +172,8 @@ class LogConsoleDialog(QDialog):
         color = color_map.get(levelname.upper(), "#CBD5E1")
 
         escaped = html.escape(text)
-        colored_html = f"<div style='color: {color}; margin: 1px 0;'>{escaped}</div>"
+        # white-space: pre-wrap сохраняет переносы \n и отступы в HTML-виджете
+        colored_html = f"<div style='color: {color}; margin: 1px 0; white-space: pre-wrap;'>{escaped}</div>"
         self.text_edit.appendHtml(colored_html)
         self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
 

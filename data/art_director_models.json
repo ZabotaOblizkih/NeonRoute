@@ -1,39 +1,13 @@
 ﻿{
   "models": [
     {
-      "id": "model_2",
-      "name": "Realistic Vision",
-      "architecture": "sd15",
-      "checkpoint": "pony_xl_fp8e4.safetensors",
-      "routing_description": "Повседневные фотореалистичные кадры, люди, реальная жизнь, естественный будуар и студийные портреты, raw photo, dslr.",
-      "llm_guidance": "",
-      "negative_prompt": "CyberRealistic_Negative-neg, worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text",
-      "is_default": true,
-      "style_triggers": [],
-      "active": true,
-      "triggers": [],
-      "pipeline": {
-        "architecture": "sd15",
-        "sampler": "DPM++ 2M Karras",
-        "scheduler": "Karras",
-        "steps": 25,
-        "cfg_scale": 6.0,
-        "clip_skip": 1,
-        "hires_upscaler": "4x-UltraSharp",
-        "hires_denoise": 0.32,
-        "enable_hr": true,
-        "enable_adetailer": true,
-        "negative_prompt": "CyberRealistic_Negative-neg, worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text"
-      }
-    },
-    {
       "id": "auto_aamxlanimemix_v10_fp8e4",
       "name": "aamXLAnimeMix_v10_fp8e4",
       "architecture": "sdxl",
       "checkpoint": "aamXLAnimeMix_v10_fp8e4.safetensors",
       "routing_description": "Аниме, 2D, манга",
       "llm_guidance": "",
-      "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed, badhandv4",
+      "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed",
       "is_default": false,
       "style_triggers": [
         "Манга"
@@ -50,8 +24,8 @@
         "hires_upscaler": "4x-UltraSharp",
         "hires_denoise": 0.32,
         "enable_hr": false,
-        "enable_adetailer": false,
-        "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed, badhandv4"
+        "enable_adetailer": true,
+        "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed"
       }
     },
     {
@@ -73,10 +47,10 @@
         "steps": 40,
         "cfg_scale": 4.0,
         "clip_skip": 1,
-        "hires_upscaler": "4x_NickelbackFS_72000_G",
+        "hires_upscaler": "4x-UltraSharp",
         "hires_denoise": 0.35,
-        "enable_hr": false,
-        "enable_adetailer": false,
+        "enable_hr": true,
+        "enable_adetailer": true,
         "negative_prompt": "CyberRealistic_Negative-neg, (disfigured, deformed, unrealistic anatomy, poorly drawn face, bad proportions, extra limbs, low quality, overexposed, watermark, text)"
       }
     },
@@ -101,8 +75,8 @@
         "clip_skip": 2,
         "hires_upscaler": "Latent (bicubic antialiased)",
         "hires_denoise": 0.46,
-        "enable_hr": false,
-        "enable_adetailer": false,
+        "enable_hr": true,
+        "enable_adetailer": true,
         "negative_prompt": "BadDream, FastNegativeV2"
       }
     },
@@ -127,7 +101,7 @@
         "clip_skip": 2,
         "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
         "hires_denoise": 0.4,
-        "enable_hr": false,
+        "enable_hr": true,
         "enable_adetailer": false,
         "negative_prompt": "easynegative, badhandv4, (worst quality, low quality:1.2), (zombie, interlocked fingers), full body, thighs"
       }
@@ -139,7 +113,7 @@
       "checkpoint": "mopMixtureOfPerverts_instaV10DMD_fp8e4.safetensors",
       "routing_description": "Новая SDXL модель (требуется настройка описания для роутинга)",
       "llm_guidance": "",
-      "negative_prompt": "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text",
+      "negative_prompt": "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, text",
       "is_default": false,
       "style_triggers": [],
       "active": true,
@@ -154,8 +128,8 @@
         "hires_upscaler": "4x-UltraSharp",
         "hires_denoise": 0.32,
         "enable_hr": false,
-        "enable_adetailer": false,
-        "negative_prompt": "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text"
+        "enable_adetailer": true,
+        "negative_prompt": "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, text"
       }
     },
     {

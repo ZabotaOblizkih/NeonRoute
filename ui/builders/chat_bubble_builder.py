@@ -225,19 +225,42 @@ class ChatBubbleBuilderMixin:
         return widget
 
     def _clear_chat_widgets(self):
-        """Removes all chat bubble widgets from the view except bottom stretch."""
+        """
+        Мгновенно размонтирует и уничтожает все виджеты сообщений из контейнера чата.
+        Исключает наложение старых сообщений на новые за счет явного hide() и setParent(None).
+        """
         if hasattr(self, "_remove_greeting_cycler_chip"):
             self._remove_greeting_cycler_chip()
-        self._remove_typing_loader()
+        if hasattr(self, "_remove_typing_loader"):
+            self._remove_typing_loader()
+
         self._rendered_messages_offset = 0
         self._all_session_messages = []
         self._btn_load_more_widget = None
-        while self.chat_layout.count() > 1:
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                if hasattr(item.widget(), "audio_widget") and item.widget().audio_widget:
-                    item.widget().audio_widget.cleanup()
-                item.widget().deleteLater()
+
+        if hasattr(self, "chat_layout") and self.chat_layout is not None:
+            # Зачищаем абсолютно все элементы без исключения до 0
+            while self.chat_layout.count() > 0:
+                item = self.chat_layout.takeAt(0)
+                if not item:
+                    continue
+                w = item.widget()
+                if w is not None:
+                    # 1. Мгновенно убираем виджет с экрана
+                    w.hide()
+                    # 2. Физически разрываем связь с chat_container
+                    w.setParent(None)
+                    # 3. Очищаем медиа-ресурсы, если есть
+                    if hasattr(w, "audio_widget") and w.audio_widget:
+                        try:
+                            w.audio_widget.cleanup()
+                        except Exception:
+                            pass
+                    # 4. Освобождаем память C++
+                    w.deleteLater()
+
+            # Восстанавливаем чистый концевой распорочный элемент
+            self.chat_layout.addStretch()
 
     def _update_message_attachment(self, widget: ChatMessageWidget, file_path: Path, generation_params: Optional[dict] = None):
         """Appends generated document or image to the message in session storage."""
