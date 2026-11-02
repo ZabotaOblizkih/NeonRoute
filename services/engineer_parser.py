@@ -131,10 +131,10 @@ class EngineerResponseParser:
                 "stdout": summary_out,
                 "stderr": "",
                 "summary": f"Чекпоинт успешно зафиксирован:\n{summary_out}",
-                "artifact_format": self.artifact_format,
-                "artifact_type": self.artifact_type,
+                "artifact_format": getattr(plan, "artifact_format", None),
+                "artifact_type": getattr(plan, "artifact_type", None),
                 "target_artifact": target_artifact,
-                "verification_script": self.verification_script,
+                "verification_script": verification_script,
                 "verification_passed": False
             }
 
@@ -352,19 +352,19 @@ class EngineerResponseParser:
         allow_turn2_revision = (turn == 2 and turn1_test_signature_mismatch)
         should_freeze = (turn >= 3) or (turn == 2 and not allow_turn2_revision)
 
-        if should_freeze and self.verification_script and (ws_dir / Path(self.verification_script).name).is_file():
-            vs_name = Path(self.verification_script).name.lower()
+        if should_freeze and verification_script and (ws_dir / Path(verification_script).name).is_file():
+            vs_name = Path(verification_script).name.lower()
             c_before = len(clean_blocks)
             p_before = len(actions.patch_blocks)
             clean_blocks = [(fn, cnt) for fn, cnt in clean_blocks if Path(fn).name.lower() != vs_name]
             patch_blocks = [(fn, body) for fn, body in patch_blocks if Path(fn).name.lower() != vs_name]
             if len(clean_blocks) < c_before or len(patch_blocks) < p_before:
-                logger.warning(f"🛡️ [Verification Freeze] Попытка модификации проверочного скрипта '{self.verification_script}' заблокирована на ходе {turn}.")
-        elif allow_turn2_revision and self.verification_script:
-            vs_name = Path(self.verification_script).name.lower()
+                logger.warning(f"🛡️ [Verification Freeze] Попытка модификации проверочного скрипта '{verification_script}' заблокирована на ходе {turn}.")
+        elif allow_turn2_revision and verification_script:
+            vs_name = Path(verification_script).name.lower()
             revised = any(Path(fn).name.lower() == vs_name for fn, _ in clean_blocks) or any(Path(fn).name.lower() == vs_name for fn, _ in patch_blocks)
             if revised:
-                logger.info(f"🔄 [Verification Freeze] Разрешена однократная ревизия проверочного скрипта '{self.verification_script}' на ходе 2.")
+                logger.info(f"🔄 [Verification Freeze] Разрешена однократная ревизия проверочного скрипта '{verification_script}' на ходе 2.")
 
         write_blocks = clean_blocks
         actions.write_blocks = clean_blocks
