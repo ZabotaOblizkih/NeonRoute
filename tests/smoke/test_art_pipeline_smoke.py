@@ -10,13 +10,15 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from typing import Optional
 import pytest
 
 import config
 from services.art_director_config import save_art_director_models, load_art_director_models
 from services.art_director.director import ArtDirector
 from services.art_director.contracts import VisualIntent, TargetSubject
-from services.model_router import ModelRouter
+from services.art_director.plan import GenerationPlan
+from services.model_router import ModelRouter, normalize_model_choice
 from ui.controllers.hardware_engine import HardwareEngineMixin
 
 
@@ -39,6 +41,36 @@ class DummyWindow(HardwareEngineMixin):
 
     def get_effective_mode(self):
         return "roleplay"
+
+    def execute_auto_generation(
+        self,
+        prompt: str = "",
+        visual_intent: Optional[VisualIntent] = None
+    ) -> GenerationPlan:
+        """
+        Executes end-to-end art generation simulating HardwareEngineMixin in Auto Mode.
+        """
+        active_pref_style = normalize_model_choice(self.selected_forge_checkpoint)
+        available_models = self.forge_client.get_models() if self.forge_client else []
+
+        if visual_intent is not None:
+            plan = self.art_director.plan_from_visual_intent(
+                visual_intent=visual_intent,
+                preferred_style=active_pref_style,
+                available_models=available_models,
+                mode=self.get_effective_mode(),
+            )
+        else:
+            plan = self.art_director.plan_generation(
+                raw_prompt=prompt,
+                preferred_style=active_pref_style,
+                available_models=available_models,
+                mode=self.get_effective_mode(),
+            )
+
+        kwargs = plan.to_forge_kwargs()
+        self.forge_client.text_to_image(**kwargs)
+        return plan
 
 
 @pytest.fixture
@@ -228,4 +260,180 @@ def test_art_generation_pipeline_smoke(isolated_storage):
     )
     assert call_kwargs.get("enable_adetailer") is True, (
         f"enable_adetailer is not True: got {call_kwargs.get('enable_adetailer')}{dump_context}"
+    )
+
+
+def test_art_generation_pipeline_auto_routing_smoke(isolated_storage):
+    """
+    End-to-end smoke test validating semantic auto-routing of models (Auto Mode).
+
+    Covers:
+    A. Data Isolation: 2 synthetic models (test_realistic_default with is_default=True, test_anime_alt)
+    B. Semantic routing logic:
+       1. Clear semantic query matching alternative model triggers/aesthetics -> test_anime_alt
+       2. Borderline / competing triggers / tie-break query -> test_realistic_default
+    C. End-to-end execution:
+       - DummyWindow with HardwareEngineMixin in Auto Mode (preferred_style=None / "✨ Арт-директор (Авто)")
+       - forge_client.text_to_image mock verification (called 1 time per generation)
+       - Plan target_checkpoint and forge kwargs checkpoint verification
+    """
+    tmp_json_path = isolated_storage
+
+    # -------------------------------------------------------------------------
+    # A. Data Isolation: Register 2 Synthetic Models
+    # -------------------------------------------------------------------------
+    model_realistic_default = {
+        "id": "test_realistic_default",
+        "name": "Test Realistic Default",
+        "architecture": "sd15",
+        "checkpoint": "cyberrealistic_v5.safetensors",
+        "is_default": True,
+        "style_triggers": ["real people", "portrait photo", "photorealistic"],
+        "routing_description": "fine details, 35mm photograph, natural lighting",
+        "description": "fine details, 35mm photograph, natural lighting",
+        "active": True,
+        "pipeline": {
+            "architecture": "sd15",
+            "sampler": "DPM++ 2M Karras",
+            "scheduler": "Karras",
+            "steps": 25,
+            "cfg_scale": 6.0,
+            "clip_skip": 1,
+            "enable_hr": False,
+            "enable_adetailer": True,
+            "negative_prompt": "ugly, deformed, bad hands"
+        }
+    }
+
+    model_anime_alt = {
+        "id": "test_anime_alt",
+        "name": "Test Anime Alt",
+        "architecture": "sd15",
+        "checkpoint": "meinamix_v11.safetensors",
+        "is_default": False,
+        "style_triggers": ["anime", "illustration", "2d drawing"],
+        "routing_description": "vibrant colors, anime screencap, cel shaded",
+        "description": "vibrant colors, anime screencap, cel shaded",
+        "active": True,
+        "pipeline": {
+            "architecture": "sd15",
+            "sampler": "DPM++ 2M Karras",
+            "scheduler": "Karras",
+            "steps": 28,
+            "cfg_scale": 7.0,
+            "clip_skip": 2,
+            "enable_hr": False,
+            "enable_adetailer": False,
+            "negative_prompt": "worst quality, low quality, bad anatomy"
+        }
+    }
+
+    save_success = save_art_director_models([model_realistic_default, model_anime_alt])
+    assert save_success is True, "Failed to persist synthetic models into isolated storage"
+    assert tmp_json_path.exists(), f"Isolated models file {tmp_json_path} does not exist"
+
+    # Initialize ArtDirector and reload models
+    art_director = ArtDirector()
+    art_director.reload_models()
+
+    # Verify router loaded both profiles
+    active_ids = {p.get("id") for p in art_director.router.profiles}
+    assert "test_realistic_default" in active_ids, f"Default model not loaded: {active_ids}"
+    assert "test_anime_alt" in active_ids, f"Anime model not loaded: {active_ids}"
+
+    # Initialize DummyWindow and mock ForgeClient
+    mock_forge = MagicMock()
+    mock_forge.get_models.return_value = [
+        {"title": "cyberrealistic_v5.safetensors", "model_name": "cyberrealistic_v5"},
+        {"title": "meinamix_v11.safetensors", "model_name": "meinamix_v11"}
+    ]
+    window = DummyWindow(art_director=art_director, forge_client=mock_forge)
+    window._on_forge_models_discovered([])
+
+    # Verify Auto option and model names in window
+    assert "✨ Арт-директор (Авто)" in window.available_forge_checkpoints
+    assert "Test Realistic Default" in window.available_forge_checkpoints
+    assert "Test Anime Alt" in window.available_forge_checkpoints
+
+    # -------------------------------------------------------------------------
+    # B. Router Selection Logic (Diagnostic Unit Checks)
+    # -------------------------------------------------------------------------
+    # 1. Clear semantic query matching anime triggers/aesthetics
+    anime_query = "anime illustration 2d drawing"
+    anime_winner_id, anime_score, anime_reason = art_director.router.match_prompt_detailed(anime_query)
+    assert anime_winner_id == "test_anime_alt", (
+        f"Expected 'test_anime_alt' for query '{anime_query}', got '{anime_winner_id}' (reason: {anime_reason}, score: {anime_score})"
+    )
+
+    # 2. Borderline / tie-break / default query
+    default_query = "Нарисуй фотографию в портрете"
+    def_winner_id, def_score, def_reason = art_director.router.match_prompt_detailed(default_query)
+    assert def_winner_id == "test_realistic_default", (
+        f"Expected 'test_realistic_default' for query '{default_query}', got '{def_winner_id}' (reason: {def_reason}, score: {def_score})"
+    )
+
+    # Competing triggers tie-breaker check
+    competing_query = "portrait photo anime illustration"
+    comp_winner_id, comp_score, comp_reason = art_director.router.match_prompt_detailed(competing_query)
+    assert comp_winner_id == "test_realistic_default", (
+        f"Expected 'test_realistic_default' for tie-break query '{competing_query}', got '{comp_winner_id}' (reason: {comp_reason}, score: {comp_score})"
+    )
+
+    # -------------------------------------------------------------------------
+    # C. End-to-End Pipeline Execution in Auto Mode (preferred_style=None)
+    # -------------------------------------------------------------------------
+    # Scenario 1: Clear semantic intent -> chooses anime model
+    window.selected_forge_checkpoint = None  # Auto Mode
+    mock_forge.reset_mock()
+
+    intent_anime = VisualIntent(
+        prompt="anime illustration 2d drawing of a cybernetic warrior",
+        mode="roleplay",
+        suggested_model=None
+    )
+
+    plan_anime = window.execute_auto_generation(visual_intent=intent_anime)
+
+    # Assertions for Scenario 1
+    assert mock_forge.text_to_image.call_count == 1, (
+        f"mock_forge.text_to_image should be called exactly once, called {mock_forge.text_to_image.call_count} times"
+    )
+    call_kwargs_anime = mock_forge.text_to_image.call_args.kwargs
+    actual_ckpt_anime = call_kwargs_anime.get("checkpoint") or call_kwargs_anime.get("checkpoint_name")
+
+    assert plan_anime.style == "test_anime_alt", f"Plan style mismatch: expected 'test_anime_alt', got '{plan_anime.style}'"
+    assert plan_anime.target_checkpoint == "meinamix_v11.safetensors", (
+        f"Plan target_checkpoint mismatch: expected 'meinamix_v11.safetensors', got '{plan_anime.target_checkpoint}'"
+    )
+    assert actual_ckpt_anime == "meinamix_v11.safetensors", (
+        f"Forge kwargs checkpoint mismatch: expected 'meinamix_v11.safetensors', got '{actual_ckpt_anime}'"
+    )
+
+    # Scenario 2: Borderline / Tie-break intent -> chooses default model
+    window.selected_forge_checkpoint = "✨ Арт-директор (Авто)"  # UI Auto Mode string
+    mock_forge.reset_mock()
+
+    intent_default = VisualIntent(
+        prompt="Нарисуй фотографию в портрете",
+        mode="roleplay",
+        suggested_model=None
+    )
+
+    plan_default = window.execute_auto_generation(visual_intent=intent_default)
+
+    # Assertions for Scenario 2
+    assert mock_forge.text_to_image.call_count == 1, (
+        f"mock_forge.text_to_image should be called exactly once, called {mock_forge.text_to_image.call_count} times"
+    )
+    call_kwargs_default = mock_forge.text_to_image.call_args.kwargs
+    actual_ckpt_default = call_kwargs_default.get("checkpoint") or call_kwargs_default.get("checkpoint_name")
+
+    assert plan_default.style == "test_realistic_default", (
+        f"Plan style mismatch: expected 'test_realistic_default', got '{plan_default.style}'"
+    )
+    assert plan_default.target_checkpoint == "cyberrealistic_v5.safetensors", (
+        f"Plan target_checkpoint mismatch: expected 'cyberrealistic_v5.safetensors', got '{plan_default.target_checkpoint}'"
+    )
+    assert actual_ckpt_default == "cyberrealistic_v5.safetensors", (
+        f"Forge kwargs checkpoint mismatch: expected 'cyberrealistic_v5.safetensors', got '{actual_ckpt_default}'"
     )
