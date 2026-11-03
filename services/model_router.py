@@ -7,6 +7,7 @@ Matches generation prompts with registered models based on cosine similarity wit
 import re
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -154,7 +155,15 @@ class ModelRouter:
 
         if auto_load:
             self.load_profiles()
-            self.update_embeddings()
+            self.update_embeddings_async()
+
+    def update_embeddings_async(self) -> threading.Thread:
+        """
+        Runs update_embeddings in a background daemon thread to eliminate GUI freeze at startup.
+        """
+        thread = threading.Thread(target=self.update_embeddings, daemon=True, name="ModelRouterWarmup")
+        thread.start()
+        return thread
 
     def get_embedding_engine(self):
         """
