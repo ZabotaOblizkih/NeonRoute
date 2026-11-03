@@ -1,0 +1,126 @@
+﻿{
+  "models": [
+    {
+      "id": "realistic",
+      "name": "Realistic Vision",
+      "checkpoint": "realisticVisionV60B1_v51HyperVAE_pruned_fp16.safetensors",
+      "routing_description": "Повседневные фотореалистичные кадры, люди, реальная жизнь, естественный будуар и студийные портреты, raw photo, dslr.",
+      "is_default": true,
+      "style_triggers": [],
+      "active": true,
+      "triggers": [
+        "photo",
+        "photorealistic",
+        "portrait",
+        "real life",
+        "nature",
+        "фото",
+        "снимок",
+        "портрет",
+        "реализм",
+        "dslr",
+        "девуш",
+        "женщин",
+        "человек",
+        "люд",
+        "парн",
+        "мужчин",
+        "настоящ",
+        "реальн"
+      ],
+      "description": "Повседневные фотореалистичные кадры, люди, реальная жизнь, естественный будуар и студийные портреты."
+    },
+    {
+      "id": "cyberrealistic",
+      "name": "CyberRealistic Classic",
+      "checkpoint": "cyberrealistic_classic.safetensors",
+      "routing_description": "Технологичный фотореализм, киберпанк, глянец, латекс, броня, хай-тек будуар и контрастное неоновое освещение, cyberpunk, sci-fi.",
+      "is_default": false,
+      "style_triggers": [],
+      "active": true,
+      "triggers": [
+        "киберпанк",
+        "cyberpunk",
+        "неон",
+        "neon",
+        "sci-fi",
+        "футуризм",
+        "андроид",
+        "high-tech",
+        "латекс",
+        "ночной город"
+      ],
+      "description": "Технологичный фотореализм, киберпанк, глянец, латекс, броня, хай-тек будуар и контрастное неоновое освещение."
+    },
+    {
+      "id": "fantasy_art",
+      "name": "DreamShaper 8",
+      "checkpoint": "dreamshaper_8.safetensors",
+      "routing_description": "Художественные арты, цифровая живопись, магия, сказочные расы, фэнтези и концепт-арт, magic, fantasy.",
+      "is_default": false,
+      "style_triggers": [
+        "рисунок",
+        "картина",
+        "маслом",
+        "акварель",
+        "иллюстрация",
+        "painting",
+        "artstation"
+      ],
+      "active": true,
+      "triggers": [
+        "art",
+        "fantasy",
+        "digital painting",
+        "illustration",
+        "concept art",
+        "рисунок",
+        "картина",
+        "живопись",
+        "фэнтези",
+        "арт",
+        "акварель",
+        "масло",
+        "эльф",
+        "elf",
+        "магия"
+      ],
+      "description": "Художественные арты, цифровая живопись, магия, сказочные расы, фэнтези и концепт-арт."
+    },
+    {
+      "id": "anime_meina",
+      "name": "MeinaHentai",
+      "checkpoint": "meinahentai_v5Final.safetensors",
+      "routing_description": "Чистая 2D аниме-рисовка, манга, вайфу, стилизованный аниме-ролеплей и хентай, anime, 2d, waifu.",
+      "is_default": false,
+      "style_triggers": [
+        "аниме",
+        "anime",
+        "манга",
+        "manga",
+        "2d",
+        "2д",
+        "вайфу",
+        "тян",
+        "селл-шейдинг"
+      ],
+      "active": true,
+      "triggers": [
+        "anime",
+        "аниме",
+        "manga",
+        "манга",
+        "вайфу",
+        "waifu",
+        "хентай",
+        "hentai",
+        "2d",
+        "чиби",
+        "chibi",
+        "в стиле аниме",
+        "anime screencap"
+      ],
+      "description": "Чистая 2D аниме-рисовка, манга, вайфу, стилизованный аниме-ролеплей и хентай."
+    }
+  ]
+}

@@ -13,7 +13,7 @@ _orig_thread_start = threading.Thread.start
 def _safe_thread_start(self, *args, **kwargs):
     target_name = getattr(getattr(self, "_target", None), "__name__", "")
     if getattr(self, "name", "") == "FastEmbedWarmup" or target_name in (
-        "_get_embedding_engine", "_run", "warmup_memory_engine"
+        "_get_embedding_engine", "_run", "warmup_memory_engine", "_watchdog"
     ):
         return
     return _orig_thread_start(self, *args, **kwargs)

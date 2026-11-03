@@ -44,6 +44,7 @@ def test_mainwindow_headless_lifecycle(qapp, monkeypatch):
         assert ok_asst is True
         assert window.mode_coordinator.current_mode == AppMode.ASSISTANT
     finally:
+        window._shutdown_completed = True
         window.close()
         # Сброс активной сессии для предотвращения утечки состояния
         SandboxManager.set_active_session_id(None)
