@@ -144,13 +144,15 @@ class SandboxManager:
             return 0
 
     @classmethod
-    def get_workspace_dir(cls) -> Path:
-        """Возвращает изолированную директорию проекта для активной сессии."""
+    def get_workspace_dir(cls, create: bool = False) -> Path:
+        """Возвращает изолированную директорию проекта для активной сессии (ленивое создание)."""
         if cls._active_session_id:
             proj_dir = WORKSPACE_DIR / "projects" / cls._active_session_id
-            proj_dir.mkdir(parents=True, exist_ok=True)
+            if create:
+                proj_dir.mkdir(parents=True, exist_ok=True)
             return proj_dir
-        WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        if create:
+            WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
         return WORKSPACE_DIR
 
     @classmethod

@@ -486,6 +486,7 @@ class MainWindow(
         self.btn_audio = self.chat_header_bar.btn_audio
         self.btn_fullscreen = self.chat_header_bar.btn_fullscreen
         self.btn_toggle_inspector = self.chat_header_bar.btn_toggle_inspector
+        self.btn_toggle_inspector.setVisible(False)
 
         # Floating close button for fullscreen mode
         self.floating_close_btn = QPushButton("✕", self)
@@ -1500,6 +1501,8 @@ class MainWindow(
     def toggle_workspace_inspector(self):
         if not hasattr(self, "workspace_inspector"):
             return
+        if not self.is_engineer_mode_active():
+            return
         is_visible = not self.workspace_inspector.isVisible()
         self._sync_splitter_layout(is_engineer=is_visible)
 
@@ -1534,6 +1537,8 @@ class MainWindow(
 
         if hasattr(self, "btn_scene_bg"):
             self.btn_scene_bg.setVisible(is_rp)
+        if hasattr(self, "btn_toggle_inspector"):
+            self.btn_toggle_inspector.setVisible(is_eng)
 
         self._update_header_for_current_state()
         # singleShot гарантирует, что sizeHint кнопок и visibility всех виджетов применились

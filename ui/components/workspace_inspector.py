@@ -477,13 +477,10 @@ class WorkspaceInspectorWidget(CardWidget):
         self.active_file_path = path
 
     def _init_watcher(self):
-        """Регистрирует директорию песочницы в наблюдателе."""
-        ws_dir = SandboxManager.get_workspace_dir()
+        """Регистрирует директорию песочницы в наблюдателе (без насильного mkdir)."""
+        ws_dir = SandboxManager.get_workspace_dir(create=False)
         if not ws_dir.exists():
-            try:
-                ws_dir.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                return
+            return
 
         watched = set(self._watcher.directories())
         ws_str = str(ws_dir.resolve())

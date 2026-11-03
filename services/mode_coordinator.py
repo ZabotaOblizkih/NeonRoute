@@ -323,8 +323,9 @@ class ModeCoordinator:
         self.mw.current_session = session_data
         self.mw.chat_history = list(session_data.get("chat_history", []))
 
-        # 1. Синхронизация песочницы и инструментов
-        if sess_id:
+        # 1. Синхронизация песочницы и инструментов (только для инженерных сессий)
+        is_eng = (target_mode == AppMode.ENGINEER)
+        if sess_id and is_eng:
             try:
                 from services.sandbox_manager import SandboxManager
                 SandboxManager.set_active_session_id(sess_id)
@@ -333,6 +334,12 @@ class ModeCoordinator:
             try:
                 from services.tool_engine import ToolEngine
                 ToolEngine.set_active_session_id(sess_id)
+            except Exception:
+                pass
+        else:
+            try:
+                from services.sandbox_manager import SandboxManager
+                SandboxManager.set_active_session_id(None)
             except Exception:
                 pass
 
@@ -443,7 +450,7 @@ class ModeCoordinator:
         if hasattr(self.mw, "input_box") and self.mw.input_box:
             self.mw.input_box.set_engineer_mode(is_eng)
 
-        # Синхронизация панелей (карточка персонажа, фон сцены, кнопка Forge)
+        # Синхронизация панелей (карточка персонажа, фон сцены, кнопка Forge, песочница)
         is_rp = (mode == AppMode.ROLEPLAY)
         if hasattr(self.mw, "char_card_widget"):
             self.mw.char_card_widget.setVisible(is_rp)
@@ -451,6 +458,8 @@ class ModeCoordinator:
             self.mw.btn_scene_bg.setVisible(is_rp)
         if hasattr(self.mw, "btn_forge_toggle"):
             self.mw.btn_forge_toggle.setVisible(mode != AppMode.ENGINEER)
+        if hasattr(self.mw, "btn_toggle_inspector"):
+            self.mw.btn_toggle_inspector.setVisible(is_eng)
 
         # Синхронизация инспектора песочницы и размеров сплиттера
         if hasattr(self.mw, "_sync_splitter_layout"):
