@@ -215,8 +215,22 @@ class FP8ConvertWorker(QThread):
 
         import os as _os
         import collections as _collections
+
+        py_dir = Path(self.python_exe).parent
+        torch_lib = py_dir / "lib" / "site-packages" / "torch" / "lib"
+        scripts_dir = py_dir / "Scripts"
+
         env = dict(_os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
+
+        # Изоляция PATH: ставим родные DLL Forge на первое место и исключаем библиотеки llama-server
+        clean_path_parts = [str(torch_lib), str(py_dir), str(scripts_dir)]
+        for p in _os.environ.get("PATH", "").split(_os.pathsep):
+            p_low = p.lower()
+            if "neonroute" not in p_low and ".lmstudio" not in p_low:
+                clean_path_parts.append(p)
+        env["PATH"] = _os.pathsep.join(clean_path_parts)
+
         stdout_tail = _collections.deque(maxlen=30)
 
         cmd = [
