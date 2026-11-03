@@ -1459,8 +1459,9 @@ class ModelsManagerDialog(QDialog):
 
     def _update_fp8_button_state(self):
         """
-        Обновляет доступность кнопки конвертации FP8.
-        Кнопка активна, только если выбранный чекпоинт является файлом .safetensors и еще не содержит '_fp8e4'.
+        Обновляет доступность кнопки конвертации FP8 (O(1) без блокирующего сетевого и дискового I/O).
+        Кнопка активна, только если выбранный чекпоинт является файлом .safetensors
+        и еще не содержит явных маркеров квантования.
         """
         if not hasattr(self, "btn_convert_fp8"):
             return
@@ -1470,22 +1471,10 @@ class ModelsManagerDialog(QDialog):
 
         ckpt = self.combo_checkpoint.currentText().strip()
         is_safetensors = ckpt.lower().endswith(".safetensors")
-        is_already_fp8 = "_fp8" in ckpt.lower() or "e4m3fn" in ckpt.lower()
+        is_already_fp8 = any(k in ckpt.lower() for k in ("_fp8", "-fp8", "e4m3fn", "_quant"))
 
-        ckpt_path = self._resolve_selected_checkpoint_path(ckpt)
-        is_compact_size = False
-        if ckpt_path and ckpt_path.is_file():
-            try:
-                is_compact_size = ckpt_path.stat().st_size < int(4.5 * (1024 ** 3))
-            except Exception:
-                pass
-
-        can_convert = bool(is_safetensors and not is_already_fp8 and not is_compact_size)
-        self.btn_convert_fp8.setEnabled(can_convert)
-        if is_compact_size and not is_already_fp8:
-            self.btn_convert_fp8.setToolTip("Чекпоинт уже оптимизирован (< 4.5 ГБ)")
-        else:
-            self.btn_convert_fp8.setToolTip("Конвертирует UNet модели SDXL в нативный FP8. Освобождает 4 ГБ VRAM.")
+        self.btn_convert_fp8.setEnabled(bool(is_safetensors and not is_already_fp8))
+        self.btn_convert_fp8.setToolTip("Конвертирует UNet модели SDXL в нативный FP8. Освобождает 4 ГБ VRAM.")
 
     def _on_start_fp8_conversion(self):
         """
@@ -1510,6 +1499,23 @@ class ModelsManagerDialog(QDialog):
         if not ckpt_path or not ckpt_path.is_file():
             InfoBar.error("Ошибка", f"Файл чекпоинта '{ckpt_name}' не найден на диске.", parent=self, position=InfoBarPosition.TOP)
             return
+
+        # Pre-flight Size Guard: проверка на случай случайного повторного сжатия уже компактной модели
+        try:
+            file_size_gb = ckpt_path.stat().st_size / (1024 ** 3)
+            if file_size_gb < 4.5:
+                reply = QMessageBox.question(
+                    self,
+                    "Модель уже оптимизирована",
+                    f"Чекпоинт '{ckpt_name}' уже имеет компактный размер ({file_size_gb:.1f} ГБ, типичный SDXL FP16 ~6.6 ГБ).\n\n"
+                    f"Похоже, модель уже сжата в FP8.\nВы действительно хотите запустить сжатие повторно?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+        except Exception as e:
+            logger.debug(f"Pre-flight size check error: {e}")
 
         # 3. Разрешение интерпретатора Python с PyTorch
         python_exe = self._resolve_torch_python()
