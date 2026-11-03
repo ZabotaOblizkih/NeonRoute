@@ -1,10 +1,12 @@
 import os
 import sys
 import time
+import json
+import struct
+import math
 from pathlib import Path
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
 
 if len(sys.argv) > 1:
     SRC_PATH = sys.argv[1]
@@ -20,37 +22,91 @@ else:
 print(f"[*] Открытие исходного чекпоинта: {SRC_PATH}", flush=True)
 t0 = time.time()
 
-tensors = {}
-with safe_open(SRC_PATH, framework="pt", device="cpu") as f:
-    metadata = f.metadata() or {}
-    keys = list(f.keys())
+dtype_bytes_map = {
+    "F8_E4M3": 1,
+    "F16": 2,
+    "BF16": 2,
+    "F32": 4,
+    "I64": 8,
+    "I32": 4,
+    "BOOL": 1
+}
+
+# Этап 1. Быстрый аудит и расчет заголовка safetensors через get_slice (0 MB RAM)
+with safe_open(SRC_PATH, framework="pt", device="cpu") as f_in:
+    raw_meta = f_in.metadata() or {}
+    clean_meta = {str(k): str(v) for k, v in raw_meta.items()}
+    clean_meta["forge_unet_storage_dtype"] = "fp8e4"
+
+    keys = list(f_in.keys())
     total = len(keys)
-    print(f"[*] Загружено ключей: {total}. Начало конвертации UNet в FP8 (e4m3fn)...", flush=True)
+    print(f"[*] Загружено ключей: {total}. Расчет смещений заголовка (Zero-RAM)...", flush=True)
 
-    for idx, k in enumerate(keys):
-        t = f.get_tensor(k)
-        # Квантуем строго веса UNet, пропуская VAE и CLIP
-        if "model.diffusion_model." in k and t.dtype in (torch.float16, torch.float32):
-            t = t.to(torch.float8_e4m3fn)
+    header = {"__metadata__": clean_meta}
+    target_plan = {}
+    offset = 0
+
+    for k in keys:
+        s = f_in.get_slice(k)
+        orig_shape = s.get_shape()
+        orig_dtype = s.get_dtype()
+        numel = math.prod(orig_shape) if orig_shape else 1
+
+        if "model.diffusion_model." in k and orig_dtype in ("F16", "F32", "BF16"):
+            target_dtype = "F8_E4M3"
+        elif orig_dtype == "F32":
+            target_dtype = "F16"
         else:
-            if t.dtype == torch.float32:
-                t = t.to(torch.float16)
-        tensors[k] = t
+            target_dtype = orig_dtype
 
-        if idx % 300 == 0 or idx == total - 1:
-            print(f"    Прогресс: {idx + 1}/{total} слоев обработано...", flush=True)
+        elem_size = dtype_bytes_map.get(target_dtype, 2)
+        t_len = numel * elem_size
 
-print(f"[*] Сохранение оптимизированного файла: {DST_PATH}", flush=True)
-clean_meta = {str(mk): str(mv) for mk, mv in metadata.items()} if metadata else {}
-clean_meta["forge_unet_storage_dtype"] = "fp8e4"
+        header[k] = {
+            "dtype": target_dtype,
+            "shape": orig_shape,
+            "data_offsets": [offset, offset + t_len]
+        }
+        target_plan[k] = target_dtype
+        offset += t_len
 
+header_json = json.dumps(header, separators=(',', ':')).encode("utf-8")
+pad_len = (8 - (len(header_json) % 8)) % 8
+header_json += b" " * pad_len
+header_size = len(header_json)
+
+# Этап 2. Потоковая запись: пишем заголовок, затем конвертируем и пишем по одному тензору
+print(f"[*] Сохранение оптимизированного файла (потоковый стриминг): {DST_PATH}", flush=True)
 try:
-    save_file(tensors, DST_PATH, metadata=clean_meta)
+    with open(DST_PATH, "wb") as f_out:
+        f_out.write(struct.pack("<Q", header_size))
+        f_out.write(header_json)
+
+        with safe_open(SRC_PATH, framework="pt", device="cpu") as f_in:
+            for idx, k in enumerate(keys):
+                t = f_in.get_tensor(k)
+                plan_dt = target_plan[k]
+
+                if plan_dt == "F8_E4M3":
+                    t = t.to(torch.float8_e4m3fn)
+                elif plan_dt == "F16" and t.dtype != torch.float16:
+                    t = t.to(torch.float16)
+
+                raw_b = t.flatten().view(torch.uint8).numpy().tobytes()
+                f_out.write(raw_b)
+                del t
+
+                if idx % 300 == 0 or idx == total - 1:
+                    print(f"    Прогресс: {idx + 1}/{total} слоев обработано...", flush=True)
 except Exception as e:
     import traceback
-    err_tb = traceback.format_exc()
-    print("[!] КРИТИЧЕСКАЯ ОШИБКА ПРИ СОХРАНЕНИИ ФАЙЛА:", flush=True)
-    print(err_tb, flush=True)
+    print("[!] КРИТИЧЕСКАЯ ОШИБКА ПРИ ПОТОКОВОМ СОХРАНЕНИИ ФАЙЛА:", flush=True)
+    print(traceback.format_exc(), flush=True)
+    if os.path.exists(DST_PATH):
+        try:
+            os.remove(DST_PATH)
+        except Exception:
+            pass
     sys.exit(1)
 
 orig_size = os.path.getsize(SRC_PATH) / (1024**3)
