@@ -633,8 +633,8 @@ class EngineerControllerMixin:
             bubble = self._append_message("Элария", card_text, is_user=False, avatar_path=avatar)
             if active_task:
                 active_task.metadata["bubble"] = bubble
-            if hasattr(self, "_sync_turn"):
-                self._sync_turn(role="assistant", content=card_text, replace_last=False)
+                active_task.metadata["plan_text"] = card_text
+                active_task.metadata["message_id"] = getattr(bubble, "message_id", None)
         else:
             bubble = existing_bubble
             m_step = re.search(r'🛠️\s*\*+Инженер\*+:\s*(.+)', card_text)
@@ -718,7 +718,35 @@ class EngineerControllerMixin:
                     self._update_message_attachment(bubble, artifact_path)
                 if res.get("stdout") and str(res["stdout"]).strip() and hasattr(bubble, "add_console_spoiler"):
                     bubble.add_console_spoiler(title=f"Консоль: {file_name}", output=res["stdout"], is_error=False)
-            self._sync_turn(role="assistant", content=fin_text, replace_last=True)
+
+            # Синхронизация единственной монолитной записи задачи в session.json
+            if getattr(self, "current_session", None) and isinstance(self.current_session.get("messages"), list):
+                target_msg = None
+                msg_id = getattr(bubble, "message_id", None) if bubble else task.metadata.get("message_id")
+                if msg_id:
+                    for m in self.current_session["messages"]:
+                        if m.get("id") == msg_id:
+                            target_msg = m
+                            break
+                if not target_msg:
+                    for m in reversed(self.current_session["messages"]):
+                        if not m.get("is_user", False):
+                            target_msg = m
+                            break
+                if target_msg:
+                    target_msg["text"] = fin_text
+                    if artifact_path:
+                        target_msg["file_paths"] = [str(artifact_path)]
+                    plan_t = getattr(bubble, "_captured_plan", "") or task.metadata.get("plan_text", "")
+                    if plan_t:
+                        target_msg["thought"] = {
+                            "content": plan_t,
+                            "duration": 0.0
+                        }
+                    if bubble and hasattr(bubble, "timer_lbl"):
+                        target_msg["elapsed_time"] = bubble.timer_lbl.text()
+                    if hasattr(self, "_save_current_session"):
+                        self._save_current_session()
         elif is_analysis:
             if not success and (stderr or "Ошибка" in summary):
                 err_output = res.get("stderr") or stderr or ""

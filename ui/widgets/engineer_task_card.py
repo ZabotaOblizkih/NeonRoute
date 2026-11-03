@@ -482,6 +482,7 @@ class EngineerTaskCardWidget(QWidget):
         avatar_path: Optional[Path] = None,
         session_id: Optional[str] = None,
         parent=None,
+        is_active: bool = True,
         **kwargs
     ):
         super().__init__(parent)
@@ -511,7 +512,8 @@ class EngineerTaskCardWidget(QWidget):
         self._has_detected_tools: bool = False
         self._captured_plan: str = ""
         self._start_time: float = time.time()
-        self._is_active_task: bool = True
+        self._is_active_task: bool = is_active
+        self._saved_elapsed_time: str = str(kwargs.get("elapsed_time") or "").strip()
 
         self._init_ui()
 
@@ -528,6 +530,12 @@ class EngineerTaskCardWidget(QWidget):
         for fp in self.file_paths:
             if fp.exists():
                 self.add_workspace_file_card(fp)
+
+        # Финализация архивного сообщения из истории
+        if not self._is_active_task:
+            self.mark_completed()
+            if self._saved_elapsed_time:
+                self.timer_lbl.setText(self._saved_elapsed_time)
 
     def _init_ui(self):
         self.setStyleSheet("background: transparent;")
@@ -571,7 +579,8 @@ class EngineerTaskCardWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._on_timer_tick)
-        self._timer.start()
+        if self._is_active_task:
+            self._timer.start()
 
         header_row.addStretch()
 
@@ -994,7 +1003,7 @@ class EngineerTaskCardWidget(QWidget):
             self._timer.stop()
         self.phase_indicator.setText("✓ COMPLETED")
         self.phase_indicator.setStyleSheet("color: #10B981; font-size: 11px; font-weight: 700; background: transparent;")
-        if self.spoiler and self.spoiler.get_plan_text():
+        if hasattr(self, "spoiler") and self.spoiler and hasattr(self.spoiler, "get_plan_text") and self.spoiler.get_plan_text():
             self.spoiler.setVisible(True)
 
     def mark_failed(self, error_text: str = ""):

@@ -172,6 +172,12 @@ class ChatBubbleBuilderMixin:
 
         session_id_val = getattr(self, "current_session", {}).get("id") if hasattr(self, "current_session") and isinstance(self.current_session, dict) else None
 
+        extra_kw = {}
+        if widget_cls.__name__ == "EngineerTaskCardWidget":
+            extra_kw["is_active"] = False
+            if msg.get("elapsed_time"):
+                extra_kw["elapsed_time"] = msg.get("elapsed_time")
+
         widget = widget_cls(
             sender=sender,
             text=text,
@@ -191,7 +197,8 @@ class ChatBubbleBuilderMixin:
             visual_intent=msg.get("visual_intent"),
             message_id=msg.get("id"),
             session_id=session_id_val,
-            parent=getattr(self, "chat_scroll_content", getattr(self, "chat_container", None))
+            parent=getattr(self, "chat_scroll_content", getattr(self, "chat_container", None)),
+            **extra_kw
         )
         if msg.get("visual_intent"):
             widget.visual_intent = msg.get("visual_intent")

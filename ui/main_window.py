@@ -1328,7 +1328,27 @@ class MainWindow(
         self._turn_bubble = None
         self._current_streaming_widget = None
         default_sender = getattr(self.active_character, "name", "Элария") if hasattr(self, "active_character") and self.active_character else "Элария"
-        for msg in messages:
+
+        # Авто-консолидация старых разрозненных сообщений инженера в одну монолитную карточку
+        processed_messages = []
+        i = 0
+        while i < len(messages):
+            m = messages[i]
+            if (not m.get("is_user")) and ("### 📐 Архитектурный план" in m.get("text", "") or "### 🔍 Инспекция проекта" in m.get("text", "")):
+                if i + 1 < len(messages) and not messages[i + 1].get("is_user"):
+                    next_m = messages[i + 1]
+                    if next_m.get("text", "").startswith(("✅ Файл", "⚠️")):
+                        merged = dict(next_m)
+                        merged["thought"] = {"content": m.get("text", ""), "duration": 0.0}
+                        if m.get("file_paths") and not merged.get("file_paths"):
+                            merged["file_paths"] = m.get("file_paths")
+                        processed_messages.append(merged)
+                        i += 2
+                        continue
+            processed_messages.append(m)
+            i += 1
+
+        for msg in processed_messages:
             img_path = msg.get("image_path")
             if not img_path and msg.get("file_paths"):
                 for fp in msg.get("file_paths", []):
