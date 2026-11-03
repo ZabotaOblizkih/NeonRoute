@@ -5,7 +5,7 @@
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 5050 Laptop GPU / 16 ГБ RAM)  
 > **Метрики кодовой базы**: 183 файла, 71 953 строки кода  
-> **Статус верификации**: 487+ тестов пройдено (100% Pass Rate)
+> **Статус верификации**: 918+ тестов пройдено (100% Pass Rate)
 
 ---
 
@@ -50,15 +50,16 @@ NeonRoute/
 │   ├── civitai_service.py                       # [181 строка] Запрос параметров модели по полному AutoV2 SHA256 с Civitai API
 │   ├── code_engine.py                           # [327 строк] Модульный движок: ASTSkeletonizer, ExecutionSandbox, AutoImporter (Zero-Token Healing), реэкспорт валидатора
 │   ├── code_validator.py                        # [614 строк] AST-валидатор синтаксиса, Scope Guard (NameError через symtable), Stub/Reachability Guard, AST Linter импортов
-│   ├── config_manager.py                        # [6 строк] Шим-совместимость для utils.config_manager.ConfigManager
 │   ├── context_window_builder.py                # [942 строки] Сборщик контекста LLM, архитектура «Трёх якорей», Sliding CoT Preservation, KV-Cache In-Chat Injection
 │   ├── direct_command_parser.py                 # [108 строк] Парсер CLI-параметров и флагов прямого рендера (!арт / !art)
 │   ├── document_parser.py                       # [598 строк] Универсальный CPU-парсер документов, кода и дампов чатов (.pdf, .docx, .doc, .xlsx, .csv, .pptx, .fb2, .json)
 │   ├── engineer_context.py                      # [354 строки] Сбор файлового контекста, AST-скелетирование (>600 строк), извлечение кода и откат песочницы
-│   ├── engineer_controller.py                   # [7 строк] Шим-совместимость для ui.controllers.engineer_controller
 │   ├── engineer_diagnostics.py                  # [342 строки] Очистка стектрейсов clean_traceback, экспертная диагностика ошибок рантайма, срез места сбоя extract_crash_slice
 │   ├── engineer_planner.py                      # [508 строк] Фаза «Архитектор»: интеграция с EngineerSkillRouter, 3-уровневая AST-локализация узлов для файлов >250 строк, IntentOverrideGuard
 │   ├── engineer_prompts.py                      # [128 строк] Мета-промпты Архитектора, Инженера и RCA с динамической инъекцией правил архетипа, реестр PyPI
+│   ├── engineer_stream.py                       # [79 строк] Потоковый парсинг токенов LLM (CodeStreamExtractor, extract_clean_code)
+│   ├── engineer_review.py                       # [169 строк] Ветка статического аудита, Git Diff и чекпоинтов (ReviewPipeline)
+│   ├── engineer_parser.py                       # [371 строка] Парсер ответов LLM, извлечение инструментов и fallback-эвристики
 │   ├── engineer_skill_router.py                 # [605 строк] Векторный роутер 5 инженерных архетипов на CPU (FastEmbed) с поддержкой кастомных скиллов и иконок
 │   ├── engineer_tdd.py                          # [629 строк] Двухфазный Code-First TDD пайплайн (NEW_MODULE / INCREMENTAL_FEATURE, Bootstrap Baseline, Regression Check)
 │   ├── entity_mapper.py                         # [160 строк] Детерминированный конвертер кириллических сущностей в теги SD 1.5, Ambiguity Gate
@@ -72,7 +73,6 @@ NeonRoute/
 │   ├── knowledge_watcher.py                     # [201 строка] QFileSystemWatcher сателлит с дебаунсом 2.0 с для горячей инвалидации базы знаний
 │   ├── layer_budgeter.py                        # [628 строк] Топологический аудитор GPU (Pure Compute vs Primary Display), парсер заголовков GGUF и калькулятор слоев NGL
 │   ├── lm_studio.py                             # [735 строк] Потокобезопасный синглтон-клиент LLM (Keep-Alive, SSE-стриминг с chunk_callback, DRY/XTC сэмплеры, Structured Outputs)
-│   ├── lora_manager.py                          # [11 строк] Шим-совместимость для services.art_director.lora_manager
 │   ├── macro_engine.py                          # [64 строки] Парсер динамических макросов {{user}}, {{char}}, {{random: ...}}, {{roll: XdY+Z}} и <START>
 │   ├── markdown_chunker.py                      # [400 строк] Структурный нарезчик Markdown с защитой целостности кодовых блоков ``` и шапок таблиц
 │   ├── memory_db.py                             # [812 строк] Двухконтурное хранилище памяти: SQLite (WAL) + LanceDB (facts и rp_memories) на CPU через FastEmbed ONNX
@@ -137,7 +137,8 @@ NeonRoute/
 │   │
 │   ├── common/                                  # Общие интерфейсные утилиты
 │   │   ├── __init__.py                          # [1 строка] Инициализация пакета ui.common
-│   │   └── icon_utils.py                        # [24 строки] Прокси-метакласс SafeFIF для безопасного разрешения иконок FluentIcon
+│   │   ├── icon_utils.py                        # [24 строки] Прокси-метакласс SafeFIF
+│   │   └── ui_context.py                        # [85 строк] Единый источник правды (SSOT) состояния интерфейса, сессии и бабла генерации Прокси-метакласс SafeFIF для безопасного разрешения иконок FluentIcon
 │   │
 │   ├── components/                              # Графические компоненты и виджеты
 │   │   ├── __init__.py                          # [1 строка] Инициализация пакета ui.components
@@ -155,11 +156,9 @@ NeonRoute/
 │   │   ├── input_box.py                         # [349 строк] ChatInputBox: поле ввода с авторасширением (42–250px), вставкой скриншотов Ctrl+V и кнопкой-трансформером
 │   │   ├── reminder_toast.py                    # [63 строки] ReminderToastWidget: всплывающее уведомление напоминания
 │   │   ├── rpg_elements.py                      # [513 строк] Парсер RPGContentParser и виджеты: RPGStatusWidget, RPGThoughtWidget, RPGChoicesWidget, блоки <check>/<terminal>/<sms>
-│   │   ├── rpg_status_widget.py                 # [24 строки] Шим реэкспорта rpg_elements
-│   │   ├── scroll_button.py                     # [136 строк] FloatingScrollDownButton: круглая акриловая кнопка прокрутки ко дну чата
+│   │   │   ├── scroll_button.py                     # [136 строк] FloatingScrollDownButton: круглая акриловая кнопка прокрутки ко дну чата
 │   │   ├── search_bar.py                        # [165 строк] SearchBarWidget: панель поиска по тексту диалога с навигацией по совпадениям
-│   │   ├── search_bar_widget.py                 # [8 строк] Шим реэкспорта search_bar.SearchBarWidget
-│   │   ├── sidebar_widget.py                    # [263 строки] SidebarWidget: левая боковая панель с карточкой компаньона, кнопкой «Новый чат», списком диалогов и папками
+│   │   │   ├── sidebar_widget.py                    # [263 строки] SidebarWidget: левая боковая панель с карточкой компаньона, кнопкой «Новый чат», списком диалогов и папками
 │   │   ├── status_bar_widget.py                 # [313 строк] MainStatusBar, VramLabel, RamLabel, ServiceStatusBadge: телеметрия железа и управление серверами
 │   │   ├── status_pill.py                       # [51 строка] StatusPill: компактный LED-индикатор статуса сервисов
 │   │   ├── step_progress_button.py              # [94 строки] StepProgressButton и CardProgressBridge: кнопка с кольцевым и линейным прогрессом перевода слотов карточки
@@ -216,14 +215,14 @@ NeonRoute/
 │   │   ├── local_lora_dialog.py                 # [274 строки] Выбор локальных весов LoRA из папок Forge с настройкой веса и триггеров
 │   │   ├── media_gallery_dialog.py              # [207 строк] Сетка всех сгенерированных изображений чата или всех сессий
 │   │   ├── model_sampling_dialog.py             # [803 строки] Тонкая настройка сэмплинга (Temperature, Min-P, Top-P, Repeat Penalty, DRY, XTC, Max Tokens, DM Mode)
-│   │   ├── models_manager_dialog.py             # [22 строки] Прокси-модуль для ui.models_manager_dialog.ModelsManagerDialog
-│   │   ├── new_chat_dialog.py                   # [202 строки] Всплывающий селектор режима при создании нового диалога (РП Чат, Ассистент, Инженер)
+│   │   │   ├── new_chat_dialog.py                   # [202 строки] Всплывающий селектор режима при создании нового диалога (РП Чат, Ассистент, Инженер)
 │   │   ├── prompt_viewer_dialog.py              # [181 строка] PromptViewerDialog: инспекция и редактирование системного промпта карточки для текущей РП-сессии
 │   │   ├── shutdown_dialog.py                   # [83 строки] Индикатор прогресса выгрузки VRAM и сохранения состояния при выходе
 │   │   ├── user_settings_dialog.py              # [1005 строк] Настройки профиля пользователя для Ассистента и менеджер игровых персон для Ролевого чата
 │   │   │
-│   │   └── gallery/                             # Миксины диалога галереи персонажей
+│   │   └── gallery/                             # Компоненты и миксины галереи персонажей
 │   │       ├── __init__.py                      # [11 строк] Инициализация пакета ui.dialogs.gallery
+│   │       ├── character_card_widget.py         # [340 строк] CardItemDelegate, render_seamless_avatar, CharacterCardWidget
 │   │       ├── dna_party_mixin.py               # [663 строки] Извлечение Scenery DNA, Visual DNA, распознавание состава отряда и прямая генерация арта из галереи
 │   │       └── translation_mixin.py             # [297 строк] Конвейер перевода отдельных полей и всей карточки персонажа с переключением RU/EN
 │   │
@@ -381,6 +380,9 @@ classDiagram
   4. **Mount**: привязка изолированной папки песочницы `SandboxManager.set_active_session_id(sess_id)`, восстановление карточки персонажа, планирование переключения выделенной модели режима с дебаунсом 400 мс (`_model_switch_timer`) и пакетная отрисовка сообщений с пагинацией по 35 реплик.
 
 ---
+
+### 3.2. Архитектура единого источника правды (`UIContext` SSOT)
+Для исключения дефекта «хрупкого базового класса» (Fragile Base Class), при котором 13 миксинов хаотично мутировали `self.current_session` и `self._turn_bubble`, в систему внедрен класс `ui.common.ui_context.UIContext`. Он выступает единым источником правды для жизненного цикла диалогового хода (`begin_turn`, `finish_turn`, `turn_bubble`) и активной сессии. В классе `MainWindow` обратная совместимость обеспечивается прозрачными свойствами `@property`, делегирующими доступ в `self.ui_context` без риска регрессии в существующих вызовах.
 
 ## 4. Жизненный цикл выключения (Graceful Shutdown Flow)
 
