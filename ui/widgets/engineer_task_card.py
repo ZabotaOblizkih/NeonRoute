@@ -205,18 +205,7 @@ class CompactWorkspaceFileBadge(QFrame):
                 elif hasattr(inspector, "refresh_files"):
                     inspector.refresh_files()
 
-            if self.on_run:
-                try:
-                    self.on_run(str(self.file_path))
-                except Exception as e:
-                    logger.warning(f"Ошибка вызова on_run: {e}")
 
-            p = self.parentWidget()
-            while p:
-                if hasattr(p, "run_script_requested"):
-                    p.run_script_requested.emit(str(self.file_path))
-                    break
-                p = p.parentWidget()
 
 
 class EngineerSpoilerWidget(QFrame):
