@@ -192,7 +192,8 @@ class CodeFirstTDDPipeline:
         resp1 = client.chat_completion(
             messages=[{"role": "system", "content": step1_system}, {"role": "user", "content": step1_user}],
             model=target_model,
-            temperature=worker_temp
+            temperature=worker_temp,
+            max_tokens=4096
         )
         files1 = cls.extract_code_blocks(str(resp1 or ""), default_filename=mod_name)
         impl_code = files1.get(mod_name) or (list(files1.values())[0] if files1 else "# Empty module\n")
@@ -223,7 +224,8 @@ class CodeFirstTDDPipeline:
             resp2 = client.chat_completion(
                 messages=[{"role": "system", "content": step2_system}, {"role": "user", "content": step2_user}],
                 model=target_model,
-                temperature=worker_temp
+                temperature=worker_temp,
+                max_tokens=4096
             )
             files2 = cls.extract_code_blocks(str(resp2 or ""), default_filename=test_file)
             test_code = files2.get(test_file) or (list(files2.values())[0] if files2 else "")
@@ -283,7 +285,7 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — ведущий инженер Python. Исправь код реализации модуля, устранив ошибки логики."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp)
+                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=mod_name)
                 new_impl = blocks.get(mod_name) or (list(blocks.values())[0] if blocks else curr_impl)
                 new_impl = sanitize_code(new_impl, mod_name)
@@ -307,7 +309,7 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй структуру и ассерты теста."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp)
+                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
                 new_test = blocks.get(test_file) or (list(blocks.values())[0] if blocks else curr_test)
                 new_test = sanitize_code(new_test, test_file)
@@ -366,6 +368,8 @@ class CodeFirstTDDPipeline:
                     pass
 
         orig_mod_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore") if (ws_dir / mod_name).is_file() else ""
+        has_valid_baseline = False
+        orig_test_code = ""
 
         # === ШАГ 1: ПРОВЕРКА ИЛИ BOOTSTRAP БАЗОВЫХ ТЕСТОВ ===
         if not (ws_dir / test_file).is_file() or (ws_dir / test_file).stat().st_size == 0:
@@ -387,7 +391,8 @@ class CodeFirstTDDPipeline:
             boot_resp = client.chat_completion(
                 messages=[{"role": "system", "content": boot_system}, {"role": "user", "content": boot_user}],
                 model=target_model,
-                temperature=worker_temp
+                temperature=worker_temp,
+                max_tokens=4096
             )
             boot_blocks = cls.extract_code_blocks(str(boot_resp or ""), default_filename=test_file)
             boot_test_code = boot_blocks.get(test_file) or (list(boot_blocks.values())[0] if boot_blocks else "")
@@ -404,7 +409,7 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": f"Исправь опечатки в {test_file} под существующий эталонный код модуля. Создавай объекты внутри тестов без фикстур."},
                     {"role": "user", "content": f"Код модуля {mod_name}:\n```python\n{orig_mod_code}\n```\n\nТекущий тест:\n```python\n{boot_test_code}\n```\n\nОшибка pytest:\n{boot_check.output or boot_check.stderr}"}
                 ]
-                fix_resp = client.chat_completion(messages=fix_boot_msgs, model=target_model, temperature=worker_temp)
+                fix_resp = client.chat_completion(messages=fix_boot_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 f_blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
                 boot_test_code = f_blocks.get(test_file) or (list(f_blocks.values())[0] if f_blocks else boot_test_code)
                 boot_test_code = sanitize_code(boot_test_code, test_file)
@@ -412,13 +417,21 @@ class CodeFirstTDDPipeline:
                 boot_check = ToolEngine.run_pytest(test_file)
 
             if not boot_check.success:
-                err_msg = f"⚠ [Bootstrap Warning]: Не удалось стабилизировать базовые тесты для `{mod_name}`. Продолжаем без baseline-страховки."
+                err_msg = f"⚠ [Bootstrap Warning]: Не удалось стабилизировать базовые тесты для `{mod_name}`. Удаляю невалидный тест и продолжаю без baseline-страховки."
                 logger.warning(err_msg)
                 _send("assistant", err_msg)
+                # Удаляем с диска битый тестовый файл, чтобы он не отравлял дальнейшие шаги:
+                if (ws_dir / test_file).is_file():
+                    try:
+                        (ws_dir / test_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                has_valid_baseline = False
+                orig_test_code = ""
             else:
                 _send("assistant", f"✅ **Bootstrap завершён**: Базовые тесты `{test_file}` созданы и 100% зелёные.")
-
-            orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
+                has_valid_baseline = True
+                orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
         else:
             # Штатный прогон существующих тестов
             _send("assistant", f"🔍 **Шаг 1 (Pre-flight Baseline Check)**: Прогон существующих тестов `{test_file}`...")
@@ -440,6 +453,7 @@ class CodeFirstTDDPipeline:
                     "summary": alert_msg
                 }
             _send("assistant", f"✅ Базовые тесты `{test_file}` 100% зеленые. Приступаю к внесению правок.")
+            has_valid_baseline = True
             orig_test_code = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore")
 
         # === ШАГ 2 (ВНЕСЕНИЕ ПРАВОК): Дописывание новых методов в класс с сохранением старой логики ===
@@ -460,7 +474,8 @@ class CodeFirstTDDPipeline:
         resp2 = client.chat_completion(
             messages=[{"role": "system", "content": step2_system}, {"role": "user", "content": step2_user}],
             model=target_model,
-            temperature=worker_temp
+            temperature=worker_temp,
+            max_tokens=4096
         )
         blocks2 = cls.extract_code_blocks(str(resp2 or ""), default_filename=mod_name)
         new_mod_code = blocks2.get(mod_name) or (list(blocks2.values())[0] if blocks2 else orig_mod_code)
@@ -469,7 +484,7 @@ class CodeFirstTDDPipeline:
         _send("assistant", f"✅ Изменения внесены в `{mod_name}`.")
 
         # === ШАГ 3 (REGRESSION CHECK): Запуск старых тестов на новом коде ===
-        if (ws_dir / test_file).is_file():
+        if has_valid_baseline and (ws_dir / test_file).is_file():
             _send("assistant", f"🛡️ **Шаг 3 (Regression Check)**: Запуск старых тестов `{test_file}` на новом коде...")
             reg_res = ToolEngine.run_pytest(test_file)
             reg_attempt = 0
@@ -478,24 +493,54 @@ class CodeFirstTDDPipeline:
                 logger.warning(f"⚠️ [TDD INCREMENTAL] Регрессия старых тестов! Попытка восстановления {reg_attempt}/5")
                 _send("assistant", f"⚠️ Регрессия: старые тесты упали (попытка {reg_attempt}/5). Восстанавливаю обратную совместимость...")
                 curr_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore")
-                reg_user = (
-                    f"РЕГРЕССИОННЫЙ СБОЙ: Старые тесты {test_file} упали после добавления новых методов!\n"
-                    f"```\n{reg_res.output or reg_res.stderr}\n```\n\n"
-                    f"Текущий код {mod_name}:\n```python\n{curr_code}\n```\n\n"
-                    f"Исходный рабочий код до изменений:\n```python\n{orig_mod_code}\n```\n\n"
-                    f"Исправь реализацию {mod_name}, чтобы старые тесты {test_file} стали 100% зелеными, "
-                    f"сохранив при этом новый добавленный функционал.\n"
-                    f"Верни обновленный код через <<TOOL:write_file filename=\"{mod_name}\">>код<</TOOL:write_file>>."
-                )
-                reg_msgs = [
-                    {"role": "system", "content": "Ты — старший инженер Python. Устрани регрессию, восстановив работу старого функционала."},
-                    {"role": "user", "content": reg_user}
-                ]
-                reg_resp = client.chat_completion(messages=reg_msgs, model=target_model, temperature=worker_temp)
-                reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=mod_name)
-                fixed_code = reg_blocks.get(mod_name) or (list(reg_blocks.values())[0] if reg_blocks else curr_code)
-                fixed_code = sanitize_code(fixed_code, mod_name)
-                ToolEngine.write_file(mod_name, fixed_code)
+                curr_test = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
+
+                if reg_attempt % 2 == 1:
+                    # Нечётная попытка: исправление реализации модуля
+                    reg_user = (
+                        f"РЕГРЕССИОННЫЙ СБОЙ: Старые тесты {test_file} упали после добавления новых методов!\n"
+                        f"```\n{reg_res.output or reg_res.stderr}\n```\n\n"
+                        f"Текущий код {mod_name}:\n```python\n{curr_code}\n```\n\n"
+                        f"Исходный рабочий код до изменений:\n```python\n{orig_mod_code}\n```\n\n"
+                        f"Исправь реализацию {mod_name}, чтобы старые тесты {test_file} стали 100% зелеными, "
+                        f"сохранив при этом новый добавленный функционал.\n"
+                        f"Верни обновленный код через <<TOOL:write_file filename=\"{mod_name}\">>код<</TOOL:write_file>>."
+                    )
+                    reg_msgs = [
+                        {"role": "system", "content": "Ты — старший инженер Python. Устрани регрессию, восстановив работу старого функционала."},
+                        {"role": "user", "content": reg_user}
+                    ]
+                    reg_resp = client.chat_completion(messages=reg_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                    reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=mod_name)
+                    fixed_code = reg_blocks.get(mod_name) or (list(reg_blocks.values())[0] if reg_blocks else curr_code)
+                    fixed_code = sanitize_code(fixed_code, mod_name)
+                    ToolEngine.write_file(mod_name, fixed_code)
+                else:
+                    # Чётная попытка: адаптация тестов под обновлённую спецификацию интерфейса
+                    _send("assistant", f"🧪 Регрессия: адаптация тестов `{test_file}` под обновлённую спецификацию интерфейса...")
+                    reg_test_user = (
+                        f"РЕГРЕССИОННЫЙ СБОЙ: Старые тесты {test_file} упали после изменения интерфейса (Попытка {reg_attempt}/5):\n"
+                        f"```\n{reg_res.output or reg_res.stderr}\n```\n\n"
+                        f"Спецификация интерфейса (interface_spec):\n```json\n{spec_str}\n```\n\n"
+                        f"Текущий код модуля {mod_name}:\n```python\n{curr_code}\n```\n\n"
+                        f"Текущий код тестов {test_file}:\n```python\n{curr_test}\n```\n\n"
+                        f"Если сигнатура или параметры методов изменились согласно interface_spec, обнови тесты {test_file}.\n"
+                        f"СТРОГИЙ ПРОМПТ-ГАРД:\n"
+                        f"1. Строго функции pytest (def test_...()). Запрещен unittest.TestCase.\n"
+                        f"2. Запрещено указывать в аргументах функций внешние фикстуры.\n"
+                        f"Верни полный исправленный файл тестов через <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
+                    )
+                    reg_test_msgs = [
+                        {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй тесты под обновлённую спецификацию интерфейса."},
+                        {"role": "user", "content": reg_test_user}
+                    ]
+                    reg_resp = client.chat_completion(messages=reg_test_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                    reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=test_file)
+                    fixed_test = reg_blocks.get(test_file) or (list(reg_blocks.values())[0] if reg_blocks else curr_test)
+                    fixed_test = sanitize_code(fixed_test, test_file)
+                    ToolEngine.write_file(test_file, fixed_test)
+                    orig_test_code = fixed_test
+
                 reg_res = ToolEngine.run_pytest(test_file)
 
             if not reg_res.success:
@@ -516,6 +561,9 @@ class CodeFirstTDDPipeline:
         # === ШАГ 4 (ДОПИСЫВАНИЕ ТЕСТОВ): Генерация тестовых функций строго для новых методов ===
         _send("assistant", f"✍️ **Шаг 4 (Дописывание тестов)**: Генерация тестов для новых методов...")
         curr_mod_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore")
+        if not orig_test_code or not orig_test_code.strip():
+            orig_test_code = f"import pytest\nfrom {clean_mod} import *\n"
+
         step4_system = "Ты — инженер по тестированию pytest. Сгенерируй тестовые функции СТРОГО для новых методов."
         step4_user = (
             f"Спецификация новых методов (interface_spec):\n```json\n{spec_str}\n```\n\n"
@@ -531,7 +579,8 @@ class CodeFirstTDDPipeline:
         resp4 = client.chat_completion(
             messages=[{"role": "system", "content": step4_system}, {"role": "user", "content": step4_user}],
             model=target_model,
-            temperature=worker_temp
+            temperature=worker_temp,
+            max_tokens=4096
         )
         new_test_snippet = extract_clean_code(str(resp4 or ""))
         updated_test_code = cls.append_new_tests(orig_test_code, new_test_snippet)
@@ -585,7 +634,7 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — ведущий инженер Python. Исправь реализацию модуля, чтобы тесты стали зелеными."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp)
+                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=mod_name)
                 new_impl = blocks.get(mod_name) or (list(blocks.values())[0] if blocks else curr_impl)
                 new_impl = sanitize_code(new_impl, mod_name)
@@ -608,7 +657,7 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй структуру и ассерты теста."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp)
+                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
                 new_test = blocks.get(test_file) or (list(blocks.values())[0] if blocks else curr_test)
                 new_test = sanitize_code(new_test, test_file)

@@ -60,7 +60,7 @@ class EngineerContext:
     def normalize_artifact_format(raw_val: str, task_text: str = "", has_verification_script: bool = False) -> str:
         """Нормализует формат задачи по фиксированной матрице форматов NeonRoute."""
         val = (raw_val or "").strip().lower()
-        if val in ("excel", "word", "pygame", "tkinter", "cli", "module"):
+        if val in ("excel", "word", "pygame", "tkinter", "cli"):
             return val
         t = (task_text or "").lower()
         if val in ("document", "docs", "doc", "spreadsheet", "table"):
@@ -73,11 +73,9 @@ class EngineerContext:
             return "pygame"
         if val in ("cli_tool", "cli_script", "script", "console"):
             return "cli"
-        if val in ("module", "library", "algo", "algorithm", "data_structure"):
-            return "module"
         if has_verification_script:
             return "module"
-        # Сопоставление с ближайшим форматом по ключевым словам
+        # Сопоставление с ближайшим форматом по ключевым словам (превалирует над общим "module")
         if any(k in t for k in (".xlsx", ".xls", "excel", "эксель")):
             return "excel"
         if any(k in t for k in (".docx", ".doc", "word", "ворд")):
@@ -86,6 +84,8 @@ class EngineerContext:
             return "pygame"
         if any(k in t for k in ("tkinter", "customtkinter")):
             return "tkinter"
+        if val in ("module", "library", "algo", "algorithm", "data_structure"):
+            return "module"
         if any(k in t for k in ("модуль", "module", "класс", "структур", "алгоритм")):
             return "module"
         return "cli"

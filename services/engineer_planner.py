@@ -200,15 +200,26 @@ class EngineerPlanner:
             raw_task_type = str(data.get("task_type") or "").strip().upper()
             interface_spec = data.get("interface_spec") or {}
             raw_format = str(data.get("format") or data.get("artifact_type") or "").strip().lower()
-            if raw_format in ("pure_logic_tdd", "interactive_loop", "batch_artifact", "service_backend", "cli_automation"):
-                skill_id = raw_format
-            elif raw_format == "module":
-                skill_id = "pure_logic_tdd" 
+
             parsed_format = EngineerContext.normalize_artifact_format(
                 raw_format,
                 f"{task_prompt} {context_hint}",
                 has_verification_script=bool(verification_script)
             )
+
+            # Выставляем архетип с учетом реального формата артефакта, а не поверхностной метки "module"
+            if parsed_format in ("pygame", "tkinter"):
+                skill_id = "interactive_loop"
+            elif parsed_format in ("excel", "word"):
+                skill_id = "batch_artifact"
+            elif parsed_format == "cli":
+                skill_id = "cli_automation"
+            elif parsed_format == "module":
+                skill_id = "pure_logic_tdd"
+            elif raw_format in ("pure_logic_tdd", "interactive_loop", "batch_artifact", "service_backend", "cli_automation"):
+                skill_id = raw_format
+            else:
+                skill_id = "pure_logic_tdd"
             intent = str(data.get("intent") or "new").strip().lower()
             if raw_task_type == "INCREMENTAL_FEATURE":
                 intent = "maintenance"

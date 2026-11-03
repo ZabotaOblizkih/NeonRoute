@@ -415,7 +415,9 @@ class SubagentEngineer:
         is_tdd_mode = (
             getattr(plan, "task_type", None) in ("NEW_MODULE", "INCREMENTAL_FEATURE")
             and getattr(plan, "interface_spec", None)
-            and skill_id == "pure_logic_tdd"  # TDD-пайплайн активен для чистой логики
+            and skill_id == "pure_logic_tdd"
+            and getattr(plan, "artifact_format", None) in ("module", "pure_logic_tdd")
+            and getattr(plan, "artifact_format", None) not in ("pygame", "tkinter", "excel", "word", "cli")
         ) or kwargs.get("enable_tdd", False)
         if is_tdd_mode:
             logger.info(f"🧪 [Code-First TDD] Активирован двухфазный пайплайн для {plan.task_type} ({plan.target_file or plan.target_artifact})")

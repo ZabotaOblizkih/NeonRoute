@@ -789,10 +789,11 @@ class ChatFlowControllerMixin:
         base_history_limit = mode_profile.get("history_limit", 35)
 
         # ── ДИНАМИЧЕСКИЙ РАСЧЕТ БЮДЖЕТА ПАМЯТИ И ТОКЕНОВ (ДВУХКОНТУРНАЯ МОДЕЛЬ) ──
+        decision = None
         if is_eng:
             # РЕЖИМ «ИНЖЕНЕР»: Никаких урезаний! Максимум возможностей модели для кода и инструментов
             effective_history_limit = base_history_limit
-            effective_max_tokens = mode_profile.get("sampling", {}).get("max_tokens", 2048)
+            effective_max_tokens = mode_profile.get("sampling", {}).get("max_tokens", 4096)
             history_slice = self.chat_history
         elif _should_art:
             # ЗАПРОС НА АРТ: Ультра-компактный бюджет (мгновенный Prefill за 1-2 сек)
@@ -901,7 +902,7 @@ class ChatFlowControllerMixin:
         user_max_tokens = effective_sampling.get("max_tokens")
         if _should_art:
             target_max_tokens = 512
-        elif decision.is_emergency:
+        elif decision and decision.is_emergency:
             # Аварийный аппаратный предохранитель: принудительно Ступень 3 (512 токенов)
             target_max_tokens = 512
         elif has_custom_max_tok and user_max_tokens:
