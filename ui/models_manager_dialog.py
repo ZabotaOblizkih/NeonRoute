@@ -1702,13 +1702,25 @@ class ModelsManagerDialog(QDialog):
         self._fp8_source_name = ""
         self._fp8_target_row = -1
 
-        InfoBar.error(
-            "Сбой сжатия FP8",
-            f"Ошибка при конвертации: {err_msg}",
-            parent=self,
-            position=InfoBarPosition.TOP,
-            duration=5000
-        )
+        logger.error(f"[ModelsManagerDialog] Сбой сжатия FP8:\n{err_msg}")
+        try:
+            from qfluentwidgets import MessageBox
+            w = MessageBox(
+                "Сбой сжатия FP8",
+                f"Не удалось сжать чекпоинт в FP8.\n\nДетали ошибки:\n{err_msg}\n\n(Полный лог сохранен в logs/neonroute.log)",
+                self
+            )
+            w.yesButton.setText("Закрыть")
+            w.cancelButton.setVisible(False)
+            w.exec()
+        except Exception:
+            InfoBar.error(
+                "Сбой сжатия FP8",
+                f"Ошибка: {err_msg}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=8000
+            )
 
     def _start_forge_scan(self, silent: bool = False):
         """Запускает фоновое сканирование Forge без блокировки главного потока интерфейса."""

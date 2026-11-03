@@ -245,6 +245,7 @@ class FP8ConvertWorker(QThread):
                     stripped = line.strip()
                     if stripped:
                         stdout_tail.append(stripped)
+                        logger.info(f"[FP8Convert] {stripped}")
                         self.progress_updated.emit(stripped)
 
             if self._is_aborted or self.isInterruptionRequested():
@@ -260,7 +261,9 @@ class FP8ConvertWorker(QThread):
                 self.conversion_finished.emit(str(self.dst_path))
             else:
                 tail_msg = chr(10).join(stdout_tail)
-                self.conversion_failed.emit(tail_msg if tail_msg else f"Код завершения: {ret}")
+                err_text = tail_msg if tail_msg else f"Код завершения: {ret}"
+                logger.error(f"[FP8ConvertWorker] Сбой конвертации (код {ret}):\n{err_text}")
+                self.conversion_failed.emit(err_text)
         except Exception as e:
             if not (self._is_aborted or self.isInterruptionRequested()):
                 logger.error(f"[FP8ConvertWorker] Ошибка выполнения: {e}", exc_info=True)

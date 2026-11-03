@@ -41,8 +41,17 @@ with safe_open(SRC_PATH, framework="pt", device="cpu") as f:
             print(f"    Прогресс: {idx + 1}/{total} слоев обработано...", flush=True)
 
 print(f"[*] Сохранение оптимизированного файла: {DST_PATH}", flush=True)
-metadata["forge_unet_storage_dtype"] = "fp8e4"
-save_file(tensors, DST_PATH, metadata=metadata)
+clean_meta = {str(mk): str(mv) for mk, mv in metadata.items()} if metadata else {}
+clean_meta["forge_unet_storage_dtype"] = "fp8e4"
+
+try:
+    save_file(tensors, DST_PATH, metadata=clean_meta)
+except Exception as e:
+    import traceback
+    err_tb = traceback.format_exc()
+    print("[!] КРИТИЧЕСКАЯ ОШИБКА ПРИ СОХРАНЕНИИ ФАЙЛА:", flush=True)
+    print(err_tb, flush=True)
+    sys.exit(1)
 
 orig_size = os.path.getsize(SRC_PATH) / (1024**3)
 new_size = os.path.getsize(DST_PATH) / (1024**3)
