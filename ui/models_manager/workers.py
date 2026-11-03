@@ -166,9 +166,22 @@ class FP8ConvertWorker(QThread):
         self.python_exe = str(python_exe)
         self.script_path = Path(script_path)
         self.input_checkpoint_path = Path(input_checkpoint_path)
-        self.dst_path = self.input_checkpoint_path.with_name(
-            f"{self.input_checkpoint_path.stem}_fp8e4{self.input_checkpoint_path.suffix}"
-        )
+        stem = self.input_checkpoint_path.stem
+        ext = self.input_checkpoint_path.suffix
+        stem_lower = stem.lower()
+        if stem_lower.endswith("_fp16e4"):
+            new_stem = stem[:-7] + "_fp8e4"
+        elif stem_lower.endswith("_fp16"):
+            new_stem = stem[:-5] + "_fp8e4"
+        elif stem_lower.endswith("-fp16"):
+            new_stem = stem[:-5] + "-fp8e4"
+        elif not (stem_lower.endswith("_fp8e4") or stem_lower.endswith("_fp8")):
+            new_stem = f"{stem}_fp8e4"
+        else:
+            new_stem = f"{stem}_quant_tmp"
+        self.dst_path = self.input_checkpoint_path.with_name(f"{new_stem}{ext}")
+        if self.dst_path.resolve() == self.input_checkpoint_path.resolve():
+            self.dst_path = self.input_checkpoint_path.with_name(f"{stem}_quant_tmp{ext}")
         self.output_path = self.dst_path
         self._is_aborted = False
         self.process: Optional[subprocess.Popen] = None

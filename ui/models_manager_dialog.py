@@ -80,10 +80,19 @@ class ModelsManagerDialog(QDialog):
         if not filename:
             return ""
         stem = Path(filename).stem.lower()
-        for sfx in ("_fp8e4", "_fp8", "_e4m3fn", "_fp16", "_pruned"):
-            if stem.endswith(sfx):
-                stem = stem[:-len(sfx)]
-        return stem.strip()
+        suffixes = (
+            "_fp8e4", "_fp16e4", "_fp8_e4m3fn", "_e4m3fn", "_e5m2",
+            "_fp8", "_fp16", "_bf16", "_pruned", "-fp8", "-fp16"
+        )
+        changed = True
+        while changed:
+            changed = False
+            for sfx in suffixes:
+                if stem.endswith(sfx):
+                    stem = stem[:-len(sfx)]
+                    changed = True
+                    break
+        return stem.strip(" _-")
 
     @staticmethod
     def _get_default_negative(checkpoint_name: str = "", model_id: str = "") -> str:
@@ -135,6 +144,9 @@ class ModelsManagerDialog(QDialog):
         self._scan_worker: Optional[ForgeScanWorker] = None
         self._civitai_worker: Optional[CivitaiParamsWorker] = None
         self._fp8_worker: Optional[FP8ConvertWorker] = None
+        self._fp8_target_row: int = -1
+        self._fp8_source_path: Optional[Path] = None
+        self._fp8_source_name: str = ""
 
         self.setObjectName("ModelsManagerDialog")
         self.setWindowTitle("🎨 Модели генерации, параметры пайплайна и роутинг — NeonRoute")
@@ -1458,8 +1470,22 @@ class ModelsManagerDialog(QDialog):
 
         ckpt = self.combo_checkpoint.currentText().strip()
         is_safetensors = ckpt.lower().endswith(".safetensors")
-        is_already_fp8 = "_fp8e4" in ckpt.lower()
-        self.btn_convert_fp8.setEnabled(bool(is_safetensors and not is_already_fp8))
+        is_already_fp8 = "_fp8" in ckpt.lower() or "e4m3fn" in ckpt.lower()
+
+        ckpt_path = self._resolve_selected_checkpoint_path(ckpt)
+        is_compact_size = False
+        if ckpt_path and ckpt_path.is_file():
+            try:
+                is_compact_size = ckpt_path.stat().st_size < int(4.5 * (1024 ** 3))
+            except Exception:
+                pass
+
+        can_convert = bool(is_safetensors and not is_already_fp8 and not is_compact_size)
+        self.btn_convert_fp8.setEnabled(can_convert)
+        if is_compact_size and not is_already_fp8:
+            self.btn_convert_fp8.setToolTip("Чекпоинт уже оптимизирован (< 4.5 ГБ)")
+        else:
+            self.btn_convert_fp8.setToolTip("Конвертирует UNet модели SDXL в нативный FP8. Освобождает 4 ГБ VRAM.")
 
     def _on_start_fp8_conversion(self):
         """
@@ -1491,10 +1517,20 @@ class ModelsManagerDialog(QDialog):
             InfoBar.warning("Внимание", "Не найден интерпретатор Python с модулями PyTorch и safetensors.", parent=self, position=InfoBarPosition.TOP)
             return
 
-        # Блокировка UI
+        # Фиксация контекста задачи конвертации
+        self._fp8_target_row = self.current_selected_row
+        self._fp8_source_path = ckpt_path
+        self._fp8_source_name = ckpt_name
+
+        # Блокировка UI для исключения гонок фокуса и случайных переключений
         self.btn_convert_fp8.setEnabled(False)
         self.btn_convert_fp8.setText("⚡ Сжатие в процессе...")
         self.combo_checkpoint.setEnabled(False)
+        self.table.setEnabled(False)
+        if hasattr(self, "btn_add_model"):
+            self.btn_add_model.setEnabled(False)
+        if hasattr(self, "btn_remove_model"):
+            self.btn_remove_model.setEnabled(False)
         self.progress_fp8.setVisible(True)
         self.progress_fp8.setRange(0, 0)
         self.lbl_fp8_status.setVisible(True)
@@ -1516,99 +1552,144 @@ class ModelsManagerDialog(QDialog):
             self.progress_fp8.setValue(cur)
 
     def _on_fp8_finished(self, new_file_path: str):
-        """Обрабатывает успешное завершение конвертации в FP8."""
+        """Обрабатывает успешное завершение конвертации в FP8 с поддержкой Atomic In-Place Swap."""
         new_path = Path(new_file_path)
         new_name = new_path.name
 
-        # 1. Удаление исходного FP16, если включен соответствующий чекбокс
-        if self.chk_delete_source.isChecked() and new_path.is_file() and new_path.stat().st_size > 0:
-            orig_name = self.combo_checkpoint.currentText().strip()
-            orig_path = self._resolve_selected_checkpoint_path(orig_name)
-            if orig_path and orig_path.is_file() and orig_path.resolve() != new_path.resolve():
-                deleted = False
+        source_path = getattr(self, "_fp8_source_path", None)
+        target_row = getattr(self, "_fp8_target_row", self.current_selected_row)
+        if not source_path:
+            orig_name = getattr(self, "_fp8_source_name", "") or self.combo_checkpoint.currentText().strip()
+            source_path = self._resolve_selected_checkpoint_path(orig_name)
+
+        # 1. Валидация целостности созданного FP8 файла
+        if not (new_path.is_file() and new_path.stat().st_size > 0):
+            logger.error(f"[FP8] Сжатый файл отсутствует или пуст: {new_path}")
+            self._on_fp8_failed("Созданный файл поврежден или имеет нулевой размер.")
+            return
+
+        final_checkpoint_name = new_name
+
+        # 2. Обработка режима перезаписи (Atomic In-Place Swap) или сохранения исходника
+        if self.chk_delete_source.isChecked() and source_path and source_path.is_file():
+            # Security Guard: Проверка родства имен перед удалением (Name Affinity Guard)
+            src_norm = self._normalize_checkpoint_stem(source_path.name)
+            new_norm = self._normalize_checkpoint_stem(new_path.name)
+            if src_norm != new_norm:
+                logger.critical(
+                    f"[FP8 Security Guard] ЗАПРЕЩЕНО удаление/замена: имена стэмов не совпадают! "
+                    f"Исходник: '{source_path.name}' ({src_norm}) != Новый: '{new_path.name}' ({new_norm})"
+                )
+                InfoBar.error(
+                    "Ошибка безопасности",
+                    "Обнаружено несоответствие имен исходного и сжатого файла. Исходник сохранен.",
+                    parent=self,
+                    position=InfoBarPosition.TOP
+                )
+            else:
+                # Безопасный Atomic In-Place Swap: удаляем старый и ставим новый на его место с исходным именем
                 try:
-                    import send2trash
-                    send2trash.send2trash(str(orig_path))
-                    deleted = True
-                except (ImportError, Exception):
+                    deleted = False
                     try:
-                        os.remove(orig_path)
+                        import send2trash
+                        send2trash.send2trash(str(source_path))
                         deleted = True
-                    except Exception as e:
-                        logger.warning(f"Не удалось удалить исходный файл {orig_path}: {e}")
+                    except (ImportError, Exception):
+                        try:
+                            os.remove(source_path)
+                            deleted = True
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить исходный файл {source_path}: {e}")
 
-                if deleted and orig_name in self.available_checkpoints:
-                    self.available_checkpoints.remove(orig_name)
-                    self.combo_checkpoint.blockSignals(True)
-                    idx_o = self.combo_checkpoint.findText(orig_name)
-                    if idx_o >= 0:
-                        self.combo_checkpoint.removeItem(idx_o)
-                    self.combo_checkpoint.blockSignals(False)
+                    if deleted:
+                        if new_path.resolve() != source_path.resolve():
+                            import os as _os
+                            _os.replace(new_path, source_path)
+                            final_checkpoint_name = source_path.name
+                            logger.info(f"[FP8] Файл успешно заменен с сохранением исходного имени: {final_checkpoint_name}")
+                except Exception as e:
+                    logger.error(f"[FP8] Ошибка при замене исходного файла: {e}", exc_info=True)
 
-        # 2. Вызов refresh_checkpoints в Forge
+        # 3. Вызов refresh_checkpoints в Forge
         try:
             self.forge_client.refresh_checkpoints()
         except Exception as e:
             logger.debug(f"refresh_checkpoints error: {e}")
 
-        # 3. Добавление нового файла в available_checkpoints и combo_checkpoint
-        if new_name not in self.available_checkpoints:
-            self.available_checkpoints.append(new_name)
+        # 4. Обновление списков доступных чекпоинтов
+        if final_checkpoint_name not in self.available_checkpoints:
+            self.available_checkpoints.append(final_checkpoint_name)
 
         self.combo_checkpoint.blockSignals(True)
-        if self.combo_checkpoint.findText(new_name) == -1:
-            self.combo_checkpoint.addItem(new_name)
-        idx_new = self.combo_checkpoint.findText(new_name)
-        if idx_new >= 0:
-            self.combo_checkpoint.setCurrentIndex(idx_new)
+        if self.combo_checkpoint.findText(final_checkpoint_name) == -1:
+            self.combo_checkpoint.addItem(final_checkpoint_name)
+        idx_final = self.combo_checkpoint.findText(final_checkpoint_name)
+        if idx_final >= 0:
+            self.combo_checkpoint.setCurrentIndex(idx_final)
         else:
-            self.combo_checkpoint.setEditText(new_name)
+            self.combo_checkpoint.setEditText(final_checkpoint_name)
         self.combo_checkpoint.blockSignals(False)
 
-        # 4. Обновление поля checkpoint текущей редактируемой модели без создания дубликата
-        if 0 <= self.current_selected_row < len(self.row_widgets):
-            r = self.row_widgets[self.current_selected_row]
-            r["checkpoint"] = new_name
-            item = self.table.item(self.current_selected_row, 2)
+        # 5. Обновление записи строго в строке target_row (защита от рассинхрона фокуса)
+        if 0 <= target_row < len(self.row_widgets):
+            r = self.row_widgets[target_row]
+            r["checkpoint"] = final_checkpoint_name
+            item = self.table.item(target_row, 2)
             if item:
-                item.setText(new_name)
+                item.setText(final_checkpoint_name)
 
         # Фиксация изменений в data/art_director_models.json
         if hasattr(self, "_save_models_to_json"):
             self._save_models_to_json()
 
-        # 5. Автоматическое применение пресета SDXL (Turbo или Classic)
+        # 6. Автоматическое применение пресета SDXL (Turbo или Classic)
         turbo_markers = ("turbo", "dmd", "lightning", "hyper", "lcm")
-        is_turbo = any(m in new_name.lower() or m in self.input_name.text().lower() for m in turbo_markers)
+        is_turbo = any(m in final_checkpoint_name.lower() or m in self.input_name.text().lower() for m in turbo_markers)
         if is_turbo:
             self.combo_presets.setCurrentIndex(1)
         else:
             self.combo_presets.setCurrentIndex(2)
 
-        # 6. Восстановление состояния UI
+        # 7. Восстановление состояния UI и разблокировка контролов
+        self.table.setEnabled(True)
         self.combo_checkpoint.setEnabled(True)
+        if hasattr(self, "btn_add_model"):
+            self.btn_add_model.setEnabled(True)
+        if hasattr(self, "btn_remove_model"):
+            self.btn_remove_model.setEnabled(True)
         self.btn_convert_fp8.setText("⚡ Сжать в FP8 (e4m3fn)")
         self._update_fp8_button_state()
         self.progress_fp8.setVisible(False)
         self.lbl_fp8_status.setVisible(False)
         self._fp8_worker = None
+        self._fp8_source_path = None
+        self._fp8_source_name = ""
+        self._fp8_target_row = -1
 
         InfoBar.success(
             "Конвертация завершена",
-            f"Чекпоинт успешно сжат в FP8: {new_name}",
+            f"Чекпоинт успешно оптимизирован в FP8: {final_checkpoint_name}",
             parent=self,
             position=InfoBarPosition.TOP,
             duration=4000
         )
 
     def _on_fp8_failed(self, err_msg: str):
-        """Обрабатывает сбой конвертации в FP8."""
+        """Обрабатывает сбой конвертации в FP8 с полной разблокировкой UI."""
+        self.table.setEnabled(True)
         self.combo_checkpoint.setEnabled(True)
+        if hasattr(self, "btn_add_model"):
+            self.btn_add_model.setEnabled(True)
+        if hasattr(self, "btn_remove_model"):
+            self.btn_remove_model.setEnabled(True)
         self.btn_convert_fp8.setText("⚡ Сжать в FP8 (e4m3fn)")
         self._update_fp8_button_state()
         self.progress_fp8.setVisible(False)
         self.lbl_fp8_status.setVisible(False)
         self._fp8_worker = None
+        self._fp8_source_path = None
+        self._fp8_source_name = ""
+        self._fp8_target_row = -1
 
         InfoBar.error(
             "Сбой сжатия FP8",
