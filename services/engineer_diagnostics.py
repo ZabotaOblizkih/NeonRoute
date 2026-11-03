@@ -120,6 +120,15 @@ def diagnose_runtime_error(raw_error: str) -> str:
     if not raw_error:
         return raw_error
 
+    if "the following arguments are required:" in raw_error:
+        m_arg = re.search(r"the following arguments are required:\s*([^\r\n]+)", raw_error)
+        req_args = m_arg.group(1).strip() if m_arg else "позиционные аргументы"
+        return (
+            f"[СБОЙ АВТОНОМНОГО ЗАПУСКА CLI]: Скрипт требует обязательный аргумент {req_args}, но песочница запускает его без параметров.\n"
+            f"Решение: в argparse добавь для аргумента '{req_args}' параметры nargs='?' и default='demo.txt', "
+            f"а перед его чтением создай тестовый файл 'demo.txt', чтобы скрипт завершался с кодом 0."
+        )
+
     hints: List[str] = []
 
     # 1. Недопустимое строковое выравнивание в python-docx

@@ -13,7 +13,7 @@ import logging
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from services.sandbox_manager import SandboxManager, ScriptExecutionResult
 from services.code_engine import ASTSkeletonizer, PatchApplier, SelfHealingEngine
 from services.tool_parser import ToolCall, ToolResult, ToolParser
@@ -91,10 +91,9 @@ class ToolEngine:
             return ToolResult(tool_name="write_file", success=False, output=err_msg)
 
     @classmethod
-
-    def run_script(cls, filename: str) -> ToolResult:
-        """Делегирует исполнение в изолированный SandboxManager."""
-        res = SandboxManager.run_script(filename)
+    def run_script(cls, filename: str, args: Optional[Union[str, List[str]]] = None) -> ToolResult:
+        """Делегирует исполнение в изолированный SandboxManager с поддержкой CLI-аргументов."""
+        res = SandboxManager.run_script(filename, args=args)
         return ToolResult(
             tool_name="run_script",
             success=res.success,

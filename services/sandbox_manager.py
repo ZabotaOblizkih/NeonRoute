@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Set, Optional, Union, Tuple
+from typing import Set, Optional, Union, Tuple, List
 from dataclasses import dataclass
 
 from config import BASE_DIR, WORKSPACE_DIR, OUTPUTS_DIR, FORGE_ROOT_DIR
@@ -236,7 +236,7 @@ class SandboxManager:
         return f"[Успешно]: Файл C:\\NeonRoute\\workspace\\{clean_name} создан ({file_bytes} байт)."
 
     @classmethod
-    def run_script(cls, filename: str, timeout: int = 45) -> ScriptExecutionResult:
+    def run_script(cls, filename: str, timeout: int = 45, args: Optional[Union[str, List[str]]] = None) -> ScriptExecutionResult:
         """
         Единая точка безопасного выполнения скриптов:
         - Активирует sandbox_guard (лимит RAM 512MB, блокировка сокетов, изоляция ФС).
@@ -537,14 +537,22 @@ class SandboxManager:
             env["PYTHONPATH"] = f"{base_dir_str}{os.pathsep}{env.get('PYTHONPATH', '')}"
             env["NEONROUTE_WORKSPACE_DIR"] = str(ws_dir.resolve())
 
+            import shlex
+            cmd = [
+                sys.executable,
+                "-m",
+                "services.sandbox_runner",
+                str(script_path)
+            ]
+            if args:
+                if isinstance(args, str):
+                    cmd.extend(shlex.split(args))
+                elif isinstance(args, (list, tuple)):
+                    cmd.extend([str(a) for a in args])
+
             # Архитектурный запуск через микро-раннер от изолированной директории проекта
             proc = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "services.sandbox_runner",
-                    str(script_path)
-                ],
+                cmd,
                 cwd=str(ws_dir.resolve()),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
