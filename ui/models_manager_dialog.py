@@ -9,10 +9,13 @@ import subprocess
 import logging
 
 logger = logging.getLogger("NeonRoute.ModelsManagerDialog")
+
 import uuid
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+_GLOBAL_TORCH_PYTHON: Optional[str] = None
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent
 from PyQt6.QtGui import QMouseEvent
@@ -1407,13 +1410,31 @@ class ModelsManagerDialog(QDialog):
 
     def _resolve_selected_checkpoint_path(self, ckpt_name: str) -> Optional[Path]:
         """
-        Запрашивает список установленных чекпоинтов через self.forge_client.get_installed_checkpoints()
-        и находит полный путь для выбранного в combo_checkpoint имени файла.
+        Находит полный путь к чекпоинту: сначала мгновенно на локальном диске (0 мс),
+        затем через кеш installed_checkpoints без блокировки GUI.
         """
         if not ckpt_name:
             return None
 
-        clean_name = Path(ckpt_name).name.lower()
+        p_raw = Path(ckpt_name)
+        if p_raw.is_absolute() and p_raw.is_file():
+            return p_raw.resolve()
+
+        clean_name = p_raw.name.lower()
+
+        # 0. Мгновенная локальная проверка на диске (0 мс, исключает сетевые задержки HTTP)
+        from config import FORGE_MODELS_DIR, FORGE_ROOT_DIR
+        local_dirs = [
+            FORGE_MODELS_DIR,
+            FORGE_ROOT_DIR / "webui" / "models" / "Stable-diffusion",
+            FORGE_ROOT_DIR / "models" / "Stable-diffusion",
+            Path("C:/neyroGPD/webui_forge_cu121_torch231/webui/models/Stable-diffusion")
+        ]
+        for ld in local_dirs:
+            if ld and ld.is_dir():
+                direct_file = ld / p_raw.name
+                if direct_file.is_file():
+                    return direct_file.resolve()
 
         # 1. Запрос списка установленных чекпоинтов через ForgeClient
         try:

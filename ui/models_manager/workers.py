@@ -222,6 +222,8 @@ class FP8ConvertWorker(QThread):
 
         env = dict(_os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
+        env.pop("PYTHONHOME", None)
+        env.pop("PYTHONPATH", None)
 
         # Изоляция PATH: ставим родные DLL Forge на первое место и исключаем библиотеки llama-server
         clean_path_parts = [str(torch_lib), str(py_dir), str(scripts_dir)]
