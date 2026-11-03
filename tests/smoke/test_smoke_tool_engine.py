@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from pathlib import Path
 from services.tool_engine import ToolEngine
 from services.tool_parser import ToolCall

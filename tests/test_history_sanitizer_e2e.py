@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from unittest.mock import MagicMock
 
 from ui.controllers.assistant_flow_controller import AssistantFlowControllerMixin

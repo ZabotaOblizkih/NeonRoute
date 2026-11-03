@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from PyQt6.QtWidgets import QApplication
 from services.mode_coordinator import AppMode
 from services.sandbox_manager import SandboxManager

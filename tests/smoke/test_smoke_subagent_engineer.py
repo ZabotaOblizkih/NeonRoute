@@ -1,4 +1,4 @@
-﻿import json
+import json
 import pytest
 from services.subagent_engineer import SubagentEngineer, CodeStreamExtractor, extract_clean_code
 from services.sandbox_manager import SandboxManager
