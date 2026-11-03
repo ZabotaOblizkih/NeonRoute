@@ -10,6 +10,8 @@ and FastEmbed vector routing rules in modern Windows 11 / Glassmorphism aestheti
 import os
 import subprocess
 import logging
+
+logger = logging.getLogger("NeonRoute.ModelsManager.Workers")
 import uuid
 import re
 from pathlib import Path
