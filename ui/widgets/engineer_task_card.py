@@ -717,6 +717,31 @@ class EngineerTaskCardWidget(QWidget):
 
         self._detect_skill_from_text(raw_in)
 
+        # Сценарий 0: Архитектурный план инженера
+        if "### 📐 Архитектурный план" in raw_in or "### 🔍 Инспекция проекта" in raw_in:
+            m_body = re.search(r'> \*\*Техническое задание:\*\*\s*\n(.*?)(?=\n\n⏳|\n\n###|$)', raw_in, flags=re.DOTALL)
+            if not m_body:
+                m_body = re.search(r'> \*\*Цель запроса:\*\*\s*\n(.*?)(?=\n\n⏳|\n\n###|$)', raw_in, flags=re.DOTALL)
+            plan_body = m_body.group(1).strip() if m_body else ""
+            if plan_body:
+                clean_plan = "\n".join(re.sub(r'^\s*>\s?', '', line) for line in plan_body.splitlines())
+            else:
+                clean_plan = raw_in
+
+            self._captured_plan = clean_plan
+            self.spoiler.setVisible(True)
+            self.spoiler.set_plan_text(clean_plan, title="💭 Архитектура и анализ")
+            self.spoiler.set_collapsed(True, status="✅ Архитектурный план утверждён")
+
+            m_status = re.search(r'(⏳\s*\*.*?\*)', raw_in)
+            status_text = m_status.group(1) if m_status else "⏳ Приступаю к автономной реализации кода..."
+            self._set_summary_text(status_text)
+            if not self._is_active_task:
+                self.mark_completed()
+            self._update_bubble_geometry()
+            return
+
+
         # Сценарий 1: Есть теги <think>
         if "<think>" in raw_in:
             m_think = re.search(r'<think>(.*?)(?:</think>|$)', raw_in, flags=re.DOTALL)
@@ -773,9 +798,11 @@ class EngineerTaskCardWidget(QWidget):
             return
 
         # Сценарий 3: Чистый текст без тулов и без <think>
-        self.spoiler.setVisible(False)
+        if not self._captured_plan:
+            self.spoiler.setVisible(False)
         self._set_summary_text(raw_in.strip())
-        self.mark_completed()
+        if not self._is_active_task:
+            self.mark_completed()
         self._update_bubble_geometry()
 
     def append_stream_chunk(self, chunk: str):
@@ -967,6 +994,8 @@ class EngineerTaskCardWidget(QWidget):
             self._timer.stop()
         self.phase_indicator.setText("✓ COMPLETED")
         self.phase_indicator.setStyleSheet("color: #10B981; font-size: 11px; font-weight: 700; background: transparent;")
+        if self.spoiler and self.spoiler.get_plan_text():
+            self.spoiler.setVisible(True)
 
     def mark_failed(self, error_text: str = ""):
         """Переводит карточку задачи в статус сбоя."""

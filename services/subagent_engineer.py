@@ -324,12 +324,21 @@ class SubagentEngineer:
         logger.info(f"📐 [Архитектор: Утверждённый план]: {plan.plan_content}")
 
         format_badge = "🎮 Pygame" if plan.artifact_format == "pygame" else f"📦 {plan.artifact_format.upper()}"
+        # Для отображения в UI извлекаем чистое описание без служебных директив <<TOOL:...>> для LLM
+        clean_plan_body = (plan.plan_desc or "").strip()
+        if not clean_plan_body:
+            raw_c = re.sub(r'<<TOOL:\w+.*?>>', '', plan.plan_content)
+            raw_c = re.sub(r'<<?/+TOOL(?::\w+)?>>?', '', raw_c)
+            raw_c = re.sub(r'запусти (?:главную точку входа|скрипт верификации) через \.?\s*', '', raw_c, flags=re.IGNORECASE)
+            raw_c = re.sub(r'### УТВЕРЖДЁННЫЙ АРХИТЕКТУРНЫЙ ПЛАН.*?\n', '', raw_c)
+            clean_plan_body = raw_c.strip()
+
         if plan.intent == "review":
             clean_plan_card = (
                 f"### 🔍 Инспекция проекта: `{plan.target_artifact}`\n"
                 f"**Формат:** {format_badge} | **Действие:** `Анализ / Git Diff`\n\n"
                 f"> **Цель запроса:**\n"
-                f"> {plan.plan_content}\n\n"
+                f"> {clean_plan_body}\n\n"
                 f"⏳ *Выполняю анализ состояния рабочей области...*"
             )
         else:
@@ -337,7 +346,7 @@ class SubagentEngineer:
                 f"### 📐 Архитектурный план: `{plan.target_artifact}`\n"
                 f"**Формат:** {format_badge} | **Действие:** `{plan.intent}`\n\n"
                 f"> **Техническое задание:**\n"
-                f"> {plan.plan_content}\n\n"
+                f"> {clean_plan_body}\n\n"
                 f"⏳ *Приступаю к автономной реализации кода...*"
             )
 

@@ -611,15 +611,50 @@ class EngineerControllerMixin:
     def _display_engineer_plan_card(self, card_text: str):
         if getattr(self, "typing_loader", None) is not None:
             self._remove_typing_loader()
-        avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
-        bubble = self._append_message("Элария", card_text, is_user=False, avatar_path=avatar)
+
+        active_task = None
         if hasattr(self, "_active_tasks"):
             for t in self._active_tasks.values():
                 if t.metadata and t.metadata.get("is_ephemeral_doc"):
-                    t.metadata["bubble"] = bubble
+                    active_task = t
                     break
-        if hasattr(self, "_sync_turn"):
-            self._sync_turn(role="assistant", content=card_text, replace_last=False)
+
+        existing_bubble = active_task.metadata.get("bubble") if active_task else None
+        if existing_bubble is not None:
+            try:
+                from PyQt6 import sip
+                if sip.isdeleted(existing_bubble):
+                    existing_bubble = None
+            except Exception:
+                pass
+
+        if existing_bubble is None:
+            avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
+            bubble = self._append_message("Элария", card_text, is_user=False, avatar_path=avatar)
+            if active_task:
+                active_task.metadata["bubble"] = bubble
+            if hasattr(self, "_sync_turn"):
+                self._sync_turn(role="assistant", content=card_text, replace_last=False)
+        else:
+            bubble = existing_bubble
+            m_step = re.search(r'🛠️\s*\*+Инженер\*+:\s*(.+)', card_text)
+            if m_step:
+                raw_step = m_step.group(1).strip()
+                clean_step = raw_step.strip("`* ")
+                if hasattr(bubble, "add_step"):
+                    bubble.add_step(clean_step, status="running")
+            elif "сформирован. Запускаю верификацию" in card_text or "Запускаю верификацию" in card_text:
+                m_v = re.search(r'Файл `?([\w\-.]+)`? сформирован', card_text)
+                target_f = m_v.group(1) if m_v else "код"
+                if hasattr(bubble, "add_step"):
+                    for badge in getattr(bubble, "_file_badges", {}).values():
+                        if badge.status == "running":
+                            badge.set_status("completed")
+                    bubble.add_step(f"Верификация {target_f} в песочнице", status="running")
+            else:
+                if hasattr(bubble, "set_text"):
+                    bubble.set_text(card_text)
+
         self._scroll_to_bottom()
 
     def _handle_engineer_task_finished(self, task: InferenceTask, result: Any):
@@ -658,14 +693,20 @@ class EngineerControllerMixin:
                     if bubble_sid and active_sid and bubble_sid != active_sid:
                         logger.info("[EngineerController] Смена сессии: подавление обновления виджета фоновой задачи")
                         return
+                    # Переводим бегущие шаги в completed
+                    for badge in getattr(bubble, "_file_badges", {}).values():
+                        if badge.status == "running":
+                            badge.set_status("completed")
                     if hasattr(bubble, "add_workspace_file_card"):
                         bubble.add_workspace_file_card(artifact_path, on_run=self._execute_workspace_script)
                     if hasattr(self, "_update_message_attachment"):
                         self._update_message_attachment(bubble, artifact_path)
                     if res.get("stdout") and str(res["stdout"]).strip() and hasattr(bubble, "add_console_spoiler"):
                         bubble.add_console_spoiler(title=f"Консоль: {file_name}", output=res["stdout"], is_error=False)
-                    if hasattr(bubble, "set_text"):
-                        bubble.set_text(fin_text)
+                    if hasattr(bubble, "_set_summary_text"):
+                        bubble._set_summary_text(fin_text)
+                    if hasattr(bubble, "mark_completed"):
+                        bubble.mark_completed()
                 except RuntimeError:
                     bubble = None
             if bubble is None:
