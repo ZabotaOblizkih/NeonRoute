@@ -144,6 +144,7 @@ class ModelsManagerDialog(QDialog):
         self._scan_worker: Optional[ForgeScanWorker] = None
         self._civitai_worker: Optional[CivitaiParamsWorker] = None
         self._fp8_worker: Optional[FP8ConvertWorker] = None
+        self._cached_torch_python: Optional[str] = None
         self._fp8_target_row: int = -1
         self._fp8_source_path: Optional[Path] = None
         self._fp8_source_name: str = ""
@@ -1339,6 +1340,8 @@ class ModelsManagerDialog(QDialog):
             return False
 
     def _resolve_torch_python(self) -> Optional[str]:
+        if getattr(self, "_cached_torch_python", None) and Path(self._cached_torch_python).is_file():
+            return self._cached_torch_python
         """
         Динамически определяет путь к интерпретатору с PyTorch и safetensors:
         - Проверяет forge_launcher.bat / launcher из настроек Forge.
@@ -1380,7 +1383,8 @@ class ModelsManagerDialog(QDialog):
 
         for c in candidates:
             if c.is_file() and self._verify_python(str(c)):
-                return str(c.resolve())
+                self._cached_torch_python = str(c.resolve())
+                return self._cached_torch_python
 
         # 2. Проверка текущего sys.executable
         if self._verify_python(sys.executable):
@@ -1541,6 +1545,7 @@ class ModelsManagerDialog(QDialog):
         self.progress_fp8.setRange(0, 0)
         self.lbl_fp8_status.setVisible(True)
         self.lbl_fp8_status.setText("Запуск конвертера FP8 (e4m3fn)...")
+        QApplication.processEvents()
 
         self._fp8_worker = FP8ConvertWorker(python_exe, script_path, ckpt_path, parent=self)
         self._fp8_worker.progress_updated.connect(self._on_fp8_progress)
@@ -1854,6 +1859,9 @@ class ModelsManagerDialog(QDialog):
                     self._add_model_row(new_model_data)
                     existing_ckpts.add(Path(cp).name.lower())
                     new_added += 1
+
+        if new_added > 0:
+            self._save_models_to_json()
 
         if not getattr(self, "_scan_silent", True):
             msg = f"Успешно получено {len(found_checkpoints)} чекпоинтов из SD Forge."

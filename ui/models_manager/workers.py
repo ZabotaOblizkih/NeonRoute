@@ -211,6 +211,12 @@ class FP8ConvertWorker(QThread):
             startupinfo.wShowWindow = 0  # SW_HIDE
             creationflags = subprocess.CREATE_NO_WINDOW
 
+        import os as _os
+        import collections as _collections
+        env = dict(_os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        stdout_tail = _collections.deque(maxlen=30)
+
         cmd = [
             self.python_exe,
             str(self.script_path),
@@ -228,6 +234,7 @@ class FP8ConvertWorker(QThread):
                 encoding="utf-8",
                 errors="replace",
                 startupinfo=startupinfo,
+                env=env,
                 creationflags=creationflags
             )
 
@@ -237,6 +244,7 @@ class FP8ConvertWorker(QThread):
                         break
                     stripped = line.strip()
                     if stripped:
+                        stdout_tail.append(stripped)
                         self.progress_updated.emit(stripped)
 
             if self._is_aborted or self.isInterruptionRequested():
@@ -251,7 +259,8 @@ class FP8ConvertWorker(QThread):
             if ret == 0 and self.dst_path.exists() and self.dst_path.stat().st_size > 0:
                 self.conversion_finished.emit(str(self.dst_path))
             else:
-                self.conversion_failed.emit(f"Код завершения: {ret}")
+                tail_msg = chr(10).join(stdout_tail)
+                self.conversion_failed.emit(tail_msg if tail_msg else f"Код завершения: {ret}")
         except Exception as e:
             if not (self._is_aborted or self.isInterruptionRequested()):
                 logger.error(f"[FP8ConvertWorker] Ошибка выполнения: {e}", exc_info=True)
