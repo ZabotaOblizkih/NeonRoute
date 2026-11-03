@@ -105,6 +105,7 @@ from ui.controllers.header_controller import HeaderStateController
 from ui.workers.shutdown_worker import ShutdownWorker
 from ui.workers.tool_execution_worker import ToolExecutionWorker
 from ui.log_console import LogConsoleDialog, setup_global_log_handler
+from ui.common.ui_context import UIContext
 from ui.styles import NEON_THEME_QSS
 
 logger = logging.getLogger("NeonRoute.MainWindow")
@@ -149,6 +150,7 @@ class MainWindow(
 
     def __init__(self):
         super().__init__()
+        self.ui_context = UIContext(self)
         setup_global_log_handler()
         self.setWindowTitle(APP_NAME)
         self._is_initializing = True  # Флаг подавления фоновых триггеров при старте
@@ -294,6 +296,29 @@ class MainWindow(
         if not hasattr(self, "_menu_bar") or self._menu_bar is None:
             self._menu_bar = ClickOnlyMenuBar(self)
         return self._menu_bar
+
+    # --- Единый источник правды (SSOT): делегирование в self.ui_context ---
+    @property
+    def current_session(self) -> Optional[Dict[str, Any]]:
+        return self.ui_context.current_session if hasattr(self, 'ui_context') else getattr(self, '_legacy_current_session', None)
+
+    @current_session.setter
+    def current_session(self, val: Optional[Dict[str, Any]]) -> None:
+        if hasattr(self, 'ui_context'):
+            self.ui_context.current_session = val
+        else:
+            self._legacy_current_session = val
+
+    @property
+    def _turn_bubble(self) -> Optional[Any]:
+        return self.ui_context.turn_bubble if hasattr(self, 'ui_context') else getattr(self, '_legacy_turn_bubble', None)
+
+    @_turn_bubble.setter
+    def _turn_bubble(self, val: Optional[Any]) -> None:
+        if hasattr(self, 'ui_context'):
+            self.ui_context.turn_bubble = val
+        else:
+            self._legacy_turn_bubble = val
 
     def _setup_ui(self):
         # 0. Custom Fluent TitleBar with Windows 11 Snap Layouts
