@@ -1011,7 +1011,7 @@ class ArtDirector:
             f"[NEGATIVE]        : \"{final_negative}\"\n"
             f"[PROFILE / CKPT]  : {plan_model_title} ({plan_model_id}) -> {target_ckpt}\n"
             f"[RESOLUTION]      : {width}x{height} (Hires.fix {hr_scale}x -> {int(width*hr_scale)}x{int(height*hr_scale)})\n"
-            f"[ADETAILER]       : {'ON' if plan.enable_adetailer else 'OFF'} (Hands={plan.adetailer_hands_enabled})\n"
+            f"[ADETAILER]       : {'ON | Face: ' + str(plan.adetailer_face_model) + ' (conf=' + str(plan.adetailer_face_confidence) + ', denoise=' + str(plan.adetailer_face_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ') | Hands: ' + ('ON [' + str(plan.adetailer_hands_model) + ', conf=' + str(plan.adetailer_hands_confidence) + ', denoise=' + str(plan.adetailer_hands_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ']' if plan.adetailer_hands_enabled else 'OFF') if plan.enable_adetailer else 'OFF'}\n"
             f"[PARAMS]          : Steps={plan.steps} | CFG={plan.cfg_scale} | Denoise={plan.denoising_strength} | Sampler={plan.sampler_name} | Seed={effective_seed}\n"
             f"========================================================================="
         )
@@ -1513,7 +1513,7 @@ class ArtDirector:
             f"[NEGATIVE]        : \"{final_negative}\"\n"
             f"[PROFILE / CKPT]  : {plan_model_title} ({plan_model_id}) -> {target_ckpt}\n"
             f"[RESOLUTION]      : {width}x{height} (Hires.fix {hr_scale}x -> {int(width*hr_scale)}x{int(height*hr_scale)})\n"
-            f"[ADETAILER]       : {'ON' if plan.enable_adetailer else 'OFF'} (Hands={plan.adetailer_hands_enabled})\n"
+            f"[ADETAILER]       : {'ON | Face: ' + str(plan.adetailer_face_model) + ' (conf=' + str(plan.adetailer_face_confidence) + ', denoise=' + str(plan.adetailer_face_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ') | Hands: ' + ('ON [' + str(plan.adetailer_hands_model) + ', conf=' + str(plan.adetailer_hands_confidence) + ', denoise=' + str(plan.adetailer_hands_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ']' if plan.adetailer_hands_enabled else 'OFF') if plan.enable_adetailer else 'OFF'}\n"
             f"[PARAMS]          : Steps={plan.steps} | CFG={plan.cfg_scale} | Denoise={plan.denoising_strength} | Seed={effective_seed}\n"
             f"================================================================================"
         )
