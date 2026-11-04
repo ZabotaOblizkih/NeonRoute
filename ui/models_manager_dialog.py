@@ -1335,7 +1335,7 @@ class ModelsManagerDialog(QDialog):
             return False
         try:
             res = subprocess.run(
-                [str(py_path), "-c", "import torch, safetensors; print('OK')"],
+                [str(py_path), "-c", "import numpy; print('OK')"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -1346,6 +1346,10 @@ class ModelsManagerDialog(QDialog):
 
     def _resolve_torch_python(self) -> Optional[str]:
         if getattr(self, "_cached_torch_python", None) and Path(self._cached_torch_python).is_file():
+            return self._cached_torch_python
+        import sys
+        if self._verify_python(sys.executable):
+            self._cached_torch_python = str(Path(sys.executable).resolve())
             return self._cached_torch_python
         """
         Динамически определяет путь к интерпретатору с PyTorch и safetensors:

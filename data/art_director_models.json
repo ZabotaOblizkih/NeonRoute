@@ -6,7 +6,7 @@
       "architecture": "sdxl",
       "checkpoint": "pony_xl_fp8e4.safetensors",
       "routing_description": "Аниме, 2D, манга",
-      "llm_guidance": "",
+      "llm_guidance": "anime",
       "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed",
       "is_default": false,
       "style_triggers": [
@@ -16,10 +16,10 @@
       "triggers": [],
       "pipeline": {
         "architecture": "sdxl",
-        "sampler": "DPM++ 2M Karras",
+        "sampler": "DPM++ SDE Karras",
         "scheduler": "Karras",
         "steps": 25,
-        "cfg_scale": 6.0,
+        "cfg_scale": 5.0,
         "clip_skip": 1,
         "hires_upscaler": "4x-UltraSharp",
         "hires_denoise": 0.32,
@@ -191,23 +191,23 @@
       "checkpoint": "dreamshaperXL_lightningDPMSDE.safetensors",
       "routing_description": "Новая SDXL модель (требуется настройка описания для роутинга)",
       "llm_guidance": "",
-      "negative_prompt": "ugly, deformed, noisy, blurry, low contrast",
+      "negative_prompt": "(low quality, worst quality:1.4), cgi, text, signature, watermark, extra limbs",
       "is_default": false,
       "style_triggers": [],
       "active": true,
       "triggers": [],
       "pipeline": {
         "architecture": "sdxl",
-        "sampler": "LCM",
+        "sampler": "DPM++ SDE Karras",
         "scheduler": "Karras",
-        "steps": 10,
-        "cfg_scale": 1.3,
+        "steps": 6,
+        "cfg_scale": 1.8,
         "clip_skip": 2,
         "hires_upscaler": "4x-UltraSharp",
         "hires_denoise": 0.32,
         "enable_hr": false,
-        "enable_adetailer": false,
-        "negative_prompt": "ugly, deformed, noisy, blurry, low contrast"
+        "enable_adetailer": true,
+        "negative_prompt": "(low quality, worst quality:1.4), cgi, text, signature, watermark, extra limbs"
       }
     }
   ]
