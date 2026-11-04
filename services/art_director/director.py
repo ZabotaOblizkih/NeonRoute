@@ -12,7 +12,7 @@ from services.forge_models import (
 )
 from services.direct_command_parser import parse_direct_command_params
 from services.art_director.lora_manager import LoraManager, extract_lora_metadata
-from services.art_director.vram_policy import is_hires_safe, resolve_hardware_vram_budget, calculate_max_hires_canvas_area, resolve_forge_offload_policy
+from services.art_director.vram_policy import is_hires_safe, resolve_hardware_vram_budget, calculate_max_hires_canvas_area
 from services.forge_client import is_sdxl_checkpoint
 from services.model_router import ModelRouter
 
@@ -536,21 +536,12 @@ class ArtDirector:
         )
 
         arch_str = str(architecture).upper() if architecture else "SD15"
-        offload_pol = resolve_forge_offload_policy(
-            width=width,
-            height=height,
-            architecture=architecture,
-            is_fp8=is_fp8,
-            enable_adetailer=enable_adetailer,
-            system_monitor=monitor,
-        )
         logger.info(
             f"[Forge VRAM Policy Diagnostic Passport]\n"
             f"  ├── 1. Аппаратный профиль : Total VRAM = {total_vram_gb:.1f} GB | Резерв ОС = {os_reserve_mb} MB\n"
             f"  ├── 2. Пайплайн и модель  : Arch = {arch_str} | FP8 = {is_fp8} | ADetailer = {enable_adetailer}\n"
             f"  ├── 3. Геометрия холста   : {width}x{height} ({width * height:,} px) | Ratio = {ratio:.2f} (Eff Area: {effective_area:,} px)\n"
-            f"  ├── 4. Режим памяти Forge : {offload_pol['mode']} (AlwaysOffload={offload_pol['always_offload']}, Req={offload_pol['full_keep_required_mb']} MB)\n"
-            f"  └── 5. Вердикт Hires.fix  : Allowed = {hires_safe} | Потолок площади = {max_area:,} px"
+            f"  └── 4. Вердикт Hires.fix  : Allowed = {hires_safe} | Потолок площади = {max_area:,} px"
         )
 
         return hires_safe

@@ -752,11 +752,14 @@ class ForgeClient(QObject):
                 enable_adetailer=has_ad,
                 system_monitor=monitor,
             )
-            self.free_vram(
-                always_offload=offload_pol["always_offload"],
-                inference_memory_mb=offload_pol["inference_memory_mb"],
-                unload_models=False,
-            )
+            want_offload = bool(offload_pol["always_offload"])
+            if getattr(self, "_last_always_offload", False) != want_offload:
+                self._last_always_offload = want_offload
+                self.free_vram(
+                    always_offload=want_offload,
+                    inference_memory_mb=offload_pol["inference_memory_mb"],
+                    unload_models=False,
+                )
         except Exception as _pol_err:
             offload_pol = {"mode": "DEFAULT", "always_offload": False}
             logger.debug(f"[ForgeClient] Ошибка применения vram_policy: {_pol_err}")
