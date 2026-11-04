@@ -159,10 +159,17 @@ class ModelRouter:
             self.load_profiles()
             self.update_embeddings_async()
 
-    def update_embeddings_async(self) -> threading.Thread:
+    def update_embeddings_async(self, delay: float = 5.0):
         """
-        Runs update_embeddings in a background daemon thread to eliminate GUI freeze at startup.
+        Runs update_embeddings in a background daemon thread with deferred delay
+        to eliminate CPU contention with LLM startup and prevent GUI freeze.
         """
+        if delay > 0:
+            timer = threading.Timer(delay, self.update_embeddings)
+            timer.daemon = True
+            timer.name = "ModelRouterDeferredWarmup"
+            timer.start()
+            return timer
         thread = threading.Thread(target=self.update_embeddings, daemon=True, name="ModelRouterWarmup")
         thread.start()
         return thread

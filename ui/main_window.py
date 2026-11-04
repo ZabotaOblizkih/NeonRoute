@@ -638,15 +638,23 @@ class MainWindow(
         self.health_worker.start()
 
         import threading
-        def _check_lms_background():
-            if not self.process_manager.is_lm_studio_running():
-                self.process_manager.start_lm_studio_async()
-        threading.Thread(target=_check_lms_background, daemon=True).start()
+        def _background_services_worker():
+            try:
+                if not self.process_manager.is_lm_studio_running():
+                    self.process_manager.start_lm_studio_async()
+            except Exception as lms_err:
+                logger.warning(f"[MainWindow] Ошибка фонового запуска LLM: {lms_err}")
 
-        from services.art_director.prompting import warmup_argos
-        from services.memory_db import warmup_memory_engine
-        warmup_argos()
-        warmup_memory_engine()
+            try:
+                from services.art_director.prompting import warmup_argos
+                from services.memory_db import warmup_memory_engine
+                warmup_argos()
+                warmup_memory_engine()
+                logger.info("[MainWindow] Фоновый прогрев Argos и MemoryEngine успешно завершен.")
+            except Exception as warmup_err:
+                logger.warning(f"[MainWindow] Ошибка фонового прогрева подсистем: {warmup_err}")
+
+        threading.Thread(target=_background_services_worker, daemon=True, name="BackgroundServicesWorker").start()
 
         def _finish_initialization():
             self._is_initializing = False
