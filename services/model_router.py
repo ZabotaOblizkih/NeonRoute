@@ -37,11 +37,12 @@ def normalize_model_choice(choice: Optional[str]) -> Optional[str]:
 
 DEFAULT_ROUTER_MODELS: List[Dict[str, Any]] = [
     {
-        "id": "realistic",
-        "name": "Realistic Vision v6.0",
-        "checkpoint": "realisticVisionV60B1_v51HyperVAE_pruned_fp16.safetensors",
+        "id": "default_photoreal",
+        "name": "Universal Photorealism (SD 1.5)",
+        "checkpoint": "model_sd15.safetensors",
+        "architecture": "sd15",
         "routing_description": "Повседневные фотореалистичные кадры, люди, реальная жизнь, естественный будуар, портреты, студийные фото, природа, пейзажи, raw photo, realistic, 35mm dslr photography, real human, portrait.",
-        "llm_guidance": "Стиль: Фотореализм. Используй теги: RAW photo, 35mm photograph, authentic skin texture, cinematic lighting, 8k uhd. Избегай слов: 3d render, cartoon, anime, illustration.",
+        "llm_guidance": "Стиль: Фотореализм. Используй теги: RAW photo, 35mm photograph, authentic skin texture, cinematic lighting. Избегай слов: 3d render, cartoon, anime, illustration.",
         "is_default": True,
         "style_triggers": [],
         "active": True,
@@ -59,6 +60,7 @@ DEFAULT_ROUTER_MODELS: List[Dict[str, Any]] = [
         "id": "cyberrealistic",
         "name": "CyberRealistic Classic",
         "checkpoint": "CyberRealistic_V4.1_FP16.safetensors",
+        "architecture": "sd15",
         "routing_description": "Технологичный фотореализм, киберпанк, глянец, латекс, броня, хай-тек будуар, контрастное неоновое освещение, роботы, киборги, сложные платья, шелк, корсеты, cyberpunk, sci-fi, neon city, high-tech, futuristic.",
         "llm_guidance": "Стиль: Студийный глянец и киберпанк. Используй теги: candid RAW photo, studio lighting, sharp focus, intricate fabrics, neon reflections. Избегай слов: 2d, sketch, flat colors.",
         "is_default": False,
@@ -201,6 +203,10 @@ class ModelRouter:
             models = data.get("models")
             if isinstance(models, list) and models:
                 self.profiles = [dict(m) for m in models]
+                for m in self.profiles:
+                    if not m.get("architecture"):
+                        name_and_ckpt = f"{m.get('name', '')} {m.get('checkpoint', '')}".lower()
+                        m["architecture"] = "sdxl" if any(x in name_and_ckpt for x in ("xl", "pony", "illustrious")) else "sd15"
                 return self.profiles
             else:
                 self.profiles = [dict(m) for m in DEFAULT_ROUTER_MODELS]
