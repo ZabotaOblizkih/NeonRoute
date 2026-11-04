@@ -488,7 +488,6 @@ class ProcessManager(QObject):
                         current_running_ngl=current_running_ngl,
                         cache_type=kv_cache_type
                     )
-                    LayerBudgeter.log_audit_report(audit_data)
 
                     if not can_run:
                         logger.error(f"[ProcessManager] Запуск отменен: {reason}")
