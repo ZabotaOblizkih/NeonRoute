@@ -141,7 +141,7 @@ ROUTING_TAIL_PROTOCOL = (
 
 REASONING_PROTOCOL = ROUTING_TAIL_PROTOCOL
 
-GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
+GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "\n\n[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]\n"
     "The user has requested an image. Act as an expert prompt engineer for Stable Diffusion.\n"
     "Target model / aesthetic profile: {model_hint}.\n\n"
@@ -163,6 +163,66 @@ GALLERY_SKILL_DIRECTIVE_TEMPLATE = (
     "Example:\n"
     "[IMAGE_PROMPT: 1girl, sitting on windowsill, looking through window at night city, heavy rain on glass, cozy oversized sweater, holding steaming mug, soft warm indoor lamp light, neon reflections, cinematic lighting, sharp focus --ar portrait --model {target_model_id}]"
 )
+
+GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
+    "\n\n[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion XL]\n"
+    "The user has requested an image. Act as an expert prompt engineer for SDXL.\n"
+    "Target model / aesthetic profile: {model_hint}.\n\n"
+    "Prompt Engineering Rules:\n"
+    "1. Language: STRICTLY English.\n"
+    "2. Syntax & Structure: Short descriptive visual clauses combined with precise comma-separated tags.\n"
+    "   - Describe the scene naturally in 1-2 concise phrases, then specify style, lighting, and camera.\n"
+    "   - AVOID bloated tag lists; prefer precise visual nouns and adjectives over generic buzzwords.\n"
+    "3. Structure Priority:\n"
+    "   [Subject description & action] -> [Clothing/attributes] -> [Environment & depth] -> [Lighting & palette] -> [Shot framing / camera style].\n"
+    "4. Token Density: STRICTLY 15–30 impactful tokens/words. Keep it focused and avoid fluff.\n"
+    "5. SDXL Specifics:\n"
+    "   - NEVER use obsolete quality tags (NO: '8k', 'photorealistic', 'masterpiece', 'hyperdetailed', 'trending on artstation').\n"
+    "   - Convey quality through lighting, texture, and lens details (e.g., 'dappled sunlight, fine linen texture, 35mm film grain, rim light').\n"
+    "   - If target model is Anime/Pony-based: use Danbooru tags and framing ('solo, 1girl, cowboy shot, ...').\n"
+    "6. Framing Flag: Always append one aspect ratio flag to the end:\n"
+    "   --ar wide (landscapes, rooms, sceneries, architecture, vehicles)\n"
+    "   --ar portrait (standing characters, full body, outfits, vertical interactions)\n"
+    "   --ar square (face close-ups, busts, avatars, single objects)\n"
+    "7. Do NOT write negative prompts (injected automatically).\n\n"
+    "Output Format:\n"
+    "CRITICAL: Do NOT write any conversational filler, explanations, or Russian text.\n"
+    "Output STRICTLY AND ONLY the generation tag on a single line:\n"
+    "[IMAGE_PROMPT: <SDXL prompt> --ar <wide|portrait|square> --model {target_model_id}]\n\n"
+    "Example:\n"
+    "[IMAGE_PROMPT: young woman sitting on a windowsill wrapped in a thick wool sweater, gazing at rain-slicked city streets, soft warm interior lamplight, moody neon reflections, 50mm portrait shot, shallow depth of field --ar portrait --model {target_model_id}]"
+)
+
+GALLERY_DIRECTIVES_BY_ARCH = {
+    "sd15": GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE,
+    "sdxl": GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE,
+}
+
+# Обратная совместимость для сторонних импортов
+GALLERY_SKILL_DIRECTIVE_TEMPLATE = GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
+
+def resolve_model_architecture(model_identifier: str = "", profile: Optional[Dict[str, Any]] = None) -> str:
+    """Определяет архитектуру (sd15, sdxl) по профилю или строке модели."""
+    if profile and isinstance(profile, dict):
+        arch = (profile.get("architecture") or profile.get("base_architecture") or "").lower().strip()
+        if arch in GALLERY_DIRECTIVES_BY_ARCH:
+            return arch
+        if "pony" in arch or "sdxl" in arch:
+            return "sdxl"
+        if "sd15" in arch or "1.5" in arch:
+            return "sd15"
+            
+    lower = str(model_identifier or "").lower().strip()
+    if any(x in lower for x in ("1.5", "v1-5", "sd15")):
+        return "sd15"
+    if any(x in lower for x in ("xl", "pony", "illustrious", "sd_xl", "pd-xl")):
+        return "sdxl"
+    return "sd15"
+
+def get_gallery_directive(architecture: str = "sd15", model_hint: str = "", target_model_id: str = "") -> str:
+    """Возвращает директиву генерации под целевую архитектуру модели."""
+    template = GALLERY_DIRECTIVES_BY_ARCH.get(architecture, GALLERY_DIRECTIVES_BY_ARCH["sd15"])
+    return template.format(model_hint=model_hint, target_model_id=target_model_id)
 
 
 class _PromptBuilderMethod:
@@ -600,10 +660,14 @@ class AssistantPromptBuilder:
     def build_gallery_art_prompt(
         user_query: str,
         target_model_id: str = "realistic",
-        target_model_desc: str = ""
+        target_model_desc: str = "",
+        architecture: Optional[str] = None
     ) -> str:
+        if not architecture:
+            architecture = resolve_model_architecture(target_model_id)
         model_hint = f"{target_model_id} ({target_model_desc})" if target_model_desc else target_model_id
-        directive = GALLERY_SKILL_DIRECTIVE_TEMPLATE.format(
+        directive = get_gallery_directive(
+            architecture=architecture,
             model_hint=model_hint,
             target_model_id=target_model_id
         )

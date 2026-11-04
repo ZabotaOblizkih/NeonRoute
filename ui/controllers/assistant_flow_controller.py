@@ -824,22 +824,53 @@ class AssistantFlowControllerMixin:
         return True
 
     def _enqueue_gallery_art_pass(self, user_query: str):
-        best_model_id = "realistic"
+        best_model_id = ""
         best_desc = ""
+        target_arch = None
         try:
             router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-            matched_id, score = router.match_prompt(user_query)
-            if matched_id:
-                best_model_id = matched_id
-                for m in router.profiles:
-                    if m.get("id") == matched_id:
-                        guidance = (m.get("llm_guidance") or "").strip()
-                        best_desc = guidance if guidance else (m.get("routing_description") or m.get("name") or "")
-                        break
-        except Exception:
-            pass
+            # 1. Проверяем ручной выбор модели в GUI/шапке
+            manual_choice = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
+            if manual_choice:
+                prof = router.get_profile(manual_choice)
+                if prof:
+                    best_model_id = prof.get("id") or prof.get("name") or manual_choice
+                    target_arch = prof.get("architecture") or prof.get("base_architecture")
+                    guidance = (prof.get("llm_guidance") or "").strip()
+                    best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
+                else:
+                    best_model_id = manual_choice
+                    best_desc = manual_choice
+            else:
+                # 2. Режим "✨ Арт-директор (Авто)" - матчим запрос пользователя
+                matched_id, score = router.match_prompt(user_query)
+                if matched_id:
+                    prof = router.get_profile(matched_id)
+                    if prof:
+                        best_model_id = matched_id
+                        target_arch = prof.get("architecture") or prof.get("base_architecture")
+                        guidance = (prof.get("llm_guidance") or "").strip()
+                        best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
+            
+            # 3. Fallback: если модель не найдена - берем универсальный дефолт из профилей
+            if not best_model_id:
+                def_prof = router.get_default_profile() if hasattr(router, "get_default_profile") else None
+                if def_prof:
+                    best_model_id = def_prof.get("id", "default")
+                    target_arch = def_prof.get("architecture") or def_prof.get("base_architecture")
+                    best_desc = def_prof.get("llm_guidance") or def_prof.get("name", "")
+                else:
+                    best_model_id = "default"
+        except Exception as e:
+            logger.warning(f"Failed to resolve target gallery model: {e}")
+            best_model_id = "default"
 
-        full_prompt = AssistantPromptBuilder.build_gallery_art_prompt(user_query, best_model_id, best_desc)
+        full_prompt = AssistantPromptBuilder.build_gallery_art_prompt(
+            user_query=user_query,
+            target_model_id=best_model_id,
+            target_model_desc=best_desc,
+            architecture=target_arch
+        )
         messages = [{"role": "user", "content": full_prompt}]
 
         model_name = None

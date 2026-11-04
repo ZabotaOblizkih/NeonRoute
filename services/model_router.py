@@ -477,6 +477,16 @@ class ModelRouter:
                 return m.get("checkpoint")
         return None
 
+    def get_default_profile(self) -> Optional[Dict[str, Any]]:
+        """Возвращает универсальный дефолтный профиль активной модели."""
+        for m in self.profiles:
+            if m.get("is_default") and m.get("active", True) is not False:
+                return m
+        for m in self.profiles:
+            if m.get("active", True) is not False:
+                return m
+        return self.profiles[0] if self.profiles else None
+
     def pre_route(self, text: str) -> Tuple[str, str]:
         """
         Быстрый семантический пре-роутинг перед ответом LLM на CPU (FastEmbed).
@@ -488,7 +498,9 @@ class ModelRouter:
 
         # Шлюз интента: не вмешиваемся в обычный диалог
         if not any(t in low_t for t in self.VISUAL_TRIGGERS):
-            return "realistic", ""
+            def_prof = self.get_default_profile()
+            def_id = def_prof.get("id", "default") if def_prof else "default"
+            return def_id, ""
 
         # Убираем сам глагол-триггер для более точного смыслового эмбеддинга темы
         content_prompt = re.sub(
