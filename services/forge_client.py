@@ -329,6 +329,15 @@ class ForgeClient(QObject):
 
         cmd = ["cmd.exe", "/c", str(target)]
         try:
+            from services.art_director.vram_policy import resolve_forge_offload_policy
+            pol = resolve_forge_offload_policy(architecture="sd15", is_fp8=True, enable_adetailer=True)
+            if pol.get("always_offload", False):
+                cmd.extend([
+                    "--api", "--port", "7860", "--listen", "--cuda-malloc",
+                    "--always-offload-from-vram", "--opt-sdp-attention",
+                    "--ad-no-huggingface", "--no-download-sd-model",
+                    "--skip-torch-cuda-test", "--no-hashing", "--disable-nan-check"
+                ])
             from config import FORGE_EXTRA_ARGS
             if FORGE_EXTRA_ARGS:
                 # Дедупликация аргументов: предотвращаем дублирование параметров, если bat-файл уже содержит флаги
@@ -753,7 +762,7 @@ class ForgeClient(QObject):
                 system_monitor=monitor,
             )
             want_offload = bool(offload_pol["always_offload"])
-            if getattr(self, "_last_always_offload", False) != want_offload:
+            if getattr(self, "_last_always_offload", None) != want_offload:
                 self._last_always_offload = want_offload
                 self.free_vram(
                     always_offload=want_offload,

@@ -158,6 +158,12 @@ def resolve_hardware_vram_budget(system_monitor=None) -> Tuple[float, int]:
             import pynvml
             info = pynvml.nvmlDeviceGetMemoryInfo(system_monitor.gpu_handle)
             total_vram_gb = round(info.total / (1024.0 ** 3), 1)
+        elif system_monitor is None:
+            import pynvml
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            total_vram_gb = round(info.total / (1024.0 ** 3), 1)
     except Exception as e:
         logger.debug(f"[VRAMPolicy] Fallback объема VRAM: {e}")
 
