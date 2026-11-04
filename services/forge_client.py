@@ -257,30 +257,30 @@ class ForgeClient(QObject):
     def get_installed_checkpoints(self) -> List[str]:
         """
         Retrieves list of checkpoint names/files installed in Forge.
-        Queries GET http://127.0.0.1:7860/sdapi/v1/sd-models (timeout=3.0s).
-        Extracts model names (model_name, title, or filename), and supplements
-        with local file discovery in C:\\neyroGPD\\...\\models\\Stable-diffusion.
+        Queries GET http://127.0.0.1:7860/sdapi/v1/sd-models only if Forge is running.
+        Otherwise immediately falls back to fast local disk scan (<1 ms).
         """
         checkpoints: List[str] = []
-        try:
-            resp = requests.get(f"{self.base_url}/sdapi/v1/sd-models", timeout=3.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                for item in data:
-                    if isinstance(item, dict):
-                        fn = item.get("filename")
-                        name = ""
-                        if fn:
-                            name = Path(fn).name
-                        if not name:
-                            name = item.get("model_name") or item.get("title", "")
-                        name = str(name).strip()
-                        if name and name not in checkpoints:
-                            checkpoints.append(name)
-        except Exception as e:
-            logger.debug(f"Failed to fetch installed checkpoints from Forge API: {e}")
+        if hasattr(self, "is_running") and self.is_running():
+            try:
+                resp = requests.get(f"{self.base_url}/sdapi/v1/sd-models", timeout=1.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data:
+                        if isinstance(item, dict):
+                            fn = item.get("filename")
+                            name = ""
+                            if fn:
+                                name = Path(fn).name
+                            if not name:
+                                name = item.get("model_name") or item.get("title", "")
+                            name = str(name).strip()
+                            if name and name not in checkpoints:
+                                checkpoints.append(name)
+            except Exception as e:
+                logger.debug(f"Failed to fetch installed checkpoints from Forge API: {e}")
 
-        # Local directory fallback scan (discovers files even if Forge is offline or still booting)
+        # Local directory fallback scan (discovers files instantly if Forge is offline or booting)
         local_models_dir = FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
         if local_models_dir.exists():
             try:

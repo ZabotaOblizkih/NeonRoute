@@ -22,7 +22,9 @@ class ModelDiscoveryWorker(QThread):
         # 1. Фоновое обнаружение моделей LM Studio
         try:
             cli_models = self.process_manager.get_available_lms_models()
-            api_models = self.lm_client.get_models()
+            api_models = []
+            if hasattr(self.process_manager, "is_lm_studio_running") and self.process_manager.is_lm_studio_running():
+                api_models = self.lm_client.get_models()
             all_lms = []
             for m in cli_models + api_models:
                 if m and m not in all_lms:
@@ -35,7 +37,9 @@ class ModelDiscoveryWorker(QThread):
         # 2. Фоновое обнаружение чекпоинтов Forge
         try:
             items = ["✨ Арт-директор (Авто)"]
-            models = self.forge_client.get_models()
+            models = []
+            if hasattr(self.forge_client, "is_running") and self.forge_client.is_running():
+                models = self.forge_client.get_models()
             if models:
                 for m in models:
                     t = m.get("title", m.get("model_name", "checkpoint"))

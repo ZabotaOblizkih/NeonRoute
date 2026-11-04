@@ -65,7 +65,9 @@ class HardwareEngineMixin:
         lm_ok = health.get("lm_ok", False)
         lm_msg = health.get("lm_msg", "LM Studio Offline")
         self.pill_lm.set_status(lm_ok, lm_msg)
-        if lm_ok or self.process_manager.is_lm_studio_running():
+        pm_state = getattr(self.process_manager, "server_state", None) if hasattr(self, "process_manager") else None
+        is_lms_up = lm_ok or (pm_state is not None and getattr(pm_state, "name", "") in ("READY", "STARTING"))
+        if is_lms_up:
             self.btn_lms_toggle.setText("⚡ Стоп LLM")
             self.btn_lms_toggle.setStyleSheet("""
                 QPushButton {
@@ -123,7 +125,7 @@ class HardwareEngineMixin:
                     color: #FFFFFF;
                 }
             """)
-        elif self._forge_launching or self.process_manager.is_forge_running():
+        elif getattr(self, "_forge_launching", False):
             self.btn_forge_toggle.setText("⏳ Запуск Forge... (ожидание 7860)")
             self.btn_forge_toggle.setStyleSheet("""
                 QPushButton {
