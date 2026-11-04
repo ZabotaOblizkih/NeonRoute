@@ -1,34 +1,6 @@
 ﻿{
   "models": [
     {
-      "id": "model_2",
-      "name": "aamXLAnimeMix_v10_fp8e4",
-      "architecture": "sdxl",
-      "checkpoint": "pony_xl_fp8e4.safetensors",
-      "routing_description": "Аниме, 2D, манга",
-      "llm_guidance": "anime",
-      "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed",
-      "is_default": false,
-      "style_triggers": [
-        "Манга"
-      ],
-      "active": true,
-      "triggers": [],
-      "pipeline": {
-        "architecture": "sdxl",
-        "sampler": "DPM++ SDE Karras",
-        "scheduler": "Karras",
-        "steps": 25,
-        "cfg_scale": 5.0,
-        "clip_skip": 1,
-        "hires_upscaler": "4x-UltraSharp",
-        "hires_denoise": 0.32,
-        "enable_hr": false,
-        "enable_adetailer": true,
-        "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed"
-      }
-    },
-    {
       "id": "auto_cyberrealistic_classicv50final_pruned_fp16",
       "name": "cyberrealistic_classicV50Final_pruned_fp16",
       "architecture": "sd15",
