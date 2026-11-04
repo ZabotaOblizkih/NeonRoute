@@ -1423,9 +1423,9 @@ class ModelsManagerDialog(QDialog):
         clean_name = p_raw.name.lower()
 
         # 0. Мгновенная локальная проверка на диске (0 мс, исключает сетевые задержки HTTP)
-        from config import FORGE_MODELS_DIR, FORGE_ROOT_DIR
+        from config import FORGE_ROOT_DIR
         local_dirs = [
-            FORGE_MODELS_DIR,
+            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion",
             FORGE_ROOT_DIR / "webui" / "models" / "Stable-diffusion",
             FORGE_ROOT_DIR / "models" / "Stable-diffusion",
             Path("C:/neyroGPD/webui_forge_cu121_torch231/webui/models/Stable-diffusion")
