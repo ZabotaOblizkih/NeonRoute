@@ -10,6 +10,7 @@ import re
 import json
 import time
 import uuid
+import sqlite3
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -280,8 +281,155 @@ class SessionManager:
         return f"💬 {short_t}" if short_t else "💬 Новый диалог"
 
     @staticmethod
+    def _get_sqlite_conn() -> sqlite3.Connection:
+        import config as _cfg
+        default_hist = ( getattr(_cfg, "BASE_DIR", Path(".")) / "history" ).resolve()
+        curr_hist = Path(HISTORY_DIR).resolve()
+        if curr_hist == default_hist:
+            db_file = Path(memory_db.db_path)
+        else:
+            curr_hist.mkdir(parents=True, exist_ok=True)
+            db_file = curr_hist / "sessions_wal.db"
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_file), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        SessionManager._ensure_sqlite_schema(conn)
+        return conn
+
+    @staticmethod
+    def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'assistant',
+                updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                file_mtime REAL NOT NULL DEFAULT 0.0,
+                header_json TEXT NOT NULL,
+                chat_history_json TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                session_id TEXT NOT NULL,
+                message_idx INTEGER NOT NULL,
+                msg_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                text TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                raw_msg_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, message_idx)
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_sess ON chat_messages(session_id);")
+
+    @staticmethod
+    def _save_session_to_sqlite(session: Dict[str, Any], file_mtime: float = 0.0) -> None:
+        try:
+            session_id = str(session["id"]).strip()
+            header_dict = {k: v for k, v in session.items() if k not in ("messages", "chat_history")}
+            chat_history_list = session.get("chat_history") if isinstance(session.get("chat_history"), list) else []
+            messages_list = session.get("messages") if isinstance(session.get("messages"), list) else []
+
+            with SessionManager._get_sqlite_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO chat_sessions
+                    (id, title, mode, updated_at, created_at, file_mtime, header_json, chat_history_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        str(session.get("title") or "Диалог"),
+                        str(session.get("mode") or "assistant"),
+                        str(session.get("updated_at") or ""),
+                        str(session.get("created_at") or ""),
+                        float(file_mtime),
+                        json.dumps(header_dict, ensure_ascii=False),
+                        json.dumps(chat_history_list, ensure_ascii=False),
+                    ),
+                )
+                conn.execute(
+                    "DELETE FROM chat_messages WHERE session_id = ? AND message_idx >= ?",
+                    (session_id, len(messages_list)),
+                )
+                rows_to_insert = []
+                for idx, m in enumerate(messages_list):
+                    if not isinstance(m, dict):
+                        continue
+                    mid = str(m.get("id") or f"msg_{idx}")
+                    role = str(m.get("role") or ("user" if m.get("is_user") else "assistant"))
+                    sender = str(m.get("sender") or role)
+                    txt = str(m.get("text") if m.get("text") is not None else m.get("content", ""))
+                    ts = str(m.get("timestamp") or "")
+                    rows_to_insert.append(
+                        (
+                            session_id,
+                            idx,
+                            mid,
+                            role,
+                            sender,
+                            txt,
+                            ts,
+                            json.dumps(m, ensure_ascii=False),
+                        )
+                    )
+                if rows_to_insert:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO chat_messages
+                        (session_id, message_idx, msg_id, role, sender, text, timestamp, raw_msg_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        rows_to_insert,
+                    )
+        except Exception as e:
+            logger.debug(f"[SessionManager] SQLite write warning for {session.get('id')}: {e}")
+
+    @staticmethod
+    def _load_session_from_sqlite(session_id: str, disk_mtime: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        try:
+            with SessionManager._get_sqlite_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                if disk_mtime is not None and abs(float(disk_mtime) - float(row["file_mtime"] or 0.0)) > 1.0:
+                    return None
+                data = json.loads(row["header_json"])
+                data["chat_history"] = json.loads(row["chat_history_json"]) if row["chat_history_json"] else []
+                cur.execute(
+                    "SELECT raw_msg_json FROM chat_messages WHERE session_id = ? ORDER BY message_idx ASC",
+                    (session_id,),
+                )
+                data["messages"] = [json.loads(r["raw_msg_json"]) for r in cur.fetchall()]
+                return data
+        except Exception as e:
+            logger.debug(f"[SessionManager] SQLite read fallback for {session_id}: {e}")
+            return None
+
+    @staticmethod
+    def _delete_session_from_sqlite(session_id: str) -> None:
+        try:
+            with SessionManager._get_sqlite_conn() as conn:
+                conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+        except Exception as e:
+            logger.debug(f"[SessionManager] SQLite delete warning for {session_id}: {e}")
+
+    @staticmethod
     def save_session(session: Union[Dict[str, Any], str], trigger_memory: bool = False) -> Optional[Path]:
-        """Сохраняет состояние сессии на диск транзакционно и атомарно (ACID)."""
+        """Сохраняет состояние сессии в SQLite WAL + быстрое файловое зеркало без блокировок fsync."""
         if isinstance(session, str):
             sess_id = session.strip()
             session_dict = SessionManager._sessions_cache.get(sess_id)
@@ -304,7 +452,14 @@ class SessionManager:
                 if isinstance(m, dict):
                     m["content"] = m.get("content") if m.get("content") is not None else m.get("text", "")
 
+        if "messages" in session and isinstance(session["messages"], list):
+            for m in session["messages"]:
+                if isinstance(m, dict) and not m.get("id"):
+                    m["id"] = str(uuid.uuid4())
+
         session_id = str(session["id"]).strip()
+        SessionManager._sessions_cache[session_id] = session
+
         file_path = HISTORY_DIR / f"chat_{session_id}.json"
         temp_path = HISTORY_DIR / f"chat_{session_id}_{uuid.uuid4().hex[:6]}.tmp"
 
@@ -313,48 +468,47 @@ class SessionManager:
         temp_session_path = session_dir / f"session_{uuid.uuid4().hex[:6]}.tmp"
 
         try:
-            # 1. Запись во временный файл истории с принудительным аппаратным сбросом буфера
+            # 1. Быстрая сериализация зеркала в буфер ОС без аппаратного простоя fsync
+            serialized = json.dumps(session, ensure_ascii=False, indent=2)
             with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(session, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
+                f.write(serialized)
 
-            # 2. Валидация целостности перед подменой
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise IOError(f"Временный файл сессии {temp_path} пуст или не был создан.")
 
-            # 3. Атомарная замена с защитой от кратковременных блокировок Windows
             replaced = False
-            for attempt in range(3):
+            for _ in range(3):
                 try:
                     os.replace(temp_path, file_path)
                     replaced = True
                     break
                 except PermissionError:
-                    time.sleep(0.05)
+                    time.sleep(0.03)
 
             if not replaced:
                 os.replace(temp_path, file_path)
 
-            # 4. Дублирование состояния в outputs/sessions/<id>/session.json для персистентности HUD-источников
+            # 2. Первичная транзакционная фиксация в SQLite WAL (0.1 мс)
+            disk_mtime = file_path.stat().st_mtime if file_path.exists() else time.time()
+            SessionManager._save_session_to_sqlite(session, file_mtime=disk_mtime)
+
+            # 3. Дублирование состояния в outputs/sessions/<id>/session.json для HUD-источников
             try:
                 with open(temp_session_path, "w", encoding="utf-8") as sf:
-                    json.dump(session, sf, ensure_ascii=False, indent=2)
-                    sf.flush()
-                    os.fsync(sf.fileno())
+                    sf.write(serialized)
                 if temp_session_path.exists() and temp_session_path.stat().st_size > 0:
                     for _ in range(3):
                         try:
                             os.replace(temp_session_path, session_json_path)
                             break
                         except PermissionError:
-                            time.sleep(0.05)
+                            time.sleep(0.03)
             except Exception as se:
                 logger.debug(f"[SessionManager] Ошибка дублирования session.json: {se}")
 
             return file_path
         except Exception as e:
-            logger.error(f"[SessionManager] Ошибка атомарного сохранения сессии {session_id}: {e}", exc_info=True)
+            logger.error(f"[SessionManager] Ошибка сохранения сессии {session_id}: {e}", exc_info=True)
             return None
         finally:
             if temp_path.exists():
@@ -376,11 +530,17 @@ class SessionManager:
             if session_json_path.exists():
                 file_path = session_json_path
             else:
+                SessionManager._delete_session_from_sqlite(session_id)
                 return None
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            disk_mtime = file_path.stat().st_mtime
+            data = SessionManager._load_session_from_sqlite(session_id, disk_mtime=disk_mtime)
+            if data is None:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "id" in data:
+                    SessionManager._save_session_to_sqlite(data, file_mtime=disk_mtime)
             if data and isinstance(data, dict):
                 if "chat_history" in data and isinstance(data["chat_history"], list):
                     for m in data["chat_history"]:
@@ -520,10 +680,26 @@ class SessionManager:
         except Exception as e:
             logger.debug(f"[SessionManager] Ошибка автоочистки сиротских cast_*.json: {e}")
 
+        sqlite_headers = {}
+        try:
+            with SessionManager._get_sqlite_conn() as conn:
+                for r in conn.execute("SELECT id, file_mtime, header_json FROM chat_sessions").fetchall():
+                    sqlite_headers[r["id"]] = (float(r["file_mtime"] or 0.0), r["header_json"])
+        except Exception:
+            pass
+
         for p in HISTORY_DIR.glob("chat_*.json"):
             try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                sid_guess = p.stem.replace("chat_", "")
+                p_mtime = p.stat().st_mtime
+                cached_entry = sqlite_headers.get(sid_guess)
+                if cached_entry and abs(p_mtime - cached_entry[0]) <= 1.0:
+                    data = json.loads(cached_entry[1])
+                else:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "id" in data:
+                        SessionManager._save_session_to_sqlite(data, file_mtime=p_mtime)
 
                 session_id = data.get("id", p.stem.replace("chat_", ""))
                 if session_id.startswith("test_") or "test_sess" in p.name:
@@ -689,6 +865,8 @@ class SessionManager:
                     pass
 
         try:
+            SessionManager._sessions_cache.pop(sid, None)
+            SessionManager._delete_session_from_sqlite(sid)
             from services.memory_db import memory_db
             memory_db.clear_rp_session_memory(sid)
         except Exception as e:
