@@ -1108,8 +1108,20 @@ class ProcessManager(QObject):
             working_dir = launcher_path.parent
 
             cmd = ["cmd.exe", "/c", str(launcher_path)]
-            # forge_launcher.bat уже содержит полный набор аргументов в COMMANDLINE_ARGS.
-            # Передача аргументов через Python отключена для предотвращения задвоения флагов запуска.
+            try:
+                from services.art_director.vram_policy import resolve_forge_offload_policy
+                pol = resolve_forge_offload_policy(architecture="sd15", is_fp8=True, enable_adetailer=True)
+                if pol.get("always_offload", False):
+                    # Если уже на старте система видит, что памяти не хватает даже для базового цикла без выгрузки
+                    cmd.extend([
+                        "--api", "--port", "7860", "--listen", "--cuda-malloc",
+                        "--always-offload-from-vram", "--opt-sdp-attention",
+                        "--ad-no-huggingface", "--no-download-sd-model",
+                        "--skip-torch-cuda-test", "--no-hashing", "--disable-nan-check"
+                    ])
+                    logger.info("[ProcessManager] Инициализация памяти: недостаточно VRAM для полноценного удержания -> запуск Forge в режиме STAGE_OFFLOAD (--always-offload-from-vram).")
+            except Exception as _e_pm:
+                logger.debug(f"[ProcessManager] Проверка стартового бюджета Forge: {_e_pm}")
 
             logs_dir = Path("logs")
             logs_dir.mkdir(parents=True, exist_ok=True)

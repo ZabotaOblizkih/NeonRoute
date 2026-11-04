@@ -467,10 +467,15 @@ class ForgeClient(QObject):
         self._checkpoint_unloaded = True
         return True
 
-    def free_vram(self) -> bool:
-        """Принудительно очищает PyTorch CUDA кэш через API Forge."""
+    def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True) -> bool:
+        """Принудительно очищает PyTorch CUDA кэш и синхронизирует режим выгрузки с vram_policy."""
         try:
-            resp = requests.post(f"{self.base_url}/sdapi/v1/free-vram", timeout=5.0)
+            payload = {"unload_models": unload_models}
+            if always_offload is not None:
+                payload["always_offload"] = bool(always_offload)
+            if inference_memory_mb is not None:
+                payload["inference_memory_mb"] = int(inference_memory_mb)
+            resp = requests.post(f"{self.base_url}/sdapi/v1/free-vram", json=payload, timeout=5.0)
             return resp.status_code == 200
         except Exception as e:
             logger.debug(f"Failed to call free-vram: {e}")
@@ -724,9 +729,31 @@ class ForgeClient(QObject):
 
         has_ad = bool("alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"])
 
+        try:
+            from services.art_director.vram_policy import resolve_forge_offload_policy
+            monitor = getattr(self, "system_monitor", None)
+            if not monitor and hasattr(self, "parent") and self.parent():
+                monitor = getattr(self.parent(), "system_monitor", None)
+            offload_pol = resolve_forge_offload_policy(
+                width=clean_width,
+                height=clean_height,
+                architecture="sdxl" if is_sdxl_checkpoint(active_target) else "sd15",
+                is_fp8=(target_dtype == "fp8e4"),
+                enable_adetailer=has_ad,
+                system_monitor=monitor,
+            )
+            self.free_vram(
+                always_offload=offload_pol["always_offload"],
+                inference_memory_mb=offload_pol["inference_memory_mb"],
+                unload_models=False,
+            )
+        except Exception as _pol_err:
+            offload_pol = {"mode": "DEFAULT", "always_offload": False}
+            logger.debug(f"[ForgeClient] Ошибка применения vram_policy: {_pol_err}")
+
         logger.info(
             f"[SD Forge] Старт txt2img: {clean_width}x{clean_height}, шаги={clean_steps}, CFG={clean_cfg}, "
-            f"Hires.fix={enable_hr}, ADetailer={has_ad}"
+            f"Hires.fix={enable_hr}, ADetailer={has_ad}, VRAMMode={offload_pol.get('mode')}"
         )
 
         stop_poller = threading.Event()
@@ -892,6 +919,8 @@ class ForgeClient(QObject):
                     f"Forge txt2img with Hires.fix failed ({status_info}, memory_error={is_oom}). "
                     "Emergency last-resort fallback: retrying generation with enable_hr=False..."
                 )
+                if is_oom:
+                    self.free_vram(always_offload=True, inference_memory_mb=1024, unload_models=True)
                 current_payload["enable_hr"] = False
                 current_payload.pop("alwayson_scripts", None)
                 try:

@@ -86,6 +86,26 @@ class SystemMonitor(QThread):
         self._running = False
         self.wait(1200)
 
+    def get_total_vram_mb(self) -> int:
+        """Возвращает общий объем видеопамяти GPU в МБ."""
+        if self.nvml_initialized and self.gpu_handle:
+            try:
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(self.gpu_handle)
+                return int(mem_info.total / (1024 * 1024))
+            except Exception:
+                pass
+        if self._last_emitted_stats:
+            return int(self._last_emitted_stats.get("vram_total_mb", 8192))
+        try:
+            if HAS_PYNVML:
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                return int(mem_info.total / (1024 * 1024))
+        except Exception:
+            pass
+        return 8192
+
     def get_free_vram_mb(self) -> int:
         """Возвращает текущий объем свободной видеопамяти в МБ."""
         if self.nvml_initialized and self.gpu_handle:
