@@ -949,6 +949,7 @@ class ArtDirector:
         plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
         plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
 
+        _is_xl_v = bool(arch_cfg.get("is_xl") or "xl" in str(arch_cfg.get("architecture", "")).lower() or is_sdxl_checkpoint(target_ckpt))
         plan = GenerationPlan(
             style=plan_model_id,
             target_model_key=plan_model_id,
@@ -980,20 +981,24 @@ class ArtDirector:
             reasoning=f"Стиль: {plan_model_title} ({plan_model_id})",
             style_badge=f"✨ {plan_model_title}",
             adetailer_face_model="face_yolov8n.pt",
-            adetailer_face_confidence=0.35,
-            adetailer_face_denoise=0.30,
+            adetailer_face_confidence=0.32,
+            adetailer_face_denoise=0.35 if _is_xl_v else 0.32,
             adetailer_hands_enabled=hands_enabled,
             adetailer_hands_model="hand_yolov8n.pt",
-            adetailer_hands_confidence=0.40,
-            adetailer_hands_denoise=0.22,
-            adetailer_hands=hands_enabled
+            adetailer_hands_confidence=0.28,
+            adetailer_hands_denoise=0.38 if _is_xl_v else 0.40,
+            adetailer_hands=hands_enabled,
+            adetailer_inpaint_size=768 if _is_xl_v else 512
         )
-
-        ad_face_denoise = float(model_pipeline.get("ad_denoising_strength", model_pipeline.get("ad_face_denoise", 0.30)))
+        def_face_d = 0.35 if _is_xl_v else 0.32
+        ad_face_denoise = float(model_pipeline.get("ad_denoising_strength", model_pipeline.get("ad_face_denoise", def_face_d)))
         plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8n.pt")
-        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.35))
+        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.32))
         plan.adetailer_face_denoise = ad_face_denoise
         plan.ad_denoising_strength = ad_face_denoise
+        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.28))
+        plan.adetailer_hands_denoise = float(model_pipeline.get("adetailer_hands_denoise", 0.38 if _is_xl_v else 0.40))
+        plan.adetailer_inpaint_size = int(model_pipeline.get("adetailer_inpaint_size", 768 if _is_xl_v else 512))
         if model_pipeline.get("ad_prompt"):
             plan.ad_prompt = model_pipeline.get("ad_prompt")
         if model_pipeline.get("ad_negative_prompt"):
@@ -1455,13 +1460,14 @@ class ArtDirector:
             reasoning=f"Стиль: {plan_model_title} ({plan_model_id})",
             style_badge=f"✨ {plan_model_title}",
             adetailer_face_model="face_yolov8n.pt",
-            adetailer_face_confidence=0.35,
-            adetailer_face_denoise=0.30,
+            adetailer_face_confidence=0.32,
+            adetailer_face_denoise=0.35 if ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt)) else 0.32,
             adetailer_hands_enabled=hands_enabled,
             adetailer_hands_model="hand_yolov8n.pt",
-            adetailer_hands_confidence=0.40,
-            adetailer_hands_denoise=0.22,
-            adetailer_hands=hands_enabled
+            adetailer_hands_confidence=0.28,
+            adetailer_hands_denoise=0.38 if ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt)) else 0.40,
+            adetailer_hands=hands_enabled,
+            adetailer_inpaint_size=768 if ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt)) else 512
         )
 
         # Применяем индивидуальные параметры рендера или канонические дефолты
@@ -1484,11 +1490,16 @@ class ArtDirector:
         plan.scheduler = gen_scheduler
 
         # Zero-Logic ADetailer
-        ad_face_denoise = float(model_pipeline.get("ad_denoising_strength", model_pipeline.get("ad_face_denoise", 0.30)))
+        _is_xl_p = ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt))
+        def_face_d2 = 0.35 if _is_xl_p else 0.32
+        ad_face_denoise = float(model_pipeline.get("ad_denoising_strength", model_pipeline.get("ad_face_denoise", def_face_d2)))
         plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8n.pt")
-        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.35))
+        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.32))
         plan.adetailer_face_denoise = ad_face_denoise
         plan.ad_denoising_strength = ad_face_denoise
+        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.28))
+        plan.adetailer_hands_denoise = float(model_pipeline.get("adetailer_hands_denoise", 0.38 if _is_xl_p else 0.40))
+        plan.adetailer_inpaint_size = int(model_pipeline.get("adetailer_inpaint_size", 768 if _is_xl_p else 512))
         if model_pipeline.get("ad_prompt"):
             plan.ad_prompt = model_pipeline.get("ad_prompt")
         if model_pipeline.get("ad_negative_prompt"):

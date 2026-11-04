@@ -80,11 +80,12 @@ class GenerationPlan:
     adetailer_face_denoise: Optional[float] = None
     adetailer_hands: Optional[bool] = None
     adetailer_face_model: str = "face_yolov8n.pt"
-    adetailer_face_confidence: float = 0.35
+    adetailer_face_confidence: float = 0.32
     adetailer_hands_enabled: bool = False
     adetailer_hands_model: str = "hand_yolov8n.pt"
-    adetailer_hands_confidence: float = 0.40
-    adetailer_hands_denoise: float = 0.22
+    adetailer_hands_confidence: float = 0.28
+    adetailer_hands_denoise: float = 0.40
+    adetailer_inpaint_size: int = 512
 
     def __post_init__(self):
         if self.prompt and not self.positive_prompt:
@@ -151,11 +152,14 @@ class GenerationPlan:
 
         alwayson = {}
         if getattr(self, "enable_adetailer", True):
+            inpaint_sz = getattr(self, "adetailer_inpaint_size", 512)
             face_slot = {
                 "ad_model": getattr(self, "adetailer_face_model", "face_yolov8n.pt"),
-                "ad_confidence": getattr(self, "adetailer_face_confidence", 0.35),
-                "ad_denoising_strength": getattr(self, "adetailer_face_denoise", 0.30),
-                "ad_inpaint_only_masked": True
+                "ad_confidence": getattr(self, "adetailer_face_confidence", 0.32),
+                "ad_denoising_strength": getattr(self, "adetailer_face_denoise", 0.32),
+                "ad_inpaint_only_masked": True,
+                "ad_inpaint_width": inpaint_sz,
+                "ad_inpaint_height": inpaint_sz
             }
             if getattr(self, "ad_prompt", None):
                 face_slot["ad_prompt"] = self.ad_prompt
@@ -165,9 +169,11 @@ class GenerationPlan:
             hands_active = bool(getattr(self, "adetailer_hands_enabled", False) or getattr(self, "adetailer_hands", False))
             hand_slot = {
                 "ad_model": getattr(self, "adetailer_hands_model", "hand_yolov8n.pt"),
-                "ad_confidence": getattr(self, "adetailer_hands_confidence", 0.40),
-                "ad_denoising_strength": getattr(self, "adetailer_hands_denoise", 0.22),
-                "ad_inpaint_only_masked": True
+                "ad_confidence": getattr(self, "adetailer_hands_confidence", 0.28),
+                "ad_denoising_strength": getattr(self, "adetailer_hands_denoise", 0.40),
+                "ad_inpaint_only_masked": True,
+                "ad_inpaint_width": inpaint_sz,
+                "ad_inpaint_height": inpaint_sz
             }
 
             ad_args = [

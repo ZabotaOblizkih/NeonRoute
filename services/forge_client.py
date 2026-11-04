@@ -520,8 +520,7 @@ class ForgeClient(QObject):
         - Отключает при отсутствии маркеров человека/персонажа (пейзажи, техника, интерьеры)
         """
         if is_sdxl_checkpoint(target_model_name):
-            logger.info(f"[ForgeClient] ADetailer Guard: ADetailer аппаратно отключен для SDXL модели '{target_model_name}' на 8GB GPU во избежание OOM.")
-            return False
+            logger.info(f"[ForgeClient] ADetailer Guard: SDXL model '{target_model_name}' active. Optimal profile: inpaint 768px, conf 0.32/0.28.")
         if has_intimate_or_dynamic_triggers(prompt):
             logger.info("ADetailer automatically disabled for dynamic/intimate scene.")
             return False
