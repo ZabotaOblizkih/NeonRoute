@@ -133,3 +133,32 @@ class TestNameAffinityGuardAndDeletion:
             is_valid = broken_fp8.is_file() and broken_fp8.stat().st_size > 0
             assert not is_valid
             assert orig_file.read_text() == "VALUABLE_ORIGINAL_WEIGHTS"
+
+
+def test_resolve_forge_offload_policy_fast_and_stage_modes():
+    from services.art_director.vram_policy import resolve_forge_offload_policy
+
+    # 1. На 8 ГБ VRAM (7790 МБ свободно после выгрузки LLM) SDXL FP8 идет в режиме FAST_KEEP_VRAM (без пошаговой выгрузки)
+    pol_fast = resolve_forge_offload_policy(
+        width=896, height=1152, architecture="sdxl", is_fp8=True, enable_adetailer=True, free_vram_mb=7790
+    )
+    assert pol_fast["mode"] == "FAST_KEEP_VRAM"
+    assert pol_fast["always_offload"] is False
+    assert pol_fast["can_run"] is True
+
+    # 2. Тяжелая модель SDXL FP16 на 8 ГБ автоматически переключается в пошаговую выгрузку STAGE_OFFLOAD
+    pol_fp16 = resolve_forge_offload_policy(
+        width=896, height=1152, architecture="sdxl", is_fp8=False, enable_adetailer=True, free_vram_mb=7790
+    )
+    assert pol_fp16["mode"] == "STAGE_OFFLOAD"
+    assert pol_fp16["always_offload"] is True
+    assert pol_fp16["can_run"] is True
+
+    # 3. При ограниченной свободной памяти (4200 МБ) для SDXL FP8 включается STAGE_OFFLOAD
+    pol_tight = resolve_forge_offload_policy(
+        width=896, height=1152, architecture="sdxl", is_fp8=True, enable_adetailer=True, free_vram_mb=4200
+    )
+    assert pol_tight["mode"] == "STAGE_OFFLOAD"
+    assert pol_tight["always_offload"] is True
+    assert pol_tight["can_run"] is True
+

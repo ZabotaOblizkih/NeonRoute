@@ -326,8 +326,8 @@ class LMStudioClient(QObject):
             current_gpu = getattr(self, "_current_loaded_gpu", "1.0")
 
             # Защита от частых перезагрузок (Reload Loop):
-            # Если модель уже активна на сервере и доступна
-            is_healthy, _ = self.check_health()
+            # Если модель уже выгружена (_is_model_unloaded=True), не тратим 2.4с на ConnectTimeout к закрытому порту 1234
+            is_healthy = False if getattr(self, "_is_model_unloaded", False) else self.check_health()[0]
             if is_healthy and self.is_model_loaded(model_name):
                 # Для автономного сервера без process_manager или при достаточном контексте
                 has_pm_headless = bool(self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server())

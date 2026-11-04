@@ -469,6 +469,8 @@ class ForgeClient(QObject):
 
     def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True) -> bool:
         """Принудительно очищает PyTorch CUDA кэш и синхронизирует режим выгрузки с vram_policy."""
+        if unload_models and getattr(self, "_checkpoint_unloaded", False) and always_offload is None and inference_memory_mb is None:
+            return True
         try:
             payload = {"unload_models": unload_models}
             if always_offload is not None:
@@ -599,6 +601,7 @@ class ForgeClient(QObject):
             logger.warning(err_msg)
             raise ForgeOfflineError(err_msg)
 
+        self._checkpoint_unloaded = False
         # Switch checkpoint if specified
         if checkpoint:
             self.set_model(checkpoint)
