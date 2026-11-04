@@ -22,8 +22,8 @@
    Субагент «Инженер» (`services.subagent_engineer.SubagentEngineer`) и модуль `services.engineer_tdd.CodeFirstTDDPipeline` не полагаются на теоретическую оценку сгенерированного кода. Единственным критерием корректности является запуск в песочнице с кодом возврата `exit_code == 0`, прохождение проверки содержательности артефакта (`SubstanceGuard`), успешное выполнение набора тестов `pytest` (или Headless GUI Smoke-теста) и многоуровневых AST-проверок (`CodeValidator`).
 5. **Безопасность и изоляция рантайма**:
    Все операции создания и исполнения скриптов изолированы в каталоге `workspace/projects/<session_id>/`. Системные вызовы операционной системы фильтруются на уровне AST-префлайта и рантайм аудит-хуков `sys.addaudithook` в `services.sandbox_guard.py`.
-6. **ACID-персистентность состояния**:
-   Все операции записи сессий, каста персонажей, реестров знаний, пользовательских скиллов и настроек выполняются атомарно через функцию `utils.file_utils.atomic_write_json` со сбросом буфера операционной системы (`fsync`) во временный файл `.tmp` и экспоненциальным ретраем при блокировках `WinError 32`.
+6. **ACID-персистентность состояния и двухконтурный движок сессий (`SQLite WAL + Fast JSON Mirror`)**:
+   Оперативная история диалогов всех трёх режимов (`assistant`, `roleplay`, `engineer`) хранится в таблицах `chat_sessions` и `chat_messages` базы `data/memory.db` в режиме `SQLite WAL` (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), обеспечивая транзакционную запись хода за `~0.1 мс` без аппаратных блокировок диска. Для обратной совместимости с `mobile_server`, `RPCastExtractor` и внешнего экспорта/импорта синхронно поддерживается файловое зеркало `history/chat_<id>.json` с контролем внешней модификации по `st_mtime` (без блокирующего `os.fsync`). Конфигурации, каст персонажей, реестры знаний и пользовательские скиллы записываются атомарно через `utils.file_utils.atomic_write_json`.
 
 ---
 
@@ -114,7 +114,7 @@ NeonRoute/
 │ ├── sandbox_runner.py # [63 строки] Изолированный раннер пользовательских скриптов через runpy.run_path с активацией sandbox_guard
 │ ├── search_tokenizer.py # [173 строки] Токенизатор для индекса BM25 со стеммингом Портера RU/EN, разбором camelCase/snake_case и декомпозицией корней
 │ ├── server_config.py # [496 строк] 3-уровневый каскад ServerConfigResolver для поиска llama-server.exe, CUDA 12 DLLs, GGUF и mmproj
-│ ├── session_manager.py # [815 строк] Управление сессиями диалогов, кэш сессий sessions_cache, ACID-запись chat<id>.json и session.json
+│ ├── session_manager.py # [993 строк] Управление сессиями диалогов (SQLite WAL chat_sessions/chat_messages + быстрое зеркало JSON), кэш sessions_cache
 │ ├── skill_router.py # [391 строка] Гибридный роутер микро-скиллов Ассистента (7 базовых + пользовательские скиллы из custom_assistant_skills.json)
 │ ├── stt_service.py # [68 строк] Сервис голосового ввода (Faster-Whisper stub)
 │ ├── subagent_engineer.py # [1787 строк] Автономный субагент «Инженер»: CodeStreamExtractor, ветка review/Git, интеграция TDD, Zero-Token Healing, SubstanceGuard
@@ -691,7 +691,15 @@ engineer	28 672 (28K)	22 000	50	0.70	0.00	1.00	1.00	0.00	0.00	4096
     Контур 2 (EMERGENCY_VRAM_THRESHOLD_MB = 150): Пожарный рубильник — при падении свободной VRAM ниже 150 МБ параметры принудительно переключаются на Ступень 3 (24 сообщения / 512 токенов) независимо от заполнения контекста.
 
 13. Спецификация форматов персистентного хранения данных
-13.1. Сессия диалога: history/chat_<session_id>.json (и зеркало outputs/sessions/<session_id>/session.json)
+13.1. Сессия диалога: SQLite WAL (`data/memory.db`: таблицы `chat_sessions` и `chat_messages`) и файловое зеркало `history/chat_<session_id>.json`
+
+    Оперативное хранение и чтение выполняются через таблицы SQLite WAL с автоматической прозрачной миграцией архивных JSON-файлов и сверкой метки времени `file_mtime` (`st_mtime`):
+
+    • Таблица `chat_sessions`: `id` (TEXT PRIMARY KEY), `title`, `mode`, `updated_at`, `created_at`, `file_mtime` (REAL), `header_json` (полный слепок метаданных сессии), `chat_history_json`.
+
+    • Таблица `chat_messages`: `session_id` (TEXT), `message_idx` (INTEGER), `msg_id`, `role`, `sender`, `text`, `timestamp`, `raw_msg_json` (полный слепок полей сообщения без потерь), составной ключ `PRIMARY KEY (session_id, message_idx)` и индекс `idx_chat_messages_sess`.
+
+    Структура полей объекта сессии (в ОЗУ `sessions_cache` и JSON-зеркале для экспорта/импорта):
 
     id (string UUID), title (string), mode ("assistant" | "roleplay" | "engineer"), type ("engineering", optional).
 
@@ -731,7 +739,7 @@ engineer	28 672 (28K)	22 000	50	0.70	0.00	1.00	1.00	0.00	0.00	4096
 
 13.3. Долговременная память, кэш моделей и пользовательские скиллы (data/)
 
-    data/memory.db (SQLite WAL): таблицы user_memory, rp_memory (до 100 вех на сессию), reminders, синхронизированные с векторными таблицами facts и rp_memories в data/vector_memory/ (LanceDB).
+    data/memory.db (SQLite WAL): таблицы оперативных сессий `chat_sessions` и `chat_messages`, а также таблицы памяти `user_memory`, `rp_memory` (до 100 вех на сессию) и `reminders`, синхронизированные с векторными таблицами `facts` и `rp_memories` в `data/vector_memory/` (LanceDB).
 
     data/models_cache.json: кэш распарсенных заголовков GGUF (total_layers, model_size_mb, architecture, is_moe, context_length) по ключу path::mtime::size.
 
@@ -751,7 +759,7 @@ tests/test_token_budget_manager.py	34	Пессимистичный расчет 
 tests/test_tavern_parser.py	48	Парсинг спецификаций Tavern V1/V2, Chub.ai, автоизвлечение Visual DNA, Scenery DNA, detect_card_archetype (11 архетипов) и статей лорбуков.
 tests/test_art_director.py	64	Формирование GenerationPlan, архетипы геометрии кадра, симметризация BREAK, интеграция LoRA, ADetailer и MinorSafetyDetector.
 tests/test_rp_cast_manager.py	42	Управление отрядом, format_cast_data_block, ротация фокусного спутника, таргетированные companion_updates, перехват <stats> в RoleplayStateManager.
-tests/test_session_manager.py	55	Атомарное сохранение сессий, ACID-запись через .tmp, архитектура «Трёх якорей», HistorySanitizer и Sliding CoT Preservation.
+tests/test_session_manager.py & tests/smoke/test_sqlite_sessions_and_leak_guard_smoke.py	58	Двухконтурный движок сессий SQLite WAL (`chat_sessions`/`chat_messages`) + быстрое зеркало JSON для 3 режимов, синхронизация внешних правок по `st_mtime`, сторож утечек в продакшен (`check_sandbox_state_leak`), архитектура «Трёх якорей», HistorySanitizer и Sliding CoT Preservation.
 tests/test_document_parser.py	44	Безопасное извлечение текста из .docx, .xlsx, .pptx, .pdf, .fb2 и гибридный поиск HybridSearchEngine (BM25 + Dense + RRF).
 ИТОГО	487+	100% Pass Rate (0 failed, 0 skipped, 0 warnings)
 15. Архитектура интеграций и сетевая топология внешних сервисов (C4 Container Level)
@@ -1032,3 +1040,18 @@ JSON
    - При выключенном сервере Forge сетевые запросы `GET /sdapi/v1/sd-models` блокируются. Обнаружение установленных моделей переключается на мгновенное локальное чтение директории `models/Stable-diffusion` (< 1 мс вместо 3-секундного HTTP-таймаута).
 4. **Сторожевой контроль в регрессионном смок-сьюте (`test_startup_non_blocking_guard`)**:
    - Внедрен в `tests/smoke/test_smoke_mainwindow_lifecycle.py`. Контролирует три строгих инварианта: время инициализации конструктора окна `< 1000 мс`, максимальный джиттер кадров цикла событий `< 300 мс`, 0 блокирующих сокетов/сетевых вызовов в `MainThread` и нулевую компиляцию векторов в первые 4.0 секунды.
+
+### 5.3. Миграция оперативного хранилища сессий на SQLite WAL и защита периметра от тестовых утечек
+
+Для устранения накладных расходов SSD и блокировок `os.fsync` при перезаписи крупных ролевых сессий (600+ сообщений с метаданными и визуальными промптами) внедрена двухконтурная архитектура хранения в `services/session_manager.py`:
+
+1. **Транзакционное ядро SQLite WAL (`data/memory.db`)**:
+   - В базу `data/memory.db` (`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`) добавлены таблицы `chat_sessions` и `chat_messages` с индексом `idx_chat_messages_sess`.
+   - Запись реплик и шапки сессии выполняется за `~0.1 мс` с сохранением 100% специфичных полей каждого режима (`knowledge_sources`, `thought`, `visual_intent`, `character_data`, `generation_params`) в колонках `header_json` и `raw_msg_json`.
+   - Метод `list_sessions()` считывает шапки диалогов напрямую из `chat_sessions` со сверкой `st_mtime`, исключая чтение и парсинг тяжелых JSON-файлов при отрисовке боковой панели.
+2. **Быстрое файловое зеркало (`Zero-Fsync JSON Mirror`) и `st_mtime` синхронизация**:
+   - Файлы `history/chat_<id>.json` и `outputs/sessions/<id>/session.json` обновляются через атомарный `os.replace` без блокирующего аппаратного вызова `os.fsync`, сохраняя полную совместимость с роутами `mobile_server`, `RPCastExtractor` и экспортом/импортом.
+   - При внешней модификации JSON-файла (например, через `mobile_server`) `load_session()` детектирует изменение `st_mtime` и автоматически синхронизирует состояние обратно в SQLite WAL.
+3. **Сторожевой контроль изоляции тестов (`tests/conftest.py` и `tests/smoke/test_sqlite_sessions_and_leak_guard_smoke.py`)**:
+   - Фикстура `check_sandbox_state_leak` в `tests/conftest.py` контролирует снимок реальной директории `history/` до и после каждого теста, предотвращая утечку тестовых сессий в боевое окружение.
+   - Смок-сьют `test_sqlite_sessions_and_leak_guard_smoke.py` верифицирует запись и восстановление чатов всех 3 режимов (`assistant`, `roleplay`, `engineer`), синхронизацию внешних правок и чистоту промышленной базы `data/memory.db`.

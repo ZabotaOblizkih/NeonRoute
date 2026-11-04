@@ -102,12 +102,23 @@ def pytest_unconfigure(config):
     shutil.rmtree(_AIRGAP_BASE, ignore_errors=True)
 
 
+_PROD_HISTORY_DIR = Path(__file__).resolve().parent.parent / "history"
+_PROD_MEMORY_DB = Path(__file__).resolve().parent.parent / "data" / "memory.db"
+
+
+def _snapshot_prod_history() -> set[str]:
+    if not _PROD_HISTORY_DIR.exists():
+        return set()
+    return {p.name for p in _PROD_HISTORY_DIR.glob("chat_*.json")}
+
+
 @pytest.fixture(autouse=True)
 def check_sandbox_state_leak(request):
     _apply_airgap_paths(_AIRGAP_TEMP_ROOT)
     from services.sandbox_manager import SandboxManager
     SandboxManager._workspace_dir_override = _AIRGAP_TEMP_ROOT / "workspace"
     SandboxManager.set_active_session_id(None)
+    before_prod_files = _snapshot_prod_history()
 
     yield
 
@@ -116,4 +127,16 @@ def check_sandbox_state_leak(request):
         SandboxManager.set_active_session_id(None)
         pytest.fail(
             f"УТЕЧКА СОСТОЯНИЯ: Тест '{request.node.name}' оставил незакрытую сессию '{active_sid}'!"
+        )
+
+    after_prod_files = _snapshot_prod_history()
+    leaked_files = after_prod_files - before_prod_files
+    if leaked_files:
+        for lf in leaked_files:
+            try:
+                (_PROD_HISTORY_DIR / lf).unlink(missing_ok=True)
+            except Exception:
+                pass
+        pytest.fail(
+            f"УТЕЧКА СЕССИИ В ПРОДАКШЕН: Тест '{request.node.name}' создал файлы в боевой папке history/: {leaked_files}"
         )

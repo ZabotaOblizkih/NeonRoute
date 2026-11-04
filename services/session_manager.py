@@ -283,10 +283,10 @@ class SessionManager:
     @staticmethod
     def _get_sqlite_conn() -> sqlite3.Connection:
         import config as _cfg
-        default_hist = ( getattr(_cfg, "BASE_DIR", Path(".")) / "history" ).resolve()
         curr_hist = Path(HISTORY_DIR).resolve()
-        if curr_hist == default_hist:
-            db_file = Path(memory_db.db_path)
+        mem_db_p = Path(memory_db.db_path).resolve()
+        if curr_hist.parent == mem_db_p.parent.parent:
+            db_file = mem_db_p
         else:
             curr_hist.mkdir(parents=True, exist_ok=True)
             db_file = curr_hist / "sessions_wal.db"
