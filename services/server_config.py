@@ -456,7 +456,7 @@ class ServerConfigResolver:
             norm_cand = re.sub(r"[^a-z0-9]", "", cand.stem.lower())
             # Check for shared key vision identifiers (e.g. qwen25vl, llava, etc.)
             for kw in vision_keywords:
-                if kw in model_name_lower and kw in norm_cand:
+                if (kw in model_name_lower or kw in norm_model) and kw in norm_cand:
                     return cand
 
         return None

@@ -53,10 +53,8 @@ def calculate_max_hires_canvas_area(
 
     if is_xl:
         base_weights_mb = WEIGHTS_SDXL_FP8_MB if is_fp8 else WEIGHTS_SDXL_FP16_MB
-        k_arch = K_ARCH_SDXL
     else:
         base_weights_mb = WEIGHTS_SD15_MB
-        k_arch = K_ARCH_SD15
 
     lora_mb = max(0, int(active_lora_count)) * LORA_ADAPTER_WEIGHT_MB
     total_weights_mb = base_weights_mb + lora_mb
@@ -201,10 +199,8 @@ def resolve_forge_offload_policy(
 
     if is_xl:
         base_weights_mb = WEIGHTS_SDXL_FP8_MB if is_fp8 else WEIGHTS_SDXL_FP16_MB
-        k_arch = K_ARCH_SDXL
     else:
         base_weights_mb = WEIGHTS_SD15_MB
-        k_arch = K_ARCH_SD15
 
     lora_mb = max(0, int(active_lora_count)) * LORA_ADAPTER_WEIGHT_MB
     total_weights_mb = base_weights_mb + lora_mb

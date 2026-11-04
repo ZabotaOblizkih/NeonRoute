@@ -564,7 +564,7 @@ class LayerBudgeter:
                     "reason": reason,
                 }
                 cls.log_audit_report(audit_data)
-                return (0, False, reason, audit_data)
+                return (0, can_run, reason, audit_data)
         else:
             usable_ram_mb = max(0.0, available_ram_mb - min_os_headroom_mb)
 
@@ -596,7 +596,7 @@ class LayerBudgeter:
             "reason": reason,
         }
         cls.log_audit_report(audit_data)
-        return (calculated_ngl, True, reason, audit_data)
+        return (calculated_ngl, can_run, reason, audit_data)
 
     # -------------------------------------------------------------------------
     # 5. Диагностический паспорт (логгер NeonRoute.LayerBudgeter)

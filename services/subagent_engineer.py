@@ -378,7 +378,6 @@ class SubagentEngineer:
 
         declared_entry_file = plan.verification_script if plan.verification_script else (None if getattr(plan, "artifact_format", None) == "module" else plan.target_artifact)
         verification_passed = False
-        target_artifact_passed = False
 
         # При подготовке системного промпта рабочего:
         skill_id = getattr(plan, "skill_id", "pure_logic_tdd")
@@ -877,8 +876,12 @@ class SubagentEngineer:
                 # Откатываем рабочую область и переходим на следующий ход автономного цикла
                 ws_dir = SandboxManager.get_workspace_dir()
                 SubagentEngineer._rollback_workspace(ws_dir, file_backups)
-                consecutive_same_error_count = consecutive_same_error_count + 1 if last_error == prev_loop_error else 1
-                prev_loop_error = last_error
+                current_fp = extract_error_fingerprint(last_error)
+                if current_fp and current_fp == last_error_fingerprint:
+                    consecutive_same_error_count += 1
+                else:
+                    consecutive_same_error_count = 1
+                    last_error_fingerprint = current_fp
 
                 if turn < max_turns:
                     diag_msg = (
@@ -1348,7 +1351,6 @@ class SubagentEngineer:
                         if f.is_file() and f.suffix.lower() in (".xlsx", ".docx") and f.stat().st_size > 0
                     ]
                     if created_docs:
-                        target_artifact_passed = True
                         self.active_verification_script = None
                         loop_succeeded = True
                         logger.info(
@@ -1448,7 +1450,6 @@ class SubagentEngineer:
                 else:
                     tgt_name = Path(target_artifact).name.lower() if target_artifact else ""
                     if Path(script_to_run).name.lower() == tgt_name:
-                        target_artifact_passed = True
                         self.active_verification_script = None
                         loop_succeeded = True
                         if turn > 1:
@@ -1466,7 +1467,6 @@ class SubagentEngineer:
                             if t_res.success:
                                 stdout = t_res.stdout or stdout
                                 stderr = t_res.error or ""
-                                target_artifact_passed = True
                                 self.active_verification_script = None
                                 loop_succeeded = True
                                 GitSandboxManager.checkpoint(ws_dir, f"Turn {turn}: verified step for {target_artifact}")

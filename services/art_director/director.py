@@ -1376,8 +1376,8 @@ class ArtDirector:
             enable_ad = bool(model_pipeline["enable_adetailer"]) and not is_bg
         else:
             allow_by_model = getattr(canon, "allow_adetailer", True)
-            enable_ad = allow_by_model and not is_bg
-        hands_enabled = enable_ad
+            enable_ad = (allow_by_model or wants_hands) and not is_bg
+        hands_enabled = bool(enable_ad or (wants_hands and not is_bg))
 
         plan_enable_ad = enable_ad
         # Определение доступности Hires.fix через динамическую политику VRAM

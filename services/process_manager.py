@@ -1253,7 +1253,6 @@ class ProcessManager(QObject):
 
     def _run_forge_stop(self):
         logger.info("Stopping SD WebUI Forge and releasing GPU VRAM...")
-        stopped = False
 
         # 1. Kill tracked process tree if known
         if self._forge_process is not None and self._forge_process.pid:
@@ -1267,7 +1266,6 @@ class ProcessManager(QObject):
                     startupinfo=s_info,
                     creationflags=s_flags
                 )
-                stopped = True
             except Exception as e:
                 logger.warning(f"Error terminating Forge PID {pid}: {e}")
             finally:
