@@ -437,7 +437,7 @@ class ProcessManager(QObject):
                     try:
                         from utils.config_manager import ConfigManager
                         cfg_json = ConfigManager.load_config()
-                        target_id = cfg_json.get("active_model")
+                        target_id = cfg_json.get("assistant_model_name") or cfg_json.get("active_model")
                     except Exception:
                         pass
 
@@ -658,14 +658,19 @@ class ProcessManager(QObject):
                 return
 
             target_model = getattr(self.lm_client, "_last_loaded_model_id", None)
+            target_ctx = getattr(self.lm_client, "_current_loaded_ctx", None) if self.lm_client else None
             if not target_model:
                 try:
                     from utils.config_manager import ConfigManager
-                    target_model = ConfigManager.load_config().get("active_model")
+                    from config import MODE_PROFILES
+                    cfg_init = ConfigManager.load_config()
+                    target_model = cfg_init.get("assistant_model_name") or cfg_init.get("active_model")
+                    def_ctx = MODE_PROFILES.get("assistant", {}).get("context_length", 14336)
+                    target_ctx = int(cfg_init.get("context_length_assistant", def_ctx))
                 except Exception:
                     pass
 
-            ok = self.start_llama_server_sync(model_identifier=target_model)
+            ok = self.start_llama_server_sync(model_identifier=target_model, context_length=target_ctx)
             if ok:
                 self.action_completed.emit("lms_start", True, "LLM сервер успешно запущен.")
             else:

@@ -414,6 +414,7 @@ class ForgeClient(QObject):
 
             current = self.get_current_model()
             if current and (current == target_title or target_title in current):
+                self._last_resolved_title = current
                 logger.info(f"Forge checkpoint '{target_title}' is already active.")
                 return True
 
@@ -441,6 +442,7 @@ class ForgeClient(QObject):
                 logger.error(f"Failed to set model {target_title}: HTTP {resp_opt.status_code} - {resp_opt.text}")
                 return False
 
+            self._last_resolved_title = target_title
             logger.info(f"Forge checkpoint successfully queued: {target_title}")
             self._checkpoint_unloaded = False
             return True
@@ -689,9 +691,14 @@ class ForgeClient(QObject):
 
         # ЖЕЛЕЗНЫЙ ХАРДЛОК ЧЕКПОИНТА: передаем модель прямо в override_settings запроса
         if checkpoint:
-            # Ищем точный title модели из списка Forge
-            target_model_title = checkpoint
-            models = self.get_models()
+            # Используем уже разрешенный в set_model title без повторного сетевого опроса get_models()
+            cached_title = getattr(self, "_last_resolved_title", None)
+            if cached_title and checkpoint.lower().replace(".safetensors", "").replace(".ckpt", "") in cached_title.lower():
+                target_model_title = cached_title
+                models = []
+            else:
+                target_model_title = checkpoint
+                models = self.get_models()
             search_str = checkpoint.lower().replace(".safetensors", "").replace(".ckpt", "")
             for m in models:
                 m_title = m.get("title", "")
