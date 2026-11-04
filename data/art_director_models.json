@@ -181,6 +181,32 @@
         "enable_adetailer": true,
         "negative_prompt": "(low quality, worst quality:1.4), cgi, text, signature, watermark, extra limbs"
       }
+    },
+    {
+      "id": "auto_counterfeitxl_v25",
+      "name": "counterfeitxl_v25",
+      "architecture": "sdxl",
+      "checkpoint": "counterfeitxl_v25.safetensors",
+      "routing_description": "Новая модель (требуется настройка описания для роутинга)",
+      "llm_guidance": "",
+      "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed, badhandv4",
+      "is_default": false,
+      "style_triggers": [],
+      "active": true,
+      "triggers": [],
+      "pipeline": {
+        "architecture": "sdxl",
+        "sampler": "DPM++ 2M Karras",
+        "scheduler": "Karras",
+        "steps": 25,
+        "cfg_scale": 6.0,
+        "clip_skip": 1,
+        "hires_upscaler": "4x-UltraSharp",
+        "hires_denoise": 0.32,
+        "enable_hr": false,
+        "enable_adetailer": false,
+        "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed, badhandv4"
+      }
     }
   ]
 }
