@@ -704,7 +704,7 @@ class MainWindow(
         logger.info(f"[NeonRoute] Фоновая синхронизация базы знаний завершена: {total} документов.")
 
     def _load_saved_sessions(self):
-        """Loads all sessions from C:\\NeonRoute\\history\\ or creates a fresh one."""
+        """Loads all sessions from history directory or creates a fresh one."""
         # Явно отключаем сигналы и удаляем существующие виджеты перед очисткой:
         for item, widget in self._session_items.values():
             try:
@@ -1558,7 +1558,7 @@ class MainWindow(
         if is_eng:
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(False)
-            self.statusBar().showMessage("Режим: 🛠️ Инженер (Песочница C:\\NeonRoute\\workspace)")
+            self.statusBar().showMessage(f"Режим: 🛠️ Инженер (Песочница {WORKSPACE_DIR})")
         elif self.current_mode == "assistant":
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)

@@ -68,7 +68,7 @@ class ToolExecutionWorker(QThread):
                     clean_fn = SandboxManager.clean_workspace_filename(fn)
                     target_path = SandboxManager.get_workspace_dir() / clean_fn
                     if not target_path.exists():
-                        err_msg = f"Ошибка: Скрипт не найден перед запуском: C:\\NeonRoute\\workspace\\{clean_fn}"
+                        err_msg = f"Ошибка: Скрипт не найден перед запуском: {target_path}"
                         results.append({
                             "tool_name": call.name,
                             "result": err_msg,
@@ -80,7 +80,7 @@ class ToolExecutionWorker(QThread):
                         overall_success = False
                         continue
                     if target_path.stat().st_size == 0:
-                        err_msg = f"Ошибка: Скрипт C:\\NeonRoute\\workspace\\{clean_fn} имеет нулевой размер (пустой файл)!"
+                        err_msg = f"Ошибка: Скрипт {target_path} имеет нулевой размер (пустой файл)!"
                         results.append({
                             "tool_name": call.name,
                             "result": err_msg,
@@ -125,7 +125,7 @@ class ToolExecutionWorker(QThread):
                         target_path = SandboxManager.get_workspace_dir() / clean_fn
                         if not target_path.exists() or (target_path.stat().st_size == 0 and len(call.content.strip()) > 0):
                             is_err = True
-                            res_str = f"Ошибка: Файл C:\\NeonRoute\\workspace\\{clean_fn} не был сохранен или остался пустым!"
+                            res_str = f"Ошибка: Файл {target_path} не был сохранен или остался пустым!"
                         else:
                             last_written_file = clean_fn
 

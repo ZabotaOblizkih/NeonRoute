@@ -139,3 +139,26 @@ def test_ui_defaults_and_configs_no_hardcoded_c_drive():
             assert not str(val).startswith("C:\\NeonRoute") and not str(val).startswith("C:/NeonRoute"), (
                 f"config.json field '{key}' contains hardcoded path: {val}"
             )
+
+
+def test_ui_dialogs_and_workers_no_hardcoded_c_drive():
+    """
+    Checks that ui/dialogs/clean_cache_dialog.py, ui/dialogs/help_dialog.py,
+    ui/main_window.py, and ui/workers/tool_execution_worker.py contain no
+    hardcoded 'C:\\NeonRoute' or 'C:/NeonRoute' string literals.
+    """
+    target_files = [
+        config.BASE_DIR / "ui" / "dialogs" / "clean_cache_dialog.py",
+        config.BASE_DIR / "ui" / "dialogs" / "help_dialog.py",
+        config.BASE_DIR / "ui" / "main_window.py",
+        config.BASE_DIR / "ui" / "workers" / "tool_execution_worker.py",
+    ]
+    for filepath in target_files:
+        assert filepath.exists(), f"Target file does not exist: {filepath}"
+        content = filepath.read_text(encoding="utf-8")
+        assert r"C:\\NeonRoute" not in content, (
+            f"File '{filepath.name}' contains hardcoded 'C:\\\\NeonRoute'"
+        )
+        assert "C:/NeonRoute" not in content, (
+            f"File '{filepath.name}' contains hardcoded 'C:/NeonRoute'"
+        )

@@ -487,7 +487,7 @@ class CleanCacheDialog(QDialog):
 
         # 5. Generated Images Outputs (UNCHECKED by default for safety!)
         row3 = QHBoxLayout()
-        self.chk_outputs = QCheckBox("Сгенерированные изображения (C:\\NeonRoute\\outputs\\)", card)
+        self.chk_outputs = QCheckBox(f"Сгенерированные изображения ({OUTPUTS_DIR})", card)
         self.chk_outputs.setChecked(False)
         self.chk_outputs.setToolTip("Внимание: удалит все ранее сгенерированные изображения в папке outputs!")
         row3.addWidget(self.chk_outputs, stretch=1)
@@ -567,7 +567,7 @@ class CleanCacheDialog(QDialog):
             reply = QMessageBox.warning(
                 self,
                 "Подтверждение удаления изображений",
-                "Вы выбрали удаление всех сгенерированных изображений из C:\\NeonRoute\\outputs\\.\n\n"
+                f"Вы выбрали удаление всех сгенерированных изображений из {OUTPUTS_DIR}.\n\n"
                 "Вы уверены, что хотите удалить их?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No

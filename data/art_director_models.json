@@ -163,7 +163,7 @@
       "checkpoint": "dreamshaperXL_lightningDPMSDE.safetensors",
       "routing_description": "Новая SDXL модель (требуется настройка описания для роутинга)",
       "llm_guidance": "",
-      "negative_prompt": "(low quality, worst quality:1.4), cgi, text, signature, watermark, extra limbs",
+      "negative_prompt": "ugly, deformed, noisy, blurry, low contrast, text, BadDream, 3d, cgi, render, fake, anime, open mouth, big forehead, long neck",
       "is_default": false,
       "style_triggers": [],
       "active": true,
@@ -172,14 +172,14 @@
         "architecture": "sdxl",
         "sampler": "DPM++ SDE Karras",
         "scheduler": "Karras",
-        "steps": 6,
-        "cfg_scale": 1.8,
+        "steps": 4,
+        "cfg_scale": 2.0,
         "clip_skip": 2,
-        "hires_upscaler": "4x-UltraSharp",
-        "hires_denoise": 0.32,
+        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hires_denoise": 0.5,
         "enable_hr": false,
         "enable_adetailer": true,
-        "negative_prompt": "(low quality, worst quality:1.4), cgi, text, signature, watermark, extra limbs"
+        "negative_prompt": "ugly, deformed, noisy, blurry, low contrast, text, BadDream, 3d, cgi, render, fake, anime, open mouth, big forehead, long neck"
       }
     },
     {
@@ -189,7 +189,7 @@
       "checkpoint": "counterfeitxl_v25.safetensors",
       "routing_description": "Новая модель (требуется настройка описания для роутинга)",
       "llm_guidance": "",
-      "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed, badhandv4",
+      "negative_prompt": "flat color, negativeXL_D, (low quality, worst quality:1.2), bad anatomy, fewer digits, extra fingrers",
       "is_default": false,
       "style_triggers": [],
       "active": true,
@@ -199,13 +199,13 @@
         "sampler": "DPM++ 2M Karras",
         "scheduler": "Karras",
         "steps": 25,
-        "cfg_scale": 6.0,
-        "clip_skip": 1,
-        "hires_upscaler": "4x-UltraSharp",
-        "hires_denoise": 0.32,
+        "cfg_scale": 6.5,
+        "clip_skip": 2,
+        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hires_denoise": 0.43,
         "enable_hr": false,
-        "enable_adetailer": false,
-        "negative_prompt": "worst quality, low quality, bad anatomy, bad proportions, deformed, badhandv4"
+        "enable_adetailer": true,
+        "negative_prompt": "flat color, negativeXL_D, (low quality, worst quality:1.2), bad anatomy, fewer digits, extra fingrers"
       }
     }
   ]

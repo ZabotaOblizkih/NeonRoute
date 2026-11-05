@@ -1,4 +1,4 @@
-﻿"""
+"""
 Help Dialog for NeonRoute (v0.9.0-beta).
 Provides user guide and instructions regarding VRAM management, operational modes,
 workspace sandbox, art generation, reminders, shortcuts, and long-term memory.
@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame, QScrollArea, QWidget
 )
 
-from config import APP_VERSION
+from config import APP_VERSION, WORKSPACE_DIR
 
 
 class HelpDialog(QDialog):
@@ -134,7 +134,7 @@ class HelpDialog(QDialog):
 
         # 3. Песочница workspace
         content_layout.addWidget(self._create_card(
-            title="💻 Песочница C:\\NeonRoute\\workspace и интерактивная консоль",
+            title=f"💻 Песочница {WORKSPACE_DIR} и интерактивная консоль",
             text="• Создание и правка кода: файлы создаются (write_file) и обновляются (patch_file) строго внутри песочницы с принудительной синхронизацией fsync.\n"
                  "• Интерактивный запуск: кнопка «[ ▶ Запустить ]» на карточке файла открывает скрипт в отдельном окне командной строки Windows (cmd.exe /k), что обеспечивает стабильную работу скриптов с пользовательским вводом input().\n"
                  "• Безопасность (Path Guard): доступ к системным папкам (Windows, Program Files, .git, .env) заблокирован."
