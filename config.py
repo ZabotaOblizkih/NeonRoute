@@ -5,7 +5,7 @@ Optimized for 8 GB VRAM (RTX 5050 / MSI Cyborg 15)
 
 import os
 from pathlib import Path
-from core.forge_locator import find_forge_root
+from core.forge_locator import find_forge_root, resolve_forge_models_directory, parse_forge_launcher_args
 
 # Base Paths (Dynamically resolved relative to project root)
 BASE_DIR = Path(__file__).resolve().parent
@@ -61,13 +61,6 @@ if env_forge_root:
 else:
     # Эвристический каскадный поиск только при отсутствии переменной
     FORGE_ROOT_DIR = find_forge_root() or Path(r"C:\neyroGPD")
-FORGE_LORA_DIRS = [
-    FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Lora",
-    FORGE_ROOT_DIR / "webui" / "models" / "Lora",
-    FORGE_ROOT_DIR / "models" / "Lora"
-]
-DEFAULT_FORGE_LORA_DIR = next((p for p in FORGE_LORA_DIRS if p.exists()), FORGE_LORA_DIRS[0])
-
 _forge_env = os.environ.get("NEONROUTE_FORGE_LAUNCHER")
 if _forge_env:
     FORGE_LAUNCHER_PATH = Path(_forge_env)
@@ -79,6 +72,24 @@ else:
         if _local_launcher.exists():
             _found_launcher = _local_launcher
     FORGE_LAUNCHER_PATH = _found_launcher if _found_launcher is not None else (FORGE_ROOT_DIR / "forge_launcher.bat")
+
+def get_forge_models_dir() -> Path:
+    return resolve_forge_models_directory(FORGE_ROOT_DIR, FORGE_LAUNCHER_PATH)
+
+FORGE_SD_MODELS_DIR = get_forge_models_dir()
+
+FORGE_LORA_DIRS = [
+    FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Lora",
+    FORGE_ROOT_DIR / "webui" / "models" / "Lora",
+    FORGE_ROOT_DIR / "models" / "Lora"
+]
+_custom_launcher_paths = parse_forge_launcher_args(FORGE_LAUNCHER_PATH)
+if "lora_dir" in _custom_launcher_paths:
+    _custom_lora = _custom_launcher_paths["lora_dir"]
+    if _custom_lora not in FORGE_LORA_DIRS:
+        FORGE_LORA_DIRS.insert(0, _custom_lora)
+
+DEFAULT_FORGE_LORA_DIR = next((p for p in FORGE_LORA_DIRS if p.exists()), FORGE_LORA_DIRS[0])
 LM_STUDIO_CLI_CMD = "lms"
 
 # Hardware optimization flags for Forge (RTX 5050 8GB VRAM)

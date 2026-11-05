@@ -1,8 +1,9 @@
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 import configparser
 import logging
 import os
+import re
 import string
 
 logger = logging.getLogger("NeonRoute.ForgeLocator")
@@ -31,6 +32,90 @@ def is_valid_forge_dir(path: Path | str | None) -> bool:
         return any((p / launcher).is_file() for launcher in FORGE_LAUNCHER_CANDIDATES)
     except Exception:
         return False
+
+def parse_forge_launcher_args(launcher_path: Optional[Path]) -> Dict[str, Path]:
+    """
+    Парсит bat/cmd/sh файл лаунчера Forge на наличие аргументов командной строки:
+    --models-dir, --ckpt-dir, --lora-dir, --embeddings-dir.
+    Корректно извлекает пути с пробелами и кавычками.
+    Возвращает словарь с нормализованными (resolve) путями для найденных параметров.
+    """
+    custom_paths: Dict[str, Path] = {}
+    if not launcher_path:
+        return custom_paths
+
+    try:
+        launcher = Path(launcher_path).resolve()
+        if not launcher.is_file():
+            return custom_paths
+
+        # Читаем батник с безопасными фоллбеками по кодировкам
+        content = ""
+        for enc in ("utf-8", "cp1251", "latin-1"):
+            try:
+                content = launcher.read_text(encoding=enc)
+                break
+            except Exception:
+                continue
+
+        # Ищем строки передачи аргументов или COMMANDLINE_ARGS
+        # Поддерживаем флаги: --models-dir, --ckpt-dir, --lora-dir, --embeddings-dir
+        target_flags = {
+            "--models-dir": "models_dir",
+            "--ckpt-dir": "ckpt_dir",
+            "--lora-dir": "lora_dir",
+            "--embeddings-dir": "embeddings_dir",
+        }
+
+        # Регулярка для захвата: --flag <значение> (в кавычках или без, через пробел или =)
+        pattern = re.compile(
+            r'(--(?:models|ckpt|lora|embeddings)-dir)(?:[\s=]+)(?:"([^"]+)"|([^\s]+))',
+            re.IGNORECASE
+        )
+        for match in pattern.finditer(content):
+            flag = match.group(1).lower()
+            val = match.group(2) or match.group(3)
+            if val and flag in target_flags:
+                key = target_flags[flag]
+                path_obj = Path(val.strip().strip('"').strip("'"))
+                # Если путь относительный, считаем его относительно рабочей папки лаунчера
+                if not path_obj.is_absolute():
+                    path_obj = launcher.parent / path_obj
+                custom_paths[key] = path_obj.resolve()
+
+    except Exception:
+        pass
+
+    return custom_paths
+
+
+def resolve_forge_models_directory(forge_root: Optional[Path], launcher_path: Optional[Path] = None) -> Path:
+    """
+    Определяет реальную директорию чекпоинтов Stable Diffusion с учетом аргументов лаунчера и симлинков.
+    Приоритет:
+    1. --ckpt-dir из лаунчера.
+    2. --models-dir / "Stable-diffusion" из лаунчера.
+    3. forge_root / "models" / "Stable-diffusion".
+    """
+    custom = parse_forge_launcher_args(launcher_path)
+    if "ckpt_dir" in custom and custom["ckpt_dir"].exists():
+        return custom["ckpt_dir"]
+
+    if "models_dir" in custom and custom["models_dir"].exists():
+        sd_sub = custom["models_dir"] / "Stable-diffusion"
+        return sd_sub.resolve()
+
+    if "ckpt_dir" in custom:
+        return custom["ckpt_dir"]
+
+    if "models_dir" in custom:
+        return (custom["models_dir"] / "Stable-diffusion").resolve()
+
+    if forge_root:
+        return (Path(forge_root).resolve() / "models" / "Stable-diffusion")
+
+    return Path(r"C:\neyroGPD\models\Stable-diffusion")
+
 
 
 def _log_passport(forge_root: Any, source_name: str) -> None:
@@ -195,11 +280,17 @@ def update_server_config_forge_root(
             config.FORGE_LAUNCHER_PATH = (
                 _found_launcher if _found_launcher is not None else (resolved_path / "forge_launcher.bat")
             )
-            config.FORGE_LORA_DIRS = [
+            config.FORGE_SD_MODELS_DIR = resolve_forge_models_directory(config.FORGE_ROOT_DIR, config.FORGE_LAUNCHER_PATH)
+
+            _custom_args = parse_forge_launcher_args(config.FORGE_LAUNCHER_PATH)
+            lora_dirs = [
                 resolved_path / "webui_forge_cu121_torch231" / "webui" / "models" / "Lora",
                 resolved_path / "webui" / "models" / "Lora",
                 resolved_path / "models" / "Lora"
             ]
+            if "lora_dir" in _custom_args and _custom_args["lora_dir"] not in lora_dirs:
+                lora_dirs.insert(0, _custom_args["lora_dir"])
+            config.FORGE_LORA_DIRS = lora_dirs
             config.DEFAULT_FORGE_LORA_DIR = next(
                 (p for p in config.FORGE_LORA_DIRS if p.exists()),
                 config.FORGE_LORA_DIRS[0]

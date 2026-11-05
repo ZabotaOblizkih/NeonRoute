@@ -452,7 +452,8 @@ class CivitaiCatalogDialog(QDialog):
         self.resize(1200, 750)
         self.setMinimumSize(980, 600)
 
-        self.target_dir = target_dir or (FORGE_ROOT_DIR / "models" / "Stable-diffusion")
+        import config
+        self.target_dir = target_dir or getattr(config, "get_forge_models_dir", lambda: FORGE_ROOT_DIR / "models" / "Stable-diffusion")()
         self.cards_data: List[Dict[str, Any]] = []
         self.current_page: int = 1
         self.total_pages: int = 1
@@ -896,10 +897,12 @@ class CivitaiCatalogDialog(QDialog):
         filename = c["filename"]
 
         # Папка назначения: checkpoints или lora
+        target_resolved = self.target_dir.resolve() if self.target_dir else getattr(config, "get_forge_models_dir", lambda: (FORGE_ROOT_DIR / "models" / "Stable-diffusion").resolve())()
         if c["type"] == "LORA":
-            save_dir = self.target_dir.parent / "Lora" if self.target_dir else (FORGE_ROOT_DIR / "models" / "Lora")
+            base_dir = target_resolved.parent
+            save_dir = (base_dir / "Lora").resolve()
         else:
-            save_dir = self.target_dir
+            save_dir = target_resolved
 
         dest_file = save_dir / filename
 
