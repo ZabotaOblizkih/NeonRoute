@@ -75,6 +75,184 @@ def sanitize_messages_for_memory(messages: List[Dict[str, Any]]) -> List[Dict[st
     return sanitized
 
 
+
+def run_assistant_inference_deferred(
+    prompt: Optional[str] = None,
+    user_prompt: Optional[str] = None,
+    session_id: Optional[str] = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    lm_client: Optional[Any] = None,
+    controller: Optional[Any] = None,
+    **kwargs
+) -> Any:
+    """
+    Фоновый исполнитель задачи Ассистента с отложенной сборкой контекста (Deferred RAG).
+    Выполняется в рабочем потоке TaskQueueWorker:
+    - Если messages уже передан: прямой вызов lm_client.chat_completion без повторного RAG.
+    - Если messages is None: асинхронный поиск в KnowledgeManager и MemoryDB,
+      сборка системного промпта и контекста через SessionManager, затем инференс.
+    """
+    client = lm_client or (getattr(controller, "lm_client", None) if controller else None)
+    if client is None:
+        raise ValueError("[DeferredRAG] Отсутствует lm_client для выполнения задачи инференса.")
+
+    # ── ВЕТКА 1: ГОТОВЫЙ КОНТЕКСТ (LEGACY / ТЕСТЫ) ──
+    if messages is not None:
+        call_kwargs = dict(kwargs)
+        call_kwargs["messages"] = messages
+        for k in [
+            "controller", "user_prompt", "prompt", "session_id", "history_limit",
+            "effective_user_name", "include_memory", "vision_content", "art_guidance",
+            "enable_reasoning", "session_persona_id", "is_excel", "is_word",
+            "lm_client", "history"
+        ]:
+            call_kwargs.pop(k, None)
+        return client.chat_completion(**call_kwargs)
+
+    # ── ВЕТКА 2: ОТЛОЖЕННАЯ СБОРКА КОНТЕКСТА В ПОТОКЕ ВОРКЕРА ──
+    actual_prompt = user_prompt or prompt or ""
+
+    # 1. Поиск в базе знаний KnowledgeManager (CPU/фоновый поток)
+    matched_knowledge_docs: List[Dict[str, Any]] = []
+    knowledge_block = ""
+    if actual_prompt:
+        try:
+            from services.knowledge_manager import KnowledgeManager
+            from services.assistant_prompt_builder import AssistantPromptBuilder
+            matched_knowledge_docs = KnowledgeManager.find_relevant_documents(actual_prompt, threshold=0.3)
+            if matched_knowledge_docs:
+                for doc in matched_knowledge_docs:
+                    fname = doc.get("filename", "")
+                    if fname and not doc.get("content_snippet"):
+                        snippet = KnowledgeManager.get_document_knowledge_snippet(fname, max_chars=2000)
+                        if snippet:
+                            doc["content_snippet"] = snippet
+                knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+                matched_names = [d.get("filename") for d in matched_knowledge_docs]
+                logger.info(f"[AssistantFlow.Deferred] База знаний: найдено {len(matched_knowledge_docs)} релевантных док.: {matched_names}")
+        except Exception as e_km:
+            logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска по базе знаний: {e_km}")
+
+    curr_sess = getattr(controller, "current_session", None) if controller else None
+    if matched_knowledge_docs:
+        pending_sources = [
+            {
+                "filename": doc.get("filename", ""),
+                "chunk_id": doc.get("chunk_id", doc.get("best_chunk_id", 0)),
+                "snippet": (doc.get("snippet") or doc.get("content_snippet") or doc.get("content") or "")[:300],
+                "score": float(doc.get("score", doc.get("relevance_score", 0.0)))
+            }
+            for doc in matched_knowledge_docs
+        ]
+        if controller:
+            controller._pending_knowledge_sources = pending_sources
+            if curr_sess and isinstance(curr_sess, dict):
+                curr_sess["active_knowledge_docs"] = matched_knowledge_docs
+    elif not matched_knowledge_docs and curr_sess and isinstance(curr_sess, dict) and curr_sess.get("active_knowledge_docs"):
+        matched_knowledge_docs = curr_sess["active_knowledge_docs"]
+        from services.assistant_prompt_builder import AssistantPromptBuilder
+        knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+    elif controller:
+        controller._pending_knowledge_sources = None
+
+    # 2. Определение флага reasoning
+    enable_reasoning = kwargs.get("enable_reasoning")
+    if enable_reasoning is None:
+        enable_reasoning = bool(matched_knowledge_docs)
+        if controller:
+            if hasattr(controller, "reasoning_switch") and hasattr(controller.reasoning_switch, "isChecked"):
+                enable_reasoning = enable_reasoning or controller.reasoning_switch.isChecked()
+            elif hasattr(controller, "enable_reasoning_switch") and hasattr(controller.enable_reasoning_switch, "isChecked"):
+                enable_reasoning = enable_reasoning or controller.enable_reasoning_switch.isChecked()
+            elif getattr(controller, "_enable_reasoning", False):
+                enable_reasoning = True
+
+    # 3. Подготовка среза истории диалога
+    history = kwargs.get("history")
+    if history is None:
+        if controller and hasattr(controller, "chat_history") and controller.chat_history:
+            history = controller.chat_history
+        elif session_id:
+            try:
+                s = SessionManager.get_instance().load_session(session_id)
+                history = s.get("chat_history", []) if s else []
+            except Exception:
+                history = []
+        else:
+            history = []
+    if history is None:
+        history = []
+
+    effective_history_limit = kwargs.get("history_limit", 60)
+    from services.assistant_prompt_builder import AssistantPromptBuilder
+    if actual_prompt and (not history or history[-1].get("content") != actual_prompt):
+        full_history = list(history) + [{"role": "user", "content": actual_prompt}]
+    else:
+        full_history = list(history)
+    history_slice = AssistantPromptBuilder.slice_history(full_history, max_history_messages=effective_history_limit)
+
+    # 4. Пользователь и персона
+    effective_user_name = kwargs.get("effective_user_name")
+    sess_persona_id = kwargs.get("session_persona_id")
+    if not effective_user_name:
+        if sess_persona_id is None and curr_sess and isinstance(curr_sess, dict):
+            sess_persona_id = curr_sess.get("user_persona_id")
+        active_p = SessionManager.get_active_user_persona(is_roleplay=False, session_persona_id=sess_persona_id)
+        effective_user_name = active_p.get("name") or "Пользователь"
+
+    # 5. Сборка сообщений через SessionManager (включая memory_db.search_relevant_facts)
+    assembled_messages = SessionManager.get_lm_studio_messages(
+        history=history_slice,
+        is_roleplay=False,
+        character_card=None,
+        is_excel=kwargs.get("is_excel", False),
+        is_word=kwargs.get("is_word", False),
+        vision_content=kwargs.get("vision_content"),
+        history_limit=effective_history_limit,
+        user_name=effective_user_name,
+        include_memory=kwargs.get("include_memory", True),
+        session_id=session_id,
+        session_persona_id=sess_persona_id,
+        is_engineer=False,
+        world_facts=None,
+        art_guidance=kwargs.get("art_guidance"),
+        active_cast_block="",
+        recalled_lore_block="",
+        meta_context_block="",
+        is_dm_mode=False,
+        knowledge_block=knowledge_block,
+        matched_knowledge_docs=matched_knowledge_docs,
+        enable_reasoning=enable_reasoning,
+        user_query=actual_prompt,
+        task_text=actual_prompt
+    )
+
+    # Дополнительная страховка наличия KnowledgeBase и REASONING_PROTOCOL в системном промпте
+    if assembled_messages and assembled_messages[0].get("role") == "system":
+        sys_content = assembled_messages[0].get("content", "")
+        if knowledge_block and "<KnowledgeBase>" not in sys_content:
+            sys_content = f"{sys_content}\n\n{knowledge_block}"
+        if enable_reasoning and "<think>" not in sys_content:
+            from services.assistant_prompt_builder import REASONING_PROTOCOL
+            sys_content = f"{sys_content}\n\n{REASONING_PROTOCOL}"
+        assembled_messages[0]["content"] = sys_content
+
+    # 6. Делегирование в LM Studio
+    call_kwargs = dict(kwargs)
+    call_kwargs["messages"] = assembled_messages
+    call_kwargs["is_roleplay"] = False
+    call_kwargs["is_engineer"] = False
+    for k in [
+        "controller", "user_prompt", "prompt", "session_id", "history_limit",
+        "effective_user_name", "include_memory", "vision_content", "art_guidance",
+        "enable_reasoning", "session_persona_id", "is_excel", "is_word",
+        "lm_client", "history"
+    ]:
+        call_kwargs.pop(k, None)
+
+    return client.chat_completion(**call_kwargs)
+
+
 class AssistantFlowControllerMixin:
     """Изолированный контроллер диалогового цикла и логики режима «💬 Ассистент» (Элария)."""
 
@@ -300,6 +478,13 @@ class AssistantFlowControllerMixin:
             f"[IMAGE_PROMPT: 1girl, female samurai, holding katana, detailed traditional armor with cyberpunk accents, neo-tokyo street, night, heavy rain, wet pavement, puddles with neon reflections, dramatic rim light, cinematic lighting, upper body shot, photorealistic, 8k uhd, sharp focus --ar portrait --model {target_model_id}]"
         )
 
+    def _run_assistant_inference_deferred(self, *args, **kwargs):
+        """Прокси к run_assistant_inference_deferred с передачей self в качестве controller."""
+        kwargs.setdefault("controller", self)
+        if "lm_client" not in kwargs and hasattr(self, "lm_client"):
+            kwargs["lm_client"] = self.lm_client
+        return run_assistant_inference_deferred(*args, **kwargs)
+
     def _enqueue_assistant_llm_task(
         self,
         is_excel: bool = False,
@@ -308,7 +493,7 @@ class AssistantFlowControllerMixin:
         art_guidance: Optional[str] = None,
         enable_reasoning: Optional[bool] = None
     ):
-        """Формирует контекст Ассистента (14K) и передает задачу в TaskQueue."""
+        """Формирует контекст Ассистента и передает задачу в TaskQueue с отложенной сборкой (Deferred RAG)."""
         self._requested_word_export = is_word
         self._requested_excel_export = is_excel
 
@@ -344,7 +529,6 @@ class AssistantFlowControllerMixin:
         if _should_art:
             effective_history_limit = 6
             effective_max_tokens = 512
-            history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
         else:
             free_vram = None
             if hasattr(self, "system_monitor") and self.system_monitor:
@@ -365,126 +549,11 @@ class AssistantFlowControllerMixin:
             effective_history_limit = decision.history_limit
             effective_max_tokens = decision.max_tokens
 
-            history_slice = AssistantPromptBuilder.slice_history(self.chat_history, max_history_messages=effective_history_limit)
-
         curr_sess = getattr(self, "current_session", None) or {}
         curr_sess_id = curr_sess.get("id") if isinstance(curr_sess, dict) else (self.current_session.get("id") if self.current_session else None)
         sess_persona_id = curr_sess.get("user_persona_id") if isinstance(curr_sess, dict) else (self.current_session.get("user_persona_id") if self.current_session else None)
         active_p = SessionManager.get_active_user_persona(is_roleplay=False, session_persona_id=sess_persona_id)
         effective_user_name = active_p.get("name") or "Пользователь"
-
-        # ── ПОИСК И ИНЪЕКЦИЯ ЗНАНИЙ ЭЛАРИИ (CPU, 0 МБ VRAM) ──
-        matched_knowledge_docs: List[Dict[str, Any]] = []
-        knowledge_block = ""
-        if _req and not _should_art:
-            try:
-                from services.knowledge_manager import KnowledgeManager
-                matched_knowledge_docs = KnowledgeManager.find_relevant_documents(_req, threshold=0.3)
-                if matched_knowledge_docs:
-                    for doc in matched_knowledge_docs:
-                        fname = doc.get("filename", "")
-                        if fname and not doc.get("content_snippet"):
-                            snippet = KnowledgeManager.get_document_knowledge_snippet(fname, max_chars=2000)
-                            if snippet:
-                                doc["content_snippet"] = snippet
-                    knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
-                    matched_names = [d.get("filename") for d in matched_knowledge_docs]
-                    logger.info(f"[AssistantFlow] База знаний: найдено {len(matched_knowledge_docs)} релевантных документов для запроса: {matched_names}")
-
-                    if curr_sess and isinstance(curr_sess, dict):
-                        curr_sess["active_knowledge_docs"] = matched_knowledge_docs
-            except Exception as e_km:
-                logger.warning(f"[AssistantFlow] Ошибка поиска по базе знаний: {e_km}")
-
-        if not matched_knowledge_docs and curr_sess.get("active_knowledge_docs"):
-            matched_knowledge_docs = curr_sess["active_knowledge_docs"]
-            knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
-            logger.info(f"[AssistantFlow] Использован сессионный контекст знаний: {len(matched_knowledge_docs)} док.")
-
-        if matched_knowledge_docs:
-            self._pending_knowledge_sources = [
-                {
-                    "filename": doc.get("filename", ""),
-                    "chunk_id": doc.get("chunk_id", doc.get("best_chunk_id", 0)),
-                    "snippet": (doc.get("snippet") or doc.get("content_snippet") or doc.get("content") or "")[:300],
-                    "score": float(doc.get("score", doc.get("relevance_score", 0.0)))
-                }
-                for doc in matched_knowledge_docs
-            ]
-        else:
-            self._pending_knowledge_sources = None
-
-        if enable_reasoning is None:
-            enable_reasoning = bool(matched_knowledge_docs)
-            if hasattr(self, "reasoning_switch") and hasattr(self.reasoning_switch, "isChecked"):
-                enable_reasoning = enable_reasoning or self.reasoning_switch.isChecked()
-            elif hasattr(self, "enable_reasoning_switch") and hasattr(self.enable_reasoning_switch, "isChecked"):
-                enable_reasoning = enable_reasoning or self.enable_reasoning_switch.isChecked()
-            elif getattr(self, "_enable_reasoning", False):
-                enable_reasoning = True
-
-        messages = SessionManager.get_lm_studio_messages(
-            history=history_slice,
-            is_roleplay=False,
-            character_card=None,
-            is_excel=is_excel,
-            is_word=is_word,
-            vision_content=vision_content,
-            history_limit=effective_history_limit,
-            user_name=effective_user_name,
-            include_memory=(not _should_art),
-            session_id=curr_sess_id,
-            session_persona_id=sess_persona_id,
-            is_engineer=False,
-            world_facts=None,
-            art_guidance=art_guidance,
-            active_cast_block="",
-            recalled_lore_block="",
-            meta_context_block="",
-            is_dm_mode=False,
-            knowledge_block=knowledge_block,
-            matched_knowledge_docs=matched_knowledge_docs,
-            enable_reasoning=enable_reasoning,
-            user_query=_req,
-            task_text=_req
-        )
-
-        # Дополнительная страховка наличия KnowledgeBase и REASONING_PROTOCOL в системном промпте
-        if messages and messages[0].get("role") == "system":
-            sys_content = messages[0].get("content", "")
-            if knowledge_block and "<KnowledgeBase>" not in sys_content:
-                sys_content = f"{sys_content}\n\n{knowledge_block}"
-            if enable_reasoning and "<think>" not in sys_content:
-                from services.assistant_prompt_builder import REASONING_PROTOCOL
-                sys_content = f"{sys_content}\n\n{REASONING_PROTOCOL}"
-            messages[0]["content"] = sys_content
-
-        if _should_art:
-            best_model_id = "realistic"
-            best_desc = ""
-            try:
-                router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-                matched_id, score = router.match_prompt(_req)
-                if matched_id:
-                    best_model_id = matched_id
-                    for m in router.profiles:
-                        if m.get("id") == matched_id:
-                            guidance = (m.get("llm_guidance") or "").strip()
-                            best_desc = guidance if guidance else (m.get("routing_description") or m.get("name") or "")
-                            break
-            except Exception:
-                pass
-
-            _directive = self._get_ephemeral_art_directive(target_model_id=best_model_id, target_model_desc=best_desc, is_roleplay=False)
-            if _directive and messages:
-                for idx in reversed(range(len(messages))):
-                    if messages[idx].get("role") == "user":
-                        user_msg_copy = dict(messages[idx])
-                        _c = user_msg_copy.get("content")
-                        if isinstance(_c, str):
-                            user_msg_copy["content"] = _c + _directive
-                        messages[idx] = user_msg_copy
-                        break
 
         # ── ДВУХУРОВНЕВЫЙ СЭМПЛИНГ С ЗАЩИТОЙ ОТ МУТАЦИЙ РЕЖИМОВ ──
         sampling = (self.current_session.get("sampling_params") or {}) if self.current_session else {}
@@ -526,10 +595,8 @@ class AssistantFlowControllerMixin:
         if _should_art:
             target_max_tokens = 512
         elif not is_custom or "max_tokens" not in sampling:
-            # Штатная динамическая подстановка ступени двухконтурной модели (1024, 768, 512)
             target_max_tokens = effective_max_tokens
         else:
-            # Кастомный чат: ограничиваем сверху эффективным потолком ступени
             target_max_tokens = min(int(user_max_tokens), effective_max_tokens)
         target_ctx_len = mode_profile.get("context_length", 14336)
 
@@ -539,7 +606,10 @@ class AssistantFlowControllerMixin:
         )
 
         llm_kwargs = {
-            "messages": messages,
+            "user_prompt": _req,
+            "prompt": _req,
+            "session_id": curr_sess_id,
+            "messages": None,
             "model": model_name,
             "temperature": temp,
             "stop": ["\n\nПользователь:", "\n\nUser:"],
@@ -557,13 +627,23 @@ class AssistantFlowControllerMixin:
             "dry_penalty_last_n": 0,
             "xtc_probability": xtc_prob,
             "xtc_threshold": xtc_thresh,
-            "stream": True
+            "stream": True,
+            "is_excel": is_excel,
+            "is_word": is_word,
+            "vision_content": vision_content,
+            "art_guidance": art_guidance,
+            "enable_reasoning": enable_reasoning,
+            "history_limit": effective_history_limit,
+            "effective_user_name": effective_user_name,
+            "session_persona_id": sess_persona_id,
+            "controller": self,
+            "lm_client": self.lm_client
         }
 
         task = InferenceTask(
             name="LLM Ответ",
             task_type="llm",
-            func=self.lm_client.chat_completion,
+            func=self._run_assistant_inference_deferred,
             kwargs=llm_kwargs,
             abort_fn=self.lm_client.abort,
             metadata={
@@ -571,15 +651,11 @@ class AssistantFlowControllerMixin:
                 "is_word": is_word,
                 "is_roleplay": False,
                 "has_vision": bool(vision_content),
-                "knowledge_sources": getattr(self, "_pending_knowledge_sources", [])
+                "knowledge_sources": getattr(self, "_pending_knowledge_sources", []) or []
             }
         )
 
-        print(f"\n[DIAG_THINK][1. ENQUEUE] Messages count: {len(messages)}")
-        sys_c = messages[0].get("content", "") if messages else ""
-        print(f"[DIAG_THINK][1. ENQUEUE] Has <KnowledgeBase> in system: {'<KnowledgeBase>' in sys_c}")
-        print(f"[DIAG_THINK][1. ENQUEUE] Has <think> directive in system: {'<think>' in sys_c}")
-        print(f"[DIAG_THINK][1. ENQUEUE] Last message role: {messages[-1].get('role')} | content: {repr(messages[-1].get('content', ''))[:100]}")
+        logger.info(f"[AssistantFlow] Задача инференса поставлена в очередь (Deferred RAG) [ID: {task.id}]")
         self._active_tasks[task.id] = task
         # Инициализация потокового парсера мыслей <think>...</think>
         self._thought_stream_parser = ThoughtStreamParser()

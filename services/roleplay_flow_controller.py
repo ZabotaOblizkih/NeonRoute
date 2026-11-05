@@ -24,6 +24,133 @@ logger = logging.getLogger("NeonRoute.RoleplayFlow")
 RE_IMAGE_TAG = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', re.IGNORECASE)
 
 
+
+def run_roleplay_inference_deferred(
+    prompt: Optional[str] = None,
+    user_prompt: Optional[str] = None,
+    session_id: Optional[str] = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    lm_client: Optional[Any] = None,
+    controller: Optional[Any] = None,
+    character_card: Optional[Any] = None,
+    **kwargs
+) -> Any:
+    """
+    Фоновый исполнитель задачи Ролевого режима с отложенной сборкой контекста.
+    - Если messages уже передан: прямой вызов lm_client.chat_completion (Legacy / тесты).
+    - Если messages is None: асинхронный поиск в памяти/лоре (RPCastManager.scan_and_tick),
+      сборка сообщений через SessionManager и инъекция Depth-1 якоря.
+    """
+    client = lm_client or (getattr(controller, "lm_client", None) if controller else None)
+    if client is None:
+        raise ValueError("[DeferredRAG] Отсутствует lm_client для выполнения ролевой задачи.")
+
+    if messages is not None:
+        call_kwargs = dict(kwargs)
+        call_kwargs["messages"] = messages
+        for k in [
+            "controller", "user_prompt", "prompt", "session_id", "history_limit",
+            "effective_user_name", "include_memory", "vision_content", "art_guidance",
+            "character_card", "lm_client", "history"
+        ]:
+            call_kwargs.pop(k, None)
+        return client.chat_completion(**call_kwargs)
+
+    actual_prompt = user_prompt or prompt or ""
+    from services.session_manager import SessionManager
+    from services.rp_cast_manager import RPCastManager
+    from services.roleplay_prompt_builder import RoleplayPromptBuilder
+
+    curr_sess = getattr(controller, "current_session", None) if controller else None
+    curr_sess_id = session_id or (curr_sess.get("id") if curr_sess else None)
+    sess_persona_id = curr_sess.get("user_persona_id") if curr_sess else None
+    active_p = SessionManager.get_active_user_persona(is_roleplay=True, session_persona_id=sess_persona_id)
+    effective_user_name = active_p.get("name") or "Игрок"
+
+    active_char = character_card or (getattr(controller, "active_character", None) if controller else None)
+    c_name = getattr(active_char, "name", "Спутница") if active_char else "Спутница"
+    is_env = getattr(active_char, "is_environment", False) if active_char else False
+
+    active_cast_block, recalled_lore_block, meta_context_block = "", "", ""
+    effective_world_facts = None
+    if curr_sess:
+        scan_blocks = RPCastManager.scan_and_tick(
+            curr_sess_id,
+            actual_prompt,
+            user_name=effective_user_name,
+            companion_name=c_name,
+            is_environment=is_env
+        )
+        active_cast_block = scan_blocks.get("active_cast", "")
+        recalled_lore_block = scan_blocks.get("recalled_lore", "")
+        meta_context_block = scan_blocks.get("meta_context", "")
+        effective_world_facts = RPCastManager.get_world_state(curr_sess_id)
+        if not is_env and curr_sess_id:
+            cast_meta = RPCastManager.load_cast(curr_sess_id, user_name=effective_user_name, companion_name=c_name)
+            c_name = cast_meta.get("focus_companion", c_name)
+
+    is_dm = bool(curr_sess.get("is_dm_mode", False)) if curr_sess else False
+    custom_sys_prompt = curr_sess.get("custom_system_prompt") if curr_sess else None
+
+    history = kwargs.get("history")
+    if history is None:
+        history = getattr(controller, "chat_history", []) if controller else []
+
+    assembled_messages = SessionManager.get_lm_studio_messages(
+        history=history,
+        is_roleplay=True,
+        character_card=active_char,
+        is_excel=False,
+        is_word=False,
+        vision_content=kwargs.get("vision_content"),
+        history_limit=kwargs.get("history_limit", 65),
+        user_name=effective_user_name,
+        session_id=curr_sess_id,
+        session_persona_id=sess_persona_id,
+        is_engineer=False,
+        world_facts=effective_world_facts,
+        art_guidance=kwargs.get("art_guidance"),
+        active_cast_block="",
+        recalled_lore_block=recalled_lore_block,
+        meta_context_block=meta_context_block,
+        is_dm_mode=is_dm,
+        custom_system_prompt=custom_sys_prompt
+    )
+
+    if custom_sys_prompt and assembled_messages and assembled_messages[0].get("role") == "system":
+        assembled_messages[0]["content"] = RoleplayPromptBuilder.process_macros(
+            custom_sys_prompt, user_name=effective_user_name, char_name=c_name
+        )
+
+    if active_char and assembled_messages:
+        custom_anchor = curr_sess.get("custom_depth_anchor") if curr_sess else None
+        depth_anchor = RoleplayPromptBuilder.build_depth_anchor(
+            active_char,
+            user_name=effective_user_name,
+            user_query=actual_prompt,
+            custom_anchor=custom_anchor
+        )
+        logger.info(f"[RPFlow.DepthAnchor] ⚓ Активный Depth-1 якорь (кастомный={bool(custom_anchor)}):\n{depth_anchor.strip()}")
+        if depth_anchor and depth_anchor.strip():
+            for idx in reversed(range(len(assembled_messages))):
+                if assembled_messages[idx].get("role") == "user":
+                    anchor_msg = {"role": "system", "content": depth_anchor.strip()}
+                    assembled_messages.insert(idx, anchor_msg)
+                    break
+
+    call_kwargs = dict(kwargs)
+    call_kwargs["messages"] = assembled_messages
+    call_kwargs["is_roleplay"] = True
+    call_kwargs["is_engineer"] = False
+    for k in [
+        "controller", "user_prompt", "prompt", "session_id", "history_limit",
+        "effective_user_name", "include_memory", "vision_content", "art_guidance",
+        "character_card", "lm_client", "history"
+    ]:
+        call_kwargs.pop(k, None)
+
+    return client.chat_completion(**call_kwargs)
+
 class RoleplayFlowControllerMixin:
     """Изолированный контроллер диалогового цикла и режиссуры ролевого режима (RP)."""
 
@@ -43,12 +170,19 @@ class RoleplayFlowControllerMixin:
         """Deprecated: dialogue messages must not contain image prompt directives."""
         return ""
 
+    def _run_roleplay_inference_deferred(self, *args, **kwargs):
+        """Прокси к run_roleplay_inference_deferred с передачей self в качестве controller."""
+        kwargs.setdefault("controller", self)
+        if "lm_client" not in kwargs and hasattr(self, "lm_client"):
+            kwargs["lm_client"] = self.lm_client
+        return run_roleplay_inference_deferred(*args, **kwargs)
+
     def _enqueue_roleplay_llm_task(
         self,
         vision_content: Optional[List[Dict[str, Any]]] = None,
         art_guidance: Optional[str] = None
     ):
-        """Формирует контекст ролевой игры с лимитом на 50 сообщений и передаёт задачу в TaskQueue."""
+        """Формирует метаданные ролевой задачи и передаёт задачу в TaskQueue с отложенной сборкой (Deferred RAG)."""
         model_name = None
         if hasattr(self, "lm_combo") and self.lm_combo:
             model_name = self.lm_combo.currentText().strip()
@@ -73,84 +207,7 @@ class RoleplayFlowControllerMixin:
                         _req = str(c or "").strip()
                     break
 
-
-        # Управление контекстом делегировано динамическому бюджету SessionManager (SSOT)
         curr_sess_id = self.current_session.get("id") if self.current_session else None
-        sess_persona_id = self.current_session.get("user_persona_id") if self.current_session else None
-        active_p = SessionManager.get_active_user_persona(is_roleplay=True, session_persona_id=sess_persona_id)
-        effective_user_name = active_p.get("name") or "Игрок"
-        c_name = getattr(self.active_character, "name", "Спутница") if hasattr(self, "active_character") and self.active_character else "Спутница"
-        is_env = getattr(self.active_character, "is_environment", False) if hasattr(self, "active_character") and self.active_character else False
-
-        # Синхронизация каста и окружения
-        active_cast_block, recalled_lore_block, meta_context_block = "", "", ""
-        effective_world_facts = None
-        if self.current_session:
-            scan_blocks = RPCastManager.scan_and_tick(
-                curr_sess_id,
-                _req,
-                user_name=effective_user_name,
-                companion_name=c_name,
-                is_environment=is_env
-            )
-            active_cast_block = scan_blocks.get("active_cast", "")
-            recalled_lore_block = scan_blocks.get("recalled_lore", "")
-            meta_context_block = scan_blocks.get("meta_context", "")
-            effective_world_facts = RPCastManager.get_world_state(curr_sess_id)
-            if not is_env and curr_sess_id:
-                cast_meta = RPCastManager.load_cast(curr_sess_id, user_name=effective_user_name, companion_name=c_name)
-                c_name = cast_meta.get("focus_companion", c_name)
-
-        is_dm = bool(self.current_session.get("is_dm_mode", False)) if self.current_session else False
-
-        # Извлечение сохраненного кастомного системного промпта сессии (если задан)
-        custom_sys_prompt = self.current_session.get("custom_system_prompt") if self.current_session else None
-
-        messages = SessionManager.get_lm_studio_messages(
-            history=self.chat_history,
-            is_roleplay=True,
-            character_card=self.active_character,
-            is_excel=False,
-            is_word=False,
-            vision_content=vision_content,
-            history_limit=65,
-            user_name=effective_user_name,
-            session_id=curr_sess_id,
-            session_persona_id=sess_persona_id,
-            is_engineer=False,
-            world_facts=effective_world_facts,
-            art_guidance=art_guidance,
-            active_cast_block="",
-            recalled_lore_block=recalled_lore_block,
-            meta_context_block=meta_context_block,
-            is_dm_mode=is_dm,
-            custom_system_prompt=custom_sys_prompt
-        )
-
-        if custom_sys_prompt and messages and messages[0].get("role") == "system":
-            from services.roleplay_prompt_builder import RoleplayPromptBuilder
-            messages[0]["content"] = RoleplayPromptBuilder.process_macros(
-                custom_sys_prompt, user_name=effective_user_name, char_name=c_name
-            )
-
-        # Точка инъекции: Depth-1 системный якорь active_character перед последним user сообщением
-        if hasattr(self, "active_character") and self.active_character and messages:
-            from services.roleplay_prompt_builder import RoleplayPromptBuilder
-            # Извлечение сохраненного якоря сессии (если был настроен пользователем):
-            custom_anchor = self.current_session.get("custom_depth_anchor") if self.current_session else None
-            depth_anchor = RoleplayPromptBuilder.build_depth_anchor(
-                self.active_character,
-                user_name=effective_user_name,
-                user_query=_req,
-                custom_anchor=custom_anchor
-            )
-            logger.info(f"[RPFlow.DepthAnchor] ⚓ Активный Depth-1 якорь (кастомный={bool(custom_anchor)}):\n{depth_anchor.strip()}")
-            if depth_anchor and depth_anchor.strip():
-                for idx in reversed(range(len(messages))):
-                    if messages[idx].get("role") == "user":
-                        anchor_msg = {"role": "system", "content": depth_anchor.strip()}
-                        messages.insert(idx, anchor_msg)
-                        break
 
         # Параметры сэмплинга ролевого режима (SSOT с защитой мастер-предохранителем)
         from config import MASTER_MAX_RESPONSE_TOKENS
@@ -186,7 +243,10 @@ class RoleplayFlowControllerMixin:
             target_max_tokens = min(default_max_tok, MASTER_MAX_RESPONSE_TOKENS)
 
         llm_kwargs = {
-            "messages": messages,
+            "user_prompt": _req,
+            "prompt": _req,
+            "session_id": curr_sess_id,
+            "messages": None,
             "model": model_name,
             "temperature": temp,
             "stop": None,
@@ -204,18 +264,24 @@ class RoleplayFlowControllerMixin:
             "dry_penalty_last_n": 0,
             "xtc_probability": xtc_prob,
             "xtc_threshold": xtc_thresh,
-            "stream": True
+            "stream": True,
+            "vision_content": vision_content,
+            "art_guidance": art_guidance,
+            "character_card": getattr(self, "active_character", None),
+            "controller": self,
+            "lm_client": self.lm_client
         }
 
         task = InferenceTask(
             name="LLM Ответ",
             task_type="llm",
-            func=self.lm_client.chat_completion,
+            func=self._run_roleplay_inference_deferred,
             kwargs=llm_kwargs,
             abort_fn=self.lm_client.abort,
             metadata={"is_roleplay": True, "has_vision": bool(vision_content)}
         )
 
+        logger.info(f"[RoleplayFlow] Задача инференса поставлена в очередь (Deferred RAG) [ID: {task.id}]")
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)
 

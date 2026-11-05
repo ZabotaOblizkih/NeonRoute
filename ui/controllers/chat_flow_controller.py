@@ -49,6 +49,8 @@ except ImportError:
     ToolEngine = None
 
 from services.task_queue import InferenceTask
+from ui.controllers.assistant_flow_controller import run_assistant_inference_deferred
+from services.roleplay_flow_controller import run_roleplay_inference_deferred
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
