@@ -1220,10 +1220,33 @@ class ModelsManagerDialog(QDialog):
             if target_row < 0 or target_row >= len(self.row_widgets):
                 return
 
-            is_active = (target_row == self.current_selected_row)
+            checkpoint_name = self.combo_checkpoint.currentText().strip() or "модели"
+            status = params.get("status", "default")
 
+            # 1. Если параметры НЕ найдены — спрашиваем пользователя через неоновый MessageBox
+            if status != "success":
+                msg_text = (
+                    f"Не удалось обнаружить параметры для модели «{checkpoint_name}» на Civitai.\n\n"
+                    "Установить рекомендуемые настройки по умолчанию?"
+                )
+                dialog = MessageBox("Civitai: Параметры не найдены", msg_text, self)
+                dialog.yesButton.setText("Да")
+                dialog.cancelButton.setText("Нет")
+
+                if not dialog.exec():
+                    # Пользователь нажал 'Нет' -> оставляем текущие параметры без изменений
+                    InfoBar.warning(
+                        title="Отменено",
+                        content="Текущие параметры модели оставлены без изменений.",
+                        parent=self,
+                        position=InfoBarPosition.TOP_RIGHT,
+                        duration=3500
+                    )
+                    return
+
+            # 2. Подставляем параметры (найденные или дефолтные) в интерфейс
+            is_active = (target_row == self.current_selected_row)
             if is_active:
-                # 1. Блокируем сигналы, предотвращая каскадный сброс пресетов и дребезг таблицы
                 widgets_to_block = [
                     self.combo_sampler, self.spin_steps, self.slider_steps,
                     self.spin_cfg, self.slider_cfg, self.spin_clip_skip,
@@ -1270,10 +1293,9 @@ class ModelsManagerDialog(QDialog):
                 for w in widgets_to_block:
                     w.blockSignals(False)
 
-                # 2. Сохраняем в модель строки через существующий метод
+                # Синхронизируем оперативную модель строки (для отображения в бейджах/таблице)
                 self._save_form_to_model(target_row)
             else:
-                # Если фокус успел сместиться, обновляем словарь параметров напрямую без затрагивания UI
                 r = self.row_widgets[target_row]
                 pipe = r.setdefault("pipeline", {})
                 for k in ("sampler", "steps", "cfg_scale", "clip_skip", "hires_upscaler", "hires_denoise"):
@@ -1283,19 +1305,34 @@ class ModelsManagerDialog(QDialog):
                     pipe["negative_prompt"] = params["negative_prompt"]
                     r["negative_prompt"] = params["negative_prompt"]
 
-            # 3. Фиксируем изменения в JSON через существующий метод сохранения
-            self._save_models_to_json()
-
-            status = params.get("status", "default")
-            msg = params.get("message", "Параметры обновлены.")
+            # 3. Информируем пользователя (БЕЗ сохранения в JSON на диск!)
             if status == "success":
-                QMessageBox.information(self, "Успех", f"✅ {msg}")
+                msg = params.get("message", "Параметры успешно получены из Civitai.")
+                InfoBar.success(
+                    title="Параметры Civitai загружены",
+                    content=f"{msg}\nНажмите «Сохранить», чтобы зафиксировать изменения.",
+                    parent=self,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=5000
+                )
             else:
-                QMessageBox.warning(self, "Внимание (Параметры по умолчанию)", f"⚠️ {msg}")
+                InfoBar.info(
+                    title="Параметры по умолчанию",
+                    content="В форму подставлены стандартные настройки. Нажмите «Сохранить», чтобы зафиксировать.",
+                    parent=self,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=4500
+                )
 
         except Exception as e:
             logger.error(f"[ModelsManagerDialog] Сбой автонастройки: {e}", exc_info=True)
-            QMessageBox.warning(self, "Ошибка", f"Произошла ошибка: {e}\nПрименены стандартные параметры.")
+            InfoBar.error(
+                title="Ошибка автонастройки",
+                content=f"Произошла ошибка: {e}",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=4000
+            )
         finally:
             self._civitai_worker = None
             QApplication.restoreOverrideCursor()
@@ -1306,7 +1343,13 @@ class ModelsManagerDialog(QDialog):
     def _on_civitai_params_error(self, err_msg: str):
         try:
             logger.error(f"[ModelsManagerDialog] Сбой автонастройки: {err_msg}")
-            QMessageBox.warning(self, "Ошибка", f"Произошла ошибка: {err_msg}\nПрименены стандартные параметры.")
+            InfoBar.error(
+                title="Ошибка сети Civitai",
+                content=f"Не удалось получить данные с сервера Civitai: {err_msg}",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=4500
+            )
         finally:
             self._civitai_worker = None
             QApplication.restoreOverrideCursor()
