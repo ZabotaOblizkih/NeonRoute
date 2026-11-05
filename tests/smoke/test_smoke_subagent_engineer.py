@@ -63,8 +63,12 @@ def test_subagent_full_lifecycle_mock(clean_subagent_env):
                     "verification_script": "main.py",
                     "plan": "Создать скрипт main.py и выполнить запуск"
                 })
+            elif self.calls == 2:
+                # 2. Ход 1 Инженера: намеренная синтаксическая ошибка (проверка ветки syntax_error_found и fingerprint)
+                broken_syntax = "def main(\n    print('broken')\n# " + ("A" * 360)
+                ret = f'<<TOOL:write_file filename="main.py">>\n{broken_syntax}\n<</TOOL:write_file>>'
             else:
-                # 2. Ответ Инженера: генерация write_file и запуск
+                # 3. Ход 2 Инженера: самокоррекция после SyntaxError -> валидный write_file и запуск
                 ret = (
                     f'<<TOOL:write_file filename="main.py">>\n{valid_code}\n<</TOOL:write_file>>\n'
                     f'<<TOOL:run_script filename="main.py">><</TOOL:run_script>>'

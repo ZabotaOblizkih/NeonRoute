@@ -262,6 +262,24 @@ def test_art_generation_pipeline_smoke(isolated_storage):
         f"enable_adetailer is not True: got {call_kwargs.get('enable_adetailer')}{dump_context}"
     )
 
+    # 4. VRAM Policy k_arch & --hands (wants_hands) override checks
+    from services.art_director.vram_policy import calculate_max_hires_canvas_area
+    area_sd15 = calculate_max_hires_canvas_area(architecture="sd15", total_vram_gb=8.0)
+    area_sdxl_low = calculate_max_hires_canvas_area(architecture="sdxl", total_vram_gb=12.0)
+    area_sdxl_ok = calculate_max_hires_canvas_area(architecture="sdxl", total_vram_gb=16.0)
+    assert area_sd15 > 0 and area_sdxl_low == 0 and area_sdxl_ok > 0, (
+        f"k_arch calculation failed: sd15={area_sd15}, sdxl_12gb={area_sdxl_low}, sdxl_16gb={area_sdxl_ok}"
+    )
+
+    hands_plan = art_director.plan_generation(
+        "warrior holding a glowing rune --hands",
+        preferred_style=target_model_key,
+        mode="assistant"
+    )
+    assert "--hands" not in hands_plan.prompt.lower(), "Flag --hands was not stripped from final prompt"
+    assert hands_plan.enable_adetailer is True, "wants_hands (--hands) did not enable ADetailer"
+    assert getattr(hands_plan, "adetailer_hands_enabled", False) is True, "wants_hands (--hands) did not enable hands ADetailer"
+
 
 def test_art_generation_pipeline_auto_routing_smoke(isolated_storage):
     """

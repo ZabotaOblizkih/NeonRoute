@@ -32,10 +32,31 @@ def test_02_vram_arbiter_exclusivity():
     arbiter.release_llm_for_diffusion()
 
 
-def test_03_layer_budgeter_kv_math():
+def test_03_layer_budgeter_kv_math(tmp_path):
     kv_mb_q8 = LayerBudgeter.estimate_kv_cache_mb(14336, "q8_0")
     kv_mb_fp16 = LayerBudgeter.estimate_kv_cache_mb(14336, "f16")
     assert kv_mb_fp16 > kv_mb_q8 > 0
+
+    # Проверка can_run (OOM Guard) в LayerBudgeter
+    dummy_gguf = tmp_path / "Qwen-2.5-VL-7B.gguf"
+    dummy_gguf.write_bytes(b"0" * (50 * 1024 * 1024))  # 50 MB файл
+    ngl_oom, can_run_oom, reason_oom, audit_oom = LayerBudgeter.calculate_layer_offload(
+        model_path=str(dummy_gguf),
+        target_context=4096,
+        total_vram_mb=100.0,
+        available_ram_mb=100.0
+    )
+    assert can_run_oom is False and audit_oom.get("can_run") is False
+    assert ngl_oom == 0 and "OOM Guard" in reason_oom
+
+    # Проверка norm_model (Case 2 slug match) в ServerConfigResolver
+    from services.server_config import ServerConfigResolver
+    other_gguf = tmp_path / "Llama-3-8B.gguf"
+    other_gguf.write_bytes(b"0" * 1024)
+    mmproj_cand = tmp_path / "mmproj-qwen25vl-f16.gguf"
+    mmproj_cand.write_bytes(b"0" * 1024)
+    resolved_mmproj = ServerConfigResolver.resolve_mmproj_for_model(dummy_gguf)
+    assert resolved_mmproj is not None and Path(resolved_mmproj).name == "mmproj-qwen25vl-f16.gguf"
 
 
 def test_04_thought_stream_parser_chunk_boundaries():
