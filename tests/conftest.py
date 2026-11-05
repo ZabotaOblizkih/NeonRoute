@@ -122,6 +122,13 @@ def check_sandbox_state_leak(request):
 
     yield
 
+    # Очистка висящих фоновых таймеров роутера между тестами
+    mr_mod = sys.modules.get("services.model_router")
+    if mr_mod and hasattr(mr_mod, "ModelRouter"):
+        inst = getattr(mr_mod.ModelRouter, "_instance", None)
+        if inst and hasattr(inst, "cancel_deferred_warmup"):
+            inst.cancel_deferred_warmup()
+
     active_sid = SandboxManager.get_active_session_id()
     if active_sid is not None:
         SandboxManager.set_active_session_id(None)

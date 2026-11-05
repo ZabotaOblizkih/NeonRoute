@@ -227,7 +227,14 @@ def resolve_forge_offload_policy(
         else total_vram_mb
     )
 
-    if effective_vram_mb >= full_keep_required_mb:
+    # Для систем с общим объемом VRAM <= 8192 МБ без подтвержденного монопольного свободного пула
+    # или для архитектуры sd15 при дефолтной оценке — всегда форсируем always_offload=True
+    if total_vram_mb <= 8192 and (free_vram_mb is None or arch == "sd15"):
+        mode = "STAGE_OFFLOAD"
+        always_offload = True
+        inference_memory_mb = 1024
+        can_run = True
+    elif effective_vram_mb >= full_keep_required_mb:
         mode = "FAST_KEEP_VRAM"
         always_offload = False
         inference_memory_mb = 768 if is_xl else 640

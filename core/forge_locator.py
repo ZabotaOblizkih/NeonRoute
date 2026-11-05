@@ -1,0 +1,262 @@
+from pathlib import Path
+from typing import Optional, Any
+import configparser
+import logging
+import os
+import string
+
+logger = logging.getLogger("NeonRoute.ForgeLocator")
+
+# Приоритет маркеров: специфичный для сборки forge_launcher.bat идет первым
+FORGE_LAUNCHER_CANDIDATES = [
+    "forge_launcher.bat",
+    "webui-user.bat",
+    "run.bat",
+    "launch.py",
+]
+
+_module_dir = Path(__file__).resolve().parent
+REPO_ROOT = _module_dir.parent if _module_dir.name in ("core", "services", "utils") else _module_dir
+SERVER_CONFIG_INI_PATH = REPO_ROOT / "server_config.ini"
+
+
+def is_valid_forge_dir(path: Path | str | None) -> bool:
+    """Проверяет наличие маркеров SD WebUI Forge в директории."""
+    if not path:
+        return False
+    try:
+        p = Path(path)
+        if not p.is_dir():
+            return False
+        return any((p / launcher).is_file() for launcher in FORGE_LAUNCHER_CANDIDATES)
+    except Exception:
+        return False
+
+
+def _log_passport(forge_root: Any, source_name: str) -> None:
+    """Выводит структурированный диагностический паспорт обнаруженной установки Forge."""
+    try:
+        resolved = Path(forge_root).resolve()
+        launcher_path = resolved / "forge_launcher.bat"
+        for cand in FORGE_LAUNCHER_CANDIDATES:
+            try:
+                cand_p = resolved / cand
+                if cand_p.is_file():
+                    launcher_path = cand_p
+                    break
+            except Exception:
+                pass
+
+        launcher_exists = False
+        try:
+            launcher_exists = bool(launcher_path.exists())
+        except Exception:
+            pass
+        launcher_status = "EXISTS" if launcher_exists else "NOT_FOUND"
+
+        models_dir = resolved / "models"
+        models_exists = False
+        try:
+            models_exists = bool(models_dir.exists())
+        except Exception:
+            pass
+        models_status = "EXISTS" if models_exists else "NOT_FOUND"
+
+        passport = (
+            f"\n ├── Статус: ОБНАРУЖЕН (источник: {source_name})\n"
+            f" ├── Корень Forge: {resolved}\n"
+            f" ├── Лаунчер: {launcher_path} [{launcher_status}]\n"
+            f" └── Каталог моделей: {models_dir} [{models_status}]"
+        )
+        logger.info(f"[NeonRoute.ForgeLocator] {passport}")
+    except Exception as e:
+        logger.debug(f"[NeonRoute.ForgeLocator] Ошибка формирования паспорта: {e}")
+
+
+def find_forge_root(
+    configured_path: Optional[str | Path] = None,
+    config_file: Optional[str | Path] = None
+) -> Optional[Path]:
+    """
+    Каскадный поиск рабочей директории Forge:
+    1. Проверка пути из переданного аргумента/конфига (если валиден — мгновенный возврат).
+    2. Проверка переменной окружения FORGE_ROOT_DIR.
+    3. Значение forge_root_dir из секции [PATHS] в server_config.ini.
+    4. Относительные каталоги рядом с репозиторием (../neyroGPD, ../sd-webui-forge, ./forge).
+    5. Типовые локации на всех доступных дисках Windows (C:/, D:/ и т.д.):
+       - <диск>:/neyroGPD
+       - <диск>:/sd-webui-forge
+       - <диск>:/AI/Forge
+    """
+    # 1. Сконфигурированный путь
+    if configured_path and is_valid_forge_dir(configured_path):
+        resolved = Path(configured_path).resolve()
+        logger.info(f"[NeonRoute.ForgeLocator] Путь получен из прямого аргумента: {resolved}")
+        _log_passport(resolved, "direct_argument")
+        return resolved
+
+    # 2. Переменная окружения FORGE_ROOT_DIR
+    env_root = os.getenv("FORGE_ROOT_DIR")
+    if env_root and is_valid_forge_dir(env_root):
+        resolved = Path(env_root).resolve()
+        logger.info(f"[NeonRoute.ForgeLocator] Путь получен из переменной FORGE_ROOT_DIR: {resolved}")
+        _log_passport(resolved, "FORGE_ROOT_DIR")
+        return resolved
+
+    # 3. Значение forge_root_dir из секции [PATHS] в server_config.ini
+    ini_path = Path(config_file) if config_file else SERVER_CONFIG_INI_PATH
+    if ini_path.is_file():
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(str(ini_path), encoding="utf-8")
+            if parser.has_section("PATHS"):
+                ini_forge = (
+                    parser.get("PATHS", "forge_root_dir", fallback=None)
+                    or parser.get("PATHS", "forge_path", fallback=None)
+                )
+                if ini_forge:
+                    ini_forge = ini_forge.strip().strip('"').strip("'")
+                    if ini_forge and is_valid_forge_dir(ini_forge):
+                        resolved = Path(ini_forge).resolve()
+                        logger.info(f"[NeonRoute.ForgeLocator] Путь получен из server_config.ini ([PATHS] -> forge_root_dir): {resolved}")
+                        _log_passport(resolved, "server_config.ini ([PATHS] -> forge_root_dir)")
+                        return resolved
+        except Exception:
+            pass
+
+    # 4. Относительные пути от корня репозитория
+    repo_root = REPO_ROOT
+    rel_candidates = [
+        repo_root.parent / "neyroGPD",
+        repo_root.parent / "sd-webui-forge",
+        repo_root.parent / "Forge",
+        repo_root / "forge",
+    ]
+    for c in rel_candidates:
+        if is_valid_forge_dir(c):
+            resolved = c.resolve()
+            logger.info(f"[NeonRoute.ForgeLocator] Обнаружен относительный каталог установки: {resolved}")
+            _log_passport(resolved, "relative_directory")
+            return resolved
+
+    # 5. Проверка корней смонтированных дисков (без рекурсии)
+    available_drives = [
+        Path(f"{d}:/") for d in string.ascii_uppercase
+        if Path(f"{d}:/").exists()
+    ]
+    common_names = ["neyroGPD", "sd-webui-forge", "Forge", "AI/Forge", "webui_forge"]
+    for drive in available_drives:
+        for name in common_names:
+            c = drive / name
+            if is_valid_forge_dir(c):
+                resolved = c.resolve()
+                drive_str = str(drive)
+                logger.info(f"[NeonRoute.ForgeLocator] Обнаружена установка при сканировании диска {drive_str}: {resolved}")
+                _log_passport(resolved, f"drive_scan ({drive_str})")
+                return resolved
+
+    return None
+
+
+def update_server_config_forge_root(
+    new_path: Path | str,
+    config_file: Optional[Path | str] = None
+) -> bool:
+    """
+    Безопасно записывает forge_root_dir в секцию [PATHS] файла server_config.ini
+    и обновляет активные пути в config.py в runtime.
+    """
+    try:
+        resolved_path = Path(new_path).resolve()
+        ini_path = Path(config_file) if config_file else SERVER_CONFIG_INI_PATH
+        ini_path.parent.mkdir(parents=True, exist_ok=True)
+
+        parser = configparser.ConfigParser()
+        if ini_path.is_file():
+            parser.read(str(ini_path), encoding="utf-8")
+
+        if not parser.has_section("PATHS"):
+            parser.add_section("PATHS")
+
+        parser.set("PATHS", "forge_root_dir", str(resolved_path))
+
+        with open(str(ini_path), "w", encoding="utf-8") as f:
+            parser.write(f)
+
+        # Синхронизация активных путей в config.py в runtime
+        try:
+            import config
+            config.FORGE_ROOT_DIR = resolved_path
+            _candidate_names = ["forge_launcher.bat", "webui-user.bat", "run.bat"]
+            _found_launcher = next(
+                (resolved_path / name for name in _candidate_names if (resolved_path / name).exists()),
+                None
+            )
+            config.FORGE_LAUNCHER_PATH = (
+                _found_launcher if _found_launcher is not None else (resolved_path / "forge_launcher.bat")
+            )
+            config.FORGE_LORA_DIRS = [
+                resolved_path / "webui_forge_cu121_torch231" / "webui" / "models" / "Lora",
+                resolved_path / "webui" / "models" / "Lora",
+                resolved_path / "models" / "Lora"
+            ]
+            config.DEFAULT_FORGE_LORA_DIR = next(
+                (p for p in config.FORGE_LORA_DIRS if p.exists()),
+                config.FORGE_LORA_DIRS[0]
+            )
+        except Exception:
+            pass
+
+        return True
+    except Exception:
+        return False
+
+
+def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
+    """
+    Формирует изолированную копию переменных окружения для запуска Forge.
+    - Удаляет переменные окружения Python NeonRoute: VIRTUAL_ENV, PYTHONPATH, PYTHONHOME.
+    - Очищает активное виртуальное окружение из PATH, предотвращая
+      подтягивание DLL и site-packages NeonRoute во встроенный Python Forge.
+    - Сохраняет системные переменные Windows (SystemRoot, ComSpec, CUDA, Temp).
+    """
+    env = dict(base_env if base_env is not None else os.environ)
+
+    # 1. Удаляем переменные изоляции Python
+    venv_dir = env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+
+    # 2. Очищаем PATH от записей активного venv
+    raw_path = env.get("PATH", "")
+    if raw_path:
+        parts = raw_path.split(os.pathsep)
+        cleaned_parts = []
+
+        # Нормализуем путь к venv для сравнения префиксов
+        venv_normalized = None
+        if venv_dir:
+            try:
+                venv_normalized = str(Path(venv_dir).resolve()).lower()
+            except Exception:
+                pass
+
+        for p in parts:
+            if not p.strip():
+                continue
+            try:
+                p_norm = str(Path(p).resolve()).lower()
+                # Удаляем путь если он внутри venv
+                if venv_normalized and (p_norm == venv_normalized or p_norm.startswith(venv_normalized + os.sep)):
+                    continue
+                # Страховка по вхождению .venv и bin/scripts NeonRoute
+                if ".venv" in p_norm and ("scripts" in p_norm or "bin" in p_norm):
+                    continue
+            except Exception:
+                pass
+            cleaned_parts.append(p)
+
+        env["PATH"] = os.pathsep.join(cleaned_parts)
+
+    return env
+

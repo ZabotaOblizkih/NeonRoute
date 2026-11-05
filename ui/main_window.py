@@ -280,6 +280,13 @@ class MainWindow(
         self.reminder_controller = ReminderController(parent_window=self)
         self.reminder_controller.reminder_triggered.connect(self._on_reminder_triggered)
 
+        # Автоматический интерактивный запрос директории Forge при первом запуске (если путь не настроен)
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            from core.forge_locator import is_valid_forge_dir
+            import config
+            if not is_valid_forge_dir(config.FORGE_ROOT_DIR):
+                QTimer.singleShot(1200, lambda: self.prompt_locate_forge() if self.isVisible() else None)
+
     @property
     def active_mode(self) -> str:
         return getattr(self, "current_mode", "assistant")
@@ -1919,6 +1926,11 @@ class MainWindow(
             logger.error(f"Не удалось открыть диалог компонентов: {e}")
 
     def closeEvent(self, event):
+        if hasattr(self, "art_director") and hasattr(self.art_director, "router"):
+            try:
+                self.art_director.router.cancel_deferred_warmup()
+            except Exception:
+                pass
         if getattr(self, "_shutdown_completed", False):
             event.accept()
             super().closeEvent(event)

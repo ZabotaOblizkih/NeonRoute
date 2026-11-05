@@ -1475,7 +1475,7 @@ class ModelsManagerDialog(QDialog):
             FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion",
             FORGE_ROOT_DIR / "webui" / "models" / "Stable-diffusion",
             FORGE_ROOT_DIR / "models" / "Stable-diffusion",
-            Path("C:/neyroGPD/webui_forge_cu121_torch231/webui/models/Stable-diffusion")
+            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
         ]
         for ld in local_dirs:
             if ld and ld.is_dir():

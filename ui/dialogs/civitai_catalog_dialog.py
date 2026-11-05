@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QFrame, QSplitter, QMessageBox, QProgressBar, QWidget
 )
 
-from config import DATA_DIR
+from config import DATA_DIR, FORGE_ROOT_DIR
 
 CIVITAI_CACHE_DIR = DATA_DIR / "cache" / "civitai_thumbs"
 CIVITAI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -452,7 +452,7 @@ class CivitaiCatalogDialog(QDialog):
         self.resize(1200, 750)
         self.setMinimumSize(980, 600)
 
-        self.target_dir = target_dir or Path(r"C:\neyroGPD\models\Stable-diffusion")
+        self.target_dir = target_dir or (FORGE_ROOT_DIR / "models" / "Stable-diffusion")
         self.cards_data: List[Dict[str, Any]] = []
         self.current_page: int = 1
         self.total_pages: int = 1
@@ -897,7 +897,7 @@ class CivitaiCatalogDialog(QDialog):
 
         # Папка назначения: checkpoints или lora
         if c["type"] == "LORA":
-            save_dir = self.target_dir.parent / "Lora" if self.target_dir else Path(r"C:\neyroGPD\models\Lora")
+            save_dir = self.target_dir.parent / "Lora" if self.target_dir else (FORGE_ROOT_DIR / "models" / "Lora")
         else:
             save_dir = self.target_dir
 

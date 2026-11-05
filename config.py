@@ -5,6 +5,7 @@ Optimized for 8 GB VRAM (RTX 5050 / MSI Cyborg 15)
 
 import os
 from pathlib import Path
+from core.forge_locator import find_forge_root
 
 # Base Paths (Dynamically resolved relative to project root)
 BASE_DIR = Path(__file__).resolve().parent
@@ -53,7 +54,13 @@ DEFAULT_MEMORY_STRATEGY = MemoryStrategy.BALANCE
 DEFAULT_AUTO_GENERATE_ART = False  # False = подтверждение по кнопке-чипу, True = авторендер
 
 # External SD WebUI Forge Paths
-FORGE_ROOT_DIR = Path(os.environ.get("FORGE_ROOT_DIR", r"C:\neyroGPD"))
+env_forge_root = os.environ.get("FORGE_ROOT_DIR")
+if env_forge_root:
+    # Явный оверрайд из окружения имеет абсолютный приоритет
+    FORGE_ROOT_DIR = Path(env_forge_root)
+else:
+    # Эвристический каскадный поиск только при отсутствии переменной
+    FORGE_ROOT_DIR = find_forge_root() or Path(r"C:\neyroGPD")
 FORGE_LORA_DIRS = [
     FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Lora",
     FORGE_ROOT_DIR / "webui" / "models" / "Lora",
@@ -65,8 +72,13 @@ _forge_env = os.environ.get("NEONROUTE_FORGE_LAUNCHER")
 if _forge_env:
     FORGE_LAUNCHER_PATH = Path(_forge_env)
 else:
-    _local_launcher = BASE_DIR.parent / "neyroGPD" / "forge_launcher.bat"
-    FORGE_LAUNCHER_PATH = _local_launcher if _local_launcher.exists() else (FORGE_ROOT_DIR / "forge_launcher.bat")
+    _candidate_names = ["forge_launcher.bat", "webui-user.bat", "run.bat"]
+    _found_launcher = next((FORGE_ROOT_DIR / name for name in _candidate_names if (FORGE_ROOT_DIR / name).exists()), None)
+    if _found_launcher is None:
+        _local_launcher = BASE_DIR.parent / "neyroGPD" / "forge_launcher.bat"
+        if _local_launcher.exists():
+            _found_launcher = _local_launcher
+    FORGE_LAUNCHER_PATH = _found_launcher if _found_launcher is not None else (FORGE_ROOT_DIR / "forge_launcher.bat")
 LM_STUDIO_CLI_CMD = "lms"
 
 # Hardware optimization flags for Forge (RTX 5050 8GB VRAM)

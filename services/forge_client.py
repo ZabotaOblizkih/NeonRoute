@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
 from PyQt6.QtCore import QObject, pyqtSignal
 from config import OUTPUTS_DIR, DEFAULT_SD_SETTINGS, FORGE_ENABLE_VAE_TILING, FORGE_ROOT_DIR
+from core.forge_locator import get_clean_forge_env
 
 logger = logging.getLogger("NeonRoute.ForgeClient")
 
@@ -104,9 +105,17 @@ class ForgeOfflineError(ConnectionError):
 
 class ForgeClient(QObject):
     generation_progress = pyqtSignal(str, int)  # stage_name, percent
+    _instance: Optional['ForgeClient'] = None
+
+    @classmethod
+    def get_instance(cls) -> 'ForgeClient':
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     def __init__(self, base_url: str = "http://127.0.0.1:7860", parent=None, system_monitor=None):
         super().__init__(parent)
+        ForgeClient._instance = self
         self.base_url = base_url.rstrip("/")
         self.system_monitor = system_monitor
         self._last_vram_wait_ts: float = 0.0
@@ -357,7 +366,8 @@ class ForgeClient(QObject):
             startupinfo=startupinfo,
             creationflags=creationflags,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
+            env=get_clean_forge_env()
         )
 
     def get_current_model(self) -> Optional[str]:

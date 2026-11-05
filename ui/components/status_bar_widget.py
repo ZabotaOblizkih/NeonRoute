@@ -5,7 +5,7 @@ and service health indicators modernized with QFluentWidgets.
 """
 
 from typing import TYPE_CHECKING, Optional
-from config import EMERGENCY_VRAM_THRESHOLD_MB
+from config import EMERGENCY_VRAM_THRESHOLD_MB, FORGE_LAUNCHER_PATH
 import re
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtWidgets import QStatusBar, QWidget, QHBoxLayout, QLabel
@@ -244,7 +244,7 @@ class MainStatusBar(QStatusBar):
         self.btn_forge_toggle = PillPushButton("▶ Запустить Forge", self)
         self.btn_forge_toggle.setCheckable(False)
         self.btn_forge_toggle.setFixedHeight(24)
-        self.btn_forge_toggle.setToolTip("Запустить SD WebUI Forge (C:\\neyroGPD\\forge_launcher.bat)")
+        self.btn_forge_toggle.setToolTip(f"Запустить SD WebUI Forge ({FORGE_LAUNCHER_PATH})")
         self.btn_forge_toggle.installEventFilter(ToolTipFilter(self.btn_forge_toggle, showDelay=250, position=ToolTipPosition.TOP))
         self.btn_forge_toggle.setStyleSheet("""
             PillPushButton, QPushButton {

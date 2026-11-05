@@ -447,7 +447,7 @@ class CleanCacheDialog(QDialog):
 
         # 1. Forge / Gradio Cache (Checked by default)
         row1 = QHBoxLayout()
-        self.chk_forge = QCheckBox("Временный кэш Forge и Gradio (C:\\neyroGPD\\.tmp, .cache)", card)
+        self.chk_forge = QCheckBox(f"Временный кэш Forge и Gradio ({FORGE_ROOT_DIR / '.tmp'}, .cache)", card)
         self.chk_forge.setChecked(True)
         row1.addWidget(self.chk_forge, stretch=1)
         self.lbl_size_forge = QLabel("⏳ Подсчет...", card)

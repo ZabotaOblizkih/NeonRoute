@@ -117,7 +117,17 @@ DEFAULT_ROUTER_MODELS: List[Dict[str, Any]] = [
 ]
 
 
-class ModelRouter:
+class ModelRouterMeta(type):
+    """Метакласс синглтона ModelRouter с автоматическим гашением висящих таймеров при сбросе."""
+    def __setattr__(cls, name, value):
+        if name == "_instance" and value is None:
+            current = cls.__dict__.get("_instance") or getattr(cls, "_instance", None)
+            if current is not None and hasattr(current, "cancel_deferred_warmup"):
+                current.cancel_deferred_warmup()
+        super().__setattr__(name, value)
+
+
+class ModelRouter(metaclass=ModelRouterMeta):
     """
     Semantic model router using FastEmbed on CPU.
     Computes cosine similarity between generation prompts and routing descriptions.
@@ -154,20 +164,35 @@ class ModelRouter:
         self.profiles: List[Dict[str, Any]] = []
         self.embeddings: Dict[str, np.ndarray] = {}
         self._embed_engine = None
+        self._deferred_timer: Optional[threading.Timer] = None
 
         if auto_load:
             self.load_profiles()
             self.update_embeddings_async()
+
+    def cancel_deferred_warmup(self) -> None:
+        """Отменяет висящий таймер фонового прогрева, предотвращая утечки потоков."""
+        if getattr(self, "_deferred_timer", None) is not None:
+            try:
+                self._deferred_timer.cancel()
+            except Exception:
+                pass
+            self._deferred_timer = None
+        self._initialized = False
 
     def update_embeddings_async(self, delay: float = 5.0):
         """
         Runs update_embeddings in a background daemon thread with deferred delay
         to eliminate CPU contention with LLM startup and prevent GUI freeze.
         """
+        # Гасим предыдущий незавершенный таймер (защита от гонок и утечек)
+        self.cancel_deferred_warmup()
+
         if delay > 0:
             timer = threading.Timer(delay, self.update_embeddings)
             timer.daemon = True
             timer.name = "ModelRouterDeferredWarmup"
+            self._deferred_timer = timer
             timer.start()
             return timer
         thread = threading.Thread(target=self.update_embeddings, daemon=True, name="ModelRouterWarmup")

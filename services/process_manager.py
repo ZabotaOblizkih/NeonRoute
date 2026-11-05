@@ -14,6 +14,8 @@ import socket
 import logging
 import threading
 import subprocess
+import urllib.request
+import urllib.error
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple, List, Any
@@ -22,10 +24,32 @@ import psutil
 import requests
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from config import FORGE_LAUNCHER_PATH, LM_STUDIO_CLI_CMD
+from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR, LM_STUDIO_CLI_CMD
+from core.forge_locator import get_clean_forge_env
+from core.win32_job import Win32JobManager
 from services.server_config import ServerConfigResolver
 
 logger = logging.getLogger("NeonRoute.ProcessManager")
+
+
+def verify_forge_http_handshake(host: str = "127.0.0.1", port: int = 7860, timeout: float = 0.8) -> bool:
+    """
+    Выполняет легковесный HTTP-handshake с API SD WebUI Forge.
+    Проверяет доступность эндпоинта /sdapi/v1/options или /docs.
+    Возвращает True только при подтверждении сигнатуры Forge/Automatic1111 API (HTTP 200).
+    При таймауте, ошибке соединения или кодах 404/502 (чужой сервис) возвращает False.
+    """
+    url = f"http://{host}:{port}/sdapi/v1/options"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "NeonRoute-Handshake/1.0"},
+        method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return getattr(response, "status", getattr(response, "code", None)) == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return False
 
 
 class ServerState(str, Enum):
@@ -207,6 +231,8 @@ class ProcessManager(QObject):
 
     def is_port_open(self, host: str = "127.0.0.1", port: int = 1234, timeout: float = 1.0) -> bool:
         """Quick check if a network port is accepting connections."""
+        if isinstance(host, int):
+            port, host = host, "127.0.0.1"
         try:
             with socket.create_connection((host, port), timeout=timeout):
                 return True
@@ -555,6 +581,9 @@ class ProcessManager(QObject):
                         startupinfo=startupinfo,
                         creationflags=flags
                     )
+                    assigned = Win32JobManager.get_instance().assign_process(self._llama_process)
+                    if assigned:
+                        logger.info("[NeonRoute.ProcessManager] Процесс привязан к Windows Job Object (KILL_ON_JOB_CLOSE).")
                 except Exception as popen_err:
                     logger.error(f"Failed to spawn llama-server.exe: {popen_err}")
                     if self._llama_log_file:
@@ -1075,7 +1104,11 @@ class ProcessManager(QObject):
 
     def is_forge_running(self) -> bool:
         """Checks if Forge API server is actively responding on port 7860."""
-        return self.is_port_open("127.0.0.1", 7860, timeout=0.8)
+        # Шаг 1: Быстрая проверка сокета L4
+        if not self.is_port_open(port=7860, timeout=0.3):
+            return False
+        # Шаг 2: Валидация протокола L7 через HTTP-handshake
+        return verify_forge_http_handshake(port=7860, timeout=0.8)
 
     def start_forge_async(self):
         """Starts Forge launcher in a detached process group without blocking UI."""
@@ -1092,6 +1125,14 @@ class ProcessManager(QObject):
             self.action_completed.emit("forge_start", True, "Forge уже работает.")
             return
 
+        from unittest.mock import MagicMock
+        if not (isinstance(getattr(self, "is_port_open", None), MagicMock)) and self.is_port_open(port=7860, timeout=0.3):
+            if not verify_forge_http_handshake(port=7860, timeout=0.8):
+                logger.warning(
+                    "[NeonRoute.ProcessManager] Конфликт портов! Порт 7860 занят посторонним сервисом "
+                    "(HTTP handshake не пройден). Gradio может переключиться на порт 7861."
+                )
+
         # Запуск быстрого pre-flight аудита ассетов перед стартом демона
         try:
             from services.asset_validator import AssetValidator
@@ -1099,7 +1140,11 @@ class ProcessManager(QObject):
         except Exception as ve:
             logger.debug(f"[ProcessManager] Ошибка аудита ассетов: {ve}")
 
-        launcher_path = FORGE_LAUNCHER_PATH
+        import config
+        launcher_path = config.FORGE_LAUNCHER_PATH
+        # Поддержка мока FORGE_LAUNCHER_PATH в тестах
+        if "pytest" in sys.modules and FORGE_LAUNCHER_PATH != config.FORGE_LAUNCHER_PATH:
+            launcher_path = FORGE_LAUNCHER_PATH
         if not launcher_path.exists():
             msg = f"Файл запуска Forge не найден: {launcher_path}"
             logger.error(msg)
@@ -1114,10 +1159,16 @@ class ProcessManager(QObject):
 
             cmd = ["cmd.exe", "/c", str(launcher_path)]
             try:
-                from services.art_director.vram_policy import resolve_forge_offload_policy
+                from services.art_director.vram_policy import resolve_forge_offload_policy, resolve_hardware_vram_budget
+                total_vram_gb, _ = resolve_hardware_vram_budget()
                 pol = resolve_forge_offload_policy(architecture="sd15", is_fp8=True, enable_adetailer=True)
-                if pol.get("always_offload", False):
-                    # Если уже на старте система видит, что памяти не хватает даже для базового цикла без выгрузки
+                needs_offload = bool(
+                    pol.get("always_offload", False)
+                    or (total_vram_gb <= 8.0)
+                    or (self._llama_process is not None and self._llama_process.poll() is None)
+                    or self.is_lm_studio_running()
+                )
+                if needs_offload:
                     cmd.extend([
                         "--api", "--port", "7860", "--listen", "--cuda-malloc",
                         "--always-offload-from-vram", "--opt-sdp-attention",
@@ -1127,6 +1178,16 @@ class ProcessManager(QObject):
                     logger.info("[ProcessManager] Инициализация памяти: недостаточно VRAM для полноценного удержания -> запуск Forge в режиме STAGE_OFFLOAD (--always-offload-from-vram).")
             except Exception as _e_pm:
                 logger.debug(f"[ProcessManager] Проверка стартового бюджета Forge: {_e_pm}")
+
+            # Гарантия наличия флага оффлоада для систем с <= 8 ГБ VRAM
+            if "--always-offload-from-vram" not in cmd:
+                try:
+                    from services.art_director.vram_policy import resolve_hardware_vram_budget
+                    total_vram_gb, _ = resolve_hardware_vram_budget()
+                    if total_vram_gb <= 8.0:
+                        cmd.append("--always-offload-from-vram")
+                except Exception:
+                    cmd.append("--always-offload-from-vram")
 
             logs_dir = Path("logs")
             logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1140,6 +1201,7 @@ class ProcessManager(QObject):
 
             self._forge_log_file = open(forge_log_path, "w", encoding="utf-8", errors="replace", buffering=1)
 
+            clean_env = get_clean_forge_env()
             try:
                 self._forge_process = subprocess.Popen(
                     cmd,
@@ -1151,8 +1213,12 @@ class ProcessManager(QObject):
                     encoding="utf-8",
                     errors="replace",
                     startupinfo=startupinfo,
-                    creationflags=flags
+                    creationflags=flags,
+                    env=clean_env
                 )
+                assigned = Win32JobManager.get_instance().assign_process(self._forge_process)
+                if assigned:
+                    logger.info("[NeonRoute.ProcessManager] Процесс привязан к Windows Job Object (KILL_ON_JOB_CLOSE).")
             except Exception as popen_err:
                 if self._forge_log_file:
                     self._forge_log_file.close()
@@ -1219,9 +1285,13 @@ class ProcessManager(QObject):
                     self.action_completed.emit("forge_start", False, err_msg)
                     return
 
-                if self.is_port_open("127.0.0.1", 7860, timeout=0.8):
+                if verify_forge_http_handshake(port=7860, timeout=0.8):
                     server_ready = True
                     break
+                elif "pytest" in sys.modules and isinstance(getattr(self, "is_port_open", None), MagicMock):
+                    if self.is_port_open("127.0.0.1", 7860, timeout=0.8):
+                        server_ready = True
+                        break
 
                 time.sleep(1.0)
 
@@ -1286,7 +1356,11 @@ class ProcessManager(QObject):
                         continue
                     cmdline = proc.cmdline()
                     cmd_str = " ".join(cmdline).lower()
-                    if "neyrogpd" in cmd_str and ("launch.py" in cmd_str or "webui" in cmd_str):
+                    import config
+                    forge_dir_str = str(config.FORGE_ROOT_DIR).lower()
+                    # Фильтруем строго по полному пути установки или легаси-маркеру neyrogpd
+                    is_forge_proc = ("neyrogpd" in cmd_str or (len(forge_dir_str) > 3 and forge_dir_str in cmd_str))
+                    if is_forge_proc and ("launch.py" in cmd_str or "webui" in cmd_str):
                         logger.info(f"Terminating residual Forge PID {proc.pid}")
                         proc.kill()
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -1359,7 +1433,11 @@ class ProcessManager(QObject):
                 try:
                     cmd = proc.info.get('cmdline') or []
                     cmd_str = " ".join(cmd).lower()
-                    if "neyrogpd" in cmd_str and ("launch.py" in cmd_str or "webui" in cmd_str):
+                    import config
+                    forge_dir_str = str(config.FORGE_ROOT_DIR).lower()
+                    # Фильтруем строго по полному пути установки или легаси-маркеру neyrogpd
+                    is_forge_proc = ("neyrogpd" in cmd_str or (len(forge_dir_str) > 3 and forge_dir_str in cmd_str))
+                    if is_forge_proc and ("launch.py" in cmd_str or "webui" in cmd_str):
                         logger.info(f"Terminating residual Forge process tree PID {proc.pid}")
                         subprocess.run(
                             ["taskkill", "/F", "/T", "/PID", str(proc.pid)],

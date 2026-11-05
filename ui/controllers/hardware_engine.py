@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, List
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtWidgets import QInputDialog
 
-from config import MemoryStrategy, OUTPUTS_DIR, EMERGENCY_VRAM_THRESHOLD_MB
+from config import MemoryStrategy, OUTPUTS_DIR, EMERGENCY_VRAM_THRESHOLD_MB, FORGE_LAUNCHER_PATH
 from services.task_queue import InferenceTask
 from services.session_manager import SessionManager
 from services.art_director import GenerationPlan
@@ -33,6 +33,7 @@ class HardwareEngineMixin:
     Единый фасад оборудования и бэкендов для MainWindow.
     """
     app_config = {}
+    _is_locating_forge: bool = False
     current_session = None
 
     # -------------------------------------------------------------------------
@@ -165,6 +166,75 @@ class HardwareEngineMixin:
         tts_msg = health.get("tts_msg", "F5-TTS Offline")
         self.pill_tts.set_status(tts_ok, tts_msg)
 
+    def prompt_locate_forge(self, parent_widget=None) -> bool:
+        """
+        Интерактивный диалог выбора рабочей директории SD WebUI Forge:
+        1. Спрашивает пользователя, хочет ли он указать папку вручную.
+        2. При отказе возвращает False, генерация отключается, приложение работает дальше.
+        3. При согласии открывает выбор папки, валидирует маркеры запуска и сохраняет путь.
+        """
+        if getattr(self, "_is_locating_forge", False):
+            return False
+        self._is_locating_forge = True
+        try:
+            from PyQt6.QtWidgets import QMessageBox, QFileDialog, QWidget
+            from core.forge_locator import is_valid_forge_dir, update_server_config_forge_root
+            import config
+
+            target_parent = parent_widget or (self if isinstance(self, QWidget) else None)
+
+            msg_box = QMessageBox(target_parent)
+            msg_box.setWindowTitle("SD WebUI Forge не обнаружен")
+            msg_box.setText(
+                "Не удалось автоматически найти установку SD WebUI Forge на ваших дисках.\n\n"
+                "Хотите указать папку вручную?"
+            )
+            msg_box.setIcon(QMessageBox.Icon.Question)
+            btn_locate = msg_box.addButton("Указать папку...", QMessageBox.ButtonRole.AcceptRole)
+            btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            msg_box.exec()
+
+            if msg_box.clickedButton() != btn_locate:
+                if hasattr(self, "statusBar") and self.statusBar():
+                    self.statusBar().showMessage("SD WebUI Forge не настроен (генерация отключена)", 5000)
+                return False
+
+            while True:
+                selected_dir = QFileDialog.getExistingDirectory(
+                    target_parent,
+                    "Выберите директорию установки SD WebUI Forge",
+                    str(Path.home())
+                )
+                if not selected_dir:
+                    if hasattr(self, "statusBar") and self.statusBar():
+                        self.statusBar().showMessage("SD WebUI Forge не настроен (генерация отключена)", 5000)
+                    return False
+
+                if is_valid_forge_dir(selected_dir):
+                    update_server_config_forge_root(selected_dir)
+                    if hasattr(self, "btn_forge_toggle") and self.btn_forge_toggle:
+                        self.btn_forge_toggle.setToolTip(f"Запустить SD WebUI Forge ({config.FORGE_LAUNCHER_PATH})")
+                    if hasattr(self, "statusBar") and self.statusBar():
+                        self.statusBar().showMessage(f"SD WebUI Forge настроен: {config.FORGE_ROOT_DIR}", 4000)
+                    return True
+                else:
+                    retry_box = QMessageBox(target_parent)
+                    retry_box.setWindowTitle("Файлы запуска не найдены")
+                    retry_box.setIcon(QMessageBox.Icon.Warning)
+                    retry_box.setText(
+                        "В выбранной папке не найдены файлы запуска (forge_launcher.bat или webui-user.bat).\n\n"
+                        "Хотите попробовать снова?"
+                    )
+                    btn_retry = retry_box.addButton("Попробовать снова", QMessageBox.ButtonRole.AcceptRole)
+                    btn_abort = retry_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+                    retry_box.exec()
+                    if retry_box.clickedButton() != btn_retry:
+                        if hasattr(self, "statusBar") and self.statusBar():
+                            self.statusBar().showMessage("SD WebUI Forge не настроен (генерация отключена)", 5000)
+                        return False
+        finally:
+            self._is_locating_forge = False
+
     def _toggle_forge_server(self):
         if self.process_manager.is_forge_running() or self.pill_forge.is_online:
             self._forge_launching = False
@@ -172,8 +242,14 @@ class HardwareEngineMixin:
             self.process_manager.stop_forge_async()
             self.btn_forge_toggle.setText("▶ Запустить Forge")
         else:
+            import config
+            if not config.FORGE_LAUNCHER_PATH.exists():
+                if not self.prompt_locate_forge():
+                    self._forge_launching = False
+                    self.btn_forge_toggle.setText("▶ Запустить Forge")
+                    return
             self._forge_launching = True
-            self.statusBar().showMessage("Запуск SD WebUI Forge (C:\\neyroGPD\\forge_launcher.bat)...")
+            self.statusBar().showMessage(f"Запуск SD WebUI Forge ({config.FORGE_LAUNCHER_PATH})...")
             self.btn_forge_toggle.setText("⏳ Запуск Forge... (ожидание 7860)")
             self.btn_forge_toggle.setStyleSheet("""
                 QPushButton {
@@ -257,6 +333,23 @@ class HardwareEngineMixin:
             self.statusBar().showMessage(message, 5000)
             if not success:
                 self._forge_launching = False
+                if hasattr(self, "btn_forge_toggle") and self.btn_forge_toggle:
+                    self.btn_forge_toggle.setText("▶ Запустить Forge")
+                    self.btn_forge_toggle.setStyleSheet("""
+                        QPushButton {
+                            background-color: #111A28;
+                            color: #00F0FF;
+                            border: 1px solid #00F0FF;
+                            border-radius: 4px;
+                            padding: 2px 9px;
+                            font-size: 11px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background-color: #00F0FF;
+                            color: #050B14;
+                        }
+                    """)
             else:
                 QTimer.singleShot(3000, self._refresh_forge_models)
         else:
@@ -498,6 +591,119 @@ class HardwareEngineMixin:
             self.header_controller.set_forge_progress(stage_name, percent)
 
 
+    def _is_forge_available(self) -> bool:
+        """
+        Неблокирующая проверка доступности Forge перед любыми манипуляциями с VRAM.
+        Проверяет ProcessManager.is_forge_running() или ForgeClient.get_instance().is_server_ready(timeout=0.3).
+        """
+        try:
+            if hasattr(self, "process_manager") and self.process_manager:
+                if hasattr(self.process_manager, "is_forge_running") and self.process_manager.is_forge_running():
+                    return True
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "forge_client") and self.forge_client:
+                if hasattr(self.forge_client, "is_server_ready") and self.forge_client.is_server_ready(timeout=0.3):
+                    return True
+        except Exception:
+            pass
+
+        try:
+            from services.forge_client import ForgeClient
+            if hasattr(ForgeClient, "get_instance"):
+                fc = ForgeClient.get_instance()
+                if fc and hasattr(fc, "is_server_ready") and fc.is_server_ready(timeout=0.3):
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def _scene_art_pipeline(
+        self,
+        v_payload: Optional[Dict[str, Any]] = None,
+        scene_text: Optional[str] = None,
+        ckpt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        if not self._is_forge_available():
+            logger.info("[HardwareEngine] Пропуск генерации арта сцены: SD WebUI Forge оффлайн.")
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                try:
+                    self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
+                except Exception:
+                    pass
+            return {"image_path": None, "plan": None, "checkpoint": None, "skipped": True}
+
+        self._cancel_lms_reload()
+        available_models = self.forge_client.get_models() if hasattr(self, "forge_client") and self.forge_client else []
+
+        captured_mode = self.get_effective_mode() if hasattr(self, "get_effective_mode") else getattr(self, "current_mode", "assistant")
+        captured_char = self.active_character if (captured_mode == "roleplay" and hasattr(self, "active_character")) else None
+        active_char_name = getattr(captured_char, "name", None) if captured_char else None
+
+        sess_id = self.current_session.get("id") if getattr(self, "current_session", None) else None
+        sess_images_dir = SessionManager.get_session_images_dir(sess_id) if sess_id else None
+
+        if captured_mode in ("roleplay", "rp") and not v_payload:
+            english_prompt = self._generate_ephemeral_rp_art_prompt(
+                sess_id=sess_id,
+                last_assistant_message=scene_text or "",
+                target_model_id=ckpt or "realistic"
+            )
+            from services.vram_arbiter import VRAMArbiter
+            VRAMArbiter.get_instance().release_llm_for_diffusion()
+            plan = self.art_director.plan_generation(
+                raw_prompt=english_prompt,
+                preferred_style=ckpt,
+                available_models=available_models,
+                session_id=sess_id,
+                mode=captured_mode
+            )
+        elif v_payload:
+            plan = self.art_director.plan_from_visual_intent(
+                visual_intent=v_payload,
+                preferred_style=ckpt,
+                available_models=available_models,
+                character_name=active_char_name,
+                character=None,
+                session_id=sess_id,
+                mode=captured_mode
+            )
+        else:
+            plan = self.art_director.plan_generation(
+                raw_prompt=scene_text or "",
+                preferred_style=ckpt,
+                lm_client=self.lm_client if hasattr(self, "lm_client") else None,
+                character=None,
+                available_models=available_models,
+                character_name=active_char_name,
+                session_id=sess_id,
+                mode=captured_mode
+            )
+            if plan.is_ambiguous:
+                return {"image_path": None, "plan": plan, "checkpoint": None, "is_ambiguous": True}
+            from services.vram_arbiter import VRAMArbiter
+            VRAMArbiter.get_instance().release_llm_for_diffusion()
+
+        logger.info(f"Scene Art selected checkpoint: '{plan.target_checkpoint}'")
+
+        kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
+        img_path = None
+        try:
+            img_path = self.forge_client.text_to_image(**kwargs)
+        finally:
+            try:
+                if hasattr(self, "forge_client") and self.forge_client:
+                    self.forge_client.unload_checkpoint()
+                    self.forge_client.free_vram()
+            except Exception as _e_unl:
+                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
+            if hasattr(self, "_reload_active_lms_model_async"):
+                self._reload_active_lms_model_async(delay=1.2)
+        return {"image_path": img_path, "plan": plan, "checkpoint": plan.target_checkpoint}
+
     def _on_scene_art_requested(
         self,
         text: Optional[str] = None,
@@ -506,17 +712,12 @@ class HardwareEngineMixin:
         character_name: Optional[str] = None,
         visual_intent: Optional[Dict[str, Any]] = None
     ):
-        if not self.pill_forge.is_online:
+        if not self._is_forge_available():
             if widget and hasattr(widget, "set_scene_art_busy"):
                 widget.set_scene_art_busy(False)
-            logger.warning("[SD Forge] Отклонен запрос иллюстрации сцены: сервер Forge офлайн (порт 7860 недоступен).")
-            user_msg = (
-                "⚠️ **SD WebUI Forge не запущен или еще загружается.**\n\n"
-                "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
-            )
-            sender_name = self.active_character.name if (hasattr(self, "active_character") and self.active_character) else "Элария"
-            self._append_message(sender_name, user_msg, is_user=False, is_error=True)
-            self.statusBar().showMessage("SD WebUI Forge недоступен. Запустите Forge в нижней панели.", 6000)
+            logger.info("[HardwareEngine] Пропуск генерации арта сцены: SD WebUI Forge оффлайн.")
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
             return
 
         self._cancel_lms_reload()
@@ -541,78 +742,19 @@ class HardwareEngineMixin:
         raw_scene_text = (text or "").strip()
         needs_llm_gen = bool((captured_mode in ("roleplay", "rp") and not v_intent) or (not v_intent and re.search(r"[а-яА-ЯёЁ]", raw_scene_text)))
 
-        def _scene_art_pipeline(v_payload: Optional[Dict[str, Any]] = None, scene_text: Optional[str] = None, ckpt: Optional[str] = None) -> Dict[str, Any]:
-            self._cancel_lms_reload()
-            available_models = self.forge_client.get_models()
-            if captured_mode in ("roleplay", "rp") and not v_payload:
-                english_prompt = self._generate_ephemeral_rp_art_prompt(
-                    sess_id=sess_id,
-                    last_assistant_message=scene_text or "",
-                    target_model_id=ckpt or "realistic"
-                )
-                from services.vram_arbiter import VRAMArbiter
-                VRAMArbiter.get_instance().release_llm_for_diffusion()
-                plan = self.art_director.plan_generation(
-                    raw_prompt=english_prompt,
-                    preferred_style=ckpt,
-                    available_models=available_models,
-                    session_id=sess_id,
-                    mode=captured_mode
-                )
-            elif v_payload:
-                plan = self.art_director.plan_from_visual_intent(
-                    visual_intent=v_payload,
-                    preferred_style=ckpt,
-                    available_models=available_models,
-                    character_name=active_char_name,
-                    character=None,
-                    session_id=sess_id,
-                    mode=captured_mode
-                )
-            else:
-                plan = self.art_director.plan_generation(
-                    raw_prompt=scene_text or "",
-                    preferred_style=ckpt,
-                    lm_client=self.lm_client,
-                    character=None,
-                    available_models=available_models,
-                    character_name=active_char_name,
-                    session_id=sess_id,
-                    mode=captured_mode
-                )
-                if plan.is_ambiguous:
-                    return {"image_path": None, "plan": plan, "checkpoint": None, "is_ambiguous": True}
-                from services.vram_arbiter import VRAMArbiter
-                VRAMArbiter.get_instance().release_llm_for_diffusion()
-
-            logger.info(f"Scene Art selected checkpoint: '{plan.target_checkpoint}'")
-
-            kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
-            img_path = None
-            try:
-                img_path = self.forge_client.text_to_image(**kwargs)
-            finally:
-                try:
-                    self.forge_client.unload_checkpoint()
-                    self.forge_client.free_vram()
-                except Exception as _e_unl:
-                    logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
-                self._reload_active_lms_model_async(delay=1.2)
-            return {"image_path": img_path, "plan": plan, "checkpoint": plan.target_checkpoint}
-
         if widget and hasattr(widget, "set_scene_art_busy"):
             widget.set_scene_art_busy(True, "⏳ Генерация...")
 
         task = InferenceTask(
             name="🎨 Иллюстрация сцены",
             task_type="scene_art",
-            func=_scene_art_pipeline,
+            func=self._scene_art_pipeline,
             kwargs={
                 "v_payload": v_intent,
                 "scene_text": raw_scene_text,
                 "ckpt": active_pref_style
             },
-            abort_fn=self.forge_client.interrupt,
+            abort_fn=self.forge_client.interrupt if hasattr(self, "forge_client") and self.forge_client else None,
             metadata={
                 "is_scene_art": True,
                 "session_id": sess_id,
@@ -625,15 +767,22 @@ class HardwareEngineMixin:
         self._active_tasks[task.id] = task
         self.task_queue.enqueue(task)
 
+    def _generate_scene_art_async(self, *args, **kwargs):
+        """Алиас для _on_scene_art_requested."""
+        return self._on_scene_art_requested(*args, **kwargs)
+
     def _enqueue_image_task(self, prompt: str):
-        if not self.pill_forge.is_online:
+        if not self._is_forge_available():
+            logger.info("[HardwareEngine] Пропуск ручной генерации арта: SD WebUI Forge оффлайн.")
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
             user_msg = (
                 "⚠️ **SD WebUI Forge не запущен или еще загружается.**\n\n"
                 "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
             )
             sender_name = self.active_character.name if (hasattr(self, "active_character") and self.active_character) else "Элария"
-            self._append_message(sender_name, user_msg, is_user=False, is_error=True)
-            self.statusBar().showMessage("Forge офлайн. Запустите сервер в нижней панели.", 6000)
+            if hasattr(self, "_append_message"):
+                self._append_message(sender_name, user_msg, is_user=False, is_error=True)
             return
 
         checkpoint = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
@@ -647,6 +796,14 @@ class HardwareEngineMixin:
             active_char_name = getattr(captured_char, "name", None)
 
         def _image_worker(raw_prompt: str, ckpt: Optional[str] = None) -> Dict[str, Any]:
+            if not self._is_forge_available():
+                logger.info("[HardwareEngine] Пропуск ручной генерации арта: SD WebUI Forge оффлайн.")
+                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                    try:
+                        self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
+                    except Exception:
+                        pass
+                return {"image_path": None, "plan": None, "checkpoint": None, "skipped": True}
             self._cancel_lms_reload()
             available_models = self.forge_client.get_models()
             plan = self.art_director.plan_generation(
@@ -701,14 +858,17 @@ class HardwareEngineMixin:
         self.task_queue.enqueue(task)
 
     def _enqueue_direct_image_task(self, prompt: str):
-        if not self.pill_forge.is_online:
+        if not self._is_forge_available():
+            logger.info("[HardwareEngine] Пропуск директ-генерации арта: SD WebUI Forge оффлайн.")
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
             user_msg = (
                 "⚠️ **SD WebUI Forge не запущен или еще загружается.**\n\n"
                 "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
             )
             sender_name = self.active_character.name if (hasattr(self, "active_character") and self.active_character) else "Элария"
-            self._append_message(sender_name, user_msg, is_user=False, is_error=True)
-            self.statusBar().showMessage("Forge офлайн. Запустите сервер в нижней панели.", 6000)
+            if hasattr(self, "_append_message"):
+                self._append_message(sender_name, user_msg, is_user=False, is_error=True)
             return
 
         checkpoint = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
@@ -716,6 +876,14 @@ class HardwareEngineMixin:
         sess_images_dir = SessionManager.get_session_images_dir(sess_id) if sess_id else None
 
         def _direct_image_worker(raw_prompt: str, ckpt: Optional[str] = None) -> Dict[str, Any]:
+            if not self._is_forge_available():
+                logger.info("[HardwareEngine] Пропуск директ-генерации арта: SD WebUI Forge оффлайн.")
+                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                    try:
+                        self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
+                    except Exception:
+                        pass
+                return {"image_path": None, "plan": None, "checkpoint": None, "skipped": True}
             self._cancel_lms_reload()
             available_models = self.forge_client.get_models()
             plan = self.art_director.build_direct_plan(
