@@ -20,13 +20,6 @@ from services.session_manager import SessionManager
 from services.workspace_launcher import WorkspaceLauncher
 
 from ui.components.chat_bubble import ChatMessageWidget
-from ui.dialogs.clean_cache_dialog import CleanCacheDialog
-from ui.dialogs.background_dialog import BackgroundSettingsDialog
-from ui.dialogs.media_gallery_dialog import ChatMediaGalleryDialog
-from ui.dialogs.user_settings_dialog import UserSettingsDialog
-from ui.dialogs.about_dialog import AboutDialog
-from ui.dialogs.help_dialog import HelpDialog
-from ui.dialogs.model_sampling_dialog import ModelSamplingDialog
 from ui.log_console import LogConsoleDialog
 
 logger = logging.getLogger("NeonRoute.DialogController")
@@ -37,6 +30,7 @@ class DialogControllerMixin:
 
     def _open_user_settings_dialog(self, initial_tab: int = 0):
         try:
+            from ui.dialogs.user_settings_dialog import UserSettingsDialog
             dlg = UserSettingsDialog(initial_tab=initial_tab, parent=self)
             dlg.settings_applied.connect(self._on_settings_applied)
             dlg.profiles_updated.connect(self._on_user_profiles_updated)
@@ -155,11 +149,13 @@ class DialogControllerMixin:
 
     def _open_clean_cache_dialog(self):
         """Opens cache cleanup dialog."""
+        from ui.dialogs.clean_cache_dialog import CleanCacheDialog
         dialog = CleanCacheDialog(self)
         dialog.exec()
 
     def _open_background_settings_dialog(self):
         """Opens compact background and dimming customization dialog."""
+        from ui.dialogs.background_dialog import BackgroundSettingsDialog
         dialog = BackgroundSettingsDialog(
             current_path=self.background_path,
             current_dim_alpha=self.background_dim_opacity,
@@ -235,11 +231,13 @@ class DialogControllerMixin:
 
     def _open_help_dialog(self):
         """Opens Help / User Guide dialog."""
+        from ui.dialogs.help_dialog import HelpDialog
         dialog = HelpDialog(self)
         dialog.exec()
 
     def _open_about_dialog(self):
         """Opens About dialog."""
+        from ui.dialogs.about_dialog import AboutDialog
         dialog = AboutDialog(self)
         dialog.exec()
 
@@ -277,6 +275,7 @@ class DialogControllerMixin:
         active_mode = "engineer" if is_eng else self.current_mode
         current_defaults = get_default_sampling_params(active_mode)
 
+        from ui.dialogs.model_sampling_dialog import ModelSamplingDialog
         dlg = ModelSamplingDialog(
             current_params=current_defaults,
             mode=self.current_mode,
@@ -323,6 +322,7 @@ class DialogControllerMixin:
         if "is_dm_mode" in self.current_session:
             current_params["is_dm_mode"] = self.current_session.get("is_dm_mode", False)
         is_eng = self.is_engineer_mode_active()
+        from ui.dialogs.model_sampling_dialog import ModelSamplingDialog
         dlg = ModelSamplingDialog(
             current_params=current_params,
             mode=self.current_mode,
@@ -406,6 +406,7 @@ class DialogControllerMixin:
             if img_p.is_file() and img_p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
                 all_images.append(img_p)
 
+        from ui.dialogs.media_gallery_dialog import ChatMediaGalleryDialog
         dlg = ChatMediaGalleryDialog(
             session_id="all_sessions",
             session_title="Общая галерея",

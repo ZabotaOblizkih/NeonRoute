@@ -32,7 +32,6 @@ ASSETS_DIR = getattr(config, "ASSETS_DIR", getattr(config, "BASE_DIR", Path(".")
 
 from services.session_manager import SessionManager
 from utils.config_manager import ConfigManager
-from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 
 # Импорты компонентов интерфейса
 from ui.components.search_bar import SearchBarWidget

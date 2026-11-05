@@ -22,7 +22,6 @@ from services.art_director import GenerationPlan
 from services.model_router import normalize_model_choice
 from utils.config_manager import ConfigManager
 from ui.workers.model_discovery_worker import ModelDiscoveryWorker
-from ui.models_manager_dialog import ModelsManagerDialog
 from ui.components.chat_bubble import ChatMessageWidget
 
 logger = logging.getLogger("NeonRoute.HardwareEngine")
@@ -508,6 +507,7 @@ class HardwareEngineMixin:
 
 
     def _open_models_manager_dialog(self):
+        from ui.models_manager_dialog import ModelsManagerDialog
         dialog = ModelsManagerDialog(self.forge_client, self)
         if hasattr(dialog, "models_updated"):
             dialog.models_updated.connect(self._refresh_forge_models)
@@ -1025,3 +1025,11 @@ class HardwareEngineMixin:
             )
             self._active_tasks[task.id] = task
             self.task_queue.enqueue(task)
+
+
+def __getattr__(name: str):
+    if name == "ModelsManagerDialog":
+        from ui.models_manager_dialog import ModelsManagerDialog
+        globals()["ModelsManagerDialog"] = ModelsManagerDialog
+        return ModelsManagerDialog
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

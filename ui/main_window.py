@@ -84,8 +84,6 @@ from ui.components.sidebar_widget import SidebarWidget
 from ui.components.chat_header_widget import ChatHeaderWidget
 from ui.components.chat_input_panel import ChatInputPanel
 from ui.components.scroll_button import FloatingScrollDownButton
-from ui.dialogs.shutdown_dialog import ShutdownProgressDialog
-from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 from ui.controllers.reminder_controller import ReminderController
 from ui.builders.menu_builder import MenuBuilder, ClickOnlyMenuBar
 from ui.controllers.window_state_controller import WindowStateMixin
@@ -1971,6 +1969,7 @@ class MainWindow(
         self.hide()
 
         # Create and display compact glassmorphism progress dialog
+        from ui.dialogs.shutdown_dialog import ShutdownProgressDialog
         self._shutdown_dialog = ShutdownProgressDialog()
         self._shutdown_dialog.show()
 

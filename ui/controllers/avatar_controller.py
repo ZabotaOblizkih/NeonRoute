@@ -20,19 +20,13 @@ ASSETS_DIR = getattr(config, "ASSETS_DIR", getattr(config, "BASE_DIR", Path(".")
 from services.session_manager import SessionManager
 from services.engineer_skill_router import EngineerSkillRouter
 from services.roleplay_prompt_builder import RoleplayPromptBuilder
-from ui.dialogs.anchor_viewer_dialog import AnchorViewerDialog
-from ui.dialogs.prompt_viewer_dialog import PromptViewerDialog
 from qfluentwidgets import RoundMenu, Action, InfoBar, InfoBarPosition
 
 if not hasattr(Action, "__contains__"):
     Action.__contains__ = lambda self, item: item in self.text()
-from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
 from ui.components.chat_bubble import render_circular_avatar
 
-try:
-    from ui.dialogs.avatar_crop_dialog import AvatarCropDialog
-except ImportError:
-    AvatarCropDialog = None
+
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -333,6 +327,7 @@ class AvatarControllerMixin:
 
     def _open_avatar_lightbox(self, avatar_path: Path):
         try:
+            from ui.dialogs.avatar_lightbox_dialog import AvatarLightboxDialog
             dlg = AvatarLightboxDialog(avatar_path, self)
             dlg.showFullScreen()
             dlg.exec()
@@ -680,6 +675,7 @@ class AvatarControllerMixin:
             current_custom = self.current_session.get("custom_depth_anchor") if self.current_session else None
 
             # 4. Запуск диалога
+            from ui.dialogs.anchor_viewer_dialog import AnchorViewerDialog
             dialog = AnchorViewerDialog(
                 parent=self,
                 character_card=card,
@@ -748,6 +744,7 @@ class AvatarControllerMixin:
                 world_facts = RPCastManager.get_world_state(curr_sess_id) if curr_sess_id else ""
 
             # 5. Запуск диалога
+            from ui.dialogs.prompt_viewer_dialog import PromptViewerDialog
             dialog = PromptViewerDialog(
                 parent=self,
                 character_card=card,
