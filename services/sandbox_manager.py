@@ -235,7 +235,7 @@ class SandboxManager:
             raise IOError(f"Файл {clean_name} не был записан или остался пустым!")
 
         file_bytes = full_path.stat().st_size
-        return f"[Успешно]: Файл C:\\NeonRoute\\workspace\\{clean_name} создан ({file_bytes} байт)."
+        return f"[Успешно]: Файл {full_path} создан ({file_bytes} байт)."
 
     @classmethod
     def run_script(cls, filename: str, timeout: int = 45, args: Optional[Union[str, List[str]]] = None) -> ScriptExecutionResult:
@@ -254,7 +254,7 @@ class SandboxManager:
             return ScriptExecutionResult(success=False, return_code=1, stdout="", stderr=msg, output=msg)
 
         if not os.path.exists(script_path) or not script_path.is_file():
-            msg = f"Ошибка: Скрипт не найден: C:\\NeonRoute\\workspace\\{clean_name}"
+            msg = f"Ошибка: Скрипт не найден: {script_path}"
             return ScriptExecutionResult(success=False, return_code=1, stdout="", stderr=msg, output=msg)
 
         # 0. AST Safety Guard (VULN-02): блокировка опасных модулей

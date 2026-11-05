@@ -24,7 +24,7 @@ import psutil
 import requests
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR, LM_STUDIO_CLI_CMD
+from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR, LM_STUDIO_CLI_CMD, LOGS_DIR
 from core.forge_locator import get_clean_forge_env
 from core.win32_job import Win32JobManager
 from services.server_config import ServerConfigResolver
@@ -550,10 +550,10 @@ class ProcessManager(QObject):
                 env = os.environ.copy()
                 cuda_dir = ServerConfigResolver.resolve_cuda_dir(server_exe)
                 if cuda_dir:
-                    env["PATH"] = f"{str(cuda_dir)};{env.get('PATH', '')}"
+                    env["PATH"] = f"{str(cuda_dir)}{os.pathsep}{env.get('PATH', '')}"
 
                 # 8. Setup log file
-                logs_dir = Path("logs")
+                logs_dir = LOGS_DIR
                 logs_dir.mkdir(parents=True, exist_ok=True)
                 log_file_path = logs_dir / "llama_server.log"
 
@@ -1189,7 +1189,7 @@ class ProcessManager(QObject):
                 except Exception:
                     cmd.append("--always-offload-from-vram")
 
-            logs_dir = Path("logs")
+            logs_dir = LOGS_DIR
             logs_dir.mkdir(parents=True, exist_ok=True)
             forge_log_path = logs_dir / "forge.log"
 
@@ -1316,6 +1316,8 @@ class ProcessManager(QObject):
                 self._forge_log_file = None
             self.forge_status_changed.emit(False, str(e))
             self.action_completed.emit("forge_start", False, str(e))
+
+    _start_forge_process = _run_forge_start
 
     def stop_forge_async(self):
         """Stops Forge and terminates child process trees to release VRAM."""

@@ -13,7 +13,7 @@ import numpy as np
 
 logger = logging.getLogger("NeonRoute.SkillRouter")
 
-DATA_DIR = Path("data")
+from config import DATA_DIR
 CUSTOM_ASSISTANT_SKILLS_FILE = DATA_DIR / "custom_assistant_skills.json"
 
 ASSISTANT_SKILLS: Dict[str, Dict[str, Any]] = {

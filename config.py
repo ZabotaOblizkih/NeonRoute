@@ -60,7 +60,7 @@ if env_forge_root:
     FORGE_ROOT_DIR = Path(env_forge_root)
 else:
     # Эвристический каскадный поиск только при отсутствии переменной
-    FORGE_ROOT_DIR = find_forge_root() or Path(r"C:\neyroGPD")
+    FORGE_ROOT_DIR = find_forge_root() or (BASE_DIR.parent / "neyroGPD").resolve()
 _forge_env = os.environ.get("NEONROUTE_FORGE_LAUNCHER")
 if _forge_env:
     FORGE_LAUNCHER_PATH = Path(_forge_env)

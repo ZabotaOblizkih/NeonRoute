@@ -207,7 +207,8 @@ class ChatHeaderWidget(QFrame):
             models_list = load_art_director_models()
         except Exception:
             import json
-            json_path = Path("C:/NeonRoute/data/art_director_models.json")
+            from config import DATA_DIR
+            json_path = DATA_DIR / "art_director_models.json"
             models_list = []
             if json_path.exists():
                 try:
