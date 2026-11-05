@@ -96,3 +96,21 @@ class ReminderController(QObject):
         toast.show()
         toast.raise_()
         self._active_toasts.append(toast)
+
+    def cleanup(self) -> None:
+        """Останавливает внутренний таймер и убирает трей-иконку с панели задач."""
+        if hasattr(self, "_timer") and self._timer is not None:
+            try:
+                self._timer.stop()
+            except Exception as te:
+                logger.debug(f"[ReminderController] Error stopping timer: {te}")
+        if hasattr(self, "tray_icon") and self.tray_icon is not None:
+            try:
+                self.tray_icon.hide()
+            except Exception as ie:
+                logger.debug(f"[ReminderController] Error hiding tray icon: {ie}")
+
+    def stop(self) -> None:
+        """Алиас для cleanup()."""
+        self.cleanup()
+

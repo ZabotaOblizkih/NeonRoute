@@ -21,42 +21,30 @@ from PyQt6.QtGui import (
     QPainterPath, QCursor, QKeySequence, QShortcut, QMouseEvent
 )
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QComboBox, QFileDialog, QScrollArea, QFrame,
-    QMessageBox, QSplitter, QListWidget, QListWidgetItem, QSizePolicy,
-    QApplication, QInputDialog, QDialog, QProgressBar, QMenu,
-    QSlider, QSpinBox, QDoubleSpinBox, QWidgetAction, QGridLayout,
-    QGraphicsDropShadowEffect, QMenuBar
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QFileDialog, QSplitter, QListWidgetItem,
+    QSizePolicy, QApplication, QDialog, QMenu
 )
 from qframelesswindow import FramelessMainWindow
 from qframelesswindow.windows import WindowsFramelessWindow
-from qfluentwidgets import FluentTitleBar, setTheme, Theme
+from qfluentwidgets import FluentTitleBar
 
 from config import (
-    APP_NAME, APP_TAGLINE, APP_VERSION, DEFAULT_LM_STUDIO_URL,
+    APP_NAME, DEFAULT_LM_STUDIO_URL,
     DEFAULT_FORGE_URL, DEFAULT_TTS_URL,
-    EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR,
-    HISTORY_DIR, BACKGROUNDS_DIR, WORKSPACE_DIR
+    WORKSPACE_DIR
 )
 from services.task_queue import TaskQueueWorker, InferenceTask
-from services.lm_studio import LMStudioClient, ModelNotFoundError
-from services.forge_client import ForgeClient, ForgeOfflineError
-from services.art_director import ArtDirector, parse_user_negative_trigger
-from services.forge_models import (
-    FORGE_MODELS,
-    find_checkpoint_for_style,
-    detect_style_from_checkpoint
-)
+from services.lm_studio import LMStudioClient
+from services.forge_client import ForgeClient
+from services.art_director import ArtDirector
 from services.tts_service import TTSService
-from services.file_generator import FileGenerator
 from services.tavern_parser import TavernParser, CharacterCard
 from services.stt_service import AudioInputService
 from services.process_manager import ProcessManager
 from services.session_manager import SessionManager
-from services.memory_db import memory_db, handle_memory_command
-from services.tool_engine import ToolEngine, ToolCall
+from services.tool_engine import ToolEngine
 from services.sandbox_manager import SandboxManager
-from services.workspace_launcher import WorkspaceLauncher
 from utils.system_monitor import SystemMonitor
 from utils.health_checker import HealthCheckWorker
 from utils.config_manager import ConfigManager
@@ -64,19 +52,12 @@ from services.environment_doctor import EnvironmentDoctor
 
 from ui.components.chat_bubble import (
     ChatMessageWidget,
-    render_circular_avatar,
-    WorkspaceFileCardWidget,
-    ConsoleOutputSpoilerWidget
+    render_circular_avatar
 )
-from ui.components.assistant_chat_bubble import AssistantChatMessageWidget
-from ui.components.rp.rp_chat_bubble import RPChatMessageWidget
 from ui.components.chat_list_item import ChatSessionItemWidget
-from ui.components.chat_background import ChatBackgroundViewport
 from ui.components.chat_stream_widget import ChatStreamWidget
 from ui.components.workspace_inspector import WorkspaceInspectorWidget
 from ui.components.typing_loader import TypingLoaderWidget
-from ui.components.input_box import ChatInputBox
-from ui.components.status_pill import StatusPill
 from ui.components.status_bar_widget import MainStatusBar
 from ui.components.emoji_picker import EmojiPickerMenu
 from ui.components.search_bar import SearchBarWidget
@@ -574,15 +555,6 @@ class MainWindow(
         self.attached_files = self.input_panel.attached_files
 
         return container
-
-    def _on_send_clicked(self):
-        """Отправка сообщения с гарантированной отменой таймера LM Studio."""
-        # Мгновенная вытесняющая отмена фонового анализа сцены перед новым ходом игрока
-        if hasattr(self, "task_queue") and self.task_queue:
-            self.task_queue.abort_tasks_by_type("memory")
-        self._remove_greeting_cycler_chip()
-        self._cancel_lms_reload()
-        super()._on_send_clicked()
 
     def _setup_status_bar(self):
         status_bar = MainStatusBar(window=self)
@@ -1558,7 +1530,8 @@ class MainWindow(
         if is_eng:
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(False)
-            self.statusBar().showMessage(f"Режим: 🛠️ Инженер (Песочница {WORKSPACE_DIR})")
+            workspace_path = SandboxManager.get_workspace_dir() if hasattr(SandboxManager, "get_workspace_dir") else WORKSPACE_DIR
+            self.statusBar().showMessage(f"Режим: 🛠️ Инженер (Песочница {workspace_path})")
         elif self.current_mode == "assistant":
             if hasattr(self, "btn_forge_toggle"):
                 self.btn_forge_toggle.setVisible(True)
@@ -1601,11 +1574,6 @@ class MainWindow(
     # =========================================================================
 
     @pyqtSlot(str)
-    def _on_llm_response_received(self, text: str):
-        """Завершение генерации ответа LLM и делегирование в контроллер потока чата."""
-        super()._on_llm_response_received(text)
-
-    @pyqtSlot(str)
     def _on_engineer_plan_card(self, card_text: str):
         if hasattr(self, "_display_engineer_plan_card"):
             self._display_engineer_plan_card(card_text)
@@ -1627,175 +1595,6 @@ class MainWindow(
         logger.error(f"LM Studio reported error: {error}")
 
 
-
-    # =========================================================================
-    # Smart Sticky Bottom, SmoothScrollBar Sync & Floating Scroll Down Button
-    # =========================================================================
-
-    def _sync_scroll_to(self, value: int):
-        """
-        Программно перемещает чат на указанную позицию, останавливая анимации SmoothScrollBar
-        и синхронизируя targetValue, предотвращая срыв (катапультирование) скролла.
-        """
-        if not hasattr(self, "scroll_area") or not self.scroll_area:
-            return
-
-        v_bar = self.scroll_area.verticalScrollBar()
-        delegate = getattr(self.scroll_area, "delegate", None)
-        delegate_vbar = getattr(delegate, "vScrollBar", None) if delegate else None
-
-        min_val = v_bar.minimum() if v_bar else 0
-        max_val = v_bar.maximum() if v_bar else value
-        target_val = max(min_val, min(int(value), max_val))
-
-        bars = []
-        if v_bar:
-            bars.append(v_bar)
-        if delegate_vbar and delegate_vbar not in bars:
-            bars.append(delegate_vbar)
-
-        for bar in bars:
-            # 1. Остановка активной анимации
-            ani = getattr(bar, "ani", None)
-            if ani is not None:
-                try:
-                    ani.stop()
-                except Exception:
-                    pass
-
-            # 2. Синхронизация targetValue и сброс внутренних значений
-            if hasattr(bar, "resetValue"):
-                try:
-                    bar.resetValue(target_val)
-                except Exception:
-                    pass
-
-            if hasattr(bar, "_SmoothScrollBar__value"):
-                try:
-                    setattr(bar, "_SmoothScrollBar__value", target_val)
-                except Exception:
-                    pass
-
-            try:
-                setattr(bar, "targetValue", target_val)
-            except Exception:
-                pass
-
-            # 3. Детерминированное выставление позиции
-            try:
-                if hasattr(bar, "setValue"):
-                    try:
-                        bar.setValue(target_val, False)
-                    except TypeError:
-                        bar.setValue(target_val)
-            except Exception:
-                pass
-
-        if v_bar and v_bar.value() != target_val:
-            try:
-                v_bar.setValue(target_val)
-            except Exception:
-                pass
-
-    def _scroll_to_bottom(self):
-        """Прижимает чат к самому низу, синхронизирует SmoothScrollBar и скрывает кнопку."""
-        if hasattr(self, "scroll_area") and self.scroll_area:
-            v_bar = self.scroll_area.verticalScrollBar()
-            max_val = v_bar.maximum()
-            self._sync_scroll_to(max_val)
-            self._is_at_bottom = True
-            self._prev_scroll_max = max_val
-            self._hide_scroll_down_button()
-
-    def _on_chat_scroll_value_changed(self, val: int):
-        """Отслеживает позицию скролла: если max_val - val <= 50px, мы у самого дна."""
-        if not hasattr(self, "scroll_area") or not self.scroll_area:
-            return
-        v_bar = self.scroll_area.verticalScrollBar()
-        max_val = v_bar.maximum()
-
-        if max_val - val <= 50:
-            self._is_at_bottom = True
-            self._hide_scroll_down_button()
-        else:
-            self._is_at_bottom = False
-
-    def _on_chat_scroll_range_changed(self, min_val: Any, max_val: Optional[int] = None):
-        """
-        Обработчик изменения высоты контента чата.
-        Реализует логику «Липкого дна» (Sticky Bottom) и Event-driven появление кнопки 'Вниз'.
-        """
-        if max_val is None and isinstance(min_val, (tuple, list)):
-            min_val, max_val = min_val[0], min_val[1]
-        if max_val is None:
-            if hasattr(self, "scroll_area") and self.scroll_area:
-                max_val = self.scroll_area.verticalScrollBar().maximum()
-            else:
-                return
-
-        # Во время переключения сессии или первичной инициализации не показываем кнопку
-        if getattr(self, "_is_switching_session", False) or getattr(self, "_is_initializing", False):
-            self._prev_scroll_max = max_val
-            self._hide_scroll_down_button()
-            return
-
-        # При загрузке более ранних сообщений (вверху) не триггерим появление кнопки
-        if getattr(self, "_is_loading_more_history", False):
-            self._prev_scroll_max = max_val
-            return
-
-        prev_max = getattr(self, "_prev_scroll_max", 0)
-
-        # 1. Если пользователь был у дна: плавно/детерминированно прижимать чат ко дну
-        if getattr(self, "_is_at_bottom", True):
-            self._sync_scroll_to(max_val)
-            self._is_at_bottom = True
-            self._hide_scroll_down_button()
-        else:
-            # 2. Пользователь читает историю выше: экран обязан оставаться строго зафиксированным.
-            # Кнопка появляется ТОЛЬКО если внизу появился новый контент (max_val > prev_max)
-            if max_val > prev_max:
-                self._show_scroll_down_button()
-
-        self._prev_scroll_max = max_val
-
-    def _reposition_scroll_down_button(self):
-        """Позиционирует кнопку 'Вниз' строго по центру чата на 18px выше нижней границы вьюпорта."""
-        if not hasattr(self, "btn_scroll_down") or not self.btn_scroll_down:
-            return
-        if not hasattr(self, "scroll_area") or not self.scroll_area:
-            return
-        vp = self.scroll_area.viewport()
-        if not vp:
-            return
-
-        vp_w = vp.width()
-        vp_h = vp.height()
-        bw = self.btn_scroll_down.width()
-        bh = self.btn_scroll_down.height()
-
-        x = (vp_w - bw) // 2
-        bottom_margin = 18
-        y = vp_h - bh - bottom_margin
-        self.btn_scroll_down.move(x, y)
-
-    def _show_scroll_down_button(self):
-        """Отображает плавающую кнопку 'Вниз', обновляя ее позицию."""
-        if not hasattr(self, "btn_scroll_down") or not self.btn_scroll_down:
-            return
-        self._reposition_scroll_down_button()
-        if not self.btn_scroll_down.isVisible():
-            self.btn_scroll_down.show()
-            self.btn_scroll_down.raise_()
-
-    def _hide_scroll_down_button(self):
-        """Скрывает плавающую кнопку 'Вниз'."""
-        if hasattr(self, "btn_scroll_down") and self.btn_scroll_down and self.btn_scroll_down.isVisible():
-            self.btn_scroll_down.hide()
-
-    def _on_scroll_down_clicked(self):
-        """Обработка клика по кнопке 'Вниз': переход ко дну и скрытие кнопки."""
-        self._scroll_to_bottom()
 
     def eventFilter(self, watched, event: QEvent):
         """Слушает изменение размера вьюпорта скролл-зоны для идеального центрирования кнопки."""
@@ -1947,10 +1746,9 @@ class MainWindow(
 
         if hasattr(self, "reminder_controller") and self.reminder_controller:
             try:
-                self.reminder_controller._timer.stop()
-                self.reminder_controller.tray_icon.hide()
+                self.reminder_controller.cleanup()
             except Exception as e_tray:
-                logger.debug(f"Error stopping reminder timer or hiding tray icon: {e_tray}")
+                logger.debug(f"Error cleaning up reminder controller: {e_tray}")
 
         if hasattr(self, "_knowledge_sync_worker") and self._knowledge_sync_worker:
             try:

@@ -421,6 +421,11 @@ class ChatFlowControllerMixin:
         return self._on_send_clicked()
 
     def _on_send_clicked(self):
+        # Мгновенная вытесняющая отмена фонового анализа сцены перед новым ходом игрока
+        if hasattr(self, "task_queue") and self.task_queue:
+            self.task_queue.abort_tasks_by_type("memory")
+        if hasattr(self, "_remove_greeting_cycler_chip"):
+            self._remove_greeting_cycler_chip()
         if hasattr(self, "_cancel_lms_reload"):
             self._cancel_lms_reload()
 
@@ -1566,5 +1571,175 @@ class ChatFlowControllerMixin:
             except RuntimeError:
                 pass
         self._sync_turn(role="assistant", content=clean_text, replace_last=True)
+
+    # =========================================================================
+    # Smart Sticky Bottom, SmoothScrollBar Sync & Floating Scroll Down Button
+    # =========================================================================
+
+    def _sync_scroll_to(self, value: int):
+        """
+        Программно перемещает чат на указанную позицию, останавливая анимации SmoothScrollBar
+        и синхронизируя targetValue, предотвращая срыв (катапультирование) скролла.
+        """
+        if not hasattr(self, "scroll_area") or not self.scroll_area:
+            return
+
+        v_bar = self.scroll_area.verticalScrollBar()
+        delegate = getattr(self.scroll_area, "delegate", None)
+        delegate_vbar = getattr(delegate, "vScrollBar", None) if delegate else None
+
+        min_val = v_bar.minimum() if v_bar else 0
+        max_val = v_bar.maximum() if v_bar else value
+        target_val = max(min_val, min(int(value), max_val))
+
+        bars = []
+        if v_bar:
+            bars.append(v_bar)
+        if delegate_vbar and delegate_vbar not in bars:
+            bars.append(delegate_vbar)
+
+        for bar in bars:
+            # 1. Остановка активной анимации
+            ani = getattr(bar, "ani", None)
+            if ani is not None:
+                try:
+                    ani.stop()
+                except Exception:
+                    pass
+
+            # 2. Синхронизация targetValue и сброс внутренних значений
+            if hasattr(bar, "resetValue"):
+                try:
+                    bar.resetValue(target_val)
+                except Exception:
+                    pass
+
+            if hasattr(bar, "_SmoothScrollBar__value"):
+                try:
+                    setattr(bar, "_SmoothScrollBar__value", target_val)
+                except Exception:
+                    pass
+
+            try:
+                setattr(bar, "targetValue", target_val)
+            except Exception:
+                pass
+
+            # 3. Детерминированное выставление позиции
+            try:
+                if hasattr(bar, "setValue"):
+                    try:
+                        bar.setValue(target_val, False)
+                    except TypeError:
+                        bar.setValue(target_val)
+            except Exception:
+                pass
+
+        if v_bar and v_bar.value() != target_val:
+            try:
+                v_bar.setValue(target_val)
+            except Exception:
+                pass
+
+    def _scroll_to_bottom(self):
+        """Прижимает чат к самому низу, синхронизирует SmoothScrollBar и скрывает кнопку."""
+        if hasattr(self, "scroll_area") and self.scroll_area:
+            v_bar = self.scroll_area.verticalScrollBar()
+            max_val = v_bar.maximum()
+            self._sync_scroll_to(max_val)
+            self._is_at_bottom = True
+            self._prev_scroll_max = max_val
+            self._hide_scroll_down_button()
+
+    def _on_chat_scroll_value_changed(self, val: int):
+        """Отслеживает позицию скролла: если max_val - val <= 50px, мы у самого дна."""
+        if not hasattr(self, "scroll_area") or not self.scroll_area:
+            return
+        v_bar = self.scroll_area.verticalScrollBar()
+        max_val = v_bar.maximum()
+
+        if max_val - val <= 50:
+            self._is_at_bottom = True
+            self._hide_scroll_down_button()
+        else:
+            self._is_at_bottom = False
+
+    def _on_chat_scroll_range_changed(self, min_val: Any, max_val: Optional[int] = None):
+        """
+        Обработчик изменения высоты контента чата.
+        Реализует логику «Липкого дна» (Sticky Bottom) и Event-driven появление кнопки 'Вниз'.
+        """
+        if max_val is None and isinstance(min_val, (tuple, list)):
+            min_val, max_val = min_val[0], min_val[1]
+        if max_val is None:
+            if hasattr(self, "scroll_area") and self.scroll_area:
+                max_val = self.scroll_area.verticalScrollBar().maximum()
+            else:
+                return
+
+        # Во время переключения сессии или первичной инициализации не показываем кнопку
+        if getattr(self, "_is_switching_session", False) or getattr(self, "_is_initializing", False):
+            self._prev_scroll_max = max_val
+            self._hide_scroll_down_button()
+            return
+
+        # При загрузке более ранних сообщений (вверху) не триггерим появление кнопки
+        if getattr(self, "_is_loading_more_history", False):
+            self._prev_scroll_max = max_val
+            return
+
+        prev_max = getattr(self, "_prev_scroll_max", 0)
+
+        # 1. Если пользователь был у дна: плавно/детерминированно прижимать чат ко дну
+        if getattr(self, "_is_at_bottom", True):
+            self._sync_scroll_to(max_val)
+            self._is_at_bottom = True
+            self._hide_scroll_down_button()
+        else:
+            # 2. Пользователь читает историю выше: экран обязан оставаться строго зафиксированным.
+            # Кнопка появляется ТОЛЬКО если внизу появился новый контент (max_val > prev_max)
+            if max_val > prev_max:
+                self._show_scroll_down_button()
+
+        self._prev_scroll_max = max_val
+
+    def _reposition_scroll_down_button(self):
+        """Позиционирует кнопку 'Вниз' строго по центру чата на 18px выше нижней границы вьюпорта."""
+        if not hasattr(self, "btn_scroll_down") or not self.btn_scroll_down:
+            return
+        if not hasattr(self, "scroll_area") or not self.scroll_area:
+            return
+        vp = self.scroll_area.viewport()
+        if not vp:
+            return
+
+        vp_w = vp.width()
+        vp_h = vp.height()
+        bw = self.btn_scroll_down.width()
+        bh = self.btn_scroll_down.height()
+
+        x = (vp_w - bw) // 2
+        bottom_margin = 18
+        y = vp_h - bh - bottom_margin
+        self.btn_scroll_down.move(x, y)
+
+    def _show_scroll_down_button(self):
+        """Отображает плавающую кнопку 'Вниз', обновляя ее позицию."""
+        if not hasattr(self, "btn_scroll_down") or not self.btn_scroll_down:
+            return
+        self._reposition_scroll_down_button()
+        if not self.btn_scroll_down.isVisible():
+            self.btn_scroll_down.show()
+            self.btn_scroll_down.raise_()
+
+    def _hide_scroll_down_button(self):
+        """Скрывает плавающую кнопку 'Вниз'."""
+        if hasattr(self, "btn_scroll_down") and self.btn_scroll_down and self.btn_scroll_down.isVisible():
+            self.btn_scroll_down.hide()
+
+    def _on_scroll_down_clicked(self):
+        """Обработка клика по кнопке 'Вниз': переход ко дну и скрытие кнопки."""
+        self._scroll_to_bottom()
+
 ChatFlowController = ChatFlowControllerMixin
 
