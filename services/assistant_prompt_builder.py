@@ -155,13 +155,15 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "   --ar wide (landscapes, rooms, sceneries, architecture, vehicles)\n"
     "   --ar portrait (standing characters, full body, outfits, vertical interactions/embrace)\n"
     "   --ar square (face close-ups, selfies, busts, single small items)\n"
-    "6. Do NOT write negative prompts (injected automatically).\n\n"
+    "6. Negations: If user asks for 'without X' or 'без X' (e.g. 'без очков', 'без тату'), do NOT put it in positive tags! "
+    "Instead append: --neg <unwanted tags> (e.g. --neg glasses, eyewear, tattoos). Otherwise omit --neg.\n\n"
     "Output Format:\n"
     "CRITICAL: Do NOT write any conversational filler, greetings, or Russian text.\n"
     "Output STRICTLY AND ONLY the generation tag on a single line:\n"
-    "[IMAGE_PROMPT: <comma-separated SD positive tags> --ar <wide|portrait|square> --model {target_model_id}]\n\n"
-    "Example:\n"
-    "[IMAGE_PROMPT: 1girl, sitting on windowsill, looking through window at night city, heavy rain on glass, cozy oversized sweater, holding steaming mug, soft warm indoor lamp light, neon reflections, cinematic lighting, sharp focus --ar portrait --model {target_model_id}]"
+    "[IMAGE_PROMPT: <comma-separated SD positive tags> [--neg <excluded tags>] --ar <wide|portrait|square> --model {target_model_id}]\n\n"
+    "Examples:\n"
+    "- Standard: [IMAGE_PROMPT: 1girl, sitting on windowsill, night city, rain on glass, cozy sweater, holding steaming mug, soft lamp light --ar portrait --model {target_model_id}]\n"
+    "- With Exclusion: [IMAGE_PROMPT: 1girl, solo, portrait, cafe background, morning light, sharp focus --neg glasses, hat, jewelry --ar square --model {target_model_id}]\n"
 )
 
 GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
