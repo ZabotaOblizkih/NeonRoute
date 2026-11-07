@@ -904,6 +904,29 @@ class KnowledgeManager:
             logger.debug(f"[KnowledgeManager] Ошибка Cross-Reference Linker: {ce}")
 
         matched_results.sort(key=lambda x: x.get("relevance_score", 0.0), reverse=True)
+
+        q_preview = query.strip().replace("\n", " ")[:60]
+        if matched_results:
+            for d in matched_results:
+                chunks = d.get("matched_chunks", [])
+                ch_parts = []
+                for c in chunks:
+                    cid_raw = str(c.get("chunk_id", ""))
+                    cid_short = ("#" + cid_raw.split("#")[-1]) if "#" in cid_raw else cid_raw
+                    if c.get("bm25_score") is not None:
+                        ch_parts.append(
+                            f"{cid_short}(s={c.get('score', 0.0):.2f}, bm25={c.get('bm25_score', 0.0):.2f}, dense={c.get('dense_score', 0.0):.2f})"
+                        )
+                    else:
+                        ch_parts.append(f"{cid_short}(cont, s={c.get('score', 0.0):.2f})")
+                logger.info(
+                    f"[RAG-Trace] Запрос: «{q_preview}» -> {d.get('filename')} "
+                    f"(score={d.get('relevance_score', 0.0):.3f}, trig={d.get('matched_triggers', [])}, "
+                    f"chars={len(d.get('content_snippet', ''))}) | Чанки: [{', '.join(ch_parts)}]"
+                )
+        else:
+            logger.debug(f"[RAG-Trace] Запрос: «{q_preview}» -> совпадений не найдено (отсечено Gatekeeper).")
+
         return matched_results
 
     @classmethod
