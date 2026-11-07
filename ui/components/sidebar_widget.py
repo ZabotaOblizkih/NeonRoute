@@ -45,21 +45,10 @@ class SidebarWidget(QFrame):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 16, 14, 14)
+        layout.setContentsMargins(14, 12, 14, 14)
         layout.setSpacing(14)
 
-        # 1. App Brand Header
-        brand_layout = QVBoxLayout()
-        brand_layout.setSpacing(2)
-
-        title_lbl = QLabel("⚡ NEON ROUTE", self)
-        title_lbl.setStyleSheet("color: #00F0FF; font-size: 18px; font-weight: 900; letter-spacing: 1px;")
-        brand_layout.addWidget(title_lbl)
-
-        sub_lbl = QLabel("8GB VRAM ORCHESTRATOR", self)
-        sub_lbl.setStyleSheet("color: #64748B; font-size: 10px; font-weight: bold; letter-spacing: 1.5px;")
-        brand_layout.addWidget(sub_lbl)
-        layout.addLayout(brand_layout)
+        # Brand Header removed for clean minimalist layout
 
         # 2. Character Card Panel (Roleplay Mode)
         self.char_card_widget = QFrame(self)
@@ -98,7 +87,6 @@ class SidebarWidget(QFrame):
         self.btn_refresh_models = None
 
         # 4. Chat Sessions List
-        layout.addSpacing(6)
         chats_header = QHBoxLayout()
         c_title = QLabel("ДИАЛОГИ", self)
         c_title.setStyleSheet("color: #64748B; font-size: 10px; font-weight: bold;")
