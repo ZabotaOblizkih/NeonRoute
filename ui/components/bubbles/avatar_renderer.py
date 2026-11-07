@@ -1,5 +1,6 @@
 """
 Avatar and art pixmap rendering with rounded and circular masks and caching.
+Provides seamless edge feathering via radial gradient alpha masks (matching Characters Gallery aesthetic).
 """
 
 import re
@@ -11,12 +12,11 @@ from typing import Optional, Union
 from PyQt6.QtCore import Qt, QRect, QRectF
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPainterPath, QColor, QFont,
-    QLinearGradient, QBrush, QPen
+    QLinearGradient, QRadialGradient, QBrush, QPen, QImage
 )
 
 logger = logging.getLogger("NeonRoute.AvatarRenderer")
 
-# Глобальный LRU-кэш для скругленных превью изображений
 _IMAGE_CACHE_LOCK = threading.Lock()
 _IMAGE_PREVIEW_CACHE: dict[tuple[str, int], QPixmap] = {}
 
@@ -84,6 +84,11 @@ def render_circular_avatar(
     image_path: Optional[Path | str] = None,
     text: Optional[str] = None
 ) -> QPixmap:
+    """
+    Рендерит круглый аватар без жестких неоновых рамок с мягким растворением внешнего
+    контура в интерфейс (edge feathering via radial gradient alpha mask).
+    Идентичен визуальному стилю галереи персонажей.
+    """
     if image_path is not None:
         avatar_path = image_path
     if text is not None:
@@ -91,11 +96,13 @@ def render_circular_avatar(
 
     scale_factor = 3
     render_size = size * scale_factor
+    center = float(render_size) / 2.0
+    radius = float(render_size) / 2.0
 
-    target = QPixmap(render_size, render_size)
-    target.fill(Qt.GlobalColor.transparent)
+    image = QImage(render_size, render_size, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
 
-    painter = QPainter(target)
+    painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     if hasattr(QPainter.RenderHint, "LosslessImageRendering"):
@@ -103,6 +110,7 @@ def render_circular_avatar(
 
     p_path = Path(avatar_path) if avatar_path else None
     loaded = False
+
     if p_path and p_path.exists():
         try:
             orig_pixmap = QPixmap(str(p_path))
@@ -122,24 +130,12 @@ def render_circular_avatar(
 
                     path = QPainterPath()
                     path.addEllipse(0.0, 0.0, float(render_size), float(render_size))
-                    painter.fillPath(path, QBrush(scaled_pixmap))
-
-                    border_width = 2.0 * scale_factor
-                    half_border = border_width / 2.0
-                    rim_rect = QRectF(half_border, half_border, float(render_size) - border_width, float(render_size) - border_width)
-                    if is_error:
-                        rim_pen = QPen(QColor(239, 68, 68, 180), border_width)
-                    elif is_user:
-                        rim_pen = QPen(QColor(255, 255, 255, 80), border_width)
-                    else:
-                        rim_pen = QPen(QColor(0, 240, 255, 140), border_width)
-
-                    painter.setPen(rim_pen)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawEllipse(rim_rect)
+                    painter.setClipPath(path)
+                    painter.drawPixmap(0, 0, scaled_pixmap)
+                    painter.setClipping(False)
                     loaded = True
         except Exception as e:
-            logger.debug(f"Failed to load avatar image: {e}")
+            logger.debug(f"Failed to load seamless avatar image: {e}")
             loaded = False
 
     if not loaded:
@@ -147,23 +143,16 @@ def render_circular_avatar(
         if is_error:
             grad.setColorAt(0.0, QColor(220, 38, 38))
             grad.setColorAt(1.0, QColor(153, 27, 27))
-            rim_col = QColor(239, 68, 68, 180)
         elif is_user:
             grad.setColorAt(0.0, QColor(99, 102, 241))
             grad.setColorAt(1.0, QColor(67, 56, 202))
-            rim_col = QColor(255, 255, 255, 80)
         else:
             grad.setColorAt(0.0, QColor(14, 165, 233))
             grad.setColorAt(1.0, QColor(79, 70, 229))
-            rim_col = QColor(0, 240, 255, 140)
 
-        border_width = 2.0 * scale_factor
-        half_border = border_width / 2.0
-        rim_rect = QRectF(half_border, half_border, float(render_size) - border_width, float(render_size) - border_width)
-
-        painter.setBrush(QBrush(grad))
-        painter.setPen(QPen(rim_col, border_width))
-        painter.drawEllipse(rim_rect)
+        path = QPainterPath()
+        path.addEllipse(0.0, 0.0, float(render_size), float(render_size))
+        painter.fillPath(path, QBrush(grad))
 
         clean_name = re.sub(r'^[^\w\d]+', '', name.strip()) if name else ""
         if not clean_name:
@@ -178,6 +167,19 @@ def render_circular_avatar(
         painter.setPen(QColor(255, 255, 255))
         painter.drawText(QRectF(0, 0, float(render_size), float(render_size)), Qt.AlignmentFlag.AlignCenter, letter)
 
+    # Мягкое бесшовное растворение контура портрета в цвет подложки (Seamless Edge Feathering)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    radial_mask = QRadialGradient(center, center, radius)
+    radial_mask.setColorAt(0.0, QColor(0, 0, 0, 255))
+    radial_mask.setColorAt(0.82, QColor(0, 0, 0, 255))
+    radial_mask.setColorAt(0.93, QColor(0, 0, 0, 170))
+    radial_mask.setColorAt(1.0, QColor(0, 0, 0, 0))
+    painter.setBrush(QBrush(radial_mask))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRect(0, 0, render_size, render_size)
+
     painter.end()
+
+    target = QPixmap.fromImage(image)
     target.setDevicePixelRatio(scale_factor)
     return target

@@ -29,9 +29,9 @@ if TYPE_CHECKING:
 class HeaderAvatarWidget(QLabel):
     """
     Интерактивный аватар собеседника для ChatHeaderBar.
-    Исключает жесткие QSS-рамки, сдвигающие геометрию и обрезающие круглый pixmap.
-    Обеспечивает мягкую рассеянную глубину в покое и деликатное бирюзовое свечение при наведении.
-    Предотвращает залипание hover-эффекта при открытии контекстных меню.
+    Использует физическую глубину и бархатную тень (Ambient Occlusion + Hover Lift)
+    вместо плоской кислотной неоновой подсветки.
+    Обеспечивает тактильный отклик при нажатии с сохранением кликабельности (ЛКМ / ПКМ).
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,10 +49,11 @@ class HeaderAvatarWidget(QLabel):
         """)
 
         self._is_hovered = False
+        self._is_pressed = False
         self._shadow = QGraphicsDropShadowEffect(self)
-        self._shadow.setOffset(0, 1)
-        self._shadow.setBlurRadius(8)
-        self._shadow.setColor(QColor(0, 0, 0, 75))
+        self._shadow.setOffset(0, 2)
+        self._shadow.setBlurRadius(10)
+        self._shadow.setColor(QColor(0, 0, 0, 150))
         self.setGraphicsEffect(self._shadow)
         self._click_handler = None
 
@@ -61,17 +62,22 @@ class HeaderAvatarWidget(QLabel):
 
     def set_hovered(self, hovered: bool):
         self._is_hovered = hovered
+        if self._is_pressed:
+            return
         if hovered:
-            self._shadow.setOffset(0, 0)
+            # Эффект приподнимания (Hover Lift): тень становится глубже и мягче рассеивается
+            self._shadow.setOffset(0, 4)
             self._shadow.setBlurRadius(16)
-            self._shadow.setColor(QColor(0, 240, 255, 120))
+            self._shadow.setColor(QColor(0, 0, 0, 210))
         else:
-            self._shadow.setOffset(0, 1)
-            self._shadow.setBlurRadius(8)
-            self._shadow.setColor(QColor(0, 0, 0, 75))
+            # Состояние в покое (Ambient Occlusion): естественная мягкая тень
+            self._shadow.setOffset(0, 2)
+            self._shadow.setBlurRadius(10)
+            self._shadow.setColor(QColor(0, 0, 0, 150))
         self.update()
 
     def reset_hover(self):
+        self._is_pressed = False
         self.set_hovered(False)
 
     def enterEvent(self, event):
@@ -83,18 +89,23 @@ class HeaderAvatarWidget(QLabel):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
-        self.reset_hover()
+        # Тактильный эффект нажатия: аватар визуально мягко прижимается к подложке
+        self._is_pressed = True
+        self._shadow.setOffset(0, 1)
+        self._shadow.setBlurRadius(6)
+        self._shadow.setColor(QColor(0, 0, 0, 180))
+        self.update()
         if self._click_handler:
             self._click_handler(event)
-        else:
-            super().mousePressEvent(event)
+        super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        if not self.rect().contains(pos):
+        self._is_pressed = False
+        if self._is_hovered:
+            self.set_hovered(True)
+        else:
             self.reset_hover()
         super().mouseReleaseEvent(event)
-
 
 class ChatHeaderWidget(QFrame):
     def __init__(self, window: 'MainWindow'):
