@@ -12,6 +12,50 @@ from services.macro_engine import MacroEngine
 logger = logging.getLogger("NeonRoute.RoleplayPromptBuilder")
 
 
+CINEMA_EXAMPLES = {
+    "sdxl": {
+        "dialogue": (
+            "medium waist-up portrait of a young woman with warm amber eyes and a compassionate smile wearing traveler clothes, "
+            "sitting calmly across a rustic table with her hands resting near a wooden tea mug, weapons safely sheathed at her hip, "
+            "soft warm tavern lighting, shallow depth of field, 50mm lens still"
+        ),
+        "intimate": (
+            "intimate close-up portrait of a young woman with bare shoulders and delicate bare skin, soft disheveled hair framing her blushing face, "
+            "resting gently on a soft bed with a tender caring gaze, warm candlelight, deep gentle shadows, "
+            "secluded private sanctuary, romantic cinematic atmosphere, 85mm portrait still"
+        ),
+        "action": (
+            "dynamic waist-up action shot of a fierce warrior woman in combat armor, intense battle-focused gaze, "
+            "actively brandishing a glowing rune sword in mid-strike, sparks and magical embers flying from the clash, "
+            "dark smoky battlefield, dramatic rim lighting, motion blur, cinematic high contrast"
+        ),
+        "exploration": (
+            "wide establishing cinematic shot of a lone traveler woman in a hooded cloak with a backpack standing on a cliff edge, "
+            "holding a glowing lantern while gazing at massive ancient ruins overgrown with moss, "
+            "volumetric god rays through mist, epic atmospheric scale, 24mm wide angle lens"
+        ),
+    },
+    "sd15": {
+        "dialogue": (
+            "1girl, solo, amber eyes, gentle smile, canonical traveler tunic, sitting at table, "
+            "holding wooden mug, sheathed dagger at hip, rustic tavern interior, soft lantern lighting, waist-up portrait"
+        ),
+        "intimate": (
+            "1girl, solo, bare shoulders, nude, bare skin, disheveled hair, lying on bed, "
+            "gentle blush, tender compassionate gaze, soft candlelight, warm shadows, secluded bedroom, close-up portrait"
+        ),
+        "action": (
+            "1girl, solo, tactical armor, combat stance, holding glowing sword, swinging blade, "
+            "intense focused expression, sparks, smoke, dramatic rim lighting, dynamic action shot"
+        ),
+        "exploration": (
+            "1girl, solo, hooded travel cloak, backpack, holding lantern, sheathed weapon on back, "
+            "standing on cliff, colossal ancient ruins, mist, volumetric sunlight, wide landscape"
+        ),
+    },
+}
+
+
 class RoleplayPromptBuilder:
     """Централизованный строитель системных промптов для ролевого режима."""
 
@@ -481,16 +525,49 @@ class RoleplayPromptBuilder:
         return MacroEngine.process(assembled_prompt, user_name=u_name, char_name=companion_name)
 
     @staticmethod
-    def get_cinematic_scene_directive(scene_type: str = "dialogue", target_model_id: str = "realistic") -> str:
+    def get_cinematic_scene_directive(scene_type: str = "dialogue", target_model_id: str = "realistic", architecture: str = "sd15") -> str:
         """Возвращает кинематографическую инструкцию для генератора SD по 4 архетипам."""
         st = (scene_type or "dialogue").lower().strip()
 
-        format_rules = (
-            "\nCRITICAL FORMAT RULES:\n"
-            "1. Output ONLY concise, comma-separated Danbooru/SD positive tags inside [IMAGE_PROMPT: ...].\n"
-            "2. STRICTLY PROHIBITED: Do NOT write stories, narrative prose, sentences, or headers like '[Description]'.\n"
-            "3. ALWAYS start with appropriate subject tags matching the scene ('1girl, solo' for females, '1boy, solo' for males, or 'scenery, no humans' for empty environments).\n"
-        )
+        is_xl = "xl" in (architecture or "sd15").lower()
+        arch_key = "sdxl" if is_xl else "sd15"
+
+        if is_xl:
+            format_rules = (
+                "\nCRITICAL FORMAT RULES (SDXL):\n"
+                "1. Output a coherent, descriptive visual scene in English (2-3 concise sentences) inside [IMAGE_PROMPT: ...].\n"
+                "2. Sentence Structure Priority:\n"
+                "   - Sentence 1 (Subject & Framing): Subject identity/gender in natural English, camera framing/shot type, canonical attire, and facial expression.\n"
+                "   - Sentence 2 (Action, Hands & Gear): Body posture, hand interactions, held props, weapon status (strictly obey Weapon Policy), and magic VFX.\n"
+                "   - Sentence 3 (Environment & Lighting): Setting depth, environmental storytelling, lighting atmosphere, and lens optics.\n"
+                "3. SDXL Specifics:\n"
+                "   - Do NOT use Danbooru tag spam (NO: '1girl, solo, tags, comma'). Write fluent descriptive clauses.\n"
+                "   - NEVER use obsolete quality tags (NO: 'masterpiece', '8k', 'best quality', 'photorealistic'). Convey quality through lighting, textures, and optics.\n"
+                "4. Token Density: STRICTLY 20–35 impactful words/tokens. Keep it focused.\n"
+                "5. STRICTLY PROHIBITED: Do NOT write conversational filler, explanations, greetings, or narrative dialogue."
+            )
+        else:
+            format_rules = (
+                "\nCRITICAL FORMAT RULES (SD 1.5):\n"
+                "1. Output ONLY concise, comma-separated Danbooru/SD positive tags inside [IMAGE_PROMPT: ...].\n"
+                "2. Tag Order:\n"
+                "   [Subject: '1girl, solo' / '1boy, solo'] -> [Facial expression & gaze] -> [Canonical attire & pose] -> "
+                "[Hands, held items & weapon status] -> [Environment & location] -> [Lighting & mood] -> [Framing].\n"
+                "3. Density: 25–40 high-impact Danbooru tags. Strictly obey Weapon Policy (e.g. 'sheathed sword at hip').\n"
+                "4. STRICTLY PROHIBITED: Do NOT write full sentences, narrative prose, conversational filler, or Russian text."
+            )
+
+        def _build_footer(scene_key: str) -> str:
+            ex_prompt = CINEMA_EXAMPLES[arch_key].get(scene_key, CINEMA_EXAMPLES[arch_key]["dialogue"])
+            scene_ar = "--ar wide" if scene_key in ("action", "exploration") else "--ar portrait"
+            return (
+                f"\n\nOutput Format:\n"
+                f"Output STRICTLY AND ONLY the generation tag on a single line:\n"
+                f"Format: [IMAGE_PROMPT: <prompt> [--neg <excluded items>] {scene_ar} --model {target_model_id}]\n"
+                f"Negation: If scene excludes or character removed weapons/armor/clothes, append --neg <unwanted items> before {scene_ar}.\n\n"
+                f"Example:\n"
+                f"[IMAGE_PROMPT: {ex_prompt} {scene_ar} --model {target_model_id}]"
+            )
 
         directives = {
             "intimate": (
@@ -499,8 +576,7 @@ class RoleplayPromptBuilder:
                 "Attire & Body: Characters are undressed or in delicate sleepwear/towels. You MUST include tags like 'nude', 'bare skin', 'bare shoulders', or 'disheveled hair'.\n"
                 "Weapon & Gear Ban: STRICT PROHIBITION. Do NOT mention weapons, swords, firearms, combat armor, or backpacks. Do NOT write negative phrases like 'no weapon' or 'without clothes'—simply omit gear entirely.\n"
                 "Lighting & Framing: Soft diffuse lighting, candlelight or moonlight, warm gentle shadows, shallow depth of field, intimate emotional focus on gaze and touch.\n"
-                + format_rules +
-                f"Format: [IMAGE_PROMPT: 1girl/1boy, solo, nude, <tags> --ar portrait --model {target_model_id}]"
+                + format_rules + _build_footer("intimate")
             ),
             "action": (
                 "[CINEMATIC DIRECTIVE: COMBAT & HIGH-STAKES ACTION]\n"
@@ -508,8 +584,7 @@ class RoleplayPromptBuilder:
                 "Attire & Equipment: Full combat readiness, functional armor, tactical harness. Weapons MUST be actively drawn, brandished, or striking (e.g., 'holding katana in combat stance', 'aiming weapon', 'casting glowing spell'). Include battle-damage, dust, or dirt smudges.\n"
                 "Weapon Policy: Describe weapons in hand with precise visual tags. Never place weapons in relaxed positions.\n"
                 "Lighting & Framing: Dynamic action angle, Dutch tilt, high contrast, dramatic rim lighting, motion blur, sparks, smoke, debris, intense focused expression.\n"
-                + format_rules +
-                f"Format: [IMAGE_PROMPT: 1girl/1boy, solo, <action_tags> --ar wide --model {target_model_id}]"
+                + format_rules + _build_footer("action")
             ),
             "dialogue": (
                 "[CINEMATIC DIRECTIVE: DIALOGUE & SOCIAL INTERACTION]\n"
@@ -517,8 +592,7 @@ class RoleplayPromptBuilder:
                 "Attire & Posture: Canonical everyday clothes, travel attire, or casual wear. Natural, relaxed sitting or standing pose.\n"
                 "Weapon Policy: Weapons are safely sheathed, holstered, or laid aside. Hands are free, gesturing, or holding mundane items (e.g., 'holding mug', 'reading scroll').\n"
                 "Lighting & Framing: Medium shot, waist-up or chest-up framing, eye-level cinematic camera, natural ambient light, clear facial expression, eye contact.\n"
-                + format_rules +
-                f"Format: [IMAGE_PROMPT: 1girl/1boy, solo, <dialogue_tags> --ar portrait --model {target_model_id}]"
+                + format_rules + _build_footer("dialogue")
             ),
             "exploration": (
                 "[CINEMATIC DIRECTIVE: EXPLORATION & ENVIRONMENT]\n"
@@ -526,8 +600,7 @@ class RoleplayPromptBuilder:
                 "Attire & Gear: Travel cloaks, sturdy boots, backpacks, utility belts, lanterns, or torches. Weapons are sheathed on the back or hip.\n"
                 "Environment Priority: Deep environmental focus. The character is integrated into the scale of the massive surrounding architecture or natural vista.\n"
                 "Lighting & Framing: Wide panoramic shot, environmental storytelling, deep depth of field, atmospheric perspective, volumetric god rays, weather effects.\n"
-                + format_rules +
-                f"Format: [IMAGE_PROMPT: 1girl/1boy/scenery, <scenery_tags> --ar wide --model {target_model_id}]"
+                + format_rules + _build_footer("exploration")
             ),
         }
         return directives.get(st, directives["dialogue"])
