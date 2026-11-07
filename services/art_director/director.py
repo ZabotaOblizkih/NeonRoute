@@ -440,15 +440,9 @@ def _assemble_roleplay_context(
             loc_active = _clean_context_subtag(", ".join(clean_tags))
 
     if loc_active:
-        loc_dna_en = _clean_context_subtag(str(loc_active))
-        broad_loc = loc_dna_en.split(",")[0].strip(" ,-")
-        if broad_loc and broad_loc.lower() not in base_prompt.lower():
-            if is_closeup_frame:
-                if broad_loc.lower() not in full_pos.lower():
-                    full_pos = f"{full_pos}, {broad_loc} background, shallow depth of field".strip(" ,")
-            else:
-                if loc_dna_en.lower() not in full_pos.lower():
-                    full_pos = f"{full_pos}, {loc_dna_en}".strip(" ,")
+        # [STUB] Автоинъекция локации отключена: LLM сама генерирует окружение в кадре.
+        # Предотвращает дублирование тегов и раздувание промпта свыше 77 токенов.
+        pass
 
     full_pos = _symmetrize_break_chunks(full_pos, loc_active, "")
 
@@ -990,29 +984,105 @@ class ArtDirector:
             adetailer_hands=hands_enabled,
             adetailer_inpaint_size=768 if _is_xl_v else 512
         )
-        def_face_d = 0.35 if _is_xl_v else 0.32
-        ad_face_denoise = float(model_pipeline.get("ad_denoising_strength", model_pipeline.get("ad_face_denoise", def_face_d)))
-        plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8n.pt")
-        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.32))
-        plan.adetailer_face_denoise = ad_face_denoise
-        plan.ad_denoising_strength = ad_face_denoise
-        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.28))
+        # Унифицированное чтение ADetailer из pipeline профиля
+        is_bg = bool(getattr(intent, "is_scene_background", False))
+        enable_ad = bool(model_pipeline.get("enable_adetailer", True)) and not is_bg
+
+        plan.enable_adetailer = enable_ad
+        plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8m.pt")
+        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.44))
+        plan.adetailer_face_denoise = float(model_pipeline.get("adetailer_face_denoise", 0.35 if _is_xl_v else 0.32))
+        # Безопасное чтение размера инпейнта лица с поддержкой нового и старого ключей
+        default_inpaint = 768 if _is_xl_v else 512
+        face_inpaint_val = int(
+            model_pipeline.get("adetailer_face_inpaint_size")
+            or model_pipeline.get("adetailer_inpaint_size")
+            or default_inpaint
+        )
+        plan.adetailer_face_inpaint_size = face_inpaint_val
+        plan.adetailer_inpaint_size = face_inpaint_val
+
+        hands_on = bool(model_pipeline.get("adetailer_hands_enabled", True)) and enable_ad
+        plan.adetailer_hands_enabled = hands_on
+        plan.adetailer_hands = hands_on
+        plan.adetailer_hands_model = model_pipeline.get("adetailer_hands_model", "hand_yolov9c.pt")
+        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.38))
         plan.adetailer_hands_denoise = float(model_pipeline.get("adetailer_hands_denoise", 0.38 if _is_xl_v else 0.40))
-        plan.adetailer_inpaint_size = int(model_pipeline.get("adetailer_inpaint_size", 768 if _is_xl_v else 512))
+        plan.adetailer_hands_inpaint_size = int(model_pipeline.get("adetailer_hands_inpaint_size", 512))
+        plan.adetailer_hands_mask_blur = int(model_pipeline.get("adetailer_hands_mask_blur", 8))
+        plan.enable_hand_adetailer = hands_on
+        plan.ad_denoising_strength = plan.adetailer_face_denoise
         if model_pipeline.get("ad_prompt"):
             plan.ad_prompt = model_pipeline.get("ad_prompt")
         if model_pipeline.get("ad_negative_prompt"):
             plan.ad_negative_prompt = model_pipeline.get("ad_negative_prompt")
+        plan.adetailer_hands_prompt = model_pipeline.get("adetailer_hands_prompt")
+        plan.adetailer_hands_negative_prompt = model_pipeline.get("adetailer_hands_negative_prompt")
+        plan.archetype = archetype
+
+        # Формирование информативного блока ADetailer для лога
+        ad_face_info = "OFF"
+        ad_hands_info = "OFF"
+        if getattr(plan, "enable_adetailer", False):
+            ad_p = getattr(plan, "ad_prompt", None)
+            ad_neg = getattr(plan, "ad_negative_prompt", None)
+            face_p = f'"{ad_p}"' if ad_p else "[AUTO SCENE CONTEXT]"
+            face_neg = f'"{ad_neg}"' if ad_neg else "[BASE NEGATIVE]"
+            face_model = getattr(plan, "adetailer_face_model", "none")
+            face_conf = getattr(plan, "adetailer_face_confidence", 0.0)
+            face_denoise = getattr(plan, "adetailer_face_denoise", 0.0)
+            face_inpaint_sz = getattr(plan, "adetailer_face_inpaint_size", getattr(plan, "adetailer_inpaint_size", 512))
+            ad_face_info = (
+                f"ON | Model={face_model} | Conf={face_conf} | "
+                f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
+                f"   └── Prompt: {face_p}\n"
+                f"   └── Neg   : {face_neg}"
+            )
+            if getattr(plan, "adetailer_hands_enabled", False):
+                h_p_val = getattr(plan, "adetailer_hands_prompt", None) or "detailed hand, realistic fingers, anatomically correct, sharp focus"
+                h_p_str = h_p_val.replace("[SEP]", "").strip()
+                h_p = f'"{h_p_str}"'
+                h_neg_val = getattr(plan, "adetailer_hands_negative_prompt", None)
+                h_neg = f'"{h_neg_val}"' if h_neg_val else "[DEFAULT HANDS NEG]"
+                h_sz = getattr(plan, "adetailer_hands_inpaint_size", 512)
+                h_model = getattr(plan, "adetailer_hands_model", "none")
+                h_conf = getattr(plan, "adetailer_hands_confidence", 0.0)
+                h_denoise = getattr(plan, "adetailer_hands_denoise", 0.0)
+                h_blur = getattr(plan, "adetailer_hands_mask_blur", 8)
+                ad_hands_info = (
+                    f"ON | Model={h_model} | Conf={h_conf} | "
+                    f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
+                    f"   └── Prompt: {h_p}\n"
+                    f"   └── Neg   : {h_neg}"
+                )
+
+        p_pos = getattr(plan, "positive_prompt", "")
+        p_neg = getattr(plan, "negative_prompt", "")
+        p_title = getattr(plan, "model_title", "")
+        p_style = getattr(plan, "target_model_key", getattr(plan, "style", ""))
+        p_ckpt = getattr(plan, "target_checkpoint", "")
+        p_w = getattr(plan, "width", 512)
+        p_h = getattr(plan, "height", 512)
+        p_scale = getattr(plan, "hr_scale", 1.0)
+        p_arch = getattr(plan, "archetype", "unknown")
+        p_steps = getattr(plan, "steps", 20)
+        p_cfg = getattr(plan, "cfg_scale", 7.0)
+        p_denoise = getattr(plan, "denoising_strength", 0.35)
+        p_sampler = getattr(plan, "sampler_name", "DPM++ 2M")
+        p_sched = getattr(plan, "scheduler", "Karras")
+        p_clip = getattr(plan, "clip_skip", 1)
+        p_seed = getattr(plan, "seed", -1)
 
         logger.info(
-            f"\n"
-            f"================ [ART DIRECTOR: PLAN FROM VISUAL INTENT] ================\n"
-            f"[PROMPT CLEAN]    : \"{final_positive}\"\n"
-            f"[NEGATIVE]        : \"{final_negative}\"\n"
-            f"[PROFILE / CKPT]  : {plan_model_title} ({plan_model_id}) -> {target_ckpt}\n"
-            f"[RESOLUTION]      : {width}x{height} (Hires.fix {hr_scale}x -> {int(width*hr_scale)}x{int(height*hr_scale)})\n"
-            f"[ADETAILER]       : {'ON | Face: ' + str(plan.adetailer_face_model) + ' (conf=' + str(plan.adetailer_face_confidence) + ', denoise=' + str(plan.adetailer_face_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ') | Hands: ' + ('ON [' + str(plan.adetailer_hands_model) + ', conf=' + str(plan.adetailer_hands_confidence) + ', denoise=' + str(plan.adetailer_hands_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ']' if plan.adetailer_hands_enabled else 'OFF') if plan.enable_adetailer else 'OFF'}\n"
-            f"[PARAMS]          : Steps={plan.steps} | CFG={plan.cfg_scale} | Denoise={plan.denoising_strength} | Sampler={plan.sampler_name} | Seed={effective_seed}\n"
+            f"\n================ [ART DIRECTOR: PLAN FROM VISUAL INTENT] ================\n"
+            f"[PROMPT CLEAN]    : \"{p_pos}\"\n"
+            f"[NEGATIVE]        : \"{p_neg}\"\n"
+            f"[PROFILE / CKPT]  : {p_title} ({p_style}) -> {p_ckpt}\n"
+            f"[RESOLUTION]      : {p_w}x{p_h} (Hires.fix {p_scale}x -> {int(p_w*p_scale)}x{int(p_h*p_scale)}) | Archetype={p_arch}\n"
+            f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise} | "
+            f"Sampler={p_sampler} | Scheduler={p_sched} | ClipSkip={p_clip} | Seed={p_seed}\n"
+            f"[ADETAILER FACE]  : {ad_face_info}\n"
+            f"[ADETAILER HANDS] : {ad_hands_info}\n"
             f"========================================================================="
         )
         return plan
@@ -1047,7 +1117,7 @@ class ArtDirector:
         # 1. Отделение пользовательского негатива (--neg <текст>)
         user_neg = ""
         clean_prompt = (raw_prompt or "").strip()
-        neg_match = re.search(r'(?:--negative|--neg)\s+(.*?)(?=(?:--model|--style|--ar|--hands|$))', clean_prompt, re.IGNORECASE)
+        neg_match = re.search(r'-{1,2}(?:negative|neg)\s+(.*?)(?=(?:--model|--style|--ar|--hands|$))', clean_prompt, re.IGNORECASE)
         if neg_match:
             user_neg = neg_match.group(1).strip()
             clean_prompt = clean_prompt[:neg_match.start()] + clean_prompt[neg_match.end():]
@@ -1489,36 +1559,116 @@ class ArtDirector:
         plan.sampler_name = gen_sampler_name
         plan.scheduler = gen_scheduler
 
-        # Zero-Logic ADetailer
+        # Унифицированное чтение ADetailer из pipeline профиля
         _is_xl_p = ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt))
-        def_face_d2 = 0.35 if _is_xl_p else 0.32
-        ad_face_denoise = float(model_pipeline.get("ad_denoising_strength", model_pipeline.get("ad_face_denoise", def_face_d2)))
-        plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8n.pt")
-        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.32))
-        plan.adetailer_face_denoise = ad_face_denoise
-        plan.ad_denoising_strength = ad_face_denoise
-        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.28))
+        _is_xl_v = _is_xl_p
+        is_bg = bool(is_scene_background)
+        enable_ad = (bool(model_pipeline.get("enable_adetailer", True)) or wants_hands) and not is_bg
+
+        plan.enable_adetailer = enable_ad
+        plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8m.pt")
+        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.44))
+        plan.adetailer_face_denoise = float(model_pipeline.get("adetailer_face_denoise", 0.35 if _is_xl_p else 0.32))
+        # Безопасное чтение размера инпейнта лица с поддержкой нового и старого ключей
+        default_inpaint = 768 if _is_xl_v else 512
+        face_inpaint_val = int(
+            model_pipeline.get("adetailer_face_inpaint_size")
+            or model_pipeline.get("adetailer_inpaint_size")
+            or default_inpaint
+        )
+        plan.adetailer_face_inpaint_size = face_inpaint_val
+        plan.adetailer_inpaint_size = face_inpaint_val
+
+        hands_on = (bool(model_pipeline.get("adetailer_hands_enabled", True)) or wants_hands) and enable_ad
+        plan.adetailer_hands_enabled = hands_on
+        plan.adetailer_hands = hands_on
+        plan.adetailer_hands_model = model_pipeline.get("adetailer_hands_model", "hand_yolov9c.pt")
+        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.38))
         plan.adetailer_hands_denoise = float(model_pipeline.get("adetailer_hands_denoise", 0.38 if _is_xl_p else 0.40))
-        plan.adetailer_inpaint_size = int(model_pipeline.get("adetailer_inpaint_size", 768 if _is_xl_p else 512))
+        plan.adetailer_hands_inpaint_size = int(model_pipeline.get("adetailer_hands_inpaint_size", 512))
+        plan.adetailer_hands_mask_blur = int(model_pipeline.get("adetailer_hands_mask_blur", 8))
+        plan.enable_hand_adetailer = hands_on
+        plan.ad_denoising_strength = plan.adetailer_face_denoise
         if model_pipeline.get("ad_prompt"):
             plan.ad_prompt = model_pipeline.get("ad_prompt")
         if model_pipeline.get("ad_negative_prompt"):
             plan.ad_negative_prompt = model_pipeline.get("ad_negative_prompt")
+        plan.adetailer_hands_prompt = model_pipeline.get("adetailer_hands_prompt")
+        plan.adetailer_hands_negative_prompt = model_pipeline.get("adetailer_hands_negative_prompt")
+        plan.archetype = archetype
+        plan.raw_prompt = raw_prompt
+
+        # Формирование информативного блока ADetailer для лога
+        ad_face_info = "OFF"
+        ad_hands_info = "OFF"
+        if getattr(plan, "enable_adetailer", False):
+            ad_p = getattr(plan, "ad_prompt", None)
+            ad_neg = getattr(plan, "ad_negative_prompt", None)
+            face_p = f'"{ad_p}"' if ad_p else "[AUTO SCENE CONTEXT]"
+            face_neg = f'"{ad_neg}"' if ad_neg else "[BASE NEGATIVE]"
+            face_model = getattr(plan, "adetailer_face_model", "none")
+            face_conf = getattr(plan, "adetailer_face_confidence", 0.0)
+            face_denoise = getattr(plan, "adetailer_face_denoise", 0.0)
+            face_inpaint_sz = getattr(plan, "adetailer_face_inpaint_size", getattr(plan, "adetailer_inpaint_size", 512))
+            ad_face_info = (
+                f"ON | Model={face_model} | Conf={face_conf} | "
+                f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
+                f"   └── Prompt: {face_p}\n"
+                f"   └── Neg   : {face_neg}"
+            )
+            if getattr(plan, "adetailer_hands_enabled", False):
+                h_p_val = getattr(plan, "adetailer_hands_prompt", None) or "detailed hand, realistic fingers, anatomically correct, sharp focus"
+                h_p_str = h_p_val.replace("[SEP]", "").strip()
+                h_p = f'"{h_p_str}"'
+                h_neg_val = getattr(plan, "adetailer_hands_negative_prompt", None)
+                h_neg = f'"{h_neg_val}"' if h_neg_val else "[DEFAULT HANDS NEG]"
+                h_sz = getattr(plan, "adetailer_hands_inpaint_size", 512)
+                h_model = getattr(plan, "adetailer_hands_model", "none")
+                h_conf = getattr(plan, "adetailer_hands_confidence", 0.0)
+                h_denoise = getattr(plan, "adetailer_hands_denoise", 0.0)
+                h_blur = getattr(plan, "adetailer_hands_mask_blur", 8)
+                ad_hands_info = (
+                    f"ON | Model={h_model} | Conf={h_conf} | "
+                    f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
+                    f"   └── Prompt: {h_p}\n"
+                    f"   └── Neg   : {h_neg}"
+                )
+
+        p_raw = getattr(plan, "raw_prompt", raw_prompt)
+        p_pos = getattr(plan, "positive_prompt", "")
+        p_neg = getattr(plan, "negative_prompt", "")
+        p_title = getattr(plan, "model_title", "")
+        p_style = getattr(plan, "target_model_key", getattr(plan, "style", ""))
+        p_ckpt = getattr(plan, "target_checkpoint", "")
+        p_w = getattr(plan, "width", 512)
+        p_h = getattr(plan, "height", 512)
+        p_scale = getattr(plan, "hr_scale", 1.0)
+        p_arch = getattr(plan, "archetype", "unknown")
+        p_steps = getattr(plan, "steps", 20)
+        p_cfg = getattr(plan, "cfg_scale", 7.0)
+        p_denoise = getattr(plan, "denoising_strength", 0.35)
+        p_sampler = getattr(plan, "sampler_name", "DPM++ 2M")
+        p_sched = getattr(plan, "scheduler", "Karras")
+        p_clip = getattr(plan, "clip_skip", 1)
+        p_seed = getattr(plan, "seed", -1)
 
         logger.info(
-            f"\n"
-            f"======================= [ART DIRECTOR: PLAN GENERATION] =======================\n"
-            f"[INPUT RAW]       : \"{raw_prompt}\"\n"
-            f"[PROMPT CLEAN]    : \"{final_positive}\"\n"
-            f"[NEGATIVE]        : \"{final_negative}\"\n"
-            f"[PROFILE / CKPT]  : {plan_model_title} ({plan_model_id}) -> {target_ckpt}\n"
-            f"[RESOLUTION]      : {width}x{height} (Hires.fix {hr_scale}x -> {int(width*hr_scale)}x{int(height*hr_scale)})\n"
-            f"[ADETAILER]       : {'ON | Face: ' + str(plan.adetailer_face_model) + ' (conf=' + str(plan.adetailer_face_confidence) + ', denoise=' + str(plan.adetailer_face_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ') | Hands: ' + ('ON [' + str(plan.adetailer_hands_model) + ', conf=' + str(plan.adetailer_hands_confidence) + ', denoise=' + str(plan.adetailer_hands_denoise) + ', inpaint=' + str(plan.adetailer_inpaint_size) + ']' if plan.adetailer_hands_enabled else 'OFF') if plan.enable_adetailer else 'OFF'}\n"
-            f"[PARAMS]          : Steps={plan.steps} | CFG={plan.cfg_scale} | Denoise={plan.denoising_strength} | Seed={effective_seed}\n"
+            f"\n======================= [ART DIRECTOR: PLAN GENERATION] =======================\n"
+            f"[INPUT RAW]       : \"{p_raw}\"\n"
+            f"[PROMPT CLEAN]    : \"{p_pos}\"\n"
+            f"[NEGATIVE]        : \"{p_neg}\"\n"
+            f"[PROFILE / CKPT]  : {p_title} ({p_style}) -> {p_ckpt}\n"
+            f"[RESOLUTION]      : {p_w}x{p_h} (Hires.fix {p_scale}x -> {int(p_w*p_scale)}x{int(p_h*p_scale)}) | Archetype={p_arch}\n"
+            f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise} | "
+            f"Sampler={p_sampler} | Scheduler={p_sched} | ClipSkip={p_clip} | Seed={p_seed}\n"
+            f"[ADETAILER FACE]  : {ad_face_info}\n"
+            f"[ADETAILER HANDS] : {ad_hands_info}\n"
             f"================================================================================"
         )
 
         return plan
+
+    generate_plan = plan_generation
 
     def build_direct_plan(
         self,
