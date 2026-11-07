@@ -6,7 +6,7 @@ Uses QFluentWidgets InfoBadge for mode chips, TransparentToolButton for delete, 
 
 from pathlib import Path
 from typing import Optional
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QCursor, QColor
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from qfluentwidgets import (
@@ -46,12 +46,18 @@ class ChatSessionItemWidget(QWidget):
 
         self._setup_ui(title)
 
+    def sizeHint(self) -> QSize:
+        return QSize(240, 56)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(200, 54)
+
     def _setup_ui(self, title: str):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet("background: transparent;")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setContentsMargins(8, 6, 6, 6)
         layout.setSpacing(8)
 
         # 1. Circular Avatar (30x30)
@@ -63,16 +69,18 @@ class ChatSessionItemWidget(QWidget):
         # 2. Text layout (Title + Badge chip)
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(3)
+        text_layout.setSpacing(4)
 
         self.title_lbl = QLabel(title, self)
+        self.title_lbl.setMinimumHeight(18)
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text_layout.addWidget(self.title_lbl)
 
         # Mode Chip via QFluentWidgets InfoBadge (Soft/Pill style)
         self.badge_lbl = InfoBadge(self)
+        self.badge_lbl.setFixedHeight(21)
         self.badge_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        text_layout.addWidget(self.badge_lbl)
+        text_layout.addWidget(self.badge_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self._apply_theme_and_avatar()
 
@@ -114,8 +122,8 @@ class ChatSessionItemWidget(QWidget):
             self.badge_lbl.setText("🛠️ Инженер")
             self.badge_lbl.setCustomBackgroundColor(QColor(245, 158, 11, 38), QColor(245, 158, 11, 38))
             self.badge_lbl.setStyleSheet(
-                "color: #FBBF24; font-size: 10px; font-weight: 600; padding: 1px 7px; "
-                "border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; background: transparent;"
+                "color: #FBBF24; font-size: 11px; font-weight: 600; padding: 2px 10px; "
+                "border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 9px; background: transparent;"
             )
         elif is_rp:
             name_seed = self.char_name or "Roleplay"
@@ -126,8 +134,8 @@ class ChatSessionItemWidget(QWidget):
             self.badge_lbl.setText(badge_text)
             self.badge_lbl.setCustomBackgroundColor(QColor(192, 132, 252, 40), QColor(192, 132, 252, 40))
             self.badge_lbl.setStyleSheet(
-                "color: #D8B4FE; font-size: 10px; font-weight: 600; padding: 1px 7px; "
-                "border: 1px solid rgba(192, 132, 252, 0.35); border-radius: 8px; background: transparent;"
+                "color: #D8B4FE; font-size: 11px; font-weight: 600; padding: 2px 10px; "
+                "border: 1px solid rgba(192, 132, 252, 0.35); border-radius: 9px; background: transparent;"
             )
         else:
             # Ассистент
@@ -137,8 +145,8 @@ class ChatSessionItemWidget(QWidget):
             self.badge_lbl.setText("⚡ Ассистент")
             self.badge_lbl.setCustomBackgroundColor(QColor(0, 240, 255, 34), QColor(0, 240, 255, 34))
             self.badge_lbl.setStyleSheet(
-                "color: #00F0FF; font-size: 10px; font-weight: 600; padding: 1px 7px; "
-                "border: 1px solid rgba(0, 240, 255, 0.35); border-radius: 8px; background: transparent;"
+                "color: #00F0FF; font-size: 11px; font-weight: 600; padding: 2px 10px; "
+                "border: 1px solid rgba(0, 240, 255, 0.35); border-radius: 9px; background: transparent;"
             )
 
     def update_avatar(self, avatar_path: Optional[str]):
