@@ -56,6 +56,7 @@ from services.art_director.geometry import is_xl_model
 from services.forge_client import ForgeClient
 from services.forge_models import sync_registry_with_user_config
 # === ВЫДЕЛЕННЫЕ ВИДЖЕТЫ И ЭЛЕМЕНТЫ УПРАВЛЕНИЯ ===
+from ui.models_manager.adetailer_dialog import ADetailerSettingsDialog
 from ui.models_manager.widgets import (
     SamplingSlider,
     SamplingDoubleSpinBox,
@@ -537,13 +538,15 @@ class ModelsManagerDialog(QDialog):
 
         ad_box = QHBoxLayout()
         ad_box.setSpacing(8)
-        lbl_ad = QLabel("ADetailer (Лица/Руки):", card_pipeline)
-        self.switch_enable_ad = SwitchButton(card_pipeline)
-        self.switch_enable_ad.setOnText("ВКЛ")
-        self.switch_enable_ad.setOffText("ВЫКЛ")
-        self.switch_enable_ad.checkedChanged.connect(self._on_param_modified)
-        ad_box.addWidget(lbl_ad)
-        ad_box.addWidget(self.switch_enable_ad)
+        self.btn_adetailer_config = PushButton("ADetailer: Настройки ⚙️", card_pipeline)
+        self.btn_adetailer_config.setToolTip("Выбор моделей детекции лица/рук, порогов уверенности и денойза")
+        self.btn_adetailer_config.clicked.connect(self._open_adetailer_dialog)
+        
+        self.lbl_ad_status = QLabel("ВКЛ [v8m/v9c]", card_pipeline)
+        self.lbl_ad_status.setStyleSheet("color: #00F0FF; font-weight: bold;")
+        
+        ad_box.addWidget(self.btn_adetailer_config)
+        ad_box.addWidget(self.lbl_ad_status)
         switches_row.addLayout(ad_box)
 
         switches_row.addStretch()
@@ -672,9 +675,9 @@ class ModelsManagerDialog(QDialog):
         self.input_desc.setFixedHeight(64)
         rout_layout.addWidget(self.input_desc)
 
-        rout_layout.addWidget(QLabel("Подсказка для Эларии (llm_guidance, макс. 160 симв. / 8 тегов):", card_routing))
+        rout_layout.addWidget(QLabel("Служебные эмбеддинги и триггеры (Textual Inversion, макс. 8 тегов):", card_routing))
         self.input_guidance = FluentTextEdit(card_routing)
-        self.input_guidance.setPlaceholderText("Инструкция для Эларии: целевые теги, ограничения (макс. 160 символов, до 8 тегов)...")
+        self.input_guidance.setPlaceholderText("Файлы Textual Inversion, триггер-слова LoRA через запятую (напр.: anime-background-style-v2)...")
         self.input_guidance.setFixedHeight(54)
         self.input_guidance.textChanged.connect(self._on_input_guidance_changed)
         rout_layout.addWidget(self.input_guidance)
@@ -744,6 +747,7 @@ class ModelsManagerDialog(QDialog):
 
         main_layout.addLayout(actions_row)
         self._update_fp8_button_state()
+
 
     # ---------------- Synchronized Slider & SpinBox Slots ---------------- #
     def _on_steps_slider_changed(self, val: int):
@@ -857,7 +861,6 @@ class ModelsManagerDialog(QDialog):
         self.spin_clip_skip.blockSignals(True)
         self.slider_clip_skip.blockSignals(True)
         self.switch_enable_hr.blockSignals(True)
-        self.switch_enable_ad.blockSignals(True)
 
         idx_arch = self.combo_arch.findText(arch)
         if idx_arch >= 0:
@@ -887,7 +890,10 @@ class ModelsManagerDialog(QDialog):
         self.slider_clip_skip.setValue(clip_skip)
 
         self.switch_enable_hr.setChecked(enable_hr)
-        self.switch_enable_ad.setChecked(enable_ad)
+        if 0 <= self.current_selected_row < len(self.row_widgets):
+            cur_pipe = self.row_widgets[self.current_selected_row].setdefault("pipeline", {})
+            cur_pipe["enable_adetailer"] = enable_ad
+            self._update_ad_status_label(cur_pipe)
 
         self.combo_arch.blockSignals(False)
         self.combo_sampler.blockSignals(False)
@@ -899,7 +905,6 @@ class ModelsManagerDialog(QDialog):
         self.spin_clip_skip.blockSignals(False)
         self.slider_clip_skip.blockSignals(False)
         self.switch_enable_hr.blockSignals(False)
-        self.switch_enable_ad.blockSignals(False)
 
         if 0 <= self.current_selected_row < len(self.row_widgets):
             self._save_form_to_model(self.current_selected_row)
@@ -1005,9 +1010,39 @@ class ModelsManagerDialog(QDialog):
             "hires_upscaler": self.combo_upscaler.currentText(),
             "hires_denoise": round(self.spin_hires_denoise.value(), 2),
             "enable_hr": self.switch_enable_hr.isChecked(),
-            "enable_adetailer": self.switch_enable_ad.isChecked(),
+            "enable_adetailer": r.get("pipeline", {}).get("enable_adetailer", True),
             "negative_prompt": self.input_negative_prompt.toPlainText().strip()
         }
+
+    def _open_adetailer_dialog(self):
+        if self.current_selected_row < 0 or self.current_selected_row >= len(self.row_widgets):
+            return
+        
+        target_model = self.row_widgets[self.current_selected_row]
+        pipe = target_model.setdefault("pipeline", {})
+        if self.current_selected_row < len(self.models):
+            self.models[self.current_selected_row].setdefault("pipeline", pipe)
+        is_xl = "xl" in self.combo_arch.currentText().lower()
+
+        dialog = ADetailerSettingsDialog(pipe, is_xl=is_xl, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Обновляем словарь pipeline выбранной модели
+            pipe.update(dialog.result_params)
+            if self.current_selected_row < len(self.models):
+                self.models[self.current_selected_row]["pipeline"].update(dialog.result_params)
+            self._update_ad_status_label(pipe)
+            self._on_param_modified()
+
+    def _update_ad_status_label(self, pipe: dict):
+        if not pipe.get("enable_adetailer", True):
+            self.lbl_ad_status.setText("ВЫКЛ")
+            self.lbl_ad_status.setStyleSheet("color: #94A3B8;")
+        else:
+            face_s = pipe.get("adetailer_face_model", "v8m").replace("face_yolo", "").replace(".pt", "")
+            hands_on = pipe.get("adetailer_hands_enabled", True)
+            hand_s = pipe.get("adetailer_hands_model", "v9c").replace("hand_yolo", "").replace(".pt", "") if hands_on else "off"
+            self.lbl_ad_status.setText(f"ВКЛ [{face_s}/{hand_s}]")
+            self.lbl_ad_status.setStyleSheet("color: #00F0FF; font-weight: bold;")
 
     def _load_model_to_form(self, row_idx: int):
         if row_idx < 0 or row_idx >= len(self.row_widgets):
@@ -1030,7 +1065,6 @@ class ModelsManagerDialog(QDialog):
         self.spin_hires_denoise.blockSignals(True)
         self.slider_hires_denoise.blockSignals(True)
         self.switch_enable_hr.blockSignals(True)
-        self.switch_enable_ad.blockSignals(True)
         self.input_negative_prompt.blockSignals(True)
         self.input_desc.blockSignals(True)
         self.input_guidance.blockSignals(True)
@@ -1117,8 +1151,8 @@ class ModelsManagerDialog(QDialog):
         enable_hr = bool(pipe.get("enable_hr", False))
         self.switch_enable_hr.setChecked(enable_hr)
 
-        enable_ad = bool(pipe.get("enable_adetailer", False))
-        self.switch_enable_ad.setChecked(enable_ad)
+        enable_ad = bool(pipe.get("enable_adetailer", True))
+        self._update_ad_status_label(pipe)
 
         # Определение соответствия пресету
         curr_arch = self.combo_arch.currentText()
@@ -1180,13 +1214,14 @@ class ModelsManagerDialog(QDialog):
         self.spin_hires_denoise.blockSignals(False)
         self.slider_hires_denoise.blockSignals(False)
         self.switch_enable_hr.blockSignals(False)
-        self.switch_enable_ad.blockSignals(False)
         self.input_negative_prompt.blockSignals(False)
         self.input_desc.blockSignals(False)
         self.input_guidance.blockSignals(False)
         self.chk_is_default.blockSignals(False)
         self.edit_style_triggers.blockSignals(False)
         self._update_fp8_button_state()
+
+    _populate_form = _load_model_to_form
 
     def _on_autofill_params_clicked(self):
         """
@@ -2317,7 +2352,20 @@ class ModelsManagerDialog(QDialog):
                     "hires_upscaler": pipe.get("hires_upscaler", "4x-UltraSharp"),
                     "hires_denoise": round(pipe.get("hires_denoise", 0.32), 2),
                     "enable_hr": pipe.get("enable_hr", False),
-                    "enable_adetailer": pipe.get("enable_adetailer", False),
+                    "enable_adetailer": pipe.get("enable_adetailer", True),
+                    "adetailer_face_model": pipe.get("adetailer_face_model", "face_yolov8m.pt"),
+                    "adetailer_face_confidence": pipe.get("adetailer_face_confidence", 0.44),
+                    "adetailer_face_denoise": pipe.get("adetailer_face_denoise", 0.32),
+                    "adetailer_face_inpaint_size": pipe.get("adetailer_face_inpaint_size", pipe.get("adetailer_inpaint_size", 768)),
+                    "adetailer_inpaint_size": pipe.get("adetailer_face_inpaint_size", pipe.get("adetailer_inpaint_size", 768)),
+                    "adetailer_hands_enabled": pipe.get("adetailer_hands_enabled", True),
+                    "adetailer_hands_model": pipe.get("adetailer_hands_model", "hand_yolov9c.pt"),
+                    "adetailer_hands_confidence": pipe.get("adetailer_hands_confidence", 0.38),
+                    "adetailer_hands_denoise": pipe.get("adetailer_hands_denoise", 0.40),
+                    "adetailer_hands_inpaint_size": pipe.get("adetailer_hands_inpaint_size", 512),
+                    "adetailer_hands_mask_blur": pipe.get("adetailer_hands_mask_blur", 8),
+                    "adetailer_hands_prompt": pipe.get("adetailer_hands_prompt", ""),
+                    "adetailer_hands_negative_prompt": pipe.get("adetailer_hands_negative_prompt", ""),
                     "negative_prompt": neg
                 }
             }
@@ -2368,7 +2416,6 @@ class ModelsManagerDialog(QDialog):
                     "hires_upscaler": self.combo_upscaler.currentText(),
                     "hires_denoise": round(self.spin_hires_denoise.value(), 2),
                     "enable_hr": self.switch_enable_hr.isChecked(),
-                    "enable_adetailer": self.switch_enable_ad.isChecked(),
                     "negative_prompt": self.input_negative_prompt.toPlainText().strip()
                 }
 
@@ -2397,7 +2444,20 @@ class ModelsManagerDialog(QDialog):
                     "hires_upscaler": pipe.get("hires_upscaler", self.combo_upscaler.currentText()),
                     "hires_denoise": round(pipe.get("hires_denoise", self.spin_hires_denoise.value()), 2),
                     "enable_hr": pipe.get("enable_hr", self.switch_enable_hr.isChecked()),
-                    "enable_adetailer": pipe.get("enable_adetailer", self.switch_enable_ad.isChecked()),
+                    "enable_adetailer": pipe.get("enable_adetailer", True),
+                    "adetailer_face_model": pipe.get("adetailer_face_model", "face_yolov8m.pt"),
+                    "adetailer_face_confidence": pipe.get("adetailer_face_confidence", 0.44),
+                    "adetailer_face_denoise": pipe.get("adetailer_face_denoise", 0.32),
+                    "adetailer_face_inpaint_size": pipe.get("adetailer_face_inpaint_size", pipe.get("adetailer_inpaint_size", 768)),
+                    "adetailer_inpaint_size": pipe.get("adetailer_face_inpaint_size", pipe.get("adetailer_inpaint_size", 768)),
+                    "adetailer_hands_enabled": pipe.get("adetailer_hands_enabled", True),
+                    "adetailer_hands_model": pipe.get("adetailer_hands_model", "hand_yolov9c.pt"),
+                    "adetailer_hands_confidence": pipe.get("adetailer_hands_confidence", 0.38),
+                    "adetailer_hands_denoise": pipe.get("adetailer_hands_denoise", 0.40),
+                    "adetailer_hands_inpaint_size": pipe.get("adetailer_hands_inpaint_size", 512),
+                    "adetailer_hands_mask_blur": pipe.get("adetailer_hands_mask_blur", 8),
+                    "adetailer_hands_prompt": pipe.get("adetailer_hands_prompt", ""),
+                    "adetailer_hands_negative_prompt": pipe.get("adetailer_hands_negative_prompt", ""),
                     "negative_prompt": neg
                 }
             }
@@ -2504,3 +2564,6 @@ class ModelsManagerDialog(QDialog):
     def accept(self):
         self._stop_all_workers()
         super().accept()
+
+
+    _on_save_clicked = _save_all

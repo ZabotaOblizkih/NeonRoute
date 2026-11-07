@@ -912,8 +912,9 @@ class AssistantFlowControllerMixin:
                 if prof:
                     best_model_id = prof.get("id") or prof.get("name") or manual_choice
                     target_arch = prof.get("architecture") or prof.get("base_architecture")
+                    desc = (prof.get("routing_description") or prof.get("name") or "").strip()
                     guidance = (prof.get("llm_guidance") or "").strip()
-                    best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
+                    best_desc = f"{desc} (Triggers: {guidance})" if (desc and guidance) else (desc or guidance)
                 else:
                     best_model_id = manual_choice
                     best_desc = manual_choice
@@ -934,7 +935,9 @@ class AssistantFlowControllerMixin:
                 if def_prof:
                     best_model_id = def_prof.get("id", "default")
                     target_arch = def_prof.get("architecture") or def_prof.get("base_architecture")
-                    best_desc = def_prof.get("llm_guidance") or def_prof.get("name", "")
+                    def_desc = (def_prof.get("routing_description") or def_prof.get("name") or "").strip()
+                    def_guidance = (def_prof.get("llm_guidance") or "").strip()
+                    best_desc = f"{def_desc} (Triggers: {def_guidance})" if (def_desc and def_guidance) else (def_desc or def_guidance)
                 else:
                     best_model_id = "default"
         except Exception as e:
@@ -955,10 +958,32 @@ class AssistantFlowControllerMixin:
             if model_name.startswith("default"):
                 model_name = None
 
+        session = getattr(self, "current_session", {}) or {}
+        session_sampling = session.get("sampling_params") if isinstance(session.get("sampling_params"), dict) else {}
+        cfg_defaults = getattr(self, "app_config", {}).get("default_sampling_assistant", {}) if hasattr(self, "app_config") and isinstance(self.app_config, dict) else {}
+        mode_prof = getattr(self, "mode_profile", {}) if hasattr(self, "mode_profile") and isinstance(self.mode_profile, dict) else {}
+        profile_sampling = mode_prof.get("sampling") if isinstance(mode_prof.get("sampling"), dict) else cfg_defaults
+
+        resolved_temp = (
+            session_sampling.get("temperature")
+            or profile_sampling.get("temperature")
+            or 0.8
+        )
+
+        try:
+            target_temperature = float(resolved_temp)
+        except (TypeError, ValueError):
+            target_temperature = 0.8
+
+        logger.info(
+            f"[AssistantFlow] Starting Gallery Art Pass for query: '{user_query}' "
+            f"(target_model='{best_model_id}', temperature={target_temperature})"
+        )
+
         llm_kwargs = {
             "messages": messages,
             "model": model_name,
-            "temperature": 0.40,
+            "temperature": target_temperature,
             "stop": ["\n\nПользователь:", "\n\nUser:"],
             "is_roleplay": False,
             "is_engineer": False,
