@@ -184,8 +184,42 @@ class BM25Index:
 
     @classmethod
     def tokenize(cls, text: str) -> List[str]:
-        """Токенизация через выделенный морфологический сателлит SearchTokenizer."""
-        return SearchTokenizer.tokenize(text)
+        """
+        Токенизация для BM25 с сохранением реальной частоты терминов (TF) в документе
+        и фильтрацией служебных предлогов/союзов (COMMON_STOPWORDS).
+        """
+        if not text:
+            return []
+
+        text_clean = re.sub(r"[\r\n\t]+", " ", text)
+        tokens: List[str] = []
+
+        # 1. Hex-коды ошибок и адресов памяти
+        for h in re.findall(r"0x[0-9a-fA-F]+", text_clean):
+            tokens.append(h.lower())
+
+        # 2. Составные идентификаторы (snake_case, kebab-case)
+        for d in re.findall(r"[a-zA-Z0-9а-яА-ЯёЁ]+(?:[-_][a-zA-Z0-9а-яА-ЯёЁ]+)+", text_clean):
+            tokens.append(d.lower())
+
+        # 3. Все буквенно-цифровые слова с локальной дедупликацией форм одного вхождения
+        for w in re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]+", text_clean):
+            w_low = w.lower()
+            if len(w_low) < 2 or w_low in COMMON_STOPWORDS:
+                continue
+            word_forms: Set[str] = {w_low}
+            stemmed = SearchTokenizer.stem(w_low)
+            if len(stemmed) >= 2 and stemmed not in COMMON_STOPWORDS:
+                word_forms.add(stemmed)
+            for cp in SearchTokenizer.decompose_compound_word(w_low):
+                if len(cp) >= 2 and cp not in COMMON_STOPWORDS:
+                    word_forms.add(cp)
+                    cp_stem = SearchTokenizer.stem(cp)
+                    if len(cp_stem) >= 2 and cp_stem not in COMMON_STOPWORDS:
+                        word_forms.add(cp_stem)
+            tokens.extend(word_forms)
+
+        return tokens
 
     def index(self, corpus: List[str]) -> None:
         """

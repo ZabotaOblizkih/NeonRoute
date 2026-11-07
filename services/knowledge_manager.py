@@ -800,9 +800,26 @@ class KnowledgeManager:
                 if best_chunk:
                     MAX_SNIPPET_BUDGET = 8500
                     MAX_CHUNKS_PER_FILE = 6
+                    candidate_chunks = list(file_chunks)
+                    # Next-Chunk Continuity: подхватываем смежный чанк продолжения для топ-1 попадания
+                    top_idx = best_chunk.get("chunk_index")
+                    if top_idx is not None and engine and getattr(engine, "chunks", None):
+                        existing_ids = {c.get("chunk_id") for c in candidate_chunks}
+                        for eng_ch in engine.chunks:
+                            if (
+                                eng_ch.get("filename") == filename
+                                and eng_ch.get("chunk_index") == top_idx + 1
+                                and eng_ch.get("chunk_id") not in existing_ids
+                                and eng_ch.get("chunk_id") not in exclude_set
+                            ):
+                                cont_ch = dict(eng_ch)
+                                cont_ch["score"] = round(float(best_chunk.get("score", 0.5)) * 0.95, 4)
+                                candidate_chunks.insert(1, cont_ch)
+                                break
+
                     selected_chunks = []
                     accumulated_chars = 0
-                    for ch in file_chunks[:MAX_CHUNKS_PER_FILE]:
+                    for ch in candidate_chunks[:MAX_CHUNKS_PER_FILE]:
                         txt = ch.get("text", "").strip()
                         if not txt:
                             continue
@@ -811,10 +828,13 @@ class KnowledgeManager:
                         selected_chunks.append(ch)
                         accumulated_chars += len(txt)
 
+                    # Сортируем отобранные чанки по порядку следования в документе для связного чтения
+                    selected_chunks.sort(key=lambda c: c.get("chunk_index", 0))
+
                     snippets = [c.get("text", "").strip() for c in selected_chunks]
                     doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_chunk.get("text")
                     doc_entry["matched_chunks"] = selected_chunks
-                    doc_entry["chunk_id"] = selected_chunks[0].get("chunk_id") if selected_chunks else best_chunk.get("chunk_id")
+                    doc_entry["chunk_id"] = best_chunk.get("chunk_id")
                 matched_results.append(doc_entry)
                 processed_files.add(filename)
 

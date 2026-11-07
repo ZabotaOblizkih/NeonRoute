@@ -108,3 +108,40 @@ def test_semantic_and_crosslingual_rag_search(tmp_path: Path):
             custom_dir=tmp_path
         )
         assert noise_hits == []
+
+
+def test_bm25_tf_stopwords_and_next_chunk_continuity(tmp_path: Path):
+    """Проверяет, что:
+    1. Служебный союз 'что' в вопросе 'Что такое NeonRoute?' отфильтровывается и не перебивает чанк с 3 вхождениями 'NeonRoute'.
+    2. За главным чанком #c0 автоматически подтягивается смежный чанк продолжения #c1 в правильном порядке чтения.
+    """
+    intro_part = (
+        "# Техническая спецификация архитектуры NeonRoute\n\n"
+        "Версия системы: NeonRoute v0.9.1-beta. Система **NeonRoute** — это мультимодальный десктопный ИИ-клиент. "
+        + ("Архитектура ориентирована на локальный инференс. " * 12)
+    )
+    continuation_part = (
+        "Система бесшовно объединяет:\n"
+        "1. Большие языковые модели (LLM).\n"
+        "2. Диффузионный рендеринг Stable Diffusion Forge.\n"
+        "3. Гибридный векторный поиск RAG на CPU.\n"
+        + ("Подробное описание модулей и контуров безопасности. " * 12)
+    )
+    distractor_part = (
+        "### Вспомогательный сетевой модуль\n"
+        "Проверка порта в NeonRoute сигнализирует, что сокет занят, что предотвращает конфликт портов."
+    )
+    doc_text = f"{intro_part}\n\n{continuation_part}\n\n{distractor_part}"
+    (tmp_path / "ARCHITECTURE.md").write_text(doc_text, encoding="utf-8")
+
+    KnowledgeManager._search_engine_cache.clear()
+    KnowledgeManager.scan_and_sync(custom_dir=tmp_path)
+
+    hits = KnowledgeManager.find_relevant_documents("Что такое neonroute?", custom_dir=tmp_path)
+    assert len(hits) == 1
+    matched_chunks = hits[0].get("matched_chunks", [])
+    chunk_ids = [c["chunk_id"] for c in matched_chunks]
+
+    # Первыми двумя чанками в порядке чтения должны идти #c0 (введение) и #c1 (список компонентов)
+    assert chunk_ids[:2] == ["ARCHITECTURE.md#c0", "ARCHITECTURE.md#c1"]
+    assert "Система бесшовно объединяет:" in hits[0]["content_snippet"]
