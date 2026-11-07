@@ -106,27 +106,27 @@ def _maybe_cleanup_lance_tables(force: bool = False):
                     continue
                 with _LANCE_LOCK:
                     try:
-                        # 1. Объединение мелких фрагментов данных в крупные блоки
-                        if hasattr(tbl, "compact_files"):
-                            try:
-                                tbl.compact_files()
-                            except Exception as e_compact:
-                                logger.debug(f"[MemoryDB] compact_files fallback for '{tbl_name}': {e_compact}")
-                        # 2. Очистка старых снимков и транзакций (оставляем только актуальное состояние)
-                        if hasattr(tbl, "cleanup_old_versions"):
-                            try:
-                                tbl.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
-                            except Exception:
-                                try:
-                                    tbl.cleanup_old_versions()
-                                except Exception as e_clean:
-                                    logger.debug(f"[MemoryDB] cleanup_old_versions fallback for '{tbl_name}': {e_clean}")
-                        # 3. Нативная оптимизация LanceDB (компактизация + очистка версий и транзакций)
+                        optimized = False
                         if hasattr(tbl, "optimize"):
                             try:
                                 tbl.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
+                                optimized = True
                             except Exception as e_opt:
                                 logger.debug(f"[MemoryDB] optimize fallback for '{tbl_name}': {e_opt}")
+                        if not optimized:
+                            if hasattr(tbl, "compact_files"):
+                                try:
+                                    tbl.compact_files()
+                                except Exception as e_compact:
+                                    logger.debug(f"[MemoryDB] compact_files fallback for '{tbl_name}': {e_compact}")
+                            if hasattr(tbl, "cleanup_old_versions"):
+                                try:
+                                    tbl.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
+                                except Exception:
+                                    try:
+                                        tbl.cleanup_old_versions()
+                                    except Exception as e_clean:
+                                        logger.debug(f"[MemoryDB] cleanup_old_versions fallback for '{tbl_name}': {e_clean}")
                         logger.info(f"Таблица LanceDB '{tbl_name}' успешно оптимизирована.")
                     except Exception as e:
                         logger.warning(f"Ошибка при компактизации таблицы LanceDB '{tbl_name}': {e}")
@@ -257,29 +257,27 @@ class MemoryDB:
                 continue
             try:
                 with _LANCE_LOCK:
-                    # 1. Объединение мелких фрагментов данных в крупные блоки
-                    if hasattr(table, "compact_files"):
-                        try:
-                            table.compact_files()
-                        except Exception as e_compact:
-                            logger.debug(f"[LanceDB] compact_files fallback for '{table_name}': {e_compact}")
-
-                    # 2. Очистка старых снимков и транзакций (оставляем только актуальное состояние)
-                    if hasattr(table, "cleanup_old_versions"):
-                        try:
-                            table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
-                        except Exception:
-                            try:
-                                table.cleanup_old_versions()
-                            except Exception as e_clean:
-                                logger.debug(f"[LanceDB] cleanup_old_versions fallback for '{table_name}': {e_clean}")
-
-                    # 3. Нативная оптимизация LanceDB (компактизация + очистка версий и транзакций)
+                    optimized = False
                     if hasattr(table, "optimize"):
                         try:
                             table.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
+                            optimized = True
                         except Exception as e_opt:
                             logger.debug(f"[LanceDB] table.optimize fallback for '{table_name}': {e_opt}")
+                    if not optimized:
+                        if hasattr(table, "compact_files"):
+                            try:
+                                table.compact_files()
+                            except Exception as e_compact:
+                                logger.debug(f"[LanceDB] compact_files fallback for '{table_name}': {e_compact}")
+                        if hasattr(table, "cleanup_old_versions"):
+                            try:
+                                table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
+                            except Exception:
+                                try:
+                                    table.cleanup_old_versions()
+                                except Exception as e_clean:
+                                    logger.debug(f"[LanceDB] cleanup_old_versions fallback for '{table_name}': {e_clean}")
 
                 logger.info(f"Таблица LanceDB '{table_name}' успешно оптимизирована.")
             except Exception as e:
