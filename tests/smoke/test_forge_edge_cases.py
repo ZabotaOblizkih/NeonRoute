@@ -43,6 +43,7 @@ class DummyHardwareHost(QWidget, HardwareEngineMixin):
         self.pill_forge = MagicMock()
         self._reload_active_lms_model_async = MagicMock()
         self._cancel_lms_reload = MagicMock()
+        self._active_tasks = {}
 
     def statusBar(self):
         return self._status_bar_mock
@@ -181,7 +182,8 @@ def test_scene_art_burst_requests_never_trigger_vram_release(qapp):
     host.forge_client.is_server_ready.return_value = False
     host.pill_forge.is_online = False
 
-    with patch.object(VRAMArbiter, "release_llm_for_diffusion") as mock_release:
+    with patch.object(VRAMArbiter, "release_llm_for_diffusion") as mock_release, \
+         patch("services.forge_client.ForgeClient.get_instance", return_value=host.forge_client):
         for i in range(5):
             host._on_scene_art_requested(text=f"Быстрое сообщение диалога #{i}")
 

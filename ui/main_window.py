@@ -432,15 +432,10 @@ class MainWindow(
         self.main_content = self._create_main_content()
         self.main_splitter.addWidget(self.main_content)
 
-        # Третий элемент: инспектор песочницы для режима Инженер
-        self.workspace_inspector = WorkspaceInspectorWidget(self)
-        self.workspace_inspector.setVisible(False)
-        self.workspace_inspector.rename_session_requested.connect(self._on_rename_session_requested)
-        self.main_splitter.addWidget(self.workspace_inspector)
-
+        # Третий элемент: инспектор песочницы для режима Инженер (ленивая инициализация)
+        self._workspace_inspector: Optional[WorkspaceInspectorWidget] = None
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 0)
         self.main_splitter.setSizes([280, 920, 0])
 
         # 3. Status Bar
@@ -877,8 +872,8 @@ class MainWindow(
         self.chat_list_widget.setItemWidget(item, w)
         self._session_items[sess_id] = (item, w)
         self.chat_list_widget.setCurrentItem(item)
-        if hasattr(self, "workspace_inspector"):
-            self.workspace_inspector.update_title(item_title)
+        if getattr(self, "_workspace_inspector", None) is not None:
+            self._workspace_inspector.update_title(item_title)
 
         # Welcome / greeting message
         if mode == "assistant":
@@ -1121,9 +1116,9 @@ class MainWindow(
             if not session_data:
                 return
 
-            if hasattr(self, "workspace_inspector"):
+            if getattr(self, "_workspace_inspector", None) is not None:
                 sess_title = session_data.get("title", "Песочница")
-                self.workspace_inspector.update_title(sess_title)
+                self._workspace_inspector.update_title(sess_title)
 
             from services.mode_coordinator import AppMode
             is_eng_sess = bool(
@@ -1187,45 +1182,121 @@ class MainWindow(
             # Restore custom background if configured
             self._apply_chat_background()
 
-            # Re-render messages smoothly with screen updates temporarily disabled
-            if hasattr(self, "chat_container"):
-                self.chat_container.setUpdatesEnabled(False)
-            try:
-                self._all_session_messages = session_data.get("messages", []) or []
-                total_msgs = len(self._all_session_messages)
-                page_size = 35
+            # Чанковый (прогрессивный) рендеринг истории сообщений
+            self._all_session_messages = session_data.get("messages", []) or []
+            total_msgs = len(self._all_session_messages)
+            page_size = 35
+            first_chunk_size = 8
 
-                if total_msgs <= page_size:
-                    self._rendered_messages_offset = 0
-                    self._render_session_messages(self._all_session_messages)
-                else:
-                    self._rendered_messages_offset = total_msgs - page_size
-                    self._create_load_more_button()
-                    self._render_session_messages(self._all_session_messages[self._rendered_messages_offset:])
-            finally:
-                if hasattr(self, "chat_container"):
-                    self.chat_container.setUpdatesEnabled(True)
+            if total_msgs <= first_chunk_size:
+                # Короткий диалог: все сообщения помещаются в первый экран
+                self._rendered_messages_offset = 0
+                first_chunk = self._all_session_messages
+                earlier_chunk = []
+                final_offset = 0
+            else:
+                # Чанк 1: последние 8 сообщений (мгновенное отображение без фриза)
+                first_chunk_offset = total_msgs - first_chunk_size
+                first_chunk = self._all_session_messages[first_chunk_offset:]
+                self._rendered_messages_offset = first_chunk_offset
 
-            # Реактивное восстановление Greeting Cycler при смене диалога до первого хода игрока
-            all_msgs = session_data.get("messages", []) or []
-            if (
-                mode == "roleplay"
-                and self.active_character
-                and len(all_msgs) == 1
-                and not all_msgs[0].get("is_user")
-                and len(self.active_character.get_greetings_pool()) > 1
-            ):
-                first_widget = None
-                for i in range(self.chat_layout.count()):
-                    w = self.chat_layout.itemAt(i).widget()
-                    if isinstance(w, ChatMessageWidget):
-                        first_widget = w
-                        break
-                if first_widget:
-                    curr_idx = session_data.get("active_greeting_idx", 0)
-                    self._create_greeting_cycler_chip(first_widget, self.active_character, curr_idx)
+                # Чанк 2: оставшиеся более ранние сообщения текущей страницы
+                final_offset = max(0, total_msgs - page_size)
+                earlier_chunk = self._all_session_messages[final_offset:first_chunk_offset]
 
-            self._scroll_to_bottom()
+            def _render_earlier_chunk():
+                try:
+                    if not self.current_session or self.current_session.get("id") != session_id:
+                        return
+                    if getattr(self, "_rendered_messages_offset", None) != (total_msgs - first_chunk_size):
+                        return
+                    if not hasattr(self, "chat_layout") or self.chat_layout is None:
+                        return
+
+                    # Запоминаем текущую позицию скролла, чтобы при добавлении сообщений сверху экран не прыгал
+                    v_bar = None
+                    if hasattr(self, "scroll_area") and self.scroll_area:
+                        v_bar = self.scroll_area.verticalScrollBar()
+                    elif hasattr(self, "chat_stream") and hasattr(self.chat_stream, "scroll_area") and self.chat_stream.scroll_area:
+                        v_bar = self.chat_stream.scroll_area.verticalScrollBar()
+
+                    old_val = v_bar.value() if v_bar else 0
+                    old_max = v_bar.maximum() if v_bar else 0
+
+                    if hasattr(self, "chat_container") and self.chat_container:
+                        self.chat_container.setUpdatesEnabled(False)
+                    try:
+                        self._rendered_messages_offset = final_offset
+                        if final_offset > 0:
+                            self._create_load_more_button()
+
+                        insert_idx = 1 if getattr(self, "_btn_load_more_widget", None) else 0
+                        self._render_session_messages(earlier_chunk, target_index=insert_idx)
+                    finally:
+                        if hasattr(self, "chat_container") and self.chat_container:
+                            self.chat_container.setUpdatesEnabled(True)
+
+                    if v_bar:
+                        def _restore_scroll():
+                            try:
+                                new_max = v_bar.maximum()
+                                diff = new_max - old_max
+                                target_pos = old_val + diff
+                                if hasattr(self, "_sync_scroll_to"):
+                                    self._sync_scroll_to(target_pos)
+                                else:
+                                    v_bar.setValue(target_pos)
+                            except (RuntimeError, AttributeError):
+                                pass
+                        from PyQt6.QtCore import QTimer
+                        QTimer.singleShot(20, _restore_scroll)
+                except (RuntimeError, AttributeError):
+                    return
+
+            def _render_and_finalize_chat():
+                if self.current_session and self.current_session.get("id") != session_id:
+                    return
+
+                if hasattr(self, "chat_container") and self.chat_container:
+                    self.chat_container.setUpdatesEnabled(False)
+                try:
+                    self._render_session_messages(first_chunk)
+                finally:
+                    if hasattr(self, "chat_container") and self.chat_container:
+                        self.chat_container.setUpdatesEnabled(True)
+
+                # Реактивное восстановление Greeting Cycler при смене диалога до первого хода игрока
+                all_msgs = session_data.get("messages", []) or []
+                if (
+                    mode == "roleplay"
+                    and self.active_character
+                    and len(all_msgs) == 1
+                    and not all_msgs[0].get("is_user")
+                    and len(self.active_character.get_greetings_pool()) > 1
+                ):
+                    first_widget = None
+                    for i in range(self.chat_layout.count()):
+                        w = self.chat_layout.itemAt(i).widget()
+                        if isinstance(w, ChatMessageWidget):
+                            first_widget = w
+                            break
+                    if first_widget:
+                        curr_idx = session_data.get("active_greeting_idx", 0)
+                        self._create_greeting_cycler_chip(first_widget, self.active_character, curr_idx)
+
+                self._scroll_to_bottom()
+
+                # Чанк 2: отложенная подгрузка более ранних сообщений через микро-паузу (50 мс)
+                if earlier_chunk:
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(50, _render_earlier_chunk)
+
+            if getattr(self, "_is_initializing", False):
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, _render_and_finalize_chat)
+            else:
+                _render_and_finalize_chat()
+
             self._check_mode_lock()
             self.on_active_chat_changed(session_id)
             self.statusBar().showMessage(f"Загружен диалог: {session_data.get('title', 'Диалог')}", 3000)
@@ -1362,6 +1433,8 @@ class MainWindow(
 
     def _create_load_more_button(self):
         remaining = getattr(self, "_rendered_messages_offset", 0)
+        if hasattr(self, "chat_stream") and self.chat_stream:
+            self.chat_stream.remove_load_more_button()
         btn = self.chat_stream.create_load_more_button(remaining, on_click_callback=self._load_previous_messages_chunk)
         self._btn_load_more_widget = btn
 
@@ -1490,22 +1563,48 @@ class MainWindow(
         sidebar_w = 270
 
         if is_engineer:
-            if hasattr(self, "workspace_inspector"):
-                self.workspace_inspector.setVisible(True)
-                if hasattr(self.workspace_inspector, "refresh_files"):
-                    self.workspace_inspector.refresh_files()
+            self.workspace_inspector.setVisible(True)
+            if hasattr(self.workspace_inspector, "refresh_files"):
+                self.workspace_inspector.refresh_files()
             inspector_w = 380
             chat_w = max(450, total_w - sidebar_w - inspector_w)
             self.main_splitter.setSizes([sidebar_w, chat_w, inspector_w])
         else:
-            if hasattr(self, "workspace_inspector"):
-                self.workspace_inspector.setVisible(False)
+            if getattr(self, "_workspace_inspector", None) is not None:
+                self._workspace_inspector.setVisible(False)
             chat_w = max(600, total_w - sidebar_w)
             self.main_splitter.setSizes([sidebar_w, chat_w, 0])
 
+    @property
+    def workspace_inspector(self) -> WorkspaceInspectorWidget:
+        """Ленивый геттер инспектора песочницы: инициализирует тяжелые виджеты только при реальной необходимости."""
+        if getattr(self, "_workspace_inspector", None) is None:
+            self._init_workspace_inspector()
+        return self._workspace_inspector
+
+    @workspace_inspector.setter
+    def workspace_inspector(self, val):
+        self._workspace_inspector = val
+
+    def _init_workspace_inspector(self) -> WorkspaceInspectorWidget:
+        if getattr(self, "_workspace_inspector", None) is not None:
+            return self._workspace_inspector
+
+        inspector = WorkspaceInspectorWidget(self)
+        inspector.setVisible(False)
+        inspector.rename_session_requested.connect(self._on_rename_session_requested)
+        if hasattr(self, "main_splitter") and self.main_splitter is not None:
+            self.main_splitter.addWidget(inspector)
+            self.main_splitter.setStretchFactor(2, 0)
+
+        if getattr(self, "current_session", None) and isinstance(self.current_session, dict):
+            sess_title = self.current_session.get("title", "Песочница")
+            inspector.update_title(sess_title)
+
+        self._workspace_inspector = inspector
+        return self._workspace_inspector
+
     def toggle_workspace_inspector(self):
-        if not hasattr(self, "workspace_inspector"):
-            return
         if not self.is_engineer_mode_active():
             return
         is_visible = not self.workspace_inspector.isVisible()

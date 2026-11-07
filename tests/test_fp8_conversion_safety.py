@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 import pytest
 
 from ui.models_manager_dialog import ModelsManagerDialog
@@ -76,30 +77,42 @@ class TestWorkerNameResolution:
 
 
 class TestNameAffinityGuardAndDeletion:
-    """Проверка Name Affinity Guard и режимов Atomic Swap / Dual-file."""
+    """Проверка Name Affinity Guard и режимов Atomic Swap / Dual-file через ModelsManagerDialog."""
+
+    def _create_dummy_dialog(self, source_path: Path, delete_source: bool = True):
+        dummy = MagicMock()
+        dummy._fp8_source_path = source_path
+        dummy._fp8_target_row = -1
+        dummy.current_selected_row = -1
+        dummy.chk_delete_source.isChecked.return_value = delete_source
+        dummy._normalize_checkpoint_stem = ModelsManagerDialog._normalize_checkpoint_stem
+        dummy._resolve_selected_checkpoint_path = lambda x: source_path
+        dummy.available_checkpoints = []
+        dummy.combo_checkpoint.findText.return_value = 0
+        dummy.row_widgets = []
+        return dummy
 
     def test_guard_blocks_deleting_different_model(self):
         """Гарантирует, что при сжатии aamXL ни при каких условиях не будет удален Realistic Vision."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
-            orig_aam = tmp / "aamXLAnimeMix_v10_fp16e4.safetensors"
-            fp8_aam = tmp / "aamXLAnimeMix_v10_fp8e4.safetensors"
             foreign_rv = tmp / "Realistic_Vision_V5.1.safetensors"
+            fp8_aam = tmp / "aamXLAnimeMix_v10_fp8e4.safetensors"
 
-            orig_aam.write_text("aamXL")
-            fp8_aam.write_text("aamXL_fp8")
-            foreign_rv.write_text("realistic_vision")
+            foreign_rv.write_text("realistic_vision_weights")
+            fp8_aam.write_text("aamXL_fp8_weights")
 
-            src_norm = ModelsManagerDialog._normalize_checkpoint_stem(foreign_rv.name)
-            new_norm = ModelsManagerDialog._normalize_checkpoint_stem(fp8_aam.name)
+            dummy = self._create_dummy_dialog(source_path=foreign_rv, delete_source=True)
 
-            # Name Affinity Guard должен отклонить несовпадающие стэмы:
-            is_affinity_ok = (src_norm == new_norm)
-            assert not is_affinity_ok, "Name Affinity Guard обязан запретить удаление чужого файла!"
+            with patch("ui.models_manager_dialog.InfoBar"):
+                ModelsManagerDialog._on_fp8_finished(dummy, str(fp8_aam))
+
+            # Name Affinity Guard обязан заблокировать удаление чужого файла
             assert foreign_rv.is_file(), "Файл Realistic Vision обязан остаться нетронутым!"
+            assert foreign_rv.read_text() == "realistic_vision_weights"
 
     def test_atomic_in_place_swap(self):
-        """Проверяет режим Atomic Swap: исходное имя файла сохраняется, данные обновляются до FP8."""
+        """Проверяет режим Atomic Swap через реальный обработчик ModelsManagerDialog._on_fp8_finished."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
             orig_file = tmp / "aamXLAnimeMix_v10_fp16e4.safetensors"
@@ -108,20 +121,17 @@ class TestNameAffinityGuardAndDeletion:
             orig_file.write_text("HEAVY_6GB")
             temp_fp8.write_text("LIGHT_3GB")
 
-            src_norm = ModelsManagerDialog._normalize_checkpoint_stem(orig_file.name)
-            new_norm = ModelsManagerDialog._normalize_checkpoint_stem(temp_fp8.name)
-            assert src_norm == new_norm
+            dummy = self._create_dummy_dialog(source_path=orig_file, delete_source=True)
 
-            # Atomic Swap
-            orig_file.unlink()
-            os.replace(temp_fp8, orig_file)
+            with patch("ui.models_manager_dialog.InfoBar"):
+                ModelsManagerDialog._on_fp8_finished(dummy, str(temp_fp8))
 
-            assert orig_file.is_file()
-            assert orig_file.read_text() == "LIGHT_3GB"
-            assert not temp_fp8.exists()
+            assert orig_file.is_file(), "Исходный файл с целевым именем должен существовать!"
+            assert orig_file.read_text() == "LIGHT_3GB", "Исходный файл должен содержать новые FP8 веса!"
+            assert not temp_fp8.exists(), "Временный файл должен быть утилизирован после замены!"
 
     def test_corrupted_zero_byte_fp8_aborts_deletion(self):
-        """Если конвертер дал сбой или создал файл 0 байт, исходник ни в коем случае не удаляется."""
+        """Если конвертер создал файл 0 байт, _on_fp8_failed вызывается, а исходник не удаляется."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
             orig_file = tmp / "model.safetensors"
@@ -130,8 +140,13 @@ class TestNameAffinityGuardAndDeletion:
             orig_file.write_text("VALUABLE_ORIGINAL_WEIGHTS")
             broken_fp8.write_text("")  # 0 байт
 
-            is_valid = broken_fp8.is_file() and broken_fp8.stat().st_size > 0
-            assert not is_valid
+            dummy = self._create_dummy_dialog(source_path=orig_file, delete_source=True)
+
+            with patch("ui.models_manager_dialog.InfoBar"):
+                ModelsManagerDialog._on_fp8_finished(dummy, str(broken_fp8))
+
+            assert dummy._on_fp8_failed.called, "Должен быть вызван обработчик _on_fp8_failed"
+            assert orig_file.is_file(), "Исходный файл не должен быть удален!"
             assert orig_file.read_text() == "VALUABLE_ORIGINAL_WEIGHTS"
 
 
@@ -161,4 +176,3 @@ def test_resolve_forge_offload_policy_fast_and_stage_modes():
     assert pol_tight["mode"] == "STAGE_OFFLOAD"
     assert pol_tight["always_offload"] is True
     assert pol_tight["can_run"] is True
-

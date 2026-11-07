@@ -19,6 +19,23 @@ def _safe_thread_start(self, *args, **kwargs):
     return _orig_thread_start(self, *args, **kwargs)
 threading.Thread.start = _safe_thread_start
 
+# Заглушка синхронной загрузки FastEmbed ONNX для мгновенного старта в тестах
+try:
+    import fastembed
+    import numpy as np
+
+    class _FastEmbedMock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def embed(self, texts):
+            for _ in texts:
+                yield np.zeros(384, dtype=np.float32)
+
+    fastembed.TextEmbedding = _FastEmbedMock
+except ImportError:
+    pass
+
 _AIRGAP_BASE = Path(__file__).resolve().parent.parent / "pytest_airgap_sandbox"
 _AIRGAP_BASE.mkdir(parents=True, exist_ok=True)
 _AIRGAP_TEMP_ROOT = Path(tempfile.mkdtemp(prefix="run_", dir=str(_AIRGAP_BASE)))

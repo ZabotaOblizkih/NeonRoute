@@ -783,6 +783,20 @@ class ForgeClient(QObject):
             offload_pol = {"mode": "DEFAULT", "always_offload": False}
             logger.debug(f"[ForgeClient] Ошибка применения vram_policy: {_pol_err}")
 
+        if has_ad and "alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"]:
+            ad_args = payload["alwayson_scripts"]["ADetailer"].get("args", [])
+            # ad_args: [ad_enable, ad_skip_img2img, face_slot, hand_slot, ...]
+            slots_summary = []
+            for idx, slot in enumerate(ad_args[2:], start=1):
+                if isinstance(slot, dict):
+                    m = slot.get("ad_model", "none")
+                    d = slot.get("ad_denoising_strength", 0.0)
+                    sz = slot.get("ad_inpaint_width", 0)
+                    st = slot.get("ad_steps", "auto")
+                    slots_summary.append(f"Slot{idx}({m}: d={d}, steps={st}, {sz}px)")
+            if slots_summary:
+                logger.info(f"[ForgeClient.ADetailer] Активные слоты в payload: {' | '.join(slots_summary)}")
+
         logger.info(
             f"[SD Forge] Старт txt2img: {clean_width}x{clean_height}, шаги={clean_steps}, CFG={clean_cfg}, "
             f"Hires.fix={enable_hr}, ADetailer={has_ad}, VRAMMode={offload_pol.get('mode')}"

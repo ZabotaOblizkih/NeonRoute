@@ -25,6 +25,7 @@ class DummyHardwareHost(QWidget, HardwareEngineMixin):
         self.pill_forge = MagicMock()
         self._reload_active_lms_model_async = MagicMock()
         self._cancel_lms_reload = MagicMock()
+        self._active_tasks = {}
 
     def statusBar(self):
         return self._status_bar_mock
@@ -42,7 +43,8 @@ def test_scene_art_skips_when_forge_offline(qapp):
     host.forge_client.is_server_ready.return_value = False
     host.pill_forge.is_online = False
 
-    with patch.object(VRAMArbiter, "release_llm_for_diffusion") as mock_release:
+    with patch.object(VRAMArbiter, "release_llm_for_diffusion") as mock_release, \
+         patch("services.forge_client.ForgeClient.get_instance", return_value=host.forge_client):
         # 1. Проверка через _on_scene_art_requested
         host._on_scene_art_requested(text="Тестовая сцена")
         mock_release.assert_not_called()
@@ -71,7 +73,8 @@ def test_manual_and_direct_image_task_skips_when_forge_offline(qapp):
     host.process_manager.is_forge_running.return_value = False
     host.forge_client.is_server_ready.return_value = False
 
-    with patch.object(VRAMArbiter, "release_llm_for_diffusion") as mock_release:
+    with patch.object(VRAMArbiter, "release_llm_for_diffusion") as mock_release, \
+         patch("services.forge_client.ForgeClient.get_instance", return_value=host.forge_client):
         # Ручная генерация (!art)
         host._enqueue_image_task("Портрет персонажа")
         mock_release.assert_not_called()

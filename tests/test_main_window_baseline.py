@@ -248,3 +248,166 @@ def test_close_event_graceful_shutdown(main_window):
         assert mock_tray_hide.called
         assert main_window._shutdown_in_progress is True
         assert mock_sw_start.called
+
+
+
+# =============================================================================
+# 7. Краевые случаи: защита от гонок, спама и повреждения данных (Edge Cases)
+# =============================================================================
+
+def test_edge_case_rapid_empty_send_is_throttled(main_window):
+    """Краевой случай: отправка пустого ввода или пробелов блокируется без постановки задачи."""
+    main_window.task_queue.enqueue = MagicMock()
+
+    # 1. Пустой ввод
+    main_window.input_box.setPlainText("")
+    main_window._on_send_clicked()
+    assert not main_window.task_queue.enqueue.called
+
+    # 2. Пробелы, табы, переводы строк
+    main_window.input_box.setPlainText("   \n\t   \n  ")
+    main_window._on_send_clicked()
+    assert not main_window.task_queue.enqueue.called
+
+
+def test_edge_case_stream_abort_and_stop_button(main_window):
+    """Краевой случай: аварийная остановка стриминга по кнопке 'Стоп'."""
+    main_window.is_busy = True
+    main_window.input_box.set_busy(True)
+    main_window.task_queue.abort_current = MagicMock()
+
+    # Имитируем приход первого токена
+    main_window._on_token_streamed("Частичный ответ нейросети...")
+    assert main_window._turn_bubble is not None
+    assert main_window._current_streaming_widget is not None
+
+    # Нажатие кнопки 'Стоп'
+    main_window._on_stop_clicked()
+
+    # Проверяем корректный сброс состояния
+    assert main_window.task_queue.abort_current.called
+    assert main_window.is_busy is False
+    assert main_window._turn_bubble is None
+    assert main_window._current_streaming_widget is None
+    if hasattr(main_window.input_box, "text_input") and main_window.input_box.text_input:
+        assert main_window.input_box.text_input.isReadOnly() is False
+
+
+def test_edge_case_session_switch_during_streaming_isolation(main_window):
+    """Краевой случай: переключение диалога во время стриминга не допускает утечки токенов."""
+    # Сессия 1 со стримингом
+    main_window.is_busy = True
+    main_window._on_token_streamed("Секретные данные из сессии 1")
+    assert main_window._turn_bubble is not None
+
+    # Переключение на новую сессию (Сессия 2)
+    main_window._create_new_session("assistant")
+    assert main_window._turn_bubble is None
+    assert main_window._current_streaming_widget is None
+    assert main_window.is_busy is False
+
+    # Запоздалый токен из старого потока Сессии 1
+    main_window._on_token_streamed("Запоздалый токен")
+    # Токен должен быть отброшен без создания баббла
+    assert main_window._turn_bubble is None
+
+
+def test_edge_case_active_session_deletion_fallback(main_window, monkeypatch):
+    """Краевой случай: удаление активного диалога безопасно переключает на соседний или создает новый."""
+    from PyQt6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes)
+
+    # Создаем две сессии
+    main_window._create_new_session("assistant", title="Сессия А")
+    sess_a_id = main_window.current_session["id"]
+
+    main_window._create_new_session("assistant", title="Сессия Б")
+    sess_b_id = main_window.current_session["id"]
+
+    # Удаляем активную Сессию Б -> переключение на оставшуюся Сессию А
+    main_window._on_delete_session_requested(sess_b_id)
+    assert main_window.current_session is not None
+    assert main_window.current_session["id"] == sess_a_id
+
+    # Удаляем последнюю оставшуюся Сессию А -> автоматическое создание чистой сессии
+    main_window._on_delete_session_requested(sess_a_id)
+    assert main_window.current_session is not None
+    assert main_window.current_session["id"] != sess_a_id
+
+
+def test_edge_case_malformed_session_json_resilience(main_window, tmp_path, monkeypatch):
+    """Краевой случай: поврежденный JSON-файл в history не ломает загрузку сохраненных сессий."""
+    import json
+    import config
+    import services.session_manager as sm
+
+    clean_hist = tmp_path / "corrupt_hist_test"
+    clean_hist.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "HISTORY_DIR", clean_hist)
+    monkeypatch.setattr(sm, "HISTORY_DIR", clean_hist, raising=False)
+
+    # 1. Валидная сессия
+    valid_data = {
+        "id": "valid_sess_1",
+        "title": "Рабочий диалог",
+        "mode": "assistant",
+        "messages": [],
+        "chat_history": []
+    }
+    (clean_hist / "chat_valid_sess_1.json").write_text(json.dumps(valid_data), encoding="utf-8")
+
+    # 2. Поврежденный файл (битый синтаксис JSON)
+    (clean_hist / "chat_corrupt_bad_syntax.json").write_text("{\"id\": \"broken\", missing_bracket", encoding="utf-8")
+
+    # 3. Пустой файл
+    (clean_hist / "chat_empty.json").write_text("", encoding="utf-8")
+
+    # Загрузка сессий не должна выбрасывать исключений
+    main_window._load_saved_sessions()
+
+    assert main_window.current_session is not None
+    assert main_window.current_session.get("id") == "valid_sess_1"
+
+
+def test_edge_case_greeting_cycler_lifecycle_and_first_turn_removal(main_window):
+    """Краевой случай: чип смены завязок удаляется при совершении первого хода пользователя."""
+    from services.tavern_parser import CharacterCard
+
+    card = CharacterCard(name="TestHero", first_mes="Привет, путник!", alternate_greetings=["Здравствуй, герой!", "Приветствую!"])
+    main_window._create_new_session("roleplay", character_card=card)
+
+    assert getattr(main_window, "_greeting_cycler_widget", None) is not None
+
+    # Пользователь делает первый ход
+    main_window.input_box.setPlainText("Мой первый ответ")
+    main_window.task_queue.enqueue = MagicMock()
+    main_window._on_send_clicked()
+
+    # Чип смены завязок гарантированно удален
+    assert getattr(main_window, "_greeting_cycler_widget", None) is None
+
+
+def test_edge_case_workspace_inspector_toggle_and_mode_lock(main_window):
+    """Краевой случай: шорткат инспектора (Ctrl+B) доступен строго в режиме Инженера."""
+    # 1. В режиме ассистента вызов toggle не должен показывать инспектор
+    assert main_window.is_engineer_mode_active() is False
+    main_window.toggle_workspace_inspector()
+    assert main_window.workspace_inspector.isVisible() is False
+
+    # 2. Переходим в режим Инженера: инспектор открывается
+    main_window.mode_coordinator.transition_to(AppMode.ENGINEER)
+    assert main_window.is_engineer_mode_active() is True
+    assert main_window.workspace_inspector.isVisible() is True
+
+    # 3. Переключаем инспектор в режиме Инженера: скрывается
+    main_window.toggle_workspace_inspector()
+    assert main_window.workspace_inspector.isVisible() is False
+
+    # 4. Повторный вызов: снова показывается
+    main_window.toggle_workspace_inspector()
+    assert main_window.workspace_inspector.isVisible() is True
+
+    # 5. Возврат в Assistant: инспектор принудительно скрывается
+    main_window.mode_coordinator.transition_to(AppMode.ASSISTANT)
+    assert main_window.is_engineer_mode_active() is False
+    assert main_window.workspace_inspector.isVisible() is False

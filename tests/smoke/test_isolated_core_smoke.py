@@ -27,9 +27,28 @@ def test_01_acid_atomic_write_json():
 
 
 def test_02_vram_arbiter_exclusivity():
-    arbiter = VRAMArbiter(lm_client=MagicMock(), forge_client=MagicMock())
-    arbiter.prepare_for_task("llm_chat")
+    mock_lm = MagicMock()
+    mock_forge = MagicMock()
+    mock_forge.is_server_ready.return_value = True
+
+    arbiter = VRAMArbiter(lm_client=mock_lm, forge_client=mock_forge)
+
+    # 1. Захват GPU под LLM: выгружает Forge и переключает владельца
+    arbiter.prepare_for_task("llm")
+    assert arbiter._current_owner == "llm"
+    assert mock_forge.unload_checkpoint.called
+    assert mock_forge.free_vram.called
+
+    # 2. Переключение на диффузию: синхронно выгружает LLM и ждет освобождения VRAM
     arbiter.release_llm_for_diffusion()
+    assert arbiter._current_owner == "diffusion"
+    assert mock_lm.unload_models_cli.called
+    assert mock_forge._wait_for_vram_clear.called
+
+    # 3. Защита от преждевременной выгрузки LLM для задач генерации арт-промпта
+    mock_lm.reset_mock()
+    arbiter.prepare_for_task("image", metadata={"needs_llm_prompt_gen": True})
+    assert not mock_lm.unload_models_cli.called
 
 
 def test_03_layer_budgeter_kv_math(tmp_path):

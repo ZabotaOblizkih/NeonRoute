@@ -1,6 +1,32 @@
 {
   "version": 1,
-  "last_synced_at": "2026-11-05T23:44:10.192331",
-  "total_documents": 0,
-  "documents": {}
+  "last_synced_at": "2026-11-07T22:58:53.370759",
+  "total_documents": 1,
+  "documents": {
+    "ARCHITECTURE.md": {
+      "filename": "ARCHITECTURE.md",
+      "relative_path": "ARCHITECTURE.md",
+      "path": "C:\\NeonRoute\\knowledge_base\\ARCHITECTURE.md",
+      "mtime": 1793910394.6276984,
+      "hash": "6da1cf55fb1645de7130e7eeaaba71e4f552f7ef49df68f8d624c0c6d64b0912",
+      "size_bytes": 97406,
+      "size_kb": 95.12,
+      "line_count": 908,
+      "page_count": null,
+      "updated_at": "2026-11-07T22:58:53.370759",
+      "triggers": [
+        "VRAM",
+        "строк",
+        "NeonRoute",
+        "LLM",
+        "REST",
+        "API",
+        "FastAPI",
+        "services",
+        "системы",
+        "system"
+      ],
+      "status": "parsed"
+    }
+  }
 }

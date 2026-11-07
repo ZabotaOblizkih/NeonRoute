@@ -587,15 +587,23 @@ class RoleplayFlowControllerMixin:
         clean_ctx = re.sub(r'</?(?:stats|thought|meters|choices|check|terminal|sms|phone)>', '', clean_ctx, flags=re.IGNORECASE).strip()
 
         # 4. Формирование контекста под мизансцену
+        from services.assistant_prompt_builder import resolve_model_architecture
+        arch = resolve_model_architecture(target_model_id)
+
+        prompt_task_header = (
+            "Generate a concise descriptive visual prompt (2-3 sentences) for this RP scene:"
+            if "xl" in arch.lower()
+            else "Generate concise, comma-separated Danbooru tags for this RP scene:"
+        )
+
         if scene_type == "intimate":
             gear_status = "ЗАБЛОКИРОВАНО (nude, экипировка скрыта)"
             payload_lines = [
-                "Generate concise, comma-separated Danbooru tags for this RP scene:",
+                prompt_task_header,
                 f"- Location: {cur_loc or 'Private quarters'}",
                 "- State: strictly alone in private intimate sanctuary (characters undressed, bare skin)",
                 f"- Subject: {clean_visual_summary or 'Unspecified'}",
-                f"- Scene context: {clean_ctx or 'Intimate moment'}",
-                "CRITICAL: Output ONLY comma-separated tags inside [IMAGE_PROMPT: ...]. Do NOT write prose or paragraphs."
+                f"- Scene context: {clean_ctx or 'Intimate moment'}"
             ]
         else:
             inv_items = cast_data.get("inventory", []) if isinstance(cast_data, dict) else []
@@ -604,7 +612,7 @@ class RoleplayFlowControllerMixin:
 
             gear_status = f"АКТИВНО ({inventory_str})" if inventory_str else "В ножнах/убрано"
             payload_lines = [
-                "Generate concise, comma-separated Danbooru tags for this RP scene:",
+                prompt_task_header,
                 f"- Location: {cur_loc or 'Unspecified'}",
                 f"- Outfit: {comp_outfit}",
                 f"- Subject: {clean_visual_summary or 'Unspecified'}",
@@ -612,7 +620,17 @@ class RoleplayFlowControllerMixin:
             ]
             if inventory_str and scene_type in ("action", "exploration"):
                 payload_lines.insert(2, f"- Equipment: {inventory_str}")
-            payload_lines.append("CRITICAL: Output ONLY comma-separated tags inside [IMAGE_PROMPT: ...]. Do NOT write prose or paragraphs.")
+
+        if "xl" in arch.lower():
+            payload_lines.append(
+                "CRITICAL: Output ONLY the descriptive prompt inside [IMAGE_PROMPT: ...]. "
+                "Do NOT write conversational filler or prose outside the brackets."
+            )
+        else:
+            payload_lines.append(
+                "CRITICAL: Output ONLY comma-separated tags inside [IMAGE_PROMPT: ...]. "
+                "Do NOT write prose or paragraphs."
+            )
 
         logger.info(
             f"[ArtDirector.Cinema] 🎥 Мизансцена: '{scene_type.upper()}' -> "
@@ -621,7 +639,11 @@ class RoleplayFlowControllerMixin:
 
         from services.forge_models import detect_style_from_checkpoint
         clean_target_style = detect_style_from_checkpoint(target_model_id) if target_model_id else "realistic"
-        system_prompt = RoleplayPromptBuilder.get_cinematic_scene_directive(scene_type, clean_target_style)
+        system_prompt = RoleplayPromptBuilder.get_cinematic_scene_directive(
+            scene_type,
+            clean_target_style,
+            architecture=arch
+        )
 
         user_payload = "\n".join(payload_lines)
 

@@ -252,21 +252,43 @@ async def chat_stream(
 
                     # Trigger Gallery Art Pass if gallery was detected
                     if has_gallery:
-                        def _gallery_art_worker():
+                        def _gallery_art_worker(session=session, profile=profile, req=req):
                             try:
-                                logger.info(f"[ChatStream] Starting Gallery Art Pass (Two-Pass) for query: '{req.text}'")
+                                target_model_id = "realistic"
+                                target_model_desc = "CyberRealistic"
+
+                                session_sampling = session.get("sampling_params") if isinstance(session.get("sampling_params"), dict) else {}
+                                profile_sampling = profile.get("sampling") if "profile" in locals() and isinstance(profile.get("sampling"), dict) else {}
+                                req_overrides = getattr(req, "sampling_overrides", {}) or {}
+
+                                resolved_temp = (
+                                    session_sampling.get("temperature")
+                                    or req_overrides.get("temperature")
+                                    or profile_sampling.get("temperature")
+                                    or 0.8
+                                )
+
+                                try:
+                                    target_temperature = float(resolved_temp)
+                                except (TypeError, ValueError):
+                                    target_temperature = 0.8
+
+                                logger.info(
+                                    f"[ChatStream] Starting Gallery Art Pass for query: '{req.text}' "
+                                    f"(target_model='{target_model_id}', temperature={target_temperature})"
+                                )
 
                                 # 1. Вспомогательный скрытый арт-промпт
                                 art_llm_prompt = AssistantPromptBuilder.build_gallery_art_prompt(
                                     user_query=req.text,
-                                    target_model_id="realistic",
-                                    target_model_desc="CyberRealistic"
+                                    target_model_id=target_model_id,
+                                    target_model_desc=target_model_desc
                                 )
 
                                 # 2. Скрытый вызов к LM Studio для генерации Danbooru-тегов
                                 raw_tags = lm_client.chat_completion(
                                     messages=[{"role": "user", "content": art_llm_prompt}],
-                                    temperature=0.4,
+                                    temperature=target_temperature,
                                     context_length=4096,
                                     max_tokens=512,
                                     stream=False,

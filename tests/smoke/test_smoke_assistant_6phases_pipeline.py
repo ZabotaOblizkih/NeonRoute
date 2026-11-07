@@ -66,15 +66,19 @@ def test_smoke_assistant_6phases_pipeline(isolated_pipeline_env):
 
     # ── ФАЗА 2: Семантическая маршрутизация (SkillRouter) ──
     router = SkillRouter.get_instance()
-    # Проверяем маршрутизацию (возвращает имя скилла или None для дефолта)
-    routed_skill = None
-    if hasattr(router, "route_query"):
-        routed_skill = router.route_query(user_input)
-    elif hasattr(router, "match"):
-        routed_skill = router.match(user_input)
-    # Фаза 2 считается успешной, если роутер отработал без падений
-    assert routed_skill is None or isinstance(routed_skill, (str, dict)), "[Фаза 2] Сбой маршрутизации скиллов"
-    print(f"[Фаза 2: Роутинг] OK - маршрутизатор вернул: {routed_skill}")
+    # Проверяем реальный метод route(query) -> Tuple[Optional[str], float, str]
+    skill_id, score, reason = router.route(user_input)
+    assert skill_id is None or isinstance(skill_id, str), f"[Фаза 2] Некорректный skill_id: {skill_id}"
+    assert isinstance(score, float) and 0.0 <= score <= 1.0, f"[Фаза 2] Некорректный score: {score}"
+    assert isinstance(reason, str) and len(reason) > 0, f"[Фаза 2] Пустая причина маршрутизации"
+
+    # Проверяем эвристику прямого триггера (детерминированный контракт)
+    art_skill, art_score, _ = router.route("нарисуй неоновый город в стиле киберпанк")
+    assert art_skill == "gallery", f"[Фаза 2] Эвристика галереи не распознала триггер: {art_skill}"
+    assert art_score == 1.0
+
+    routed_skill = skill_id
+    print(f"[Фаза 2: Роутинг] OK - маршрутизатор вернул: skill='{routed_skill}', score={score:.2f}, reason='{reason}'")
 
     # ── ФАЗА 3: Сборка контекстного окна ──
     with patch("services.context_window_builder.memory_db", None):
