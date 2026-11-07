@@ -436,16 +436,46 @@ class HybridSearchEngine:
             overlap=overlap
         )
 
+    def _is_neural_vectorizer(self) -> bool:
+        return hasattr(self.dense_vectorizer, "embed") and not isinstance(self.dense_vectorizer, BuiltinDenseVectorizer)
+
+    def _get_expected_dim(self) -> int:
+        return 384 if self._is_neural_vectorizer() else getattr(self.dense_vectorizer, "dim", 256)
+
+    def _get_dense_gatekeeper_threshold(self) -> float:
+        return 0.55 if self._is_neural_vectorizer() else 0.75
+
+    def _compute_dense_matrix(self, texts: List[str]) -> np.ndarray:
+        dim = self._get_expected_dim()
+        if not texts:
+            return np.zeros((0, dim), dtype=np.float32)
+
+        if hasattr(self.dense_vectorizer, "embed_batch"):
+            mat = np.asarray(self.dense_vectorizer.embed_batch(texts), dtype=np.float32)
+        elif hasattr(self.dense_vectorizer, "embed"):
+            raw_vecs = list(self.dense_vectorizer.embed(texts))
+            mat = np.vstack(raw_vecs).astype(np.float32) if raw_vecs else np.zeros((0, dim), dtype=np.float32)
+        elif hasattr(self.dense_vectorizer, "embed_text"):
+            vecs = [self.dense_vectorizer.embed_text(t) for t in texts]
+            mat = np.vstack(vecs).astype(np.float32) if vecs else np.zeros((0, dim), dtype=np.float32)
+        else:
+            return np.zeros((len(texts), dim), dtype=np.float32)
+
+        if mat.size > 0:
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            mat = mat / np.maximum(norms, 1e-6)
+        return mat
+
     def index_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         """
         Индексация списка чанков:
         1. BM25 инвертированный индекс.
-        2. Dense матрица вложений.
+        2. Dense матрица вложений (с обязательной L2-нормализацией).
         """
         self.chunks = chunks
         if not chunks:
             self.bm25.index([])
-            self.dense_matrix = np.zeros((0, 256), dtype=np.float32)
+            self.dense_matrix = np.zeros((0, self._get_expected_dim()), dtype=np.float32)
             return
 
         texts = [c.get("text", "") for c in chunks]
@@ -453,16 +483,8 @@ class HybridSearchEngine:
         # 1. Построение BM25 индекса
         self.bm25.index(texts)
 
-        # 2. Построение Dense матрицы векторов
-        if hasattr(self.dense_vectorizer, "embed_batch"):
-            self.dense_matrix = self.dense_vectorizer.embed_batch(texts)
-        elif hasattr(self.dense_vectorizer, "embed"):
-            # Поддержка FastEmbed TextEmbedding.embed()
-            raw_vecs = list(self.dense_vectorizer.embed(texts))
-            self.dense_matrix = np.vstack(raw_vecs) if raw_vecs else np.zeros((0, 256), dtype=np.float32)
-        else:
-            vecs = [self.dense_vectorizer.embed_text(t) for t in texts]
-            self.dense_matrix = np.vstack(vecs) if vecs else np.zeros((0, 256), dtype=np.float32)
+        # 2. Построение нормализованной Dense матрицы векторов
+        self.dense_matrix = self._compute_dense_matrix(texts)
 
     def search(
         self,
@@ -531,14 +553,15 @@ class HybridSearchEngine:
 
         # --- Контур 3: RRF & Weighted Fusion с Gatekeeper-валидацией ---
         candidates: List[Dict[str, Any]] = []
+        dense_gate = self._get_dense_gatekeeper_threshold()
 
         for idx in range(num_chunks):
             s_bm25 = float(norm_bm25[idx])
             s_dense = float(dense_scores[idx])
 
             # Gatekeeper: при отсутствии точных совпадений ключевых слов / артикулов (BM25 == 0.0),
-            # кандидат допускается ТОЛЬКО при сильном семантическом сходстве (dense_score >= 0.75).
-            if s_bm25 <= 1e-5 and s_dense < 0.75:
+            # кандидат допускается ТОЛЬКО при уверенном семантическом сходстве (dense_score >= dense_gate).
+            if s_bm25 <= 1e-5 and s_dense < dense_gate:
                 continue
 
             # RRF (Reciprocal Rank Fusion)
@@ -573,8 +596,8 @@ class HybridSearchEngine:
 
     def to_dict(self) -> Dict[str, Any]:
         """Сериализация состояния движка и всех чанков для кэша на диске."""
-        return {
-            "version": 1,
+        payload: Dict[str, Any] = {
+            "version": 2,
             "k1": self.k1,
             "b": self.b,
             "alpha": self.alpha,
@@ -583,6 +606,10 @@ class HybridSearchEngine:
             "chunks": self.chunks,
             "bm25_index": self.bm25.to_dict(),
         }
+        if self.dense_matrix is not None and self.dense_matrix.size > 0:
+            payload["dense_dim"] = int(self.dense_matrix.shape[1])
+            payload["dense_vectors"] = np.round(self.dense_matrix, 5).tolist()
+        return payload
 
     def from_dict(self, data: Dict[str, Any]) -> None:
         """Восстановление состояния движка из сериализованных данных."""
@@ -598,12 +625,20 @@ class HybridSearchEngine:
         else:
             self.bm25.index(texts)
 
-        # Восстановление Dense матрицы
-        if texts:
-            if hasattr(self.dense_vectorizer, "embed_batch"):
-                self.dense_matrix = self.dense_vectorizer.embed_batch(texts)
-            else:
-                vecs = [self.dense_vectorizer.embed_text(t) for t in texts]
-                self.dense_matrix = np.vstack(vecs)
+        # Восстановление нормализованной Dense матрицы (из кэша или через пересчет)
+        expected_dim = self._get_expected_dim()
+        cached_vecs = data.get("dense_vectors")
+        cached_dim = data.get("dense_dim")
+        if (
+            texts
+            and cached_vecs
+            and len(cached_vecs) == len(texts)
+            and cached_dim == expected_dim
+        ):
+            mat = np.asarray(cached_vecs, dtype=np.float32)
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            self.dense_matrix = mat / np.maximum(norms, 1e-6)
+        elif texts:
+            self.dense_matrix = self._compute_dense_matrix(texts)
         else:
-            self.dense_matrix = np.zeros((0, 256), dtype=np.float32)
+            self.dense_matrix = np.zeros((0, expected_dim), dtype=np.float32)

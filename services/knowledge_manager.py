@@ -119,12 +119,16 @@ class KnowledgeManager:
         if cls._embedding_model is None:
             try:
                 from services import memory_db
-                if getattr(memory_db, "_EMBED_MODEL", None) is not None:
-                    cls._embedding_model = memory_db._EMBED_MODEL
+                existing = getattr(memory_db, "_EMBED_MODEL", None)
+                if existing not in (None, False) and type(existing).__name__ != "_FastEmbedMock":
+                    cls._embedding_model = existing
                 else:
                     from fastembed import TextEmbedding
+                    if getattr(TextEmbedding, "__name__", "") == "_FastEmbedMock":
+                        return None
                     cls._embedding_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-                    memory_db._EMBED_MODEL = cls._embedding_model
+                    if existing is None:
+                        memory_db._EMBED_MODEL = cls._embedding_model
             except Exception as e:
                 logger.warning(f"[KnowledgeManager] Не удалось инициализировать FastEmbed: {e}")
         return cls._embedding_model
@@ -176,7 +180,7 @@ class KnowledgeManager:
         if not reload and cache_key in cls._search_engine_cache:
             return cls._search_engine_cache[cache_key]
 
-        engine = HybridSearchEngine()
+        engine = HybridSearchEngine(dense_vectorizer=cls.get_embedding_model())
         if idx_path.exists():
             try:
                 with open(idx_path, "r", encoding="utf-8") as f:
@@ -480,7 +484,7 @@ class KnowledgeManager:
                             doc_chunks = HybridSearchEngine.chunk_text(parsed_doc.content, filename=fname)
                             all_chunks.extend(doc_chunks)
 
-            engine = HybridSearchEngine()
+            engine = HybridSearchEngine(dense_vectorizer=cls.get_embedding_model())
             engine.index_chunks(all_chunks)
             atomic_write_json(search_idx_path, engine.to_dict())
             cls._search_engine_cache[str(search_idx_path.resolve())] = engine
@@ -575,7 +579,7 @@ class KnowledgeManager:
                         filtered_ch = [c for c in all_ch if c.get("filename") != name_key]
                         if len(filtered_ch) != len(all_ch):
                             from services.hybrid_search import HybridSearchEngine
-                            eng = HybridSearchEngine()
+                            eng = HybridSearchEngine(dense_vectorizer=cls.get_embedding_model())
                             eng.index_chunks(filtered_ch)
                             atomic_write_json(search_idx_path, eng.to_dict())
                             cls._search_engine_cache[str(search_idx_path.resolve())] = eng
@@ -775,17 +779,19 @@ class KnowledgeManager:
             chunk_score = best_chunk.get("score", 0.0) if best_chunk else 0.0
 
             # Gatekeeper: если нет совпадения по триггерам/имени файла, требуем от чанка либо BM25 > 0,
-            # либо высокой семантической уверенности (dense_score >= 0.75)
+            # либо высокой семантической уверенности (dense_score >= dense_gate)
+            dense_gate = engine._get_dense_gatekeeper_threshold() if hasattr(engine, "_get_dense_gatekeeper_threshold") else 0.75
+            b_dense = best_chunk.get("dense_score", 0.0) if best_chunk else 0.0
             if score_points <= 0.0:
                 if not best_chunk:
                     continue
                 b_bm25 = best_chunk.get("bm25_score", 0.0)
-                b_dense = best_chunk.get("dense_score", 0.0)
-                if b_bm25 <= 1e-5 and b_dense < 0.75:
+                if b_bm25 <= 1e-5 and b_dense < dense_gate:
                     continue
 
-            # Синтез скоров гибридного поиска и триггерного фильтра
-            combined_score = max(norm_score, chunk_score)
+            # Синтез скоров гибридного поиска, семантической близости и триггерного фильтра
+            semantic_boost = round(b_dense * 0.6, 3) if b_dense >= dense_gate else 0.0
+            combined_score = max(norm_score, chunk_score, semantic_boost)
 
             if combined_score >= threshold or (score_points >= 1.0 and norm_score >= 0.2) or chunk_score >= threshold:
                 doc_entry = dict(doc)
