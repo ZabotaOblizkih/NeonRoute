@@ -174,6 +174,19 @@ class ProcessManager(QObject):
     def _tracked_pid(self, val: Optional[int]):
         self._saved_tracked_pid = val
 
+    def _safe_emit(self, signal_name: str, *args) -> bool:
+        """Safely emits a pyqtSignal without crashing if underlying C++ QObject was deleted."""
+        try:
+            sig = getattr(self, signal_name, None)
+            if sig is not None:
+                sig.emit(*args)
+                return True
+        except RuntimeError:
+            logger.debug(f"[ProcessManager] Ignored signal '{signal_name}' emit on deleted QObject.")
+        except Exception:
+            pass
+        return False
+
     def _set_server_state(self, new_state: ServerState, message: str = ""):
         self._server_state = new_state
         if new_state == ServerState.ERROR and message:
@@ -181,10 +194,7 @@ class ProcessManager(QObject):
         elif new_state == ServerState.READY:
             self.last_error = None
         logger.info(f"[ProcessManager.ServerState] {new_state.value}: {message}")
-        try:
-            self.server_state_changed.emit(new_state.value, message)
-        except Exception:
-            pass
+        self._safe_emit("server_state_changed", new_state.value, message)
 
     def has_headless_server(self) -> bool:
         """Checks if headless llama-server.exe is available via ServerConfigResolver."""
@@ -319,7 +329,7 @@ class ProcessManager(QObject):
             msg = "LLM выгружен для Forge" if for_forge_eviction else "Сервер LLM остановлен"
             self._set_server_state(next_state, msg)
             if not for_forge_eviction:
-                self.lms_status_changed.emit(False, msg)
+                self._safe_emit("lms_status_changed", False, msg)
 
     def _wait_for_server_ready(
         self,
@@ -632,7 +642,7 @@ class ProcessManager(QObject):
                     ready_msg = f"Модель {model_path.stem} готова к работе ({elapsed} с)."
                     logger.info(f"llama-server ready on {host}:{port} in {elapsed}s.")
                     self._set_server_state(ServerState.READY, ready_msg)
-                    self.lms_status_changed.emit(True, "Сервер LLM запущен.")
+                    self._safe_emit("lms_status_changed", True, "Сервер LLM запущен.")
                     self._current_running_ngl = effective_ngl
                     self.last_error = None
                     if hasattr(self, "lm_client") and self.lm_client:
@@ -647,13 +657,13 @@ class ProcessManager(QObject):
                         logger.warning(err_msg)
                         self._kill_llama_server_instance()
                         self._set_server_state(ServerState.ERROR, err_msg)
-                        self.lms_status_changed.emit(False, err_msg)
+                        self._safe_emit("lms_status_changed", False, err_msg)
                     return False
             except Exception as e:
                 logger.error(f"Error starting llama-server: {e}")
                 self._kill_llama_server_instance()
                 self._set_server_state(ServerState.ERROR, str(e))
-                self.lms_status_changed.emit(False, str(e))
+                self._safe_emit("lms_status_changed", False, str(e))
                 return False
 
     def restart_llama_server_async(self):
@@ -701,9 +711,9 @@ class ProcessManager(QObject):
 
             ok = self.start_llama_server_sync(model_identifier=target_model, context_length=target_ctx)
             if ok:
-                self.action_completed.emit("lms_start", True, "LLM сервер успешно запущен.")
+                self._safe_emit("action_completed", "lms_start", True, "LLM сервер успешно запущен.")
             else:
-                self.action_completed.emit("lms_start", False, "Не удалось запустить LLM сервер.")
+                self._safe_emit("action_completed", "lms_start", False, "Не удалось запустить LLM сервер.")
             return
 
         # Legacy LMS CLI fallback

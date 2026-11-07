@@ -17,6 +17,9 @@ def test_mainwindow_headless_lifecycle(qapp, monkeypatch):
     """Смок-тест инициализации MainWindow, контекста сессии и переключения режимов."""
     monkeypatch.setattr("services.lm_studio.LMStudioClient.check_health", lambda self: True)
     monkeypatch.setattr("services.layer_budgeter.LayerBudgeter.detect_gpu_topology", lambda: "PURE COMPUTE")
+    monkeypatch.setattr("services.process_manager.ProcessManager.is_lm_studio_running", lambda self: True)
+    monkeypatch.setattr("services.process_manager.ProcessManager.start_lm_studio_async", lambda *a, **kw: None)
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
     
     from ui.main_window import MainWindow
 
@@ -76,6 +79,9 @@ def test_startup_non_blocking_guard(qapp, monkeypatch, tmp_path):
 
     monkeypatch.setattr("services.lm_studio.LMStudioClient.check_health", lambda self: True)
     monkeypatch.setattr("services.layer_budgeter.LayerBudgeter.detect_gpu_topology", lambda: "PURE COMPUTE")
+    monkeypatch.setattr("services.process_manager.ProcessManager.is_lm_studio_running", lambda self: True)
+    monkeypatch.setattr("services.process_manager.ProcessManager.start_lm_studio_async", lambda *a, **kw: None)
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
 
     violations = []
 
@@ -164,6 +170,18 @@ def test_startup_non_blocking_guard(qapp, monkeypatch, tmp_path):
         assert not violations, f"MainThread blocking calls detected: {violations}"
         assert not early_vector_inits, f"Premature FastEmbed compilation detected in startup phase: {early_vector_inits}"
     finally:
+        for worker_attr in ("task_queue", "system_monitor", "health_worker", "_knowledge_sync_worker"):
+            worker = getattr(window, worker_attr, None)
+            if worker is not None:
+                try:
+                    if hasattr(worker, "stop"):
+                        worker.stop()
+                    if hasattr(worker, "quit"):
+                        worker.quit()
+                    if hasattr(worker, "wait"):
+                        worker.wait(500)
+                except Exception:
+                    pass
         window._shutdown_completed = True
         window.close()
         SandboxManager.set_active_session_id(None)

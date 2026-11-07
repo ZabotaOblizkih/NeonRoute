@@ -89,7 +89,12 @@ def test_process_manager_forge_launch_cmd_baseline(qapp, tmp_path):
         pm._run_forge_start()
 
         assert mock_popen.called, "subprocess.Popen должен быть вызван для запуска Forge"
-        call_args, call_kwargs = mock_popen.call_args
+        forge_calls = [
+            c for c in mock_popen.call_args_list
+            if c.args and isinstance(c.args[0], list) and any("forge_launcher.bat" in str(x) for x in c.args[0])
+        ]
+        assert forge_calls, f"Вызов forge_launcher.bat не найден среди вызовов Popen: {mock_popen.call_args_list}"
+        call_args, call_kwargs = forge_calls[0].args, forge_calls[0].kwargs
 
         cmd = call_args[0]
         cwd = call_kwargs.get("cwd")

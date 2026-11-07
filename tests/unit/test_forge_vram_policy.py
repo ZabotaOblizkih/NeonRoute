@@ -37,7 +37,12 @@ def test_forge_launch_cmd_contains_always_offload_on_8gb(tmp_path):
         pm._run_forge_start()
 
         assert mock_popen.called
-        cmd = mock_popen.call_args[0][0]
+        forge_calls = [
+            c for c in mock_popen.call_args_list
+            if c.args and isinstance(c.args[0], list) and any("forge_launcher.bat" in str(x) for x in c.args[0])
+        ]
+        assert forge_calls, f"Вызов forge_launcher.bat не найден среди вызовов Popen: {mock_popen.call_args_list}"
+        cmd = forge_calls[0].args[0]
         assert "--always-offload-from-vram" in cmd
         assert "--api" in cmd
         assert "--port" in cmd
