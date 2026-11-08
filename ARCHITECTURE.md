@@ -3,8 +3,8 @@
 > **Версия системы**: NeonRoute v0.9.1-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 246 файлов Python, ~86 050 строк кода (без учета vendored PyQt-Fluent-Widgets)  
-> **Статус верификации**: 381 тест собран и пройден (100% Pass Rate: 54 smoke, 190 unit, 8 integration, 129 regression)
+> **Метрики кодовой базы**: 248 файлов Python, ~86 350 строк кода (без учета vendored PyQt-Fluent-Widgets)  
+> **Статус верификации**: 393 теста собрано и пройдено (100% Pass Rate: 54 smoke, 202 unit, 8 integration, 129 regression)
 
 ---
 
@@ -24,7 +24,8 @@
 | **ADR-08** | `36c2c50`, `2359063` | `ui/main_window.py`, `ui/controllers/chat_flow_controller.py`, `ui/controllers/reminder_controller.py`, `tests/` | Монолитный `MainWindow` (2096 строк) содержал мертвые прокси-методы, смешивал кинематику скролла с логикой бизнес-слоя, а контроллер напоминаний не имел явного жизненного цикла. | 1) Инкапсуляция `ReminderController` с явным методом `cleanup()`.<br>2) Перенос кинетики скролла и логики залипания внизу (`_is_at_bottom`) в `ChatFlowControllerMixin`.<br>3) Удаление избыточных прокси-переопределений (`_on_llm_response_received`, `_on_send_clicked`).<br>4) Формирование базового набора характеризационных тестов `tests/test_main_window_baseline.py` (14 тестов). |
 | **ADR-09** | `0142b29` | `ui/controllers/assistant_flow_controller.py`, `services/roleplay_flow_controller.py`, `services/task_queue.py` | Синхронный поиск в RAG и базе памяти в UI-потоке перед отправкой задачи вызывал латентность 15–150 мс (до 2 с на холодном старте). | Переход на отложенную сборку контекста (Deferred Context Assembly Runner): отправка сообщения за $< 0.2$ мс в UI, сборка RAG и памяти внутри фонового потока `TaskQueueWorker`. |
 | **ADR-10** | `c6b83a2`, `a9bd983` | `core/forge_locator.py`, `core/win32_job.py`, `services/process_manager.py` | Хардкод путей Forge, конфликты DLL виртуального окружения, зависание процессов-зомби при аварийном выходе. | 1) 5-уровневый каскад локатора с раскрытием NTFS Junctions.<br>2) Изоляция окружения `get_clean_forge_env`.<br>3) Двухфакторная проверка L4 сокет + L7 HTTP handshake.<br>4) Windows Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`).<br>5) Динамический флаг `--always-offload-from-vram` на GPU $\le 8$ ГБ. |
-| **ADR-11** | `HEAD` | `ui/main_window.py`, `ui/controllers/session_controller.py`, `ui/controllers/search_controller.py`, `ui/controllers/dialog_controller.py`, `ui/components/chat_list_item.py` | Фасад `MainWindow` содержал 939 строк монолитной логики сессий, разрозненные методы поиска и рудиментарный monkeypatching (`AvatarCropDialog`, `resizeEvent` элементов списка сессий), нарушая SRP. | 1) Полная консолидация сессий (`_load_saved_sessions`, `create_chat`, `_create_new_session`, `_switch_to_session`, прогрессивный рендеринг) в `SessionControllerMixin` (+855 строк).<br>2) Перенос навигации по поиску (`_search_next`, `_search_prev`, `_navigate_search_match`) в `ChatSearchMixin`.<br>3) Перенос модальных вызовов в `DialogControllerMixin`.<br>4) Нативная инкапсуляция усечения заголовка (`ElideRight`) в `ChatSessionItemWidget`.<br>5) Удаление устаревших monkeypatching-заглушек `AvatarCropDialog`.<br>6) Сокращение `MainWindow` с 2007 до 1068 строк (-47%) без создания новых сущностей. |
+| **ADR-11** | `c86e755` | `ui/main_window.py`, `ui/controllers/session_controller.py`, `ui/controllers/search_controller.py`, `ui/controllers/dialog_controller.py`, `ui/components/chat_list_item.py` | Фасад `MainWindow` содержал 939 строк монолитной логики сессий, разрозненные методы поиска и рудиментарный monkeypatching (`AvatarCropDialog`, `resizeEvent` элементов списка сессий), нарушая SRP. | 1) Полная консолидация сессий (`_load_saved_sessions`, `create_chat`, `_create_new_session`, `_switch_to_session`, прогрессивный рендеринг) в `SessionControllerMixin` (+855 строк).<br>2) Перенос навигации по поиску (`_search_next`, `_search_prev`, `_navigate_search_match`) в `ChatSearchMixin`.<br>3) Перенос модальных вызовов в `DialogControllerMixin`.<br>4) Нативная инкапсуляция усечения заголовка (`ElideRight`) в `ChatSessionItemWidget`.<br>5) Удаление устаревших monkeypatching-заглушек `AvatarCropDialog`.<br>6) Сокращение `MainWindow` с 2007 до 1068 строк (-47%) без создания новых сущностей. |
+| **ADR-12** | `HEAD` | `ui/models_manager_dialog.py`, `ui/models_manager/mixins.py`, `ui/models_manager/widgets.py`, `ui/models_manager/workers.py`, `ui/models_manager/__init__.py`, `tests/unit/test_models_manager_dialog.py` | 1) `models_manager_dialog.py` (2569 строк) содержал жестко связанную логику UI-форм рендеринга, сканеров Forge/Civitai, фонового FP8 квантования и потокобезопасности (нарушение SRP).<br>2) Скрытый баг `NameError` в `register_orphaned_worker` при изоляции активных QThread потоков.<br>3) Исчезновение числовых значений параметров напротив слайдеров (шаги, CFG, денойз hires, clip skip) из-за бокового оффсета 80px стандартного `SpinBox` при фиксированной ширине 70px.<br>4) Отсутствие сквозных характеризационных тестов менеджера моделей. | 1) Модульная декомпозиция фасада через 3 контроллер-миксина (`ModelPipelineFormMixin`, `ForgeCivitaiSyncMixin`, `FP8ConversionMixin`) в `ui/models_manager/mixins.py` с сокращением фасада с 2569 до 959 строк (-63%).<br>2) Вынос чистых функций (`MODEL_PRESETS`, нормализаторы, негативы, фабрики ячеек) в `ui/models_manager/widgets.py` и системных утилит проверки Python/Torch в `ui/models_manager/workers.py`.<br>3) Устранение `NameError` через регистратор `register_orphaned_worker()`.<br>4) Перевод счетчиков на `CompactSpinBox` и `CompactDoubleSpinBox` с шириной 82px, чистым белым текстом (`#FFFFFF`), вертикальными стрелками и гардом `wheelEvent: ignore`.<br>5) Внедрение `_DynamicModuleProxy` для 100% совместимости моков `InfoBar` в тестах.<br>6) Разработка сьюта из 10 сквозных тестов (`tests/unit/test_models_manager_dialog.py`). 100% Pass Rate на 393 тестах. |
 
 ---
 
@@ -283,7 +284,7 @@ NeonRoute/
 ├── ui/                                  # Слой графического интерфейса (Presentation Layer)
 │   ├── __init__.py                      # Инициализация пакета ui
 │   ├── main_window.py                   # [1068 строк] Главное окно MainWindow (3-колоночный сплиттер, UIContext)
-│   ├── models_manager_dialog.py         # [2569 строк] Пульт управления моделями Forge, Civitai AutoFill, FP8
+│   ├── models_manager_dialog.py         # [959 строк] Модульный пульт управления моделями Forge, Civitai AutoFill, FP8
 │   ├── engineer_skills_dialog.py        # [998 строк] Центр управления знаниями инженера (Skills Hub)
 │   ├── log_console.py                   # [187 строк] Live-консоль логов (QtLogHandler, кольцевой буфер на 2000 записей)
 │   ├── styles.py                        # [319 строк] Глобальная таблица стилей NEON_THEME_QSS
@@ -382,10 +383,11 @@ NeonRoute/
 │   │   └── workspace_inspector.py       # [748 строк] Правая панель песочницы (дерево файлов, редактор, Git, Smoke F5)
 │   │
 │   ├── models_manager/                  # Модули диалога управления моделями
-│   │   ├── __init__.py                  # Инициализация пакета
+│   │   ├── __init__.py                  # Инициализация пакета и реэкспорт сущностей
 │   │   ├── adetailer_dialog.py          # [324 строки] Диалог точной настройки параметров ADetailer
-│   │   ├── widgets.py                   # [280 строк] Вспомогательные карточки и таблицы моделей
-│   │   └── workers.py                   # [340 строк] Воркеры загрузки, хэширования и конвертации весов
+│   │   ├── mixins.py                    # [710 строк] Контроллер-миксины: ModelPipelineFormMixin, ForgeCivitaiSyncMixin, FP8ConversionMixin
+│   │   ├── widgets.py                   # [470 строк] Карточки, SamplingSpinBox/DoubleSpinBox (белый текст, Compact), пресеты, ячейки
+│   │   └── workers.py                   # [470 строк] Фоновые воркеры QThread, сканирование Forge/Civitai, FP8 квантование, изоляция потоков
 │   │
 │   └── workers/                         # Фоновые воркеры интерфейса
 │       ├── __init__.py                  # Инициализация пакета workers
@@ -400,7 +402,7 @@ NeonRoute/
 │   ├── health_checker.py                # [100 строк] Асинхронный сокет-монитор портов (1234, 7860, 5010) без блокировок
 │   └── system_monitor.py                # [204 строки] Мониторинг VRAM/RAM через pynvml / nvidia-smi / psutil
 │
-└── tests/                               # Пирамида тестирования (381 тест, 100% Pass Rate)
+└── tests/                               # Пирамида тестирования (393 теста, 100% Pass Rate)
     ├── conftest.py                      # [149 строк] Airgap-фикстуры (_apply_airgap_paths, check_sandbox_state_leak)
     ├── test_chat.py                     # [88 строк] Тестирование чат-эндпоинтов мобильного шлюза
     ├── test_engineer_task_card.py       # [43 строки] Карточка задач инженера и отображение логов
@@ -434,8 +436,9 @@ NeonRoute/
     │   ├── test_sqlite_sessions_and_leak_guard_smoke.py # [255 строк] SQLite WAL сессии и защита от утечек данных
     │   └── test_three_modes_deep_smoke.py # [192 строки] Глубокие контрактные смоук-тесты трех режимов (AST, RAG, RPG)
     │
-    └── unit/                            # 14 сьютов изолированных модульных тестов (190 тестов)
+    └── unit/                            # 15 сьютов изолированных модульных тестов (202 теста)
         ├── test_adetailer_dialog.py     # [145 строк] Настройки параметров инпейнта ADetailer лица и кистей рук
+        ├── test_models_manager_dialog.py# [370 строк] 10 сквозных тестов ModelsManagerDialog: CRUD, пресеты, спинбоксы, воркеры
         ├── test_assistant_flow.py       # [85 строк] Резолвинг температур и диспетчеризация арт-прохода
         ├── test_core_services.py        # [165 строк] Модульные тесты базовых утилит (AST, парсеры, песочница)
         ├── test_deferred_rag_execution.py # [96 строк] Отложенная сборка контекста (Deferred RAG), 0 мс UI-блока
@@ -866,7 +869,73 @@ sequenceDiagram
    - Разрешение целевой папки через `config.get_forge_models_dir()` с автоматическим раскрытием NTFS Junctions и символических ссылок.
    - Строгая фильтрация расширений: загрузка разрешена исключительно для безопасного формата `.safetensors` (файлы `.ckpt` и `.pt` блокируются).
 
-### 5.4. Архитектура Headless Mobile Gateway (`mobile_server/`)
+### 5.4. Модульная архитектура менеджера моделей (`ui/models_manager/`)
+
+Диалог управления моделями генерации и семантического роутинга `ui/models_manager_dialog.py` реорганизован из монолитного файла (2569 строк) в модульную компонентную архитектуру с разделением обязанностей на контроллер-миксины (сокращение объема фасада до 959 строк, -63%):
+
+```mermaid
+classDiagram
+    class QDialog
+    class ModelPipelineFormMixin {
+        +_on_param_modified()
+        +_on_preset_selected()
+        +_sync_sliders_and_spins()
+        +_update_geometry_and_resolution()
+        +_on_open_adetailer_clicked()
+        +_bind_model_to_form()
+    }
+    class ForgeCivitaiSyncMixin {
+        +_start_forge_scan()
+        +_on_forge_scan_completed()
+        +_on_civitai_autofill_clicked()
+        +_on_civitai_params_ready()
+        +_test_routing_flow()
+    }
+    class FP8ConversionMixin {
+        +_check_fp8_conversion_capability()
+        +_start_fp8_conversion()
+        +_on_fp8_progress()
+        +_on_fp8_finished()
+        +_handle_atomic_replacement()
+    }
+    class ModelsManagerDialog {
+        +table_models: TableWidget
+        +router: ModelRouter
+        +forge_client: ForgeClient
+        +spin_steps: SamplingSpinBox
+        +spin_cfg: SamplingDoubleSpinBox
+        +spin_hires_denoise: SamplingDoubleSpinBox
+        +spin_clip_skip: SamplingSpinBox
+        +_save_all()
+        +_stop_all_workers()
+        +reject()
+        +accept()
+    }
+
+    QDialog <|-- ModelsManagerDialog
+    ModelPipelineFormMixin <|-- ModelsManagerDialog
+    ForgeCivitaiSyncMixin <|-- ModelsManagerDialog
+    FP8ConversionMixin <|-- ModelsManagerDialog
+```
+
+1. **Контроллер-миксины (`ui/models_manager/mixins.py`)**:
+   - `ModelPipelineFormMixin`: двусторонняя привязка полей формы пайплайна (сэмплеры, планировщики, шаги, CFG, денойз hires, clip skip, негативный промпт), пресеты параметров (`MODEL_PRESETS`), расчет геометрии и разрешения, синхронизация с дашбордом ADetailer.
+   - `ForgeCivitaiSyncMixin`: фоновые интеграции сканирования локальных чекпоинтов SD Forge (`ForgeScanWorker`), парсинг параметров Civitai API (`CivitaiParamsWorker`), авторегистрация новых моделей в реестре и семантическое тестирование роутинга (`RoutingTestWorker`).
+   - `FP8ConversionMixin`: управление конвейером квантования весов в FP8 E4M3FN (`FP8ConvertWorker`), обнаружение локального torch/python окружения, Name Affinity Guard и безопасная атомарная замена файлов.
+   - `_DynamicModuleProxy`: динамический прокси для `InfoBar`, `InfoBarPosition` и `MessageBox`, прозрачно перенаправляющий вызовы на моки `patch("ui.models_manager_dialog.*")` в существующих тестовых сьютах.
+
+2. **Эргономика и дизайн числовых счетчиков (`SamplingSpinBox` / `SamplingDoubleSpinBox`)**:
+   - Перевод на специализированные классы `CompactSpinBox` и `CompactDoubleSpinBox` из библиотеки QFluentWidgets.
+   - Вертикальное компактное расположение стрелок управления шагом в единый столбец справа (`padding: 0px 24px 0 6px`).
+   - Четкий чистый белый цвет цифр (`color: #FFFFFF; font-size: 13px; font-weight: 500;`) в нормальном состоянии, при наведении и при фокусе, полностью соответствующий темной киберпанк-эстетике приложения.
+   - Унифицированная ширина `setFixedWidth(82)` для всех четырех регуляторов, полностью устраняющая обрезание текста любых числовых параметров.
+   - Жесткая блокировка нежелательной прокрутки колесиком мыши (`wheelEvent: e.ignore()`).
+
+3. **Потокобезопасность и жизненный цикл фоновых потоков**:
+   - Метод `_stop_all_workers()` выполняет надежную грациозную остановку: отключение Qt-сигналов, вызов `abort()` / `requestInterruption()`, `quit()`, мягкое ожидание `wait(200)`.
+   - Активные воркеры, не успевшие завершиться за таймаут, отвязываются от родительского `QDialog` и изолируются через глобальный реестр `register_orphaned_worker()`, гарантируя отсутствие вылетов `QThread: Destroyed while thread is still running` и полностью ликвидируя скрытый баг `NameError`.
+
+### 5.5. Архитектура Headless Mobile Gateway (`mobile_server/`)
 
 Пакет `mobile_server/` реализует архитектурный паттерн Backend-for-Frontend (BFF) на базе FastAPI для подключения мобильных веб-клиентов и нативных мобильных оболочек через локальную сеть (Wi-Fi) или зашифрованный туннель Tailscale VPN:
 
@@ -954,17 +1023,17 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (381 тест, 100% Pass Rate)
+### 7.1. Структура тестового сьюта (393 теста, 100% Pass Rate)
 
-Пирамида тестирования NeonRoute состоит из 381 автоматического теста, разделенного на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 393 автоматических тестов, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
 | **`tests/smoke/`** | 14 | 54 | Быстрые сквозные смоук-тесты: арт-пайплайн, жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge |
-| **`tests/unit/`** | 14 | 190 | Изолированное модульное тестирование: клиенты Forge и LM Studio (130 тестов), RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, VRAM Policy, локатор |
+| **`tests/unit/`** | 15 | 202 | Изолированное модульное тестирование: клиенты Forge и LM Studio (130 тестов), ModelsManagerDialog (10 сквозных тестов), ADetailer (6 тестов), RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, VRAM Policy, локатор |
 | **`tests/integration/`** | 2 | 8 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`) |
 | **`tests/` (root)** | 10 | 129 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives |
-| **ИТОГО** | **40** | **381** | **100% Pass Rate во всех тестовых средах** |
+| **ИТОГО** | **41** | **393** | **100% Pass Rate во всех тестовых средах** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 
@@ -1040,3 +1109,17 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
 11. **`test_dialog_sync_smoke.py`**: синхронизация конфигурации при закрытии диалогов через кнопку закрытия `X` или Escape (`reject()`).
 12. **`test_forge_baseline.py` & `test_forge_edge_cases.py`**: интеграция SD WebUI Forge, устойчивость к поврежденным INI-файлам, кириллице и пробелам в путях, защита от лавинных запросов при мертвом бэкенде.
 13. **`test_isolated_core_smoke.py`**: изолированная валидация атомарной записи JSON, арбитра VRAM, калькулятора слоев GGUF, AST-валидатора и конечного автомата `ModeCoordinator`.
+
+### 7.5. Характеризационный базовый сьют ModelsManagerDialog (`tests/unit/test_models_manager_dialog.py`)
+
+Набор из 10 сквозных тестов (370 строк) фиксирует стабильные поведенческие контракты диалога управления моделями:
+1. `test_models_manager_init_and_table_population`: холодная инициализация диалога, корректный парсинг моделей из конфигурации, наполнение строк таблицы и выставление флагов активности.
+2. `test_models_manager_preset_selection`: применение архитектурных пресетов (SDXL Turbo, SDXL Classic, SD 1.5 Photoreal) с обновлением полей сэмплера, планировщика, шагов, CFG и тумблеров ADetailer/Hires.
+3. `test_models_manager_slider_spinbox_sync`: строгая двусторонняя синхронизация ползунков и числовых счетчиков (шаги 5–60, CFG 1.0–15.0, Денойз 0.10–0.90, Clip skip 1–4).
+4. `test_models_manager_form_data_binding`: надежная привязка формы к модели: изменение чекпоинтов, шагов, сэмплеров и негативного промпта синхронно обновляет словарь модели.
+5. `test_models_manager_table_crud`: полный жизненный цикл CRUD: добавление новой модели, переключение чекбокса активности и удаление строк с подтверждением.
+6. `test_models_manager_civitai_params_ready_flow`: сквозной поток Civitai API: получение сэмплера, шагов, CFG и негативного промпта из фонового воркера с автоподстановкой в форму.
+7. `test_models_manager_forge_scan_auto_registration`: фоновое сканирование чекпоинтов Forge: регистрация новых `.safetensors`, фильтрация квантованных дубликатов и обновление таблицы.
+8. `test_models_manager_test_routing_flow`: верификация роутинга: ввод промпта, асинхронное сопоставление через FastEmbed ONNX и отображение бейджа `RoutingResultBadge`.
+9. `test_models_manager_save_all_flow`: атомарное сохранение всей таблицы в `data/art_director_models.json`, обновление векторов роутера и синхронизация реестра Forge.
+10. `test_models_manager_safe_shutdown_and_worker_cleanup`: надежный жизненный цикл: отключение сигналов, вызов abort, безопасная изоляция через `register_orphaned_worker` без NameError.
