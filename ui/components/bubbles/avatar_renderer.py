@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from PyQt6.QtCore import Qt, QRect, QRectF
+from qfluentwidgets import FluentIcon as FIF
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPainterPath, QColor, QFont,
     QLinearGradient, QRadialGradient, QBrush, QPen, QImage
@@ -139,33 +140,37 @@ def render_circular_avatar(
             loaded = False
 
     if not loaded:
-        grad = QLinearGradient(0, 0, render_size, render_size)
+        n_lower = (name or "").lower()
         if is_error:
-            grad.setColorAt(0.0, QColor(220, 38, 38))
-            grad.setColorAt(1.0, QColor(153, 27, 27))
+            grad_colors = (QColor("#DC2626"), QColor("#7F1D1D"))
+            icon_def = FIF.INFO
         elif is_user:
-            grad.setColorAt(0.0, QColor(99, 102, 241))
-            grad.setColorAt(1.0, QColor(67, 56, 202))
+            grad_colors = (QColor("#6366F1"), QColor("#3730A3"))
+            icon_def = FIF.PEOPLE
+        elif "инженер" in n_lower or "engineer" in n_lower or "код" in n_lower:
+            grad_colors = (QColor("#D97706"), QColor("#78350F"))
+            icon_def = FIF.DEVELOPER_TOOLS
+        elif any(k in n_lower for k in ["элария", "ассистент", "assistant", "elaria"]):
+            grad_colors = (QColor("#0EA5E9"), QColor("#312E81"))
+            icon_def = FIF.ROBOT
         else:
-            grad.setColorAt(0.0, QColor(14, 165, 233))
-            grad.setColorAt(1.0, QColor(79, 70, 229))
+            # Ролевой персонаж / компаньон
+            grad_colors = (QColor("#C026D3"), QColor("#701A75"))
+            icon_def = FIF.GAME
 
-        path = QPainterPath()
-        path.addEllipse(0.0, 0.0, float(render_size), float(render_size))
-        painter.fillPath(path, QBrush(grad))
+        grad = QLinearGradient(0, 0, render_size, render_size)
+        grad.setColorAt(0.0, grad_colors[0])
+        grad.setColorAt(1.0, grad_colors[1])
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRectF(0.0, 0.0, float(render_size), float(render_size)))
 
-        clean_name = re.sub(r'^[^\w\d]+', '', name.strip()) if name else ""
-        if not clean_name:
-            letter = "U" if is_user else ("!" if is_error else "N")
-        else:
-            letter = clean_name[0].upper()
-
-        font_size = max(10 * scale_factor, int(render_size * 0.42))
-        font = QFont("Inter", font_size, QFont.Weight.Bold)
-        font.setFamilies(["Inter", "Segoe UI", "sans-serif"])
-        painter.setFont(font)
-        painter.setPen(QColor(255, 255, 255))
-        painter.drawText(QRectF(0, 0, float(render_size), float(render_size)), Qt.AlignmentFlag.AlignCenter, letter)
+        icon_sz = int(render_size * 0.50)
+        ico = icon_def.icon(color=QColor(255, 255, 255, 240))
+        ico_px = ico.pixmap(icon_sz, icon_sz)
+        x = int((render_size - icon_sz) / 2.0)
+        y = int((render_size - icon_sz) / 2.0)
+        painter.drawPixmap(x, y, ico_px)
 
     # Мягкое бесшовное растворение контура портрета в цвет подложки (Seamless Edge Feathering)
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)

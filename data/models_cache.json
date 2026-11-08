@@ -299,5 +299,12 @@
     "architecture": "unknown",
     "is_moe": false,
     "context_length": null
+  },
+  "C:\\Users\\user\\.lmstudio\\models\\noteventhrice\\DeepSeek-R1-0528-Qwen3-8B-abliterated-Q4_K_M-GGUF\\deepseek-r1-0528-qwen3-8b-abliterated-q4_k_m.gguf::1794095961.2695262::5027783168": {
+    "total_layers": 36,
+    "model_size_mb": 4794.87,
+    "architecture": "qwen3",
+    "is_moe": false,
+    "context_length": 131072
   }
 }

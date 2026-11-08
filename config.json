@@ -6,7 +6,7 @@
   "engineer_model": "qwen2.5-coder-7b-instruct",
   "engineer_model_name": "qwen2.5-coder-7b-instruct",
   "rp_model_name": "Meissa-Qwen2.5-7B-Instruct-GGUF/Meissa-Qwen2.5-7B-Instruct.Q5_K_M.gguf",
-  "assistant_model_name": "Qwen2.5-7B-Instruct-abliterated-v2-GGUF/Qwen2.5-7B-Instruct-abliterated-v2.Q5_K_M.gguf",
+  "assistant_model_name": "DeepSeek-R1-0528-Qwen3-8B-abliterated-Q4_K_M-GGUF/deepseek-r1-0528-qwen3-8b-abliterated-q4_k_m.gguf",
   "compute_device_mode": "Auto",
   "background_path": "C:\\NeonRoute\\backgrounds\\bg_11. Закат.jpg",
   "background_dim_opacity": 102,
