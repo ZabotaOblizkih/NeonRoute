@@ -232,9 +232,7 @@ def run_assistant_inference_deferred(
         sys_content = assembled_messages[0].get("content", "")
         if knowledge_block and "<KnowledgeBase>" not in sys_content:
             sys_content = f"{sys_content}\n\n{knowledge_block}"
-        if enable_reasoning and "<think>" not in sys_content:
-            from services.assistant_prompt_builder import REASONING_PROTOCOL
-            sys_content = f"{sys_content}\n\n{REASONING_PROTOCOL}"
+        # Нативное мышление модели работает через шаблон GGUF без принудительной инъекции <think> в промпт
         assembled_messages[0]["content"] = sys_content
 
     # 6. Делегирование в LM Studio
@@ -591,6 +589,13 @@ class AssistantFlowControllerMixin:
             xtc_prob = float(default_xtc_prob)
             xtc_thresh = float(default_xtc_thresh)
             source_tag = "Глобальный дефолт config.json (или профиль режима)"
+
+        _model_lower = str(model_name or "").lower()
+        _is_thinking_model = any(m in _model_lower for m in ("r1", "qwq", "qwen3", "think", "reasoning"))
+        if _is_thinking_model and not is_custom:
+            xtc_prob = 0.0
+            if effective_max_tokens == 1024:
+                effective_max_tokens = 2048
 
         if _should_art:
             target_max_tokens = 512
@@ -1057,40 +1062,71 @@ class AssistantFlowControllerMixin:
             parser_normal_text = getattr(self._thought_stream_parser, "normal_text", "").strip() or parser_normal_text
 
         # ── [HistorySanitizer] Санитайзер истории и тегов рассуждений ──
-        # Фаза 1: Спасение мыслей в thought_data (Rescue to UI spoiler)
+        # Фаза 1: Спасение мыслей в thought_data (Rescue to UI spoiler, включая множественные и неявные теги)
         re_thought_body = r"<(think|analyze|thought|reasoning)>([\s\S]*?)(?:</\1>|$)"
         re_thought_clean = r"<(think|analyze|thought|reasoning)>[\s\S]*?(?:</\1>|$)"
+        re_implicit_close = r"^([\s\S]*?)</(think|analyze|thought|reasoning)>"
 
         if thought_data is None:
-            match = re.search(re_thought_body, text, flags=re.IGNORECASE)
-            if match:
-                th_body = match.group(2).strip()
-                tag_name = match.group(1).lower()
-                thought_data = {
-                    "content": th_body,
-                    "duration": round(getattr(self._thought_stream_parser, "duration", 0.0), 2),
-                    "tag": tag_name
-                }
-                if hasattr(self, "_turn_bubble") and self._turn_bubble and hasattr(self._turn_bubble, "finalize_thought"):
-                    self._turn_bubble.finalize_thought(
-                        self._thought_stream_parser.duration if hasattr(self, "_thought_stream_parser") and self._thought_stream_parser is not None else 0.0,
-                        th_body
-                    )
-                logger.info(f"[HistorySanitizer] Спасён блок мыслей из тега <{tag_name}> ({len(th_body)} симв.) и направлен в UI спойлер.")
+            matches = list(re.finditer(re_thought_body, text, flags=re.IGNORECASE))
+            if matches:
+                th_parts = [m.group(2).strip() for m in matches if m.group(2).strip()]
+                th_body = "\n\n".join(th_parts)
+                tag_name = matches[0].group(1).lower()
+                if th_body:
+                    thought_data = {
+                        "content": th_body,
+                        "duration": round(getattr(self._thought_stream_parser, "duration", 0.0), 2),
+                        "token_count": max(1, len(th_body) // 4),
+                        "tag": tag_name
+                    }
+                    if hasattr(self, "_turn_bubble") and self._turn_bubble and hasattr(self._turn_bubble, "finalize_thought"):
+                        self._turn_bubble.finalize_thought(
+                            thought_data["duration"],
+                            thought_data["token_count"]
+                        )
+                    logger.info(f"[HistorySanitizer] Спасён блок мыслей из тега <{tag_name}> ({len(th_body)} симв.) и направлен в UI спойлер.")
+            else:
+                imp_match = re.search(re_implicit_close, text, flags=re.IGNORECASE)
+                if imp_match:
+                    th_body = imp_match.group(1).strip()
+                    tag_name = imp_match.group(2).lower()
+                    if th_body:
+                        thought_data = {
+                            "content": th_body,
+                            "duration": round(getattr(self._thought_stream_parser, "duration", 0.0), 2),
+                            "token_count": max(1, len(th_body) // 4),
+                            "tag": tag_name
+                        }
+                        if hasattr(self, "_turn_bubble") and self._turn_bubble and hasattr(self._turn_bubble, "finalize_thought"):
+                            self._turn_bubble.finalize_thought(
+                                thought_data["duration"],
+                                thought_data["token_count"]
+                            )
+                        logger.info(f"[HistorySanitizer] Спасён неявный блок мыслей до </{tag_name}> ({len(th_body)} симв.) и направлен в UI спойлер.")
 
         self._thought_stream_parser = None
 
-        # Фаза 2: Очистка текста ответа от тегов
-        had_tags = bool(re.search(re_thought_clean, text, flags=re.IGNORECASE))
-        cleaned_text = re.sub(re_thought_clean, "", text, flags=re.IGNORECASE).strip()
+        # Фаза 2: Очистка текста ответа от тегов (включая осиротевшие закрывающие </think>)
+        had_tags = bool(
+            re.search(re_thought_clean, text, flags=re.IGNORECASE)
+            or re.search(re_implicit_close, text, flags=re.IGNORECASE)
+        )
+        cleaned_text = re.sub(re_thought_clean, "", text, flags=re.IGNORECASE)
+        cleaned_text = re.sub(re_implicit_close, "", cleaned_text, flags=re.IGNORECASE)
+        cleaned_text = re.sub(r"</?(think|analyze|thought|reasoning)>", "", cleaned_text, flags=re.IGNORECASE).strip()
 
         if not cleaned_text and parser_normal_text:
-            cleaned_text = parser_normal_text
+            cleaned_text = re.sub(r"</?(think|analyze|thought|reasoning)>", "", parser_normal_text, flags=re.IGNORECASE).strip()
 
-        # Фаза 3: Защита от опустошения сообщения (Empty Text Guard)
+        # Фаза 3: Защита от утечки мыслей в бабл при исчерпании max_tokens на этапе рассуждений
         if not cleaned_text and thought_data and thought_data.get("content"):
-            text = thought_data["content"]
-            logger.warning("[HistorySanitizer] Ответ модели целиком состоял из блока рассуждений. Текст восстановлен во избежание пустого сообщения.")
+            if getattr(self, "_turn_bubble", None) is not None:
+                text = "*(Модель завершила глубокий анализ в блоке рассуждений выше, но лимит токенов ответа был исчерпан до вывода чистового текста.)*"
+                logger.warning("[HistorySanitizer] Ответ модели целиком состоял из блока рассуждений. Мысли изолированы в спойлере, в бабл выведена сервисная ремарка.")
+            else:
+                text = thought_data["content"]
+                logger.warning("[HistorySanitizer] Ответ модели целиком состоял из блока рассуждений. Текст восстановлен во избежание пустого сообщения.")
         else:
             text = cleaned_text
             if had_tags:

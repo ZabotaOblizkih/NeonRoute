@@ -1081,6 +1081,13 @@ class ChatFlowControllerMixin:
                 elif ev_type == "thought_chunk":
                     if self._turn_bubble and hasattr(self._turn_bubble, "append_thought_chunk"):
                         self._turn_bubble.append_thought_chunk(ev_data)
+                elif ev_type == "reset_normal":
+                    self._stream_token_buffer = ""
+                    if self._turn_bubble and hasattr(self._turn_bubble, "set_text"):
+                        try:
+                            self._turn_bubble.set_text("")
+                        except Exception:
+                            pass
                 elif ev_type == "end_think":
                     if self._turn_bubble and hasattr(self._turn_bubble, "finalize_thought"):
                         dur = getattr(self._thought_stream_parser, "duration", 0.0)

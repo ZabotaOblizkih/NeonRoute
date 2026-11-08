@@ -677,10 +677,12 @@ class LMStudioClient(QObject):
 
                                 pieces_to_emit = []
                                 if rc_piece:
+                                    clean_rc = re.sub(r"</?think>", "", rc_piece, flags=re.IGNORECASE)
                                     if not in_reasoning_stream:
                                         in_reasoning_stream = True
                                         pieces_to_emit.append("<think>")
-                                    pieces_to_emit.append(rc_piece)
+                                    if clean_rc:
+                                        pieces_to_emit.append(clean_rc)
                                 elif content_piece:
                                     if in_reasoning_stream:
                                         in_reasoning_stream = False

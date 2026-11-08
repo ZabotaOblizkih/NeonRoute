@@ -4,8 +4,9 @@ Parses LLM streaming output with <think>...</think> tags on CPU (0 MB VRAM).
 Features:
 1. States: NORMAL_TEXT, IN_THINK, THINK_FINISHED.
 2. Safe boundary buffering for tags broken across network chunks (e.g. '<th' + 'ink>').
-3. Fail-safe circuit breaker: forces </think> closure if thought length exceeds 16384 chars / ~4096 tokens.
-4. Duration and token count calculation for ThoughtSpoilerWidget and session persistence.
+3. Support for implicit opening <think> (when injected by llama-server template) and multiple <think> blocks.
+4. Fail-safe circuit breaker: forces </think> closure if thought length exceeds 16384 chars / ~4096 tokens.
+5. Duration and token count calculation for ThoughtSpoilerWidget and session persistence.
 """
 
 import re
@@ -31,8 +32,9 @@ class ThoughtStreamParser:
 
     THINK_OPEN_TAG = "<think>"
     THINK_CLOSE_TAG = "</think>"
-    OPEN_TAGS = ("<think>", "<thought>")
-    CLOSE_TAGS = ("</think>", "</thought>")
+    OPEN_TAGS = ("<think>", "<thought>", "<reasoning>", "<analyze>")
+    CLOSE_TAGS = ("</think>", "</thought>", "</reasoning>", "</analyze>")
+    ALL_TAGS = OPEN_TAGS + CLOSE_TAGS
 
     def __init__(self):
         self.state: ThinkParserState = ThinkParserState.NORMAL_TEXT
@@ -52,6 +54,7 @@ class ThoughtStreamParser:
         Возвращает последовательность событий:
         - ("start_think", "")
         - ("thought_chunk", thought_str)
+        - ("reset_normal", "")
         - ("end_think", "")
         - ("normal_chunk", normal_str)
         """
@@ -63,27 +66,68 @@ class ThoughtStreamParser:
         self.buffer = ""
 
         while combined:
-            if self.state == ThinkParserState.NORMAL_TEXT:
-                # Ищем открывающий тег <think> или <thought>
-                match = re.search(r"<(think|thought)>", combined, re.IGNORECASE)
-                if match:
-                    pre_text = combined[:match.start()]
-                    if pre_text:
-                        self.normal_text += pre_text
-                        events.append(("normal_chunk", pre_text))
+            if self.state in (ThinkParserState.NORMAL_TEXT, ThinkParserState.THINK_FINISHED):
+                if self._failsafe_triggered:
+                    # Если сработал предохранитель 16K, больше в IN_THINK не входим, вычищая шальные теги
+                    clean_c = re.sub(r"</?(think|thought|reasoning|analyze)>", "", combined, flags=re.IGNORECASE)
+                    if clean_c:
+                        self.normal_text += clean_c
+                        events.append(("normal_chunk", clean_c))
+                    break
 
-                    self.state = ThinkParserState.IN_THINK
-                    self.start_time = time.time()
+                open_match = re.search(r"<(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
+                close_match = re.search(r"</(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
+
+                # Сценарий неявного <think> (когда llama-server вставил <think> в промпт, и в потоке пришел </think>)
+                if (
+                    self.state == ThinkParserState.NORMAL_TEXT
+                    and close_match
+                    and (not open_match or close_match.start() < open_match.start())
+                ):
+                    pre_thought = self.normal_text + combined[:close_match.start()]
+                    self.normal_text = ""
+                    if self.start_time is None:
+                        self.start_time = time.time()
                     events.append(("start_think", ""))
+                    if self.thought_text and pre_thought:
+                        self.thought_text += "\n" + pre_thought
+                    else:
+                        self.thought_text += pre_thought
+                    if pre_thought:
+                        events.append(("thought_chunk", pre_thought))
+                    events.append(("reset_normal", ""))
+                    self._finalize_timing()
+                    events.append(("end_think", ""))
+                    self.state = ThinkParserState.THINK_FINISHED
+                    combined = combined[close_match.end():]
+                    continue
 
-                    combined = combined[match.end():]
+                if open_match:
+                    pre_text = combined[:open_match.start()]
+                    if pre_text:
+                        if self.state == ThinkParserState.NORMAL_TEXT or pre_text.strip():
+                            self.normal_text += pre_text
+                            events.append(("normal_chunk", pre_text))
+
+                    was_finished = (self.state == ThinkParserState.THINK_FINISHED)
+                    self.state = ThinkParserState.IN_THINK
+                    if self.start_time is None:
+                        self.start_time = time.time()
+
+                    if was_finished and self.thought_text:
+                        self.thought_text += "\n"
+                        events.append(("thought_chunk", "\n"))
+                    else:
+                        events.append(("start_think", ""))
+
+                    combined = combined[open_match.end():]
                     continue
                 else:
-                    # Проверяем, не заканчивается ли combined префиксом <think> или <thought>
+                    # Проверяем, не заканчивается ли combined префиксом любого открывающего или закрывающего тега
                     held = False
                     comb_lower = combined.lower()
                     max_k = 0
-                    for tag in self.OPEN_TAGS:
+                    for tag in self.ALL_TAGS:
                         for k in range(min(len(tag) - 1, len(combined)), 0, -1):
                             tail = comb_lower[-k:]
                             if tag.startswith(tail):
@@ -103,8 +147,13 @@ class ThoughtStreamParser:
                     break
 
             elif self.state == ThinkParserState.IN_THINK:
+                # Игнорируем вложенные открывающие <think> внутри уже открытого блока мыслей
+                combined = re.sub(r"<(think|thought|reasoning|analyze)>", "", combined, flags=re.IGNORECASE)
+                if not combined:
+                    break
+
                 # Ищем закрывающий тег </think> или </thought>
-                match = re.search(r"</(think|thought)>", combined, re.IGNORECASE)
+                match = re.search(r"</(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
                 if match:
                     th_part = combined[:match.start()]
                     if th_part:
@@ -139,11 +188,11 @@ class ThoughtStreamParser:
                             events.append(("normal_chunk", norm_part))
                         break
 
-                    # Проверяем, не заканчивается ли combined префиксом </think> или </thought>
+                    # Проверяем, не заканчивается ли combined префиксом закрывающего или открывающего тега
                     held = False
                     comb_lower = combined.lower()
                     max_k = 0
-                    for tag in self.CLOSE_TAGS:
+                    for tag in self.ALL_TAGS:
                         for k in range(min(len(tag) - 1, len(combined)), 0, -1):
                             tail = comb_lower[-k:]
                             if tag.startswith(tail):
@@ -161,12 +210,6 @@ class ThoughtStreamParser:
                         self.thought_text += combined
                         events.append(("thought_chunk", combined))
                     break
-
-            elif self.state == ThinkParserState.THINK_FINISHED:
-                # Все последующие токены направляются в чистовой текст
-                self.normal_text += combined
-                events.append(("normal_chunk", combined))
-                break
 
         return events
 

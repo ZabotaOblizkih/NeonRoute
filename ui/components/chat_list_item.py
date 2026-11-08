@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QCursor, QColor
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (
     InfoBadge,
     TransparentToolButton,
@@ -44,6 +44,7 @@ class ChatSessionItemWidget(QWidget):
         self.char_name = char_name
         self.avatar_path = avatar_path
 
+        self._full_title: str = title
         self._setup_ui(title)
 
     def sizeHint(self) -> QSize:
@@ -70,6 +71,7 @@ class ChatSessionItemWidget(QWidget):
         # 2. Текст названия диалога, идеально отцентрованный по вертикали
         self.title_lbl = QLabel(title, self)
         self.title_lbl.setMinimumHeight(20)
+        self.title_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.title_lbl.setStyleSheet("color: #F1F5F9; font-weight: 600; font-size: 13px; background: transparent;")
 
@@ -79,7 +81,8 @@ class ChatSessionItemWidget(QWidget):
 
         # 3. Compact Delete button with soft hover
         self.btn_del = TransparentToolButton(FIF.DELETE, self)
-        self.btn_del.setFixedSize(26, 26)
+        self.btn_del.setFixedSize(24, 24)
+        self.btn_del.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_del.setToolTip("Удалить диалог")
         self.btn_del.installEventFilter(
             ToolTipFilter(self.btn_del, showDelay=300, position=ToolTipPosition.TOP)
@@ -125,8 +128,21 @@ class ChatSessionItemWidget(QWidget):
         self.avatar_path = avatar_path
         self._apply_theme_and_avatar()
 
+    def _elide_title(self):
+        if not hasattr(self, "title_lbl") or not hasattr(self, "_full_title"):
+            return
+        fm = self.title_lbl.fontMetrics()
+        avail_w = max(10, self.title_lbl.width())
+        elided = fm.elidedText(self._full_title, Qt.TextElideMode.ElideRight, avail_w)
+        self.title_lbl.setText(elided)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide_title()
+
     def update_title(self, title: str):
-        self.title_lbl.setText(title)
+        self._full_title = title
+        self._elide_title()
 
     def update_mode(self, mode: str, char_name: Optional[str] = None, avatar_path: Optional[str] = None, session_type: Optional[str] = None):
         self.mode = mode

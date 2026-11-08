@@ -416,4 +416,24 @@ class DialogControllerMixin:
         dlg.exec()
 
 
+
+    def show_new_chat_dialog(self):
+        """Displays the popup dialog to create a new chat in the selected mode."""
+        from ui.dialogs.new_chat_dialog import NewChatDialog
+        dlg = NewChatDialog(parent=self)
+        btn = self.sidebar.btn_new_chat
+        pos = btn.mapToGlobal(QPoint(0, btn.height() + 4))
+        dlg.move(pos)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_mode:
+            self.create_chat(mode=dlg.selected_mode)
+
+    def open_dependency_dialog(self):
+        """Открывает диалог проверки и фоновой установки компонентов окружения."""
+        try:
+            from ui.dialogs.dependency_dialog import DependencyDialog
+            dlg = DependencyDialog(parent=self)
+            dlg.exec()
+        except Exception as e:
+            logger.error(f"Не удалось открыть диалог компонентов: {e}")
+
 __all__ = ["DialogControllerMixin"]

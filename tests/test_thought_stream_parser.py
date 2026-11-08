@@ -231,3 +231,57 @@ def test_thought_spoiler_widget_ui(qapp):
     assert widget.isHidden() is False
     assert "32 токенов • 1.8 сек" in widget.metrics_label.text()
     assert "Мысли загруженные" in widget.get_thought_text()
+
+
+def test_implicit_open_think_tag_closed_in_stream():
+    """
+    Сценарий DeepSeek-R1 / Qwen3: llama-server инжектирует открывающий <think> в промпт,
+    поэтому в потоке идут сразу мысли и закрывающий </think>, а затем чистовой ответ.
+    """
+    parser = ThoughtStreamParser()
+    chunks = [
+        "(Ну что же, пользователь написал Привет. ",
+        "Надо ответить живо и по делу.)\n",
+        "</think>\n",
+        "Привет, Виктор! Готова к работе."
+    ]
+
+    events = []
+    for c in chunks:
+        events.extend(parser.feed(c))
+    events.extend(parser.finalize())
+
+    ev_types = [e[0] for e in events]
+    assert "start_think" in ev_types
+    assert "reset_normal" in ev_types
+    assert "end_think" in ev_types
+
+    assert parser.state == ThinkParserState.THINK_FINISHED
+    assert "Ну что же, пользователь написал Привет" in parser.thought_text
+    assert parser.normal_text.strip() == "Привет, Виктор! Готова к работе."
+    assert "</think>" not in parser.normal_text
+
+
+def test_multiple_think_blocks_merged_into_thought_text():
+    """
+    Сценарий двойного <think>: сначала прошел блок reasoning_content (<think>...</think>),
+    а затем в текстовом потоке модель открыла второй <think>...</think> перед ответом.
+    Оба блока должны попасть в thought_text, не протекая в normal_text.
+    """
+    parser = ThoughtStreamParser()
+    chunks = [
+        "<think>Первичная мысль из reasoning_content.</think>",
+        "\n<think>\nВторая мысль (самопроверка перед ответом).\n</think>\n",
+        "Чистовой ответ без утечки мыслей!"
+    ]
+
+    for c in chunks:
+        parser.feed(c)
+    parser.finalize()
+
+    assert parser.state == ThinkParserState.THINK_FINISHED
+    assert "Первичная мысль" in parser.thought_text
+    assert "Вторая мысль" in parser.thought_text
+    assert parser.normal_text.strip() == "Чистовой ответ без утечки мыслей!"
+    assert "<think>" not in parser.normal_text
+    assert "Вторая мысль" not in parser.normal_text

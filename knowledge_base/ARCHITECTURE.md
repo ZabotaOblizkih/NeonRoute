@@ -3,8 +3,28 @@
 > **Версия системы**: NeonRoute v0.9.1-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 273 файла Python, ~83 100 строк кода (без учета vendored PyQt-Fluent-Widgets)  
-> **Статус верификации**: 190 тестов пройдено (100% Pass Rate)
+> **Метрики кодовой базы**: 246 файлов Python, ~86 050 строк кода (без учета vendored PyQt-Fluent-Widgets)  
+> **Статус верификации**: 381 тест собран и пройден (100% Pass Rate: 54 smoke, 190 unit, 8 integration, 129 regression)
+
+---
+
+## Реестр архитектурных решений (Architectural Decision Log / Recent Refactoring Snapshot)
+
+Ниже представлена хронологическая таблица ключевых архитектурных решений и рефакторингов, внедренных в последних коммитах:
+
+| Идентификатор | Коммит(ы) | Затронутые модули | Контекст и проблема | Архитектурное решение и последствия |
+| :--- | :--- | :--- | :--- | :--- |
+| **ADR-01** | `709075a` | `services/forge_client.py`, `services/lm_studio.py`, `tests/unit/` | 1) Ложное выставление флага `_is_model_unloaded = True` в LM Studio при сбое выгрузки приводило к риску CUDA OOM на 8 ГБ VRAM.<br>2) Мутация словаря параметров запроса по ссылке при каскадных ретраях ADetailer/Hires.<br>3) Блокировка UI-потока до 0.8 с поллером прогресса Forge.<br>4) Недостижимый блок `reload_checkpoint` в `text_to_image`. | 1) Внедрен строгий аудит ответа выгрузки LLM перед переключением арбитра.<br>2) Передача изолированной копии `copy.deepcopy(p)` в `_send_request`.<br>3) Сокращение `join` поллера до 0.05 с с проверкой `is_alive()`.<br>4) Сброс `_checkpoint_unloaded` после проверки `elif`.<br>5) Создание изолированных тестовых сьютов (130 тестов: 50+ Forge, 30+ LM Studio). |
+| **ADR-02** | `17d3c15` | `services/lm_studio.py`, `services/thought_stream_parser.py` | Появление моделей рассуждения (DeepSeek-R1), транслирующих рассуждения через стриминговые чанки `delta.reasoning_content` и генерирующих глубокие цепочки мыслей, превышающие буфер 4K/8K токенов. | 1) Нативная поддержка формата SSE-стриминга `reasoning_content` наряду с тегами `<think>`.<br>2) Расширение лимита буфера `ThoughtStreamParser` до 16 384 токенов (16K failsafe buffer) с автоматическим переключением в неоновый спойлер интерфейса. |
+| **ADR-03** | `8c1952d`, `a051a6a`, `02a3578` | `ui/components/bubbles/avatar_renderer.py`, `ui/components/chat_header_widget.py`, `ui/components/sidebar_widget.py` | 1) Избыточный брендовый заголовок в боковой панели отнимал вертикальное пространство сессий.<br>2) Грубое кадрирование аватаров без сглаживания краев.<br>3) Плоская визуальная иерархия шапки диалога. | 1) Полная ликвидация брендового хедера в `SidebarWidget` в пользу минималистичного макета.<br>2) Реализация сглаживания краев аватаров (seamless avatar edge feathering) на базе антиалиасинга `QPainterPath`.<br>3) Внедрение кинематографической глубины (elevation depth) в `ChatHeaderWidget`.<br>4) Перевод дефолтных аватаров на векторные символы Fluent Icon. |
+| **ADR-04** | `f5a4ffd` | `services/memory_db.py` | Устаревание служебных методов LanceDB `compact_files()` и `cleanup_old_versions()` в новых версиях библиотеки с риском сбоев сжатия таблиц фактов. | Переход на нативный API `table.optimize()` LanceDB с автоматической очисткой фрагментов и вакуумизацией дискового пространства. |
+| **ADR-05** | `3fc12f5`, `a5230f4`, `ba4979e` | `services/hybrid_search.py`, `services/knowledge_manager.py`, `tests/unit/test_hybrid_fastembed_rag.py` | 1) Потеря частотности терминов в BM25 из-за бинарного подсчета.<br>2) Отсутствие фильтрации стоп-слов RU/EN.<br>3) Разрыв контекста при фрагментировании смежных чанков.<br>4) Непрозрачность отбора RAG-документов. | 1) Полноценная формула BM25 с учетом term frequency и насыщения.<br>2) Интеграция FastEmbed ONNX с L2-нормализацией векторов.<br>3) Автоматический подбор соседнего чанка (`next_chunk_id`) по порядку следования в документе.<br>4) Внедрение компактного диагностического логирования `[RAG-Trace]` для отслеживания оценок сходства и решений Gatekeeper. |
+| **ADR-06** | `841693f` | `services/process_manager.py`, `tests/` | Утечка фоновых daemon-потоков в smoke-тестах и сбои при генерации Qt-сигналов на удаленные C++ объекты `QObject` (`RuntimeError: wrapped C/C++ object has been deleted`). | 1) Изоляция фоновых потоков `ProcessManager` при обнаружении `PYTEST_CURRENT_TEST`.<br>2) Проверка валидности QObject через `sip.isdeleted()` и weakref-гарды перед эмитом сигналов `lms_status_changed` и `forge_status_changed`. |
+| **ADR-07** | `f31cc11`, `d62b4bf`, `38e19fb`, `29b5b20`, `7adaf9b` | `services/art_director/director.py`, `services/assistant_prompt_builder.py`, `services/roleplay_prompt_builder.py` | 1) Потеря команд отрицания («без очков», «без оружия») при переходе к мирным/интимным сценам в РП и галерее.<br>2) Анатомическая нестабильность кистей рук в SDXL при средних планах. | 1) Сквозная поддержка флага `--neg <items>` (regex `r'-{1,2}(?:negative|neg)'`) в директивах SD 1.5, SDXL и ролевом футере `_build_footer`.<br>2) Внедрение HAND ANCHOR RULE (обязательная привязка кистей рук к опоре/предметам) и матрицы флагов кадрирования (`--ar square/portrait/wide`).<br>3) Введение Canon Shield для защиты ДНК внешности персонажей. |
+| **ADR-08** | `36c2c50`, `2359063` | `ui/main_window.py`, `ui/controllers/chat_flow_controller.py`, `ui/controllers/reminder_controller.py`, `tests/` | Монолитный `MainWindow` (2096 строк) содержал мертвые прокси-методы, смешивал кинематику скролла с логикой бизнес-слоя, а контроллер напоминаний не имел явного жизненного цикла. | 1) Инкапсуляция `ReminderController` с явным методом `cleanup()`.<br>2) Перенос кинетики скролла и логики залипания внизу (`_is_at_bottom`) в `ChatFlowControllerMixin`.<br>3) Удаление избыточных прокси-переопределений (`_on_llm_response_received`, `_on_send_clicked`).<br>4) Формирование базового набора характеризационных тестов `tests/test_main_window_baseline.py` (14 тестов). |
+| **ADR-09** | `0142b29` | `ui/controllers/assistant_flow_controller.py`, `services/roleplay_flow_controller.py`, `services/task_queue.py` | Синхронный поиск в RAG и базе памяти в UI-потоке перед отправкой задачи вызывал латентность 15–150 мс (до 2 с на холодном старте). | Переход на отложенную сборку контекста (Deferred Context Assembly Runner): отправка сообщения за $< 0.2$ мс в UI, сборка RAG и памяти внутри фонового потока `TaskQueueWorker`. |
+| **ADR-10** | `c6b83a2`, `a9bd983` | `core/forge_locator.py`, `core/win32_job.py`, `services/process_manager.py` | Хардкод путей Forge, конфликты DLL виртуального окружения, зависание процессов-зомби при аварийном выходе. | 1) 5-уровневый каскад локатора с раскрытием NTFS Junctions.<br>2) Изоляция окружения `get_clean_forge_env`.<br>3) Двухфакторная проверка L4 сокет + L7 HTTP handshake.<br>4) Windows Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`).<br>5) Динамический флаг `--always-offload-from-vram` на GPU $\le 8$ ГБ. |
+| **ADR-11** | `HEAD` | `ui/main_window.py`, `ui/controllers/session_controller.py`, `ui/controllers/search_controller.py`, `ui/controllers/dialog_controller.py`, `ui/components/chat_list_item.py` | Фасад `MainWindow` содержал 939 строк монолитной логики сессий, разрозненные методы поиска и рудиментарный monkeypatching (`AvatarCropDialog`, `resizeEvent` элементов списка сессий), нарушая SRP. | 1) Полная консолидация сессий (`_load_saved_sessions`, `create_chat`, `_create_new_session`, `_switch_to_session`, прогрессивный рендеринг) в `SessionControllerMixin` (+855 строк).<br>2) Перенос навигации по поиску (`_search_next`, `_search_prev`, `_navigate_search_match`) в `ChatSearchMixin`.<br>3) Перенос модальных вызовов в `DialogControllerMixin`.<br>4) Нативная инкапсуляция усечения заголовка (`ElideRight`) в `ChatSessionItemWidget`.<br>5) Удаление устаревших monkeypatching-заглушек `AvatarCropDialog`.<br>6) Сокращение `MainWindow` с 2007 до 1068 строк (-47%) без создания новых сущностей. |
 
 ---
 
@@ -12,10 +32,10 @@
 
 Система **NeonRoute** — это мультимодальный десктопный ИИ-клиент и headless-шлюз (Mobile BFF Gateway) для локального инференса нейросетевых моделей в условиях жесткого аппаратного бюджета видеопамяти (8 ГБ VRAM). Система бесшовно объединяет:
 
-1. **Большие языковые модели (LLM)**: многомодальный контекст, три режима работы (Ассистент «Элария», Ролевой чат с поддержкой карточек Tavern/Chub, автономный агент разработки ПО «Инженер»).
-2. **Диффузионный рендеринг (Stable Diffusion WebUI Forge)**: фотореалистичный синтез сцен, портретов персонажей и окружения на базе архитектур SD 1.5, SDXL, Pony, с поддержкой LoRA, ADetailer и нативной квантизации FP8 E4M3FN.
+1. **Большие языковые модели (LLM)**: многомодальный контекст, три режима работы (Ассистент «Элария», Ролевой чат с поддержкой карточек Tavern/Chub, автономный агент разработки ПО «Инженер»), нативный парсинг стриминга DeepSeek-R1 `reasoning_content` и буфер цепочек мыслей до 16K токенов.
+2. **Диффузионный рендеринг (Stable Diffusion WebUI Forge)**: фотореалистичный синтез сцен, портретов персонажей и окружения на базе архитектур SD 1.5, SDXL, Pony, с поддержкой LoRA, ADetailer, нативной квантизации FP8 E4M3FN, сквозного отрицания `--neg` и протокола фиксации рук Hand Anchor.
 3. **Голосовой интерфейс**: синтез речи F5-TTS на CPU и голосовой ввод через Faster-Whisper.
-4. **Гибридный RAG и ассоциативная память**: трехконтурный семантический поиск (BM25 + плотные эмбеддинги FastEmbed + Reciprocal Rank Fusion) и долговременная память на базе SQLite WAL и LanceDB.
+4. **Гибридный RAG и ассоциативная память**: трехконтурный семантический поиск (BM25 с сохранением term frequency + плотные эмбеддинги FastEmbed ONNX с L2-нормализацией + Reciprocal Rank Fusion) и долговременная память на базе SQLite WAL и оптимизированного LanceDB.
 5. **Headless Mobile Gateway (`mobile_server`)**: асинхронный REST/SSE шлюз на базе FastAPI для взаимодействия с мобильными клиентами через локальную сеть или VPN (Tailscale) с единой очередью инференса.
 6. **Отложенная сборка контекста (Deferred Context Assembly Runner)**: перенос ресурсоемкого поиска по базе знаний и памяти из UI-потока в рабочий поток очереди задач, снижающий латентность отправки сообщений до $< 0.2$ мс.
 
@@ -27,6 +47,7 @@
 - В каждый момент времени доступ к тяжелым вычислительным тензорам GPU имеет строго одно вычислительное ядро (LLM или Diffusion).
 - Переключение контекста управляется централизованным арбитром `services.vram_arbiter.VRAMArbiter`.
 - На системах с объемом памяти $\le 8$ ГБ инжектируется принудительная политика оффлоада `--always-offload-from-vram`.
+- Предотвращение паразитного VRAM Thrashing: выгрузка LLM категорически блокируется, если сервер Forge недоступен или не прошел двухфакторный хэндшейк.
 
 ### Технологический стек
 
@@ -35,10 +56,10 @@
 | **Рантайм и Ядро** | Python 3.10+, Standard Library (`ctypes`, `subprocess`, `urllib.request`, `socket`, `configparser`, `shutil`) |
 | **Графический интерфейс** | PyQt6, QFramelessWindow (Cyberpunk Glassmorphism / Acrylic), QFluentWidgets |
 | **Мобильный шлюз (BFF)** | FastAPI, Uvicorn, Server-Sent Events (SSE), Pydantic v2, CORS Middleware |
-| **Хранение данных** | SQLite 3 (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), LanceDB (векторные таблицы), Zero-Fsync JSON-зеркала |
-| **Сетевые контракты** | FastAPI / Uvicorn (Mobile BFF Gateway REST + Server-Sent Events), Gradio/Automatic1111 REST API, HTTP-Keep-Alive |
+| **Хранение данных** | SQLite 3 (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), LanceDB (`table.optimize()`), Zero-Fsync JSON-зеркала |
+| **Сетевые контракты** | FastAPI / Uvicorn (Mobile BFF Gateway REST + Server-Sent Events), Gradio/Automatic1111 REST API, HTTP Keep-Alive |
 | **Управление ОС и процессами** | Win32 API (`kernel32.dll`: Windows Job Objects `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`, дескрипторы скрытых процессов `CREATE_NO_WINDOW`) |
-| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (190 тестов) |
+| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (381 тест) |
 
 ---
 
@@ -51,44 +72,49 @@
 ```mermaid
 flowchart TD
     subgraph UI ["Presentation Layer (ui/)"]
-        MW["MainWindow (3-Column Splitter)"]
-        CTRL["13 Controllers / Mixins"]
+        MW["MainWindow (Frameless, 3-Column Splitter)"]
+        UI_CTX["UIContext (SSOT State & Turn Lifecycle)"]
+        CTRL["13 Controllers / Mixins (Clean Python Classes)"]
+        PRES["Dedicated Presenters (ReminderController, HeaderStateController)"]
         COMP["UI Components & Widgets (23 виджета)"]
-        DLG["Modal Dialogs (Civitai, Models, Gallery - 25 окон)"]
+        DLG["Modal Dialogs (25 окон, Lazy Loaded via PEP 562)"]
     end
 
     subgraph MOB ["Mobile Gateway Layer (mobile_server/)"]
         FASTAPI["FastAPI Application (api.py)"]
-        ROUTERS["REST & SSE Routers (chat, art, sessions, system)"]
+        ROUTERS["REST & SSE Routers (chat, art, sessions, characters, system, media)"]
         DEPS["Dependencies Injection (TaskQueue, Arbiter, Sessions)"]
     end
 
     subgraph APP ["Application Services (services/)"]
-        PM["ProcessManager"]
+        PM["ProcessManager (Thread-Safe, Daemon-Isolated)"]
         VA["VRAMArbiter (GPUOwner)"]
         LB["LayerBudgeter (GGUF & Topology)"]
-        TQ["TaskQueueWorker (Single Worker)"]
+        TQ["TaskQueueWorker (Single Worker, Priority Queue)"]
         DEF["Deferred RAG Runners (Assistant & RP)"]
-        AD["ArtDirector Engine"]
-        ENG["SubagentEngineer & TDD"]
-        RAG["KnowledgeManager & HybridSearch"]
-        MC["ModeCoordinator (FSM)"]
+        AD["ArtDirector Engine (Directives, --neg, Hand Anchor)"]
+        ENG["SubagentEngineer & TDD (SandboxGuard, AST)"]
+        RAG["KnowledgeManager & HybridSearch (BM25 TF + FastEmbed ONNX)"]
+        MEM["MemoryDB (SQLite WAL + LanceDB table.optimize)"]
+        MC["ModeCoordinator (FSM Transitions)"]
     end
 
     subgraph CORE ["Core Domain (core/)"]
-        FL["ForgeLocator (5-Level Cascade)"]
-        W32["Win32JobManager (Kill-on-Close)"]
+        FL["ForgeLocator (5-Level Cascade, NTFS Junctions)"]
+        W32["Win32JobManager (Kill-on-Close = 0x2000)"]
         SM["SessionManager Facade"]
     end
 
     subgraph EXT ["External AI Backends & OS"]
-        LLAMA["llama-server.exe / LM Studio"]
-        FORGE["SD WebUI Forge (Python 3.10 / Gradio)"]
-        OS_KERNEL["Windows Kernel (Job Object / NTFS)"]
+        LLAMA["llama-server.exe / LM Studio (SSE, reasoning_content)"]
+        FORGE["SD WebUI Forge (Gradio REST, FP8 E4M3FN, ADetailer)"]
+        OS_KERNEL["Windows Kernel (Job Object, NTFS, NVML)"]
         SQLITE["SQLite WAL (data/memory.db)"]
     end
 
+    MW --> UI_CTX
     MW --> CTRL
+    MW --> PRES
     CTRL --> COMP
     CTRL --> DLG
     CTRL --> DEF
@@ -112,30 +138,33 @@ flowchart TD
 1. **Core Domain (`core/`)**:
    - `core/forge_locator.py`: 5-уровневый каскад обнаружения директории Forge, парсинг аргументов лаунчера (`--models-dir`, `--ckpt-dir`, `--lora-dir`), разрешение NTFS-симлинков и Junctions, изоляция окружения `get_clean_forge_env`, запись в `server_config.ini`.
    - `core/win32_job.py`: `Win32JobManager` (Singleton) на чистом `ctypes` — привязка дочерних процессов к Windows Job Object с флагом `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000)`.
-   - `core/session_manager.py`: фасад реэкспорта сессий.
+   - `core/session_manager.py`: фасад совместимости для SessionManager.
 2. **Application Services (`services/`)**:
-   - `services/process_manager.py`: оркестратор жизненного цикла внешних процессов (`llama-server.exe`, LM Studio CLI, SD WebUI Forge) с двухфакторной проверкой сокетов (L4 TCP + L7 HTTP Handshake).
+   - `services/process_manager.py`: оркестратор жизненного цикла внешних процессов (`llama-server.exe`, LM Studio CLI, SD WebUI Forge) с двухфакторной проверкой сокетов (L4 TCP + L7 HTTP Handshake), изоляцией daemon-потоков в тестах и гардами от удаленных QObject.
    - `services/vram_arbiter.py`: арбитраж монопольного владения GPU (`GPUOwner.NONE`, `GPUOwner.LLM`, `GPUOwner.DIFFUSION`).
    - `services/layer_budgeter.py`: топологический аудитор GPU, парсер бинарных заголовков GGUF и калькулятор слоев `-ngl` с Pre-flight RAM Guard.
-   - `services/forge_client.py`: асинхронный REST-клиент SD Forge API с Watchdog, автоочисткой VRAM и ADetailer Guard.
-   - `services/lm_studio.py`: клиент LLM инференса (SSE streaming, Keep-Alive, DRY/XTC сэмплеры).
-   - `services/art_director/`: подсистема режиссуры кадра (резолвинг стилей, LoRA, негативов, ADetailer, геометрия кадра, политика оффлоада).
+   - `services/forge_client.py`: асинхронный REST-клиент SD Forge API с Watchdog, автоочисткой VRAM, глубоким копированием payload (`deepcopy`), неблокирующим выходом поллера (0.05 с) и корректной перезагрузкой чекпоинта.
+   - `services/lm_studio.py`: клиент LLM инференса с поддержкой SSE-стриминга, Keep-Alive, парсинга DeepSeek-R1 `reasoning_content`, фильтрацией технического плейсхолдера `default` и перехватом HTTP 400 (Jinja/ролевые конфликты).
+   - `services/art_director/`: подсистема режиссуры кадра (резолвинг стилей, LoRA, нативный флаг `--neg`, Hand Anchor Protocol, матрица флагов `--ar`, геометрия кадра, политика оффлоада).
    - `services/task_queue.py`: приоритетная однопоточная очередь инференса (`max_workers=1`, уровни `HIGH=0`, `NORMAL=10`, `LOW=20`) с поддержкой Deferred Context Assembly.
-   - `services/subagent_engineer.py`, `services/engineer_tdd.py`, `services/tool_engine.py`, `services/sandbox_manager.py`: песочница и двухфазный TDD-пайплайн.
-   - `services/knowledge_manager.py`, `services/hybrid_search.py`, `services/memory_db.py`: гибридный поиск RAG и двухконтурная память.
+   - `services/subagent_engineer.py`, `services/engineer_tdd.py`, `services/tool_engine.py`, `services/sandbox_manager.py`: изолированная песочница и двухфазный TDD-пайплайн.
+   - `services/knowledge_manager.py`, `services/hybrid_search.py`, `services/memory_db.py`: гибридный поиск RAG (BM25 TF + FastEmbed ONNX + RRF + непрерывность соседних чанков) и двухконтурная память с `LanceDB.table.optimize()`.
    - `services/mode_coordinator.py`: конечный автомат переключения режимов (Ассистент, Ролевой чат, Инженер).
 3. **Headless Mobile Gateway (`mobile_server/`)**:
    - `mobile_server/api.py`: FastAPI приложение, CORS-настройки для локальной сети и VPN (Tailscale), монтирование статики и роутеров.
    - `mobile_server/dependencies.py`: внедрение зависимостей синглтонов `TaskQueueWorker`, `SessionManager`, `VRAMArbiter`, `LMStudioClient`, `ForgeClient`.
    - `mobile_server/routes/`: асинхронные эндпоинты генерации (`art.py`), чата и SSE-стриминга (`chat.py`), управления сессиями (`sessions.py`), персонажей (`characters.py`), телеметрии VRAM (`system.py`) и статических медиа (`media.py`).
 4. **Presentation Layer (`ui/`)**:
-   - `ui/main_window.py`: главное окно с 3-колоночным сплиттером (`SidebarWidget` | `MainContent` | `WorkspaceInspectorWidget`).
-   - `ui/controllers/`: 13 специализированных миксинов контроллеров без множественного наследования от `QObject`, включая отложенные раннеры контекста.
-   - `ui/components/`: 23 графических виджета ввода, баблов сообщений, статуса, шапки, инспектора песочницы, спойлеров рассуждений `<think>`.
-   - `ui/dialogs/`: 25 модальных диалогов настроек, моделей, Civitai браузера с AutoV2 SHA-256 и безопасными путями, галереи персонажей, базы знаний.
+   - `ui/main_window.py`: главное окно с 3-колоночным сплиттером (`SidebarWidget` | `MainContent` | `WorkspaceInspectorWidget`), интегрированное с `UIContext`.
+   - `ui/controllers/`: 13 специализированных миксинов контроллеров без прямого наследования от `QObject`, включая отложенные раннеры контекста и кинематику скролла в `ChatFlowControllerMixin`.
+   - Выделенные контроллеры/презентеры: `ReminderController` с явным жизненным циклом `cleanup()` и `HeaderStateController` для шапки и прогресса Forge.
+   - `ui/components/`: 23 графических виджета ввода, баблов сообщений, статуса, шапки с кинематографической глубиной, сглаженных аватаров, инспектора песочницы, 16K спойлеров рассуждений `<think>`.
+   - `ui/dialogs/`: 25 модальных диалогов с ленивой загрузкой через PEP 562.
 5. **Configuration & Utilities (`config.py`, `utils/`)**:
-   - `config.py`: единый источник правды (SSOT) путей, лимитов памяти, профилей режимов, динамический метод `get_forge_models_dir()`.
+   - `config.py`: единый источник правды (SSOT) путей, лимитов памяти, профилей режимов, динамический метод `get_forge_models_dir()`, независимость от рабочего каталога (CWD-independence).
    - `utils/`: `system_monitor.py` (NVML/psutil), `health_checker.py` (сокетный опрос без блокировок), `file_utils.py` (атомарная запись `atomic_write_json`), `config_manager.py`.
+
+---
 
 ### 2.2. Топология файлов репозитория
 
@@ -171,7 +200,8 @@ NeonRoute/
 │   ├── __init__.py                      # Инициализация пакета services
 │   ├── art_director_config.py           # [256 строк] Загрузка/сохранение data/art_director_models.json
 │   ├── asset_validator.py               # [103 строки] Pre-flight аудит наличия чекпоинтов SD и весов ADetailer
-│   ├── assistant_prompt_builder.py      # [674 строки] Сборщик системного промпта Эларии (UserInfo, PassiveMemory, скиллы)
+│   ├── assistant_flow.py                # [207 строк] Пошаговый пайплайн Ассистента
+│   ├── assistant_prompt_builder.py      # [729 строк] Сборщик промпта Эларии, директивы SD 1.5/SDXL, --neg, Hand Anchor
 │   ├── card_translator.py               # [444 строки] Пошаговый переводчик карточек с CJK Quality Gate
 │   ├── chub_client.py                   # [416 строк] REST API клиент каталога Chub.ai (поиск, очистка промо-мусора)
 │   ├── civitai_service.py               # [181 строка] Запрос параметров модели по AutoV2 SHA-256 с Civitai API
@@ -192,26 +222,26 @@ NeonRoute/
 │   ├── entity_mapper.py                 # [160 строк] Детерминированный конвертер кириллических сущностей в теги SD 1.5
 │   ├── environment_doctor.py            # [124 строки] Аудит окружения и фоновая установка пакетов через PipInstallWorker
 │   ├── file_generator.py                # [318 строк] Генератор стилизованных документов Excel (.xlsx) и Word (.docx)
-│   ├── forge_client.py                  # [1075 строк] REST-клиент SD WebUI Forge (/sdapi/v1/txt2img, Watchdog 90s, ADetailer)
+│   ├── forge_client.py                  # [1090 строк] REST-клиент SD Forge API (deepcopy payload, 0.05s poller, reload fix)
 │   ├── forge_models.py                  # [392 строки] Реестр паспортов моделей SD (MODEL_REGISTRY, Capabilities)
 │   ├── git_sandbox.py                   # [333 строки] GitSandboxManager: локальный Git репозиторий песочницы
-│   ├── hybrid_search.py                 # [609 строк] Гибридный поиск: BM25Index + BuiltinDenseVectorizer/FastEmbed + RRF
-│   ├── knowledge_manager.py             # [980 строк] Менеджер базы знаний: extract_triggers, registry.json, search_index.json
+│   ├── hybrid_search.py                 # [678 строк] Гибридный поиск: BM25 (TF + stopwords) + FastEmbed ONNX + RRF + NextChunk
+│   ├── knowledge_manager.py             # [1029 строк] Менеджер базы знаний: [RAG-Trace], FastEmbed Gatekeeper, registry.json
 │   ├── knowledge_watcher.py             # [201 строка] QFileSystemWatcher сателлит с дебаунсом 2.0 с
 │   ├── layer_budgeter.py                # [628 строк] Топологический аудитор GPU, парсер GGUF и калькулятор слоев NGL
-│   ├── lm_studio.py                     # [735 строк] Клиент LLM (Keep-Alive, SSE-стриминг, DRY/XTC сэмплеры)
+│   ├── lm_studio.py                     # [795 строк] Клиент LLM (Keep-Alive, SSE, reasoning_content, default filter, HTTP 400 guard)
 │   ├── macro_engine.py                  # [64 строки] Парсер макросов {{user}}, {{char}}, {{random: ...}}, {{roll: XdY+Z}}
 │   ├── markdown_chunker.py              # [400 строк] Структурный нарезчик Markdown с защитой целостности кодовых блоков
-│   ├── memory_db.py                     # [812 строк] Хранилище памяти: SQLite (WAL) + LanceDB (facts и rp_memories)
+│   ├── memory_db.py                     # [815 строк] Хранилище памяти: SQLite WAL + LanceDB native table.optimize()
 │   ├── memory_extractor.py              # [308 строк] Асинхронный экстрактор фактов о пользователе (PRIORITY_LOW)
 │   ├── minor_safety.py                  # [117 строк] Детектор несовершеннолетних персонажей и фильтр безопасности
 │   ├── mode_coordinator.py              # [480 строк] Конечный автомат режимов (Teardown -> Switch -> Boot -> Mount)
 │   ├── model_router.py                  # [531 строка] Гибридный роутер моделей Арт-директора (триггеры + FastEmbed)
 │   ├── patch_engine.py                  # [499 строк] Хирургический PatchApplier и SelfHealingEngine
-│   ├── process_manager.py               # [1458 строк] Оркестратор процессов: llama-server, LM Studio, SD Forge, L4+L7 checks
+│   ├── process_manager.py               # [1470 строк] Оркестратор процессов: llama-server, Forge, L4+L7, thread isolation
 │   ├── regex_filter.py                  # [71 строка] Очистка тегов <think>, спецтокенов, нормализация тире
-│   ├── roleplay_flow_controller.py      # [674 строки] Контроллер диалогового цикла RP: run_roleplay_inference_deferred
-│   ├── roleplay_prompt_builder.py       # [534 строки] Сборщик промптов RP: Depth-0 якоря, 11 архетипов, 4 кино-директивы
+│   ├── roleplay_flow_controller.py      # [698 строк] Контроллер диалогового цикла RP: run_roleplay_inference_deferred
+│   ├── roleplay_prompt_builder.py       # [607 строк] Сборщик промптов RP: Depth-0 якоря, 11 архетипов, --neg в футере
 │   ├── roleplay_state_manager.py        # [137 строк] Парсер блоков <stats>/[STATUS] (локация, инвентарь, квесты)
 │   ├── rp_cast_extractor.py             # [553 строки] Асинхронный летописец сцены: NPC, локации, мутации, scene_type
 │   ├── rp_cast_manager.py               # [978 строк] Менеджер состояния кампании (history/cast_<id>.json): сопартийцы
@@ -226,10 +256,10 @@ NeonRoute/
 │   ├── skill_router.py                  # [391 строка] Роутер микро-скиллов Ассистента (7 базовых + custom)
 │   ├── stt_service.py                   # [68 строк] Сервис голосового ввода (Faster-Whisper stub)
 │   ├── subagent_engineer.py             # [1787 строк] Автономный субагент «Инженер»: Review/Git, TDD, SubstanceGuard
-│   ├── task_queue.py                    # [239 строк] Однопоточная приоритетная очередь задач (TaskQueueWorker)
+│   ├── task_queue.py                    # [243 строки] Однопоточная приоритетная очередь задач (TaskQueueWorker)
 │   ├── tavern_models.py                 # [692 строки] Модели CharacterCard и LoreEntry: 11 архетипов, пол, POV
 │   ├── tavern_parser.py                 # [864 строки] Парсер карточек Tavern V1/V2/CCv3 и Chub (JSON/PNG/WebP)
-│   ├── thought_stream_parser.py         # [218 строк] Потоковый FSM тегов <think>...</think> с буферизацией чанков
+│   ├── thought_stream_parser.py         # [218 строк] Потоковый FSM тегов <think> с 16K буфером и reasoning_content
 │   ├── token_budget_manager.py          # [345 строк] Оценка токенов BPE, светофор карточек и 2-контурный бюджет
 │   ├── tool_engine.py                   # [849 строк] Диспетчер инструментов песочницы (write_file, patch_file, run_pytest)
 │   ├── tool_parser.py                   # [308 строк] Парсер тегов <TOOL:...> с поддержкой SEARCH/REPLACE
@@ -242,7 +272,7 @@ NeonRoute/
 │   └── art_director/                    # Подсистема режиссуры изображений «Арт-директор»
 │       ├── __init__.py                  # [68 строк] Фасад подсистемы art_director
 │       ├── contracts.py                 # [113 строк] Контракты данных: TargetSubject, VisualIntent, SceneAnalysisContract
-│       ├── director.py                  # [1661 строка] ArtDirector: RP-контекст, LoRA-резолвинг, BREAK-симметризация
+│       ├── director.py                  # [1811 строк] ArtDirector: RP-контекст, LoRA, regex r'-{1,2}(?:negative|neg)'
 │       ├── geometry.py                  # [104 строки] Разрешения SD 1.5 и SDXL по 6 архетипам кадра
 │       ├── legacy_helpers.py            # [117 строк] Вспомогательные функции обратной совместимости
 │       ├── lora_manager.py              # [284 строки] Чтение заголовков .safetensors на CPU (0 MB VRAM)
@@ -252,29 +282,40 @@ NeonRoute/
 │
 ├── ui/                                  # Слой графического интерфейса (Presentation Layer)
 │   ├── __init__.py                      # Инициализация пакета ui
-│   ├── main_window.py                   # [2096 строк] Главное окно MainWindow (3-колоночный сплиттер, дебаунс моделей)
-│   ├── models_manager_dialog.py         # [2463 строки] Пульт управления моделями Forge, Civitai AutoFill, FP8
+│   ├── main_window.py                   # [1068 строк] Главное окно MainWindow (3-колоночный сплиттер, UIContext)
+│   ├── models_manager_dialog.py         # [2569 строк] Пульт управления моделями Forge, Civitai AutoFill, FP8
 │   ├── engineer_skills_dialog.py        # [998 строк] Центр управления знаниями инженера (Skills Hub)
 │   ├── log_console.py                   # [187 строк] Live-консоль логов (QtLogHandler, кольцевой буфер на 2000 записей)
-│   ├── styles.py                        # [311 строк] Глобальная таблица стилей NEON_THEME_QSS
+│   ├── styles.py                        # [319 строк] Глобальная таблица стилей NEON_THEME_QSS
 │   │
-│   ├── controllers/                     # 13 чистых Python-миксинов контроллеров MainWindow
-│   │   ├── assistant_flow_controller.py # [1256 строк] run_assistant_inference_deferred, 2-контурный бюджет, арт-проход
+│   ├── common/                          # Общие утилиты и контекст UI
+│   │   ├── __init__.py                  # Инициализация пакета common
+│   │   ├── icon_utils.py                # [85 строк] Утилиты векторных иконок Fluent
+│   │   └── ui_context.py                # [142 строки] UIContext: Single Source of Truth состояния интерфейса
+│   │
+│   ├── builders/                        # Строители интерфейсных элементов
+│   │   ├── __init__.py                  # Инициализация пакета builders
+│   │   ├── chat_bubble_builder.py       # [284 строки] Построитель баблов чата
+│   │   └── menu_builder.py              # [341 строка] MenuBuilder, ClickOnlyMenuBar
+│   │
+│   ├── controllers/                     # 13 чистых Python-миксинов и контроллеров MainWindow
+│   │   ├── __init__.py                  # Инициализация пакета controllers
+│   │   ├── assistant_flow_controller.py # [1286 строк] run_assistant_inference_deferred, 2-контурный бюджет, арт-проход
 │   │   ├── avatar_controller.py         # [787 строк] Синхронизация аватаров, меню скиллов, вызов диалогов
-│   │   ├── chat_flow_controller.py      # [1570 строк] Диспетчеризация ввода, реэкспорт раннеров, стрим 28 FPS
-│   │   ├── dialog_controller.py         # [418 строк] Управление модальными окнами настроек, базы знаний, экспорта
-│   │   ├── engineer_controller.py       # [772 строки] Маршрутизация задач в SubagentEngineer, синхронизация инспектора
-│   │   ├── hardware_engine.py           # [1027 строк] Управление процессами LLM/Forge, автотюн KV, guard VRAM thrashing
-│   │   ├── header_controller.py         # [129 строк] Реактивный контроллер шапки чата и прогресса Forge
-│   │   ├── reminder_controller.py       # [98 строк] Пуллинг напоминаний SQLite, трей, Windows Toast
+│   │   ├── chat_flow_controller.py      # [1745 строк] Диспетчеризация ввода, кинематика скролла, стрим 28 FPS
+│   │   ├── dialog_controller.py         # [438 строк] Управление модальными окнами настроек, базы знаний, экспорта
+│   │   ├── engineer_controller.py       # [772 строки] Маршрутизация задач в SubagentEngineer, инспектор песочницы
+│   │   ├── hardware_engine.py           # [1035 строк] Управление процессами LLM/Forge, автотюн KV, guard VRAM thrashing
+│   │   ├── header_controller.py         # [129 строк] HeaderStateController: реактивный контроллер шапки чата и Forge
+│   │   ├── reminder_controller.py       # [116 строк] ReminderController: пуллинг напоминаний, cleanup() жизненного цикла
 │   │   ├── roleplay_controller.py       # [492 строки] Фон сцены, сводка кампании, локализация карточек
-│   │   ├── search_controller.py         # [77 строк] Поиск и навигация по тексту диалога
-│   │   ├── session_controller.py        # [138 строк] Создание, переименование и удаление сессий
-│   │   ├── task_lifecycle_controller.py # [467 строк] Маршрутизация задач в очередь, перехват команд памяти
-│   │   └── window_state_controller.py   # [150 строк] Кэширование фона главного окна и полный экран (F11)
+│   │   ├── search_controller.py         # [104 строки] Поиск, подсветка и навигация по тексту диалога
+│   │   ├── session_controller.py        # [989 строк] Полный жизненный цикл сессий, сэмплинга, приветствий и истории
+│   │   ├── task_lifecycle_controller.py # [494 строки] Маршрутизация задач в очередь, перехват команд памяти
+│   │   └── window_state_controller.py   # [158 строк] Кэширование фона главного окна и полный экран (F11)
 │   │
-│   ├── dialogs/                         # 25 модальных диалоговых окон приложения
-│   │   ├── __init__.py                  # [73 строки] Реэкспорт диалогов
+│   ├── dialogs/                         # 25 модальных диалоговых окон приложения (Lazy Loaded)
+│   │   ├── __init__.py                  # [73 строки] Реэкспорт диалогов через PEP 562
 │   │   ├── about_dialog.py              # [146 строк] Окно «О программе», лицензии, системная информация
 │   │   ├── anchor_viewer_dialog.py      # [145 строк] Инспектор активных системных якорей и промптов
 │   │   ├── avatar_crop_dialog.py        # [287 строк] Интерактивный кроппер аватаров персонажей и профиля
@@ -290,6 +331,11 @@ NeonRoute/
 │   │   ├── clean_cache_dialog.py        # [612 строк] Очиститель кэша Forge, логов, превью и LanceDB
 │   │   ├── dependency_dialog.py         # [181 строка] Менеджер внешних пакетов и утилит окружения
 │   │   ├── engineer_settings_dialog.py  # [352 строки] Настройки субагента «Инженер»: лимиты итераций, тайм-ауты
+│   │   ├── gallery/                     # Модули расширенной галереи
+│   │   │   ├── __init__.py              # [1 строка] Инициализация пакета
+│   │   │   ├── character_card_widget.py # [320 строк] Виджет карточки персонажа в галерее
+│   │   │   ├── dna_party_mixin.py       # [210 строк] Миксин настройки партии соратников
+│   │   │   └── translation_mixin.py     # [145 строк] Миксин слотного перевода карточки
 │   │   ├── help_dialog.py               # [208 строк] Интерактивная справочная система и шорткаты
 │   │   ├── knowledge_manager_dialog.py  # [997 строк] Центр «Знания Эларии»: документы, скиллы, системный промпт
 │   │   ├── llm_engine_settings_dialog.py# [351 строка] Выбор и тюнинг LLM бэкенда (llama-server vs LM Studio)
@@ -301,74 +347,108 @@ NeonRoute/
 │   │   ├── shutdown_dialog.py           # [83 строки] Диалог безопасного завершения фоновых процессов
 │   │   └── user_settings_dialog.py      # [1005 строк] Профили пользователя и игровые персоны
 │   │
-│   └── components/                      # 23 специализированных графических компонента
-│       ├── __init__.py                  # [1 строка] Инициализация пакета
-│       ├── assistant_chat_bubble.py     # [456 строк] Бабл ассистента с видоискателем арт-генерации (28 FPS)
-│       ├── audio_player.py              # [126 строк] Встроенный аудиоплеер озвучки F5-TTS
-│       ├── chat_background.py           # [123 строки] Виджет отрисовки киберпанк-фонов и неоновых эффектов
-│       ├── chat_bubble.py               # [1399 строк] Базовый бабл сообщения: Markdown, подсветка кода, экспорт
-│       ├── chat_header_widget.py        # [269 строк] Шапка диалога: статус модели, переключатели режимов, аватар
-│       ├── chat_input_panel.py          # [244 строки] Нижняя парящая капсула ввода с чипами вложений
-│       ├── chat_list_item.py            # [200 строк] Элемент списка сессий в боковой панели
-│       ├── chat_message_widget.py       # [181 строка] Обертка виджета реплики для списка истории
-│       ├── chat_stream_widget.py        # [201 строка] Виджет потокового вывода токенов с мягким скроллом
-│       ├── emoji_picker.py              # [97 строк] Всплывающая панель эмодзи
-│       ├── file_card.py                 # [153 строк] Карточка прикрепленного документа / файла
-│       ├── input_box.py                 # [349 строк] Многострочное поле ввода с автовысотой и Drag&Drop
-│       ├── reminder_toast.py            # [63 строки] Всплывающее уведомление напоминаний в стиле Fluent
-│       ├── rpg_elements.py              # [513 строк] RPG-виджеты (<stats>, <meters>, <choices>, <check>)
-│       ├── scroll_button.py             # [136 строк] Кнопка быстрого скролла вниз с индикатором новых реплик
-│       ├── search_bar.py                # [165 строк] Всплывающая строка поиска по тексту чата
-│       ├── sidebar_widget.py            # [263 строки] Левая панель навигации по сессиям и режимам
-│       ├── status_bar_widget.py         # [313 строк] MainStatusBar: телеметрия VRAM/RAM, LED-индикаторы
-│       ├── status_pill.py               # [51 строка] Компактный светодиодный индикатор статуса
-│       ├── step_progress_button.py      # [94 строки] Кнопка с круговым индикатором прогресса генерации
-│       ├── thought_spoiler_widget.py    # [257 строк] Неоновый спойлер для цепочек рассуждений <think>
-│       ├── typing_loader.py             # [106 строк] Анимированный индикатор набора текста
-│       └── workspace_inspector.py       # [748 строк] Правая панель песочницы (дерево файлов, редактор, Git, Smoke F5)
+│   ├── components/                      # 23 специализированных графических компонента
+│   │   ├── __init__.py                  # Инициализация пакета components
+│   │   ├── assistant_chat_bubble.py     # [456 строк] Бабл ассистента с видоискателем арт-генерации (28 FPS)
+│   │   ├── audio_player.py              # [126 строк] Встроенный аудиоплеер озвучки F5-TTS
+│   │   ├── bubbles/                     # Баблы и вспомогательные рендереры
+│   │   │   ├── __init__.py              # Инициализация пакета
+│   │   │   ├── avatar_renderer.py       # [148 строк] Сглаживание краев аватаров (edge feathering), антиалиасинг
+│   │   │   ├── image_preview_dialog.py  # [95 строк] Просмотрщик полноразмерных превью изображений
+│   │   │   └── workspace_cards.py       # [180 строк] Карточки артефактов и файлов песочницы
+│   │   ├── chat_background.py           # [123 строки] Виджет отрисовки киберпанк-фонов и неоновых эффектов
+│   │   ├── chat_bubble.py               # [1399 строк] Базовый бабл сообщения: Markdown, подсветка кода, экспорт
+│   │   ├── chat_header_widget.py        # [314 строк] Шапка диалога: статус модели, кинематографическая глубина
+│   │   ├── chat_input_panel.py          # [244 строки] Нижняя парящая капсула ввода с чипами вложений
+│   │   ├── chat_list_item.py            # [254 строки] Элемент списка сессий в минималистичном сайдбаре
+│   │   ├── chat_message_widget.py       # [181 строка] Обертка виджета реплики для списка истории
+│   │   ├── chat_stream_widget.py        # [201 строка] Виджет потокового вывода токенов с мягким скроллом
+│   │   ├── emoji_picker.py              # [97 строк] Всплывающая панель эмодзи
+│   │   ├── file_card.py                 # [153 строки] Карточка прикрепленного документа / файла
+│   │   ├── input_box.py                 # [349 строк] Многострочное поле ввода с автовысотой и Drag&Drop
+│   │   ├── reminder_toast.py            # [63 строки] Всплывающее уведомление напоминаний в стиле Fluent
+│   │   ├── rp/                          # Компоненты ролевого режима
+│   │   │   ├── __init__.py              # Инициализация пакета
+│   │   │   └── rp_chat_bubble.py        # [312 строк] Специализированный бабл ролевых реплик
+│   │   ├── rpg_elements.py              # [513 строк] RPG-виджеты (<stats>, <meters>, <choices>, <check>)
+│   │   ├── scroll_button.py             # [136 строк] Кнопка быстрого скролла вниз с индикатором новых реплик
+│   │   ├── search_bar.py                # [165 строк] Всплывающая строка поиска по тексту чата
+│   │   ├── sidebar_widget.py            # [323 строки] Минималистичная левая панель навигации (без бренд-хедера)
+│   │   ├── status_bar_widget.py         # [313 строк] MainStatusBar: телеметрия VRAM/RAM, LED-индикаторы
+│   │   ├── status_pill.py               # [51 строка] Компактный светодиодный индикатор статуса
+│   │   ├── step_progress_button.py      # [94 строки] Кнопка с круговым индикатором прогресса генерации
+│   │   ├── thought_spoiler_widget.py    # [257 строк] Неоновый спойлер для цепочек рассуждений <think> (16K tokens)
+│   │   ├── typing_loader.py             # [106 строк] Анимированный индикатор набора текста
+│   │   └── workspace_inspector.py       # [748 строк] Правая панель песочницы (дерево файлов, редактор, Git, Smoke F5)
+│   │
+│   ├── models_manager/                  # Модули диалога управления моделями
+│   │   ├── __init__.py                  # Инициализация пакета
+│   │   ├── adetailer_dialog.py          # [324 строки] Диалог точной настройки параметров ADetailer
+│   │   ├── widgets.py                   # [280 строк] Вспомогательные карточки и таблицы моделей
+│   │   └── workers.py                   # [340 строк] Воркеры загрузки, хэширования и конвертации весов
+│   │
+│   └── workers/                         # Фоновые воркеры интерфейса
+│       ├── __init__.py                  # Инициализация пакета workers
+│       ├── model_discovery_worker.py    # [120 строк] Фоновое сканирование установленных моделей
+│       ├── shutdown_worker.py           # [85 строк] Грациозная остановка внешних рантаймов
+│       └── tool_execution_worker.py     # [140 строк] Выполнение инструментов песочницы в рабочем потоке
 │
 ├── utils/                               # Системные вспомогательные утилиты
+│   ├── __init__.py                      # Инициализация пакета utils
 │   ├── config_manager.py                # [129 строк] Управление конфигурацией config.json со слиянием дефолтов
 │   ├── file_utils.py                    # [40 строк] Атомарная запись JSON (atomic_write_json) с fsync и защитой от WinError 32
 │   ├── health_checker.py                # [100 строк] Асинхронный сокет-монитор портов (1234, 7860, 5010) без блокировок
 │   └── system_monitor.py                # [204 строки] Мониторинг VRAM/RAM через pynvml / nvidia-smi / psutil
 │
-└── tests/                               # Пирамида тестирования (190 тестов, 100% Pass Rate)
+└── tests/                               # Пирамида тестирования (381 тест, 100% Pass Rate)
     ├── conftest.py                      # [149 строк] Airgap-фикстуры (_apply_airgap_paths, check_sandbox_state_leak)
-    ├── smoke/                           # 16 сьютов сквозного смоук-тестирования компонентов (73 теста)
+    ├── test_chat.py                     # [88 строк] Тестирование чат-эндпоинтов мобильного шлюза
+    ├── test_engineer_task_card.py       # [43 строки] Карточка задач инженера и отображение логов
+    ├── test_fp8_conversion_safety.py    # [164 строки] Безопасность FP8 квантования и парсинга тензоров
+    ├── test_gallery_directives_pipeline.py # [120 строк] Директивы галерейного арта SD 1.5 vs SDXL, --neg
+    ├── test_layer_budgeter.py           # [485 строк] Тесты калькулятора слоев GGUF, топологии VRAM и RAM Guard
+    ├── test_main_window_baseline.py     # [413 строк] 14 характеризационных тестов MainWindow: жизненный цикл, FSM, шина событий
+    ├── test_tavern_parser.py            # [349 строк] Парсинг Tavern V1/V2/CCv3, Chub PNG chunk и лорбуков
+    ├── test_thought_stream_parser.py    # [232 строки] Потоковый FSM разбор мыслей <think>, reasoning_content, 16K buffer
+    ├── test_three_anchors_context_eviction.py # [191 строка] Вытеснение середины контекста при сохранении трех якорей
+    ├── test_token_budget_manager.py     # [337 строк] Токенизация BPE, двухконтурная модель и светофор
+    │
+    ├── integration/                     # 2 сьюта интеграционных тестов безопасности и арбитража (8 тестов)
+    │   ├── test_sandbox_security.py     # [140 строк] Безопасность песочницы: запрет импортов, path traversal, тайм-ауты
+    │   └── test_vram_arbitrage_flow.py  # [165 строк] Сквозное переключение VRAMArbiter между LLM и Diffusion
+    │
+    ├── smoke/                           # 14 сьютов сквозного смоук-тестирования компонентов (54 теста)
+    │   ├── __init__.py                  # Инициализация пакета smoke
     │   ├── test_art_pipeline_smoke.py   # [457 строк] Сквозной смоук-тест конвейера Арт-директора и Forge
-    │   ├── test_core_services_batch1_smoke.py # [131 строка] Смоук-тесты экстрактора памяти и ReviewPipeline
-    │   ├── test_core_services_batch2_smoke.py # [83 строки] Смоук-тесты парсера документов и макросов
-    │   ├── test_core_services_batch3_smoke.py # [68 строк] Приоритеты TaskQueue, стриппинг тулов, контекст инженера
     │   ├── test_dialog_sync_smoke.py    # [155 строк] Синхронизация при закрытии ModelsManagerDialog через reject()
     │   ├── test_forge_baseline.py       # [180 строк] Базовые пути Forge, аргументы запуска, фильтрация процессов
     │   ├── test_forge_edge_cases.py     # [190 строк] Краевые случаи: пробелы/кавычки, битый INI, directory-trap
     │   ├── test_isolated_core_smoke.py  # [148 строк] Изолированное тестирование SessionManager и ContextBuilder
+    │   ├── test_rp_art_pipeline_smoke.py# [130 строк] Смоук-тест конвейера арта в ролевом режиме (SD 1.5 / SDXL)
     │   ├── test_rp_card_and_ui_smoke.py # [220 строк] Смоук-тест карточек персонажей, каста и UI-баблов
     │   ├── test_rp_pipeline_smoke.py    # [168 строк] Сквозной пайплайн ролевого хода с контролем гигиены промпта
-    │   ├── test_smoke_assistant_6phases_pipeline.py # [200 строк] 6 фаз конвейера Ассистента и межсессионная изоляция
+    │   ├── test_smoke_assistant_6phases_pipeline.py # [281 строка] 6 фаз конвейера Ассистента и галерейный single-pass
     │   ├── test_smoke_mainwindow_lifecycle.py # [158 строк] Zero-Freeze Startup Guard, старт окна < 1000 мс
     │   ├── test_smoke_subagent_engineer.py # [94 строки] Жизненный цикл субагента «Инженер» (Архитектор -> TDD -> Fix)
     │   ├── test_smoke_tool_engine.py    # [115 строк] Выполнение инструментов песочницы и санитизация путей
     │   ├── test_sqlite_sessions_and_leak_guard_smoke.py # [255 строк] SQLite WAL сессии и защита от утечек данных
     │   └── test_three_modes_deep_smoke.py # [192 строки] Глубокие контрактные смоук-тесты трех режимов (AST, RAG, RPG)
-    ├── unit/                            # 7 сьютов изолированных модульных тестов (29 тестов)
-    │   ├── test_deferred_rag_execution.py # [96 строк] Отложенная сборка контекста (Deferred RAG), 0 мс UI-блока
-    │   ├── test_forge_custom_paths.py   # [132 строки] Парсинг --models-dir, --ckpt-dir, пробелов, кавычек, симлинков
-    │   ├── test_win32_job.py            # [116 строк] Windows Job Objects: Singleton, fallback на Linux, Popen handle
-    │   ├── test_forge_handshake.py      # [92 строки] Двухфакторная проверка: L4 TCP сокет + L7 HTTP handshake
-    │   ├── test_forge_vram_policy.py    # [66 строк] Гарантированный оффлоад VRAM (--always-offload-from-vram)
-    │   ├── test_vram_guard.py           # [85 строк] Защита от VRAM Thrashing при оффлайн Forge
-    │   └── test_forge_locator.py        # [220 строк] 10 тестов: 5 уровней каскада локатора, INI, get_clean_forge_env
-    └── test_*.py                        # 8 интеграционных и регрессионных сьютов (88 тестов)
-        ├── test_engineer_task_card.py   # [43 строки] Карточка задач инженера и отображение логов
-        ├── test_fp8_conversion_safety.py# [164 строки] Безопасность FP8 квантования и парсинга тензоров
-        ├── test_gallery_directives_pipeline.py # [120 строк] Директивы галерейного арта SD 1.5 vs SDXL
-        ├── test_layer_budgeter.py       # [485 строк] Тесты калькулятора слоев GGUF, топологии VRAM и RAM Guard
-        ├── test_tavern_parser.py        # [349 строк] Парсинг Tavern V1/V2/CCv3, Chub PNG chunk и лорбуков
-        ├── test_thought_stream_parser.py# [232 строки] Потоковый FSM разбор мыслей <think> и спойлеры
-        ├── test_three_anchors_context_eviction.py # [191 строка] Вытеснение середины контекста при сохранении трех якорей
-        └── test_token_budget_manager.py # [337 строк] Токенизация BPE, двухконтурная модель и светофор
+    │
+    └── unit/                            # 14 сьютов изолированных модульных тестов (190 тестов)
+        ├── test_adetailer_dialog.py     # [145 строк] Настройки параметров инпейнта ADetailer лица и кистей рук
+        ├── test_assistant_flow.py       # [85 строк] Резолвинг температур и диспетчеризация арт-прохода
+        ├── test_core_services.py        # [165 строк] Модульные тесты базовых утилит (AST, парсеры, песочница)
+        ├── test_deferred_rag_execution.py # [96 строк] Отложенная сборка контекста (Deferred RAG), 0 мс UI-блока
+        ├── test_forge_client.py         # [894 строки] 50+ тестов: Watchdog, deepcopy payload, 0.05s poller, reload fix
+        ├── test_forge_custom_paths.py   # [132 строки] Парсинг --models-dir, --ckpt-dir, пробелов, кавычек, симлинков
+        ├── test_forge_handshake.py      # [92 строки] Двухфакторная проверка: L4 TCP сокет + L7 HTTP handshake
+        ├── test_forge_locator.py        # [220 строк] 10 тестов: 5 уровней каскада локатора, INI, get_clean_forge_env
+        ├── test_forge_vram_policy.py    # [66 строк] Гарантированный оффлоад VRAM (--always-offload-from-vram)
+        ├── test_hybrid_fastembed_rag.py # [147 строк] FastEmbed ONNX, BM25 TF, стоп-слова, непрерывность чанков
+        ├── test_lm_studio.py            # [582 строки] 30+ тестов: SSE reasoning_content, default filter, HTTP 400 guard
+        ├── test_path_normalization.py   # [164 строки] Проверка CWD-независимости и исключения хардкода диска C:
+        ├── test_vram_guard.py           # [85 строк] Защита от VRAM Thrashing при оффлайн Forge
+        └── test_win32_job.py            # [116 строк] Windows Job Objects: Singleton, fallback на Linux, Popen handle
 ```
 
 ---
@@ -378,14 +458,18 @@ NeonRoute/
 ### 3.1. Интеграция LLM рантаймов (LM Studio / llama-server)
 
 NeonRoute поддерживает двойной контур инференса больших языковых моделей:
+
 1. **Headless `llama-server.exe` (Основной контур)**:
    - Обнаружение бинарного файла через 3-уровневый каскад `ServerConfigResolver` (`services/server_config.py`): сконфигурированный путь -> `bin/` -> системный PATH.
    - Запуск через `ProcessManager.start_llama_server_sync`: скрытые флаги Windows (`CREATE_NO_WINDOW`, `CREATE_NEW_PROCESS_GROUP`), неблокирующий стриминг `stdout` в `logs/llama_server.log`.
    - Автоматическая подвязка CUDA 12 рантайма (`ServerConfigResolver.resolve_cuda_dir`).
    - Интеграция с `LayerBudgeter`: расчет безопасного числа трансформерных слоев (`-ngl`), параметров квантования KV-кэша (`-ctk`, `-ctv`: `q8_0`, `q4_0`, `f16`) и активации Flash Attention (`-fa on/off`).
-2. **LM Studio CLI (`lms`) (Резервный контур)**:
-   - Взаимодействие через CLI-команды `lms server start` / `lms server stop`.
-   - Автоподключение к запущенному серверу на порту 1234 через постоянный `HTTP Keep-Alive`.
+2. **LM Studio CLI (`lms`) и REST API (Резервный контур)**:
+   - Взаимодействие через CLI-команды `lms server start` / `lms server stop` и постоянное HTTP Keep-Alive соединение на порту 1234.
+   - **Стриминг токенов рассуждений (DeepSeek-R1 `reasoning_content`)**: парсер SSE-потока в `services/lm_studio.py` детектирует поле `delta.reasoning_content` наряду с традиционным полем `delta.content`, направляя цепочку рассуждений в `ThoughtStreamParser` с буфером до 16K токенов.
+   - **Фильтрация плейсхолдеров**: замена эвристики `startswith('default')` на строгий метод `_is_default_model_placeholder()`, сохраняющий реальные пользовательские модели вида `default_*.gguf` и отсекающий исключительно конфигурационные заглушки.
+   - **Защита от сбоев переключения (HTTP 400 Jinja / Role Guard)**: перехват ошибок шаблонизатора Jinja и чередования ролей сообщений при смене модели «на лету» без аварийного падения сессии.
+   - **Изоляция daemon-потоков и guard сигналов**: методы `ProcessManager` не запускают фоновые потоки-демоны в тестовой среде (`PYTEST_CURRENT_TEST`), а эмит сигналов `lms_status_changed` защищен проверкой `sip.isdeleted()` для предотвращения обращений к разрушенным объектам `QObject`.
 
 ### 3.2. Архитектура интеграции SD WebUI Forge
 
@@ -398,7 +482,7 @@ flowchart TD
         D2 --> D3["3. server_config.ini ([PATHS] -> forge_root_dir)"]
         D3 --> D4["4. Относительные каталоги (../neyroGPD, ../sd-webui-forge)"]
         D4 --> D5["5. Сканирование корней дисков (C:/, D:/ ... Z:/)"]
-        D5 --> D6["6. Фоллбек по умолчанию: C:\neyroGPD"]
+        D5 --> D6["6. Безопасный фоллбек: Path.cwd() / 'forge'"]
     end
 
     subgraph Args ["2. Динамический резолвер путей моделей"]
@@ -421,7 +505,13 @@ flowchart TD
         L7 -->|Таймаут или 404/502| PORT_CONFLICT["Конфликт портов! Gradio -> порт 7861"]
     end
 
-    subgraph Hardening ["5. Защита процессов (Win32JobManager)"]
+    subgraph ClientHardening ["5. Защита клиента (services/forge_client.py)"]
+        MUTATION["Защита от мутации: deepcopy(params)"]
+        POLL["Неблокирующий выход поллера: join(0.05s)"]
+        RELOAD["Корректный сброс _checkpoint_unloaded"]
+    end
+
+    subgraph Hardening ["6. Защита процессов (Win32JobManager)"]
         JOB["CreateJobObjectW(KILL_ON_JOB_CLOSE = 0x2000)"]
         PROC["subprocess.Popen(env=clean_env)"] --> ASSIGN["AssignProcessToJobObject(job, proc._handle)"]
         JOB -.->|Авто-уничтожение при аварии родителя| KILLED["Уничтожение cmd.exe / python.exe"]
@@ -435,48 +525,34 @@ flowchart TD
 3. **`server_config.ini` (`[PATHS] -> forge_root_dir` / `forge_path`)**: Пользовательская настройка в конфигурационном файле. Поддерживает UTF-8 пути с кириллицей и пробелами.
 4. **Относительные каталоги портативных сборок**: Поиск относительно корня NeonRoute (`../neyroGPD`, `../sd-webui-forge`, `../Forge`, `./forge`).
 5. **Автосканирование смонтированных дисков**: Быстрая проверка без рекурсии стандартных папок верхнего уровня на всех доступных дисках Windows (`C:/`, `D:/` ... `Z:/`): `<диск>:/neyroGPD`, `<диск>:/sd-webui-forge`, `<диск>:/Forge`, `<диск>:/AI/Forge`, `<диск>:/webui_forge`.
-6. **Безопасный фоллбек**: Путь по умолчанию `Path(r"C:
-eyroGPD")`.
+6. **Безопасный фоллбек**: Путь `Path(r"C:\neyroGPD")` либо локальная папка `forge`.
 
 Критерий валидности каталога (`is_valid_forge_dir`): директория признается рабочей только при наличии хотя бы одного исполняемого файла лаунчера (`forge_launcher.bat`, `webui-user.bat`, `run.bat`, `launch.py`) с обязательной проверкой `p.is_file()`, что предотвращает directory-trap ошибки при наличии подпапок с именами лаунчеров.
 
 #### Динамическое разрешение путей моделей и симлинков (`core/forge_locator.py`)
-Пользователи часто выносят тяжелые веса моделей и LoRA на внешние SSD/HDD (например, `E:\Models`), указывая параметры запуска в лаунчерах.
 - Функция `parse_forge_launcher_args(launcher_path: Optional[Path]) -> Dict[str, Path]` извлекает флаги `--models-dir`, `--ckpt-dir`, `--lora-dir`, `--embeddings-dir` из bat/cmd/sh файлов, корректно обрабатывая пути в кавычках, пробелы и синтаксис вида `--models-dir="E:\Models"`.
-- Функция `resolve_forge_models_directory(forge_root, launcher_path)` применяет строгий каскад приоритетов:
-  1. `--ckpt-dir` из аргументов лаунчера (если существует или задан).
-  2. `--models-dir / "Stable-diffusion"` из аргументов лаунчера.
-  3. `forge_root / "models" / "Stable-diffusion"`.
-  4. Фоллбек `C:
-eyroGPD\models\Stable-diffusion`.
-- Все пути нормализуются через `Path.resolve()`, что прозрачно раскрывает NTFS Junctions (`mklink /J`) и символические ссылки Windows. Это гарантирует, что `CivitaiCatalogDialog` при вычислении соседней папки LoRA через `self.target_dir.resolve().parent / "Lora"` попадает в реальный внешний каталог моделей, а не на системный диск `C:`.
+- Функция `resolve_forge_models_directory(forge_root, launcher_path)` применяет строгий каскад приоритетов (`--ckpt-dir` > `--models-dir / Stable-diffusion` > `forge_root / models / Stable-diffusion`).
+- Все пути нормализуются через `Path.resolve()`, что прозрачно раскрывает NTFS Junctions (`mklink /J`) и символические ссылки Windows.
 
 #### Изоляция окружения дочернего процесса (`get_clean_forge_env`)
-Для предотвращения конфликтов библиотек (DLL Hell) и несовместимости версий PyTorch/CUDA между NeonRoute (Python 3.10) и встроенным портативным Python дистрибутива Forge:
 - Из словаря переменных окружения дочернего процесса Forge безусловно удаляются `VIRTUAL_ENV`, `PYTHONPATH`, `PYTHONHOME`.
-- Из переменной `PATH` удаляются директории активного виртуального окружения NeonRoute (`.venv\Scripts`, `.venvin` и любые подкаталоги `VIRTUAL_ENV`), включая пути с точками и в любом регистре символов.
-- Сохраняются критические системные каталоги Windows (`System32`, `SystemRoot`, `ComSpec`, `TEMP`) и пути к NVIDIA CUDA Toolkit (`CUDA12.1in`).
-- Очищенный словарь передается в `subprocess.Popen(..., env=clean_env)`.
+- Из переменной `PATH` удаляются директории активного виртуального окружения NeonRoute (`.venv\Scripts`, `.venv\bin` и любые подкаталоги `VIRTUAL_ENV`).
+- Сохраняются критические системные каталоги Windows (`System32`, `SystemRoot`, `ComSpec`, `TEMP`) и пути к NVIDIA CUDA Toolkit (`CUDA 12.1\bin`).
 
 #### Двухфакторная верификация доступности (L4 TCP + L7 HTTP Handshake)
-Для устранения ложных срабатываний и «зависания» ожидания старта сервера Forge:
 - Функция `verify_forge_http_handshake(host="127.0.0.1", port=7860, timeout=0.8) -> bool` на базе стандартной библиотеки `urllib.request` выполняет легковесный GET-запрос к эндпоинту `/sdapi/v1/options` с заголовком `User-Agent: NeonRoute-Handshake/1.0`.
-- Возвращает `True` строго при получении HTTP-статуса `200 OK`.
-- При кодах `404 Not Found` или `502 Bad Gateway` (сигнализирующих, что порт 7860 занят посторонним локальным веб-сервером или трекером) хэндшейк возвращает `False`, логируя предупреждение о конфликте портов и возможном автоматическом переключении Gradio на порт 7861.
+- Возвращает `True` строго при получении HTTP-статуса `200 OK`. При `404` или `502` возвращается `False`, предотвращая ложное распознавание посторонних локальных сервисов.
 
 #### Устранение ложного завершения процессов
-В методах `_run_forge_stop` и `shutdown_all` сервиса `services/process_manager.py` устранена проверка короткого имени папки (`forge_name in cmd_str`), приводившая к случайному принудительному закрытию редакторов кода и терминалов разработчика. Фильтрация процессов `psutil` выполняется строго по полному пути рабочей папки (`forge_dir_str in cmd_str`) или специфичному легаси-маркеру `neyrogpd`.
+В методах `_run_forge_stop` и `shutdown_all` сервиса `services/process_manager.py` фильтрация процессов `psutil` выполняется строго по полному нормализованному пути рабочей папки (`forge_dir_str in cmd_str`), исключая случайное завершение редакторов кода или терминалов.
 
 ### 3.3. Защита от процессов-сирот через Windows Job Objects (`core/win32_job.py`)
 
-При аварийном завершении NeonRoute (сбой C-расширений, закрытие через Диспетчер задач / `taskkill /F`, сбой питания) деструкторы Python и обработчик `closeEvent()` главного окна не вызываются. Дочерние процессы `cmd.exe`, `python.exe` (Forge) и `llama-server.exe` становятся процессами-сиротами (orphans), продолжая невидимо висеть в памяти Windows, удерживать порты 7860 / 1234 и блокировать до 8 ГБ VRAM.
-
-Для решения проблемы на уровне ядра Windows разработан изолированный модуль [`core/win32_job.py`](file:///C:/NeonRoute/core/win32_job.py):
-- **Синглтон `Win32JobManager`**: реализован строго через встроенный модуль `ctypes` стандартной библиотеки Python (без сторонних зависимостей вроде `pywin32`).
+- **Синглтон `Win32JobManager`**: реализован на чистом `ctypes` стандартной библиотеки Python (без сторонних зависимостей).
 - **Флаг ядра `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000)`**: настраивается через вызов Win32 API `SetInformationJobObject` с классом информации `JobObjectExtendedLimitInformation (9)`.
-- **Автоматическая привязка процессов**: при старте процессов `self._forge_process` в `_run_forge_start` и `self._llama_process` в `start_llama_server_sync` дескриптор процесса извлекается (`int(proc._handle)`) и привязывается к объекту задания через `AssignProcessToJobObject`.
-- **Аппаратная гарантия**: при закрытии дескриптора родительского процесса ядро Windows безусловно и мгновенно уничтожает все дочерние процессы дерева задания.
-- **Кроссплатформенная безопасность**: при `sys.platform != "win32"` или возникновении сбоев Win32 API модуль плавно деградирует (возвращает `False` без выброса необработанных исключений).
+- **Автоматическая привязка**: дескрипторы `proc._handle` внешних рантаймов привязываются к объекту задания через `AssignProcessToJobObject`.
+- **Аппаратная гарантия**: при закрытии NeonRoute (включая аварийное завершение процесса или сбой питания) ядро Windows мгновенно уничтожает все дочерние процессы `cmd.exe`, `python.exe` (Forge) и `llama-server.exe`.
+- **Кроссплатформенная безопасность**: при `sys.platform != "win32"` модуль плавно деградирует (возвращает `False` без выброса необработанных исключений).
 
 ---
 
@@ -488,9 +564,9 @@ eyroGPD\models\Stable-diffusion`.
 
 | Сегмент памяти | Объем (МБ) | Назначение |
 | :--- | :---: | :--- |
-| **Total VRAM Budget** | 8192 | Полный физический объем видеопамяти NVIDIA GeForce RTX 5050 / 4060 |
+| **Total VRAM Budget** | 8192 | Полный физический объем видеопамяти NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU |
 | **OS Reserve (dGPU)** | 700 | Резерв Windows DWM / Desktop Rendering для первичного дисплея |
-| **OS Reserve (iGPU)** | 150 | Резерв в режиме `PURE COMPUTE` (дисплей подключен к процессору) |
+| **OS Reserve (iGPU)** | 150 | Резерв в режиме `PURE COMPUTE` (дисплей подключен к интегрированному видеоядру) |
 | **Forge VRAM Reserve** | 450 | Неснижаемый контекст PyTorch CUDA для SD WebUI Forge |
 | **Safety Margin VRAM** | 150 | Буфер предотвращения срабатывания Windows TDR (таймаут видеодрайвера) |
 | **Emergency VRAM Limit** | 150 | Порог экстренной остановки инференса при опасном исчерпании VRAM |
@@ -513,17 +589,17 @@ sequenceDiagram
 
     Note over UI,LM: Фаза 1: Проверка доступности (Anti-Thrashing Guard)
     UI->>HW: _on_scene_art_requested(prompt, seed, ...)
-    HW->>HW: _is_forge_available()
+    HW->>HW: _is_forge_available() (L4 Socket + L7 Handshake)
     alt Forge оффлайн / Handshake failed
         HW-->>UI: Отклонить запрос, сохранить модель LLM в VRAM (0 ms thrashing)
     else Forge готов (HTTP 200)
         Note over UI,LM: Фаза 2: Вытеснение LLM и захват GPU диффузией
         HW->>VA: release_llm_for_diffusion()
-        VA->>LM: Выгрузка активной модели LLM из памяти GPU
+        VA->>LM: Выгрузка активной модели LLM из памяти GPU (с проверкой ответа)
         VA->>VA: set_owner(GPUOwner.DIFFUSION)
         HW->>TQ: enqueue(task: TASK_GENERATE_ART, priority=HIGH)
         Note over UI,LM: Фаза 3: Диффузионный рендеринг кадра
-        TQ->>FC: POST /sdapi/v1/txt2img (SDXL / SD 1.5 + ADetailer)
+        TQ->>FC: POST /sdapi/v1/txt2img (deepcopy payload, SDXL / SD 1.5 + ADetailer)
         FC-->>TQ: base64 изображения кадра
         TQ-->>UI: art_task_completed (отображение в чате)
         Note over UI,LM: Фаза 4: Освобождение GPU и восстановление LLM
@@ -565,11 +641,20 @@ sequenceDiagram
 
 ### 5.1. Архитектура MainWindow и шина событий (EventBus)
 
-Главное окно `ui/main_window.py` спроектировано на базе `qframelesswindow.FramelessMainWindow` с композицией из 13 специализированных миксинов контроллеров:
+Главное окно `ui/main_window.py` спроектировано на базе `qframelesswindow.FramelessMainWindow` с композицией из 13 специализированных миксинов контроллеров, выделенных презентеров и единого контекста интерфейса `UIContext`:
 
 ```mermaid
 classDiagram
     class FramelessMainWindow
+    class UIContext {
+        +main_window: MainWindow
+        +active_session_id: str
+        +current_mode: str
+        +active_character: CharacterCard
+        +is_generating: bool
+        +set_active_session(session_id)
+        +update_turn_state(turn_id, state)
+    }
     class WindowStateMixin {
         +_update_background_cache()
         +paintEvent()
@@ -593,6 +678,8 @@ classDiagram
         +_show_search_bar()
         +_on_search_query_changed()
         +_search_next()
+        +_search_prev()
+        +_navigate_search_match()
     }
     class AvatarControllerMixin {
         +_get_current_avatar_path()
@@ -605,6 +692,10 @@ classDiagram
     class SessionControllerMixin {
         +_on_new_chat_clicked()
         +_save_current_session()
+        +_load_saved_sessions()
+        +_create_new_session()
+        +_switch_to_session()
+        +_render_session_messages()
         +_on_rename_session_requested()
         +_on_delete_session_requested()
     }
@@ -615,12 +706,13 @@ classDiagram
         +_clear_chat_widgets()
     }
     class ChatFlowControllerMixin {
+        +_is_at_bottom: bool
         +_on_send_clicked()
         +_sync_turn()
         +_on_token_streamed()
         +_flush_stream_buffer()
-        +_on_llm_response_received()
         +_detect_repetition_loop()
+        +_update_scroll_kinetics()
         +run_assistant_inference_deferred()
         +run_roleplay_inference_deferred()
     }
@@ -661,7 +753,20 @@ classDiagram
         +_handle_tool_call_flow()
         +_handle_engineer_task_finished()
     }
+    class ReminderController {
+        +main_window: MainWindow
+        +poll_reminders()
+        +show_toast()
+        +cleanup()
+    }
+    class HeaderStateController {
+        +main_window: MainWindow
+        +update_status_indicator()
+        +update_forge_progress()
+        +sync_mode_visuals()
+    }
     class MainWindow {
+        +ui_context: UIContext
         +lm_client: LMStudioClient
         +forge_client: ForgeClient
         +task_queue: TaskQueueWorker
@@ -669,7 +774,6 @@ classDiagram
         +workspace_inspector: WorkspaceInspectorWidget
         +header_controller: HeaderStateController
         +reminder_controller: ReminderController
-        +knowledge_watcher: KnowledgeWatcher
         +toggle_workspace_inspector()
         +closeEvent()
     }
@@ -688,11 +792,19 @@ classDiagram
     RoleplayFlowControllerMixin <|-- MainWindow
     HardwareEngineMixin <|-- MainWindow
     EngineerControllerMixin <|-- MainWindow
+
+    MainWindow *-- UIContext
+    MainWindow *-- ReminderController
+    MainWindow *-- HeaderStateController
 ```
 
 - **Предотвращение коллизий sip.wrappertype**: все 13 миксинов контроллеров являются чистыми классами Python без прямого наследования от `QObject` или `QWidget`. Точкой входа в метакласс Qt выступает сам `MainWindow`.
-- **Шина событий (EventBus)**: контроллеры общаются между собой и с воркерами фоновых потоков через сигналы и слоты PyQt6 (`lms_status_changed`, `forge_status_changed`, `action_completed`, `model_installed`, `hardware_stats`), обеспечивая слабую связность компонентов.
-- **Единый источник правды (UIContext SSOT)**: состояние интерфейса, активной сессии и текущего хода генерации изолировано в объекте `ui.common.ui_context.UIContext`.
+- **Выделенные Presenter-классы**:
+  - `ReminderController`: полностью инкапсулирует опрос SQLite-базы напоминаний, показ всплывающих карточек `ReminderToast` и имеет явный метод жизненного цикла `cleanup()` для предотвращения утечек таймеров при закрытии окна.
+  - `HeaderStateController`: управляет динамическим состоянием шапки окна, светодиодными индикаторами, прогресс-баром генерации Forge и синхронизацией визуальной темы режимов.
+- **Инкапсуляция кинематики скролла**: логика мягкой автопрокрутки, флаг залипания внизу (`_is_at_bottom`) и обработка плавающей кнопки `FloatingScrollDownButton` инкапсулированы в `ChatFlowControllerMixin`, исключив захламление основного класса окна.
+- **Шина событий (EventBus)**: слабосвязанное взаимодействие между слоями через типизированные сигналы PyQt6 (`lms_status_changed`, `forge_status_changed`, `action_completed`, `model_installed`, `hardware_stats`).
+- **Единый источник правды (UIContext SSOT)**: состояние интерфейса, активная сессия, текущий ход генерации и привязка артефактов изолированы в объекте `ui.common.ui_context.UIContext`.
 
 ### 5.2. Асинхронные очереди инференса (`services/task_queue.py`)
 
@@ -706,7 +818,7 @@ classDiagram
 
 Ранее синхронный поиск в базе знаний (`KnowledgeManager.find_relevant_documents`), извлечение сниппетов и опрос долгосрочной памяти (`MemoryDB.search_relevant_facts`) выполнялись в UI-потоке непосредственно внутри `_on_send_clicked()` перед вызовом `enqueue()`. При размере базы знаний в сотни документов и баз памяти LanceDB это вызывало микрофризы интерфейса (20–150 мс).
 
-В рамках архитектуры **Deferred Context Assembly Runner (Этап 14)** реализован двухрежимный контракт задач (`Dual-Mode Task Contract`):
+В рамках архитектуры **Deferred Context Assembly Runner** реализован двухрежимный контракт задач (`Dual-Mode Task Contract`):
 1. **Zero-Block MainThread**: контроллеры `_enqueue_assistant_llm_task()` и `_enqueue_roleplay_llm_task()` не обращаются к диску, базе знаний или LanceDB. Они вычисляют только легковесный бюджет токенов и сэмплирование в памяти ($< 0.2$ мс), после чего создают `InferenceTask` с `messages=None` и функцией-раннером `_run_assistant_inference_deferred` (или `_run_roleplay_inference_deferred`).
 2. **Исполнение в потоке воркера (`TaskQueueWorker`)**:
    - При извлечении задачи из очереди воркер запускает раннер.
@@ -748,7 +860,8 @@ sequenceDiagram
 
 1. **Re-entrancy Guard локатора (`_is_locating_forge`)**: флаг-блокиратор в `core/forge_locator.py` предотвращает лавинное открытие диалоговых окон выбора директории при серии быстрых кликов пользователя.
 2. **Правило мягкого отказа**: если пользователь закрывает окно поиска Forge кнопкой «Отмена», статус Forge переходит в `STOPPED`, а система продолжает полноценную работу в текстовых и инженерных режимах без блокировки GUI.
-3. **Безопасность каталога Civitai (`ui/dialogs/civitai_catalog_dialog.py`)**:
+3. **Ленивая загрузка тяжелых диалогов (PEP 562 Lazy Loading)**: модули `ui/dialogs/` импортируются динамически при первом вызове через механизм `__getattr__` в `ui/dialogs/__init__.py`, что снижает потребление RAM при старте и исключает фризы инициализации.
+4. **Безопасность каталога Civitai (`ui/dialogs/civitai_catalog_dialog.py`)**:
    - Потоковое скачивание чекпоинтов с расчетом AutoV2 SHA-256 на лету.
    - Разрешение целевой папки через `config.get_forge_models_dir()` с автоматическим раскрытием NTFS Junctions и символических ссылок.
    - Строгая фильтрация расширений: загрузка разрешена исключительно для безопасного формата `.safetensors` (файлы `.ckpt` и `.pt` блокируются).
@@ -773,16 +886,18 @@ sequenceDiagram
 
 ### 6.1. Двухконтурный движок сессий (`SQLite WAL + Zero-Fsync JSON Mirror`)
 
-Для устранения накладных расходов диска и блокировок `os.fsync` при частых обновлениях диалогов (600+ сообщений с метаданными генерации) в `services/session_manager.py` реализована двухконтурная архитектура:
+Для устранения накладных расходов диска и блокировок `os.fsync` при частых обновлениях диалогов в `services/session_manager.py` реализована двухконтурная архитектура:
 
 1. **Транзакционное ядро SQLite WAL (`data/memory.db`)**:
    - Режим `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`.
    - Таблицы `chat_sessions` и `chat_messages` с индексом `idx_chat_messages_sess`.
    - Скорость записи хода диалога `~0.1 мс`. Поля режимов (`knowledge_sources`, `thought`, `visual_intent`, `character_data`, `generation_params`) сохраняются в JSON-колонках без потерь.
-   - Считывание списка сессий в левой боковой панели выполняется за один SQL-запрос со сверкой `st_mtime`.
+   - Считывание списка сессий в боковой панели выполняется за один SQL-запрос со сверкой `st_mtime`.
 2. **Быстрое файловое зеркало (`Zero-Fsync JSON Mirror`)**:
    - Файлы `history/chat_<id>.json` и `outputs/sessions/<id>/session.json` обновляются через атомарный `os.replace` без вызова `os.fsync`, сохраняя совместимость с мобильным шлюзом `mobile_server` и внешним экспортом.
    - При внешнем редактировании файла JSON `load_session()` детектирует изменение `st_mtime` и автоматически обновляет данные в SQLite WAL.
+3. **Оптимизация долговременной векторной памяти LanceDB**:
+   - Векторные таблицы фактов (`facts`) и ролевых воспоминаний (`rp_memories`) периодически оптимизируются через вызов `table.optimize()`, устраняющий фрагментацию файлов и устаревшие версии строк без деградации скорости семантического поиска.
 
 ### 6.2. Персоны и парсинг карточек персонажей (`services/tavern_parser.py`)
 
@@ -815,9 +930,9 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
         │
         ├─────────────────────────────────┬─────────────────────────────────┐
         ▼                                 ▼                                 ▼
-   BM25Index                      BuiltinDenseVectorizer              FastEmbed ONNX
-(Точные артикулы,                (Частотно-морфологические           (MiniLM-L12-v2,
- коды ошибок, коды деталей)       семантические корни, 256d)         семантический вектор, 384d)
+    BM25Index                      BuiltinDenseVectorizer              FastEmbed ONNX
+(Точная частота TF,               (Частотно-морфологические           (MiniLM-L12-v2,
+ стоп-слова RU/EN, артикулы)       семантические корни, 256d)         L2-нормализация, 384d)
         │                                 │                                 │
         └─────────────────────────────────┼─────────────────────────────────┘
                                           ▼
@@ -827,7 +942,9 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
                                           │
                          Gatekeeper (Отсев small talk + порог dense >= 0.75 при BM25 == 0)
                                           │
-                         Cross-Reference Linker (Авто-добор связанных файлов)
+                         Document Order Continuity (Авто-добор следующего чанка next_chunk_id)
+                                          │
+                         [RAG-Trace] Диагностическое логирование (ID чанков, скоры, гейткипер)
                                           │
                                           ▼
                       KnowledgeHUDWidget (Неоновые микро-чипы источников в чате)
@@ -837,71 +954,89 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (190 тестов, 100% Pass Rate)
+### 7.1. Структура тестового сьюта (381 тест, 100% Pass Rate)
 
-Пирамида тестирования NeonRoute состоит из 190 автоматических тестов, разделенных на три изолированных контура:
+Пирамида тестирования NeonRoute состоит из 381 автоматического теста, разделенного на четыре изолированных контура:
 
-| Контур | Файлов | Тестов | Область покрытия |
+| Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
-| **`tests/smoke/`** | 16 | 73 | Быстрые сквозные смоук-тесты: арт-пайплайн, жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge |
-| **`tests/unit/`** | 7 | 29 | Изолированное модульное тестирование: отложенная сборка контекста (Deferred RAG), кастомные пути и симлинки Forge, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, VRAM Policy, каскадный локатор |
-| **`tests/` (root)** | 8 | 88 | Интеграционные и регрессионные тесты: Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Engineer Task Card |
-| **ИТОГО** | **31** | **190** | **100% Pass Rate во всех средах** |
+| **`tests/smoke/`** | 14 | 54 | Быстрые сквозные смоук-тесты: арт-пайплайн, жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge |
+| **`tests/unit/`** | 14 | 190 | Изолированное модульное тестирование: клиенты Forge и LM Studio (130 тестов), RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, VRAM Policy, локатор |
+| **`tests/integration/`** | 2 | 8 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`) |
+| **`tests/` (root)** | 10 | 129 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives |
+| **ИТОГО** | **40** | **381** | **100% Pass Rate во всех тестовых средах** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 
-Специализированный каталог `tests/unit/` обеспечивает строгое модульное покрытие критических механизмов:
+Каталог `tests/unit/` обеспечивает строгое модульное покрытие критических механизмов:
 
-1. **`test_deferred_rag_execution.py` (1 тест)**:
-   - Проверка отложенной сборки контекста (Deferred RAG Execution).
-   - Подтверждение того, что при создании `InferenceTask` методы `KnowledgeManager.find_relevant_documents` и `MemoryDB.search_relevant_facts` не вызываются в UI-потоке.
-   - Валидация вызова RAG и обогащения массива `messages` в фоновом потоке воркера при исполнении задачи.
-   - Проверка Legacy-режима: при передаче готовых `messages` повторный вызов RAG блокируется.
-2. **`test_forge_custom_paths.py` (4 теста)**:
-   - `test_parse_forge_launcher_args_quoted_and_spaces`: парсинг путей с кавычками и пробелами (`--models-dir "D:\My Models\ForgeModels"`).
-   - `test_parse_forge_launcher_args_missing_or_empty`: устойчивость к пустым батникам, отсутствующим файлам и значениям `None`.
-   - `test_resolve_forge_models_directory_prefers_custom_dir`: проверка каскада приоритетов (`--ckpt-dir` > `--models-dir` > `forge_root`).
-   - `test_symlink_and_junction_resolution`: корректность разрешения NTFS Junctions и символических ссылок через `.resolve()`.
-3. **`test_win32_job.py` (4 теста)**:
-   - `test_win32_job_manager_singleton`: проверка паттерна Singleton для `Win32JobManager.get_instance()`.
-   - `test_win32_job_non_windows_fallback`: проверка мягкой деградации (возврат `False` без падений) при `sys.platform = "linux"`.
-   - `test_win32_job_assign_popen_mock`: корректное извлечение дескриптора `_handle` из объекта `subprocess.Popen` и вызов `AssignProcessToJobObject`.
-   - `test_win32_job_handles_api_failure`: устойчивость при возврате `0` или `None` из вызовов Win32 API ядра Windows.
-4. **`test_forge_handshake.py` (4 теста)**:
-   - `test_handshake_success_on_200`: успешная верификация Forge API при HTTP 200 на `/sdapi/v1/options`.
-   - `test_handshake_fails_on_connection_error`: перехват сетевых таймаутов и отказов сокета.
-   - `test_handshake_fails_on_foreign_http_status`: отсев посторонних сервисов при HTTP 404/502.
-   - `test_process_manager_two_factor_is_forge_running`: совместная работа L4 сокета и L7 хэндшейка в `is_forge_running()`.
-5. **`test_forge_vram_policy.py` (2 теста)**:
-   - Проверка обязательного включения флага `--always-offload-from-vram` для GPU с $\le 8.0$ ГБ VRAM.
-   - Верификация расчета политики оффлоада в `services/art_director/vram_policy.py`.
-6. **`test_vram_guard.py` (2 теста)**:
-   - Блокировка вызова `release_llm_for_diffusion` при недоступном или оффлайн сервере Forge.
-   - Предотвращение трэшинга видеопамяти при пакетных запросах арта.
-7. **`test_forge_locator.py` (10 тестов)**:
-   - 5 уровней каскада локатора, чтение и запись `server_config.ini`, очистка окружения `get_clean_forge_env`.
+1. **`test_forge_client.py` (50+ тестов, 894 строки)**:
+   - `TestHelperFunctions`: детекция SDXL чекпоинтов по маркерам и реестру, валидация интимных и динамических триггеров, правила включения ADetailer.
+   - `TestForgeClientInitAndState`: синглтон, проверка доступности (`check_health`), сокетный и API хэндшейк `is_server_ready`, получение текущей модели.
+   - `TestModelsAndCheckpoints`: получение списка моделей из API и с диска, переключение модели с авто-выбором архитектуры (SDXL -> FP8, SD 1.5 -> Auto), обработка HTTP-ошибок.
+   - `TestVRAMManagement`: очистка VRAM (`wait_for_vram_clear`), выгрузка чекпоинта (`unload_checkpoint`), повторная загрузка (`reload_checkpoint`), прерывание инференса (`interrupt`), безопасный запуск процесса.
+2. **`test_lm_studio.py` (30+ тестов, 582 строки)**:
+   - `TestHealthAndModelDiscovery`: опрос статуса LM Studio, автовыбор активной модели, фильтрация технического плейсхолдера `default`.
+   - `TestModelLoadedState`: сопоставление имени модели и суффиксов GGUF.
+   - `TestModelUnloadAndAbort`: выгрузка модели через REST и CLI, перехват прерывания генерации.
+   - `TestEnsureModelLoaded`: предстартовая проверка загрузки и длины контекста.
+   - `TestChatCompletion`: форматирование payload, стриминг SSE-токенов, нативный парсинг `delta.reasoning_content`, устойчивость к поврежденным чанкам, перехват ошибок HTTP 400 (шаблоны Jinja / конфликт ролей).
+3. **`test_hybrid_fastembed_rag.py` (6 тестов, 147 строк)**:
+   - Интеграция векторизатора FastEmbed ONNX с L2-нормализацией.
+   - Проверка сохранения term frequency в формуле BM25 и фильтрация стоп-слов RU/EN.
+   - Верификация калибровки Gatekeeper (отсев нерелевантного small talk при BM25=0).
+   - Проверка непрерывности порядка документов (`next_chunk_id`).
+4. **`test_path_normalization.py` (6 тестов, 164 строки)**:
+   - Абсолютное разрешение системных путей относительно корня проекта.
+   - Проверка CWD-независимости критических сервисов.
+   - Исключение захардкоженных путей диска `C:\` в диалогах, воркерах и строке статуса.
+5. **`test_deferred_rag_execution.py` (1 тест, 96 строк)**:
+   - Проверка отложенной сборки контекста (Deferred RAG Execution): отсутствие вызовов RAG в UI-потоке при создании задачи, обогащение контекста в фоновом потоке очереди задач, поддержка legacy-режима с готовыми сообщениями.
+6. **`test_forge_custom_paths.py` (4 теста, 132 строки)**:
+   - Парсинг путей с пробелами и кавычками в аргументах лаунчера Forge (`--models-dir`, `--ckpt-dir`).
+   - Приоритет внешних каталогов и раскрытие NTFS Junctions и символических ссылок.
+7. **`test_win32_job.py` (4 теста, 116 строк)**:
+   - Синглтон `Win32JobManager`, мягкая деградация на Linux, привязка дескрипторов `Popen` к Windows Job Object, устойчивость к сбоям Win32 API.
+8. **`test_forge_handshake.py` (4 теста, 92 строки)**:
+   - Двухфакторная проверка: L4 сокет + L7 HTTP handshake на `/sdapi/v1/options`, отсев конфликтующих портов.
+9. **`test_forge_vram_policy.py` (2 теста, 66 строк)**:
+   - Принудительное включение `--always-offload-from-vram` для GPU $\le 8.0$ ГБ VRAM.
+10. **`test_vram_guard.py` (2 теста, 85 строк)**:
+    - Блокировка выгрузки LLM из VRAM при недоступном сервере Forge (Anti-Thrashing Guard).
+11. **`test_forge_locator.py` (10 тестов, 220 строк)**:
+    - 5 уровней каскада локатора, чтение/запись `server_config.ini`, санитизация окружения `get_clean_forge_env`.
 
-### 7.3. Стандарты изоляции тестов от ОС и GUI
+### 7.3. Характеризационный базовый сьют MainWindow (`tests/test_main_window_baseline.py`)
 
-1. **Airgap-фикстура (`tests/conftest.py`)**:
-   - Метод `_apply_airgap_paths` в начале тестовой сессии подменяет системные пути (`history`, `outputs`, `workspace`, `logs`, `data`) на временную папку `tmp_path`, гарантируя нулевое воздействие на рабочую директорию пользователя.
-   - Фикстура `check_sandbox_state_leak` контролирует неизменность снимка директорий до и после каждого теста.
-2. **Подавление модальных окон**:
-   - Прямые вызовы GUI-диалогов (`QMessageBox.exec`, `QFileDialog.getExistingDirectory`) в тестах изолируются через моки, предотвращая зависание тестов в CI/CD.
-3. **Маркер `PYTEST_CURRENT_TEST`**:
-   - Все фоновые службы проверяют наличие переменной `PYTEST_CURRENT_TEST` в `os.environ` или `pytest` в `sys.modules`, отключая тяжелый фоновый прогрев векторов и долгие сетевые сторожевые таймеры.
+Набор из 14 тестов (413 строк) фиксирует стабильные контракты графического интерфейса:
+1. `test_mainwindow_initialization_smoke`: холодная инициализация всех подсистем, контроллеров и `UIContext` в headless-режиме.
+2. `test_mode_switching_contract_engineer_vs_assistant`: корректность переключения режимов конечным автоматом FSM.
+3. `test_message_sending_event_chain`: цепочка отправки сообщения от нажатия кнопки до постановки в `TaskQueueWorker`.
+4. `test_llm_response_routing_and_busy_state`: маршрутизация ответа LLM и управление состоянием `is_busy`.
+5. `test_llm_error_routing_and_recovery`: восстановление интерфейса и разблокировка ввода при сбое генерации.
+6. `test_reminder_controller_isolation_and_trigger`: изоляция и срабатывание напоминаний в `ReminderController`.
+7. `test_close_event_graceful_shutdown`: грациозное завершение фоновых потоков и вызов `cleanup()` при закрытии окна.
+8. `test_edge_case_rapid_empty_send_is_throttled`: подавление быстрых повторных кликов и пустых сообщений.
+9. `test_edge_case_stream_abort_and_stop_button`: мгновенная остановка стриминга по кнопке Stop.
+10. `test_edge_case_session_switch_during_streaming_isolation`: изоляция контекста при смене сессии во время активного стриминга.
+11. `test_edge_case_active_session_deletion_fallback`: корректный фоллбек на чистую сессию при удалении активного диалога.
+12. `test_edge_case_malformed_session_json_resilience`: устойчивость к поврежденным JSON-файлам истории диалогов.
+13. `test_edge_case_greeting_cycler_lifecycle_and_first_turn_removal`: жизненный цикл стартовых приветствий карточки персонажа.
+14. `test_edge_case_workspace_inspector_toggle_and_mode_lock`: блокировка и управление инспектором песочницы в инженерном режиме.
 
 ### 7.4. Карта сквозных смоук-тестов (`tests/smoke/`)
 
-16 смоук-тестов гарантируют надежность ключевых пользовательских сценариев и отсутствие регрессий:
-
-1. **`test_smoke_assistant_6phases_pipeline.py`**: сквозная верификация 6 фаз конвейера Ассистента (захват ввода, семантический роутинг, сборка системного окна, параметры шлюза, потоковый парсинг мыслей `<think>`, персистентность сессии и изоляция снимков промпта).
-2. **`test_rp_pipeline_smoke.py`**: верификация ролевого хода в изоляции (предстартовый опрос памяти и каста, сборка `get_lm_studio_messages`, инъекция Depth-1 якоря, гигиена промпта, вызов инференса и фоновый анализ сцены).
-3. **`test_three_modes_deep_smoke.py`**: глубокий контрактный тест утилит трех режимов (хирургический `PatchApplier`, авто-импорт `AutoImporter`, AST-скелетирование, парсинг инструментов, нарезчик Markdown с сохранением кодовых блоков, парсер RPG-виджетов, транзакционный апдейтер каста).
-4. **`test_smoke_mainwindow_lifecycle.py`**: Zero-Freeze Startup Pipeline (холодный старт главного окна $< 1000$ мс, отсутствие блокирующих сетевых сокетов и HTTP-вызовов на главном потоке).
-5. **`test_sqlite_sessions_and_leak_guard_smoke.py`**: двухконтурный движок сессий SQLite WAL, атомарные JSON-зеркала, изоляция песочницы от боевой БД `data/memory.db`.
-6. **`test_smoke_subagent_engineer.py`**: полный автономный цикл субагента «Инженер» (планирование Архитектора, TDD-генерация кода, перехват SyntaxError, самокоррекция и выполнение скрипта в песочнице).
+14 сквозных смоук-тестов (54 теста) гарантируют надежность пользовательских сценариев:
+1. **`test_smoke_assistant_6phases_pipeline.py`**: сквозная верификация 6 фаз конвейера Ассистента (захват ввода, семантический роутинг, системное окно, стриминг токенов, мысли `<think>`, сессии) и галерейный single-pass.
+2. **`test_rp_pipeline_smoke.py`**: ролевой ход в изоляции (память, каст, сборка сообщений, Depth-1 якорь, вызов инференса, анализ сцены).
+3. **`test_three_modes_deep_smoke.py`**: контрактный тест утилит трех режимов (`PatchApplier`, `AutoImporter`, AST-скелетирование, парсинг инструментов, Markdown-нарезчик, RPG-виджеты, апдейтер каста).
+4. **`test_smoke_mainwindow_lifecycle.py`**: Zero-Freeze Startup Pipeline (старт главного окна $< 1000$ мс, отсутствие блокировок на UI-потоке).
+5. **`test_sqlite_sessions_and_leak_guard_smoke.py`**: движок SQLite WAL, атомарные JSON-зеркала, изоляция боевой БД `data/memory.db`.
+6. **`test_smoke_subagent_engineer.py`**: полный автономный цикл субагента «Инженер» (планирование Архитектора, TDD-генерация кода, перехват SyntaxError, выполнение в песочнице).
 7. **`test_smoke_tool_engine.py`**: диспетчеризация инструментов песочницы (`write_file`, `patch_file`, `run_script`, `run_pytest`), защита от path traversal за пределы `workspace/`.
-8. **`test_art_pipeline_smoke.py`**: полный цикл Арт-директора (парсинг директив `!art`, резолвинг моделей, LoRA-адаптеров, симметризация BREAK-чанков и формирование плана генерации).
-9. **`test_dialog_sync_smoke.py`**: синхронизация конфигурации при закрытии диалогов управления через кнопку закрытия `X` или Escape (`reject()`).
-10. **`test_forge_baseline.py` & `test_forge_edge_cases.py`**: интеграция SD WebUI Forge, устойчивость к поврежденным INI-файлам, кириллице и пробелам в путях, защита от лавинных запросов при мертвом бэкенде.
+8. **`test_art_pipeline_smoke.py`**: полный цикл Арт-директора (директивы `!art`, резолвинг моделей, LoRA, BREAK-симметризация, генерационный план).
+9. **`test_rp_art_pipeline_smoke.py`**: генерация арта в ролевом режиме с автоматической маршрутизацией по моделям SD 1.5 и SDXL.
+10. **`test_rp_card_and_ui_smoke.py`**: импорт карточек персонажей, визуальная ДНК, оффлайн-диспатч арта сцены.
+11. **`test_dialog_sync_smoke.py`**: синхронизация конфигурации при закрытии диалогов через кнопку закрытия `X` или Escape (`reject()`).
+12. **`test_forge_baseline.py` & `test_forge_edge_cases.py`**: интеграция SD WebUI Forge, устойчивость к поврежденным INI-файлам, кириллице и пробелам в путях, защита от лавинных запросов при мертвом бэкенде.
+13. **`test_isolated_core_smoke.py`**: изолированная валидация атомарной записи JSON, арбитра VRAM, калькулятора слоев GGUF, AST-валидатора и конечного автомата `ModeCoordinator`.
