@@ -1,30 +1,30 @@
 {
   "version": 1,
-  "last_synced_at": "2026-11-08T03:12:51.435803",
+  "last_synced_at": "2026-11-09T02:36:20.180617",
   "total_documents": 1,
   "documents": {
     "ARCHITECTURE.md": {
       "filename": "ARCHITECTURE.md",
       "relative_path": "ARCHITECTURE.md",
       "path": "C:\\NeonRoute\\knowledge_base\\ARCHITECTURE.md",
-      "mtime": 1793910394.6276984,
-      "hash": "6da1cf55fb1645de7130e7eeaaba71e4f552f7ef49df68f8d624c0c6d64b0912",
-      "size_bytes": 97406,
-      "size_kb": 95.12,
-      "line_count": 908,
+      "mtime": 1794177034.1361194,
+      "hash": "ebba1cf73545369991f323d78bab3e0fa50a5731deb536829b0e6424d49f6069",
+      "size_bytes": 122366,
+      "size_kb": 119.5,
+      "line_count": 1042,
       "page_count": null,
-      "updated_at": "2026-11-07T22:58:53.370759",
+      "updated_at": "2026-11-09T02:17:22.320022",
       "triggers": [
         "VRAM",
-        "строк",
         "NeonRoute",
-        "LLM",
-        "REST",
-        "API",
-        "FastAPI",
-        "services",
+        "components",
+        "архитектурных",
         "системы",
-        "system"
+        "services",
+        "LLM",
+        "SDXL",
+        "решений",
+        "FastAPI"
       ],
       "status": "parsed"
     }

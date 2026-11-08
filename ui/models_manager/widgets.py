@@ -32,6 +32,8 @@ from qfluentwidgets import (
     Slider,
     SpinBox,
     DoubleSpinBox,
+    CompactSpinBox,
+    CompactDoubleSpinBox,
     PushButton,
     PrimaryPushButton,
     TransparentToolButton,
@@ -108,65 +110,81 @@ class SamplingSlider(Slider):
         e.ignore()
 
 
-class SamplingDoubleSpinBox(DoubleSpinBox):
+class SamplingDoubleSpinBox(CompactDoubleSpinBox):
     """
     Числовой счетчик с плавающей точкой (CFG Scale, Денойз Hires):
-    - Стрелки с точным шагом
+    - Компактные вертикальные стрелки
+    - Белые цифры
     - Отключение wheelEvent во избежание случайного скролла
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        try:
-            self.downButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.downButton.clicked.connect(self.stepDown)
-        try:
-            self.upButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.upButton.clicked.connect(self.stepUp)
-
-    def stepDown(self):
-        new_val = max(self.minimum(), self.value() - self.singleStep())
-        self.setValue(round(new_val, self.decimals()))
-
-    def stepUp(self):
-        new_val = min(self.maximum(), self.value() + self.singleStep())
-        self.setValue(round(new_val, self.decimals()))
+        self.setStyleSheet("""
+            SamplingDoubleSpinBox, CompactDoubleSpinBox {
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 5px;
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 500;
+                padding: 0px 24px 0 6px;
+            }
+            SamplingDoubleSpinBox:hover, CompactDoubleSpinBox:hover {
+                background-color: rgba(255, 255, 255, 0.09);
+                border-color: rgba(255, 255, 255, 0.22);
+            }
+            SamplingDoubleSpinBox:focus, CompactDoubleSpinBox:focus {
+                border-color: rgba(0, 240, 255, 0.6);
+                background-color: rgba(20, 24, 35, 0.95);
+                color: #FFFFFF;
+            }
+            SamplingDoubleSpinBox QLineEdit, CompactDoubleSpinBox QLineEdit {
+                color: #FFFFFF;
+                background: transparent;
+                border: none;
+            }
+        """)
 
     def wheelEvent(self, e):
         e.ignore()
 
 
-class SamplingSpinBox(SpinBox):
+class SamplingSpinBox(CompactSpinBox):
     """
     Целочисленный счетчик (Шаги, Clip Skip):
-    - Стрелки с точным шагом
+    - Компактные вертикальные стрелки
+    - Белые цифры
     - Отключение wheelEvent во избежание случайного скролла
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        try:
-            self.downButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.downButton.clicked.connect(self.stepDown)
-        try:
-            self.upButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.upButton.clicked.connect(self.stepUp)
-
-    def stepDown(self):
-        new_val = max(self.minimum(), self.value() - self.singleStep())
-        self.setValue(int(new_val))
-
-    def stepUp(self):
-        new_val = min(self.maximum(), self.value() + self.singleStep())
-        self.setValue(int(new_val))
+        self.setStyleSheet("""
+            SamplingSpinBox, CompactSpinBox {
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 5px;
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 500;
+                padding: 0px 24px 0 6px;
+            }
+            SamplingSpinBox:hover, CompactSpinBox:hover {
+                background-color: rgba(255, 255, 255, 0.09);
+                border-color: rgba(255, 255, 255, 0.22);
+            }
+            SamplingSpinBox:focus, CompactSpinBox:focus {
+                border-color: rgba(0, 240, 255, 0.6);
+                background-color: rgba(20, 24, 35, 0.95);
+                color: #FFFFFF;
+            }
+            SamplingSpinBox QLineEdit, CompactSpinBox QLineEdit {
+                color: #FFFFFF;
+                background: transparent;
+                border: none;
+            }
+        """)
 
     def wheelEvent(self, e):
         e.ignore()
@@ -352,3 +370,119 @@ class RoutingResultBadge(QFrame):
         return self._current_text
 
 
+
+
+# ============================================================================
+# Пресеты параметров пайплайна генерации
+# ============================================================================
+
+MODEL_PRESETS = {
+    "SDXL Turbo": {
+        "architecture": "SDXL / Pony",
+        "sampler": "LCM",
+        "scheduler": "Karras",
+        "steps": 10,
+        "cfg_scale": 1.3,
+        "clip_skip": 2,
+        "enable_hr": False,
+        "enable_adetailer": False,
+    },
+    "SDXL Classic": {
+        "architecture": "SDXL / Pony",
+        "sampler": "DPM++ 2M",
+        "scheduler": "Karras",
+        "steps": 28,
+        "cfg_scale": 5.0,
+        "clip_skip": 2,
+        "enable_hr": False,
+        "enable_adetailer": False,
+    },
+    "SD 1.5 Photoreal": {
+        "architecture": "SD 1.5",
+        "sampler": "DPM++ SDE Karras",
+        "scheduler": "Karras",
+        "steps": 25,
+        "cfg_scale": 5.5,
+        "clip_skip": 1,
+        "enable_hr": True,
+        "enable_adetailer": True,
+    },
+}
+
+
+# ============================================================================
+# Нормализаторы имен и вспомогательные функции
+# ============================================================================
+
+def normalize_checkpoint_stem(filename: str) -> str:
+    """Очищает имя чекпоинта от суффиксов квантования для безопасного сопоставления."""
+    if not filename:
+        return ""
+    stem = Path(filename).stem.lower()
+    suffixes = (
+        "_fp8e4", "_fp16e4", "_fp8_e4m3fn", "_e4m3fn", "_e5m2",
+        "_fp8", "_fp16", "_bf16", "_pruned", "-fp8", "-fp16"
+    )
+    changed = True
+    while changed:
+        changed = False
+        for sfx in suffixes:
+            if stem.endswith(sfx):
+                stem = stem[:-len(sfx)]
+                changed = True
+                break
+    return stem.strip(" _-")
+
+
+def get_default_negative_prompt(checkpoint_name: str = "", model_id: str = "") -> str:
+    """Интеллектуальная подстановка рекомендованного негатива по типу модели."""
+    s = f"{checkpoint_name} {model_id}".lower()
+    if any(k in s for k in ("anime", "hentai", "waifu", "manga", "meina")):
+        return "worst quality, low quality, blurry, bad anatomy, bad hands, deformed limbs, photorealistic, realistic, 3d, text, watermark"
+    elif any(k in s for k in ("dreamshaper", "artistic", "fantasy", "paint", "drawing", "illustration")):
+        return "ugly, deformed, noisy, blurry, low contrast"
+    elif any(k in s for k in ("cyber", "cyberrealistic", "neon", "scifi", "future")):
+        return "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, extra limbs, plastic skin, doll, cgi, 2d, illustration, badhandv4"
+    else:
+        return "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text"
+
+
+# ============================================================================
+# Фабричные методы ячеек таблицы моделей
+# ============================================================================
+
+def create_active_checkbox_cell(parent_widget=None, is_active: bool = True):
+    """Создает контейнер с выровненным чекбоксом активности в роутере для ячейки таблицы."""
+    chk_container = QWidget(parent_widget)
+    chk_layout = QHBoxLayout(chk_container)
+    chk_layout.setContentsMargins(6, 0, 6, 0)
+    chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    chk = CheckBox(chk_container)
+    chk.setChecked(bool(is_active))
+    chk.setToolTip("Включить модель в автоматический семантический роутер")
+    chk_layout.addWidget(chk)
+    return chk_container, chk
+
+
+def create_delete_button_cell(parent_widget=None, on_delete=None):
+    """Создает контейнер со стилизованной кнопкой удаления для ячейки таблицы."""
+    del_container = QWidget(parent_widget)
+    del_layout = QHBoxLayout(del_container)
+    del_layout.setContentsMargins(4, 0, 4, 0)
+    del_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    btn_del = TransparentToolButton(FIF.DELETE, del_container)
+    btn_del.setToolTip("Удалить модель из реестра")
+    btn_del.setFixedSize(28, 28)
+    btn_del.setStyleSheet("""
+        TransparentToolButton {
+            border-radius: 4px;
+            padding: 2px;
+        }
+        TransparentToolButton:hover {
+            background-color: rgba(239, 68, 68, 0.25);
+        }
+    """)
+    if on_delete is not None:
+        btn_del.clicked.connect(on_delete)
+    del_layout.addWidget(btn_del)
+    return del_container, btn_del

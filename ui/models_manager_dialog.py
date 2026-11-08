@@ -4,21 +4,13 @@ Configures available Stable Diffusion Forge checkpoints, pipeline generation par
 and FastEmbed vector routing rules in modern Windows 11 / Glassmorphism aesthetic.
 """
 
-import os
-import subprocess
 import logging
-
-logger = logging.getLogger("NeonRoute.ModelsManagerDialog")
-
-import uuid
-import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-_GLOBAL_TORCH_PYTHON: Optional[str] = None
+logger = logging.getLogger("NeonRoute.ModelsManagerDialog")
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QHeaderView, QMessageBox, QFrame, QWidget, QApplication,
@@ -27,36 +19,31 @@ from PyQt6.QtWidgets import (
 from qfluentwidgets import (
     LineEdit,
     SearchLineEdit,
-    TextEdit,
     ComboBox,
-    EditableComboBox,
     CheckBox,
-    Slider,
-    SpinBox,
-    DoubleSpinBox,
+    ProgressBar,
     PushButton,
     PrimaryPushButton,
     TransparentToolButton,
     SwitchButton,
-    ProgressBar,
-    InfoBar,
-    InfoBarPosition,
     TableWidget,
     FluentIcon as FIF,
     setTheme,
-    Theme
+    Theme,
+    InfoBar,
+    InfoBarPosition,
+    MessageBox,
 )
 
 from services.model_router import ModelRouter
 from services.art_director_config import (
-    load_art_director_models,
     save_art_director_models
 )
 from services.art_director.geometry import is_xl_model
 from services.forge_client import ForgeClient
 from services.forge_models import sync_registry_with_user_config
+
 # === ВЫДЕЛЕННЫЕ ВИДЖЕТЫ И ЭЛЕМЕНТЫ УПРАВЛЕНИЯ ===
-from ui.models_manager.adetailer_dialog import ADetailerSettingsDialog
 from ui.models_manager.widgets import (
     SamplingSlider,
     SamplingDoubleSpinBox,
@@ -64,6 +51,8 @@ from ui.models_manager.widgets import (
     FluentEditableComboBox,
     FluentTextEdit,
     RoutingResultBadge,
+    normalize_checkpoint_stem,
+    get_default_negative_prompt,
 )
 
 # === ВЫДЕЛЕННЫЕ ФОНОВЫЕ ВОРКЕРЫ QThread ===
@@ -72,9 +61,23 @@ from ui.models_manager.workers import (
     ForgeScanWorker,
     CivitaiParamsWorker,
     FP8ConvertWorker,
+    register_orphaned_worker,
 )
 
-class ModelsManagerDialog(QDialog):
+# === МОДУЛЬНЫЕ КОНТРОЛЛЕР-МИКСИНЫ ===
+from ui.models_manager.mixins import (
+    ModelPipelineFormMixin,
+    ForgeCivitaiSyncMixin,
+    FP8ConversionMixin,
+)
+
+
+class ModelsManagerDialog(
+    QDialog,
+    ModelPipelineFormMixin,
+    ForgeCivitaiSyncMixin,
+    FP8ConversionMixin,
+):
     """
     Центральный пульт управления чекпоинтами SD Forge, пайплайном рендера
     и семантическим роутингом FastEmbed CPU ONNX в эстетике Glassmorphism.
@@ -83,35 +86,12 @@ class ModelsManagerDialog(QDialog):
     @staticmethod
     def _normalize_checkpoint_stem(filename: str) -> str:
         """Очищает имя чекпоинта от суффиксов квантования для безопасного сопоставления."""
-        if not filename:
-            return ""
-        stem = Path(filename).stem.lower()
-        suffixes = (
-            "_fp8e4", "_fp16e4", "_fp8_e4m3fn", "_e4m3fn", "_e5m2",
-            "_fp8", "_fp16", "_bf16", "_pruned", "-fp8", "-fp16"
-        )
-        changed = True
-        while changed:
-            changed = False
-            for sfx in suffixes:
-                if stem.endswith(sfx):
-                    stem = stem[:-len(sfx)]
-                    changed = True
-                    break
-        return stem.strip(" _-")
+        return normalize_checkpoint_stem(filename)
 
     @staticmethod
     def _get_default_negative(checkpoint_name: str = "", model_id: str = "") -> str:
         """Интеллектуальная подстановка рекомендованного негатива по типу модели."""
-        s = f"{checkpoint_name} {model_id}".lower()
-        if any(k in s for k in ("anime", "hentai", "waifu", "manga", "meina")):
-            return "worst quality, low quality, blurry, bad anatomy, bad hands, deformed limbs, photorealistic, realistic, 3d, text, watermark"
-        elif any(k in s for k in ("dreamshaper", "artistic", "fantasy", "paint", "drawing", "illustration")):
-            return "ugly, deformed, noisy, blurry, low contrast"
-        elif any(k in s for k in ("cyber", "cyberrealistic", "neon", "scifi", "future")):
-            return "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, extra limbs, plastic skin, doll, cgi, 2d, illustration, badhandv4"
-        else:
-            return "worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, disfigured, extra limbs, badhandv4, text"
+        return get_default_negative_prompt(checkpoint_name, model_id)
 
     def __init__(
         self,
@@ -248,29 +228,46 @@ class ModelsManagerDialog(QDialog):
             PrimaryPushButton#PrimaryBtn:pressed {
                 background-color: #0284C7;
                 border-color: #0284C7;
-                color: #FFFFFF;
             }
-            PrimaryPushButton#TestBtn {
-                background-color: #0284C7;
-                color: #FFFFFF;
-                font-weight: 600;
-                border: 1px solid #38BDF8;
+            PushButton#CloseBtn {
+                background-color: rgba(255, 255, 255, 0.05);
+                color: #94A3B8;
+                border: 1px solid rgba(255, 255, 255, 0.10);
                 border-radius: 6px;
             }
-            PrimaryPushButton#TestBtn:hover {
-                background-color: #0369A1;
-                border-color: #00F0FF;
+            PushButton#CloseBtn:hover {
+                background-color: rgba(239, 68, 68, 0.20);
+                color: #F87171;
+                border-color: rgba(239, 68, 68, 0.40);
             }
             PushButton#AutoFillBtn {
-                background-color: rgba(16, 185, 129, 0.15);
-                border: 1px solid rgba(16, 185, 129, 0.40);
-                color: #34D399;
+                background-color: rgba(56, 189, 248, 0.15);
+                color: #38BDF8;
+                border: 1px solid rgba(56, 189, 248, 0.35);
+                border-radius: 6px;
                 font-weight: 600;
             }
             PushButton#AutoFillBtn:hover {
-                background-color: rgba(16, 185, 129, 0.25);
-                border-color: #34D399;
-                color: #6EE7B7;
+                background-color: rgba(56, 189, 248, 0.28);
+                border-color: #38BDF8;
+                color: #FFFFFF;
+            }
+            PushButton#ConvertFP8Btn {
+                background-color: rgba(168, 85, 247, 0.15);
+                color: #C084FC;
+                border: 1px solid rgba(168, 85, 247, 0.35);
+                border-radius: 6px;
+                font-weight: 600;
+            }
+            PushButton#ConvertFP8Btn:hover {
+                background-color: rgba(168, 85, 247, 0.28);
+                border-color: #C084FC;
+                color: #FFFFFF;
+            }
+            PushButton#ConvertFP8Btn:disabled {
+                background-color: rgba(255, 255, 255, 0.03);
+                color: #64748B;
+                border-color: rgba(255, 255, 255, 0.06);
             }
         """)
 
@@ -278,26 +275,31 @@ class ModelsManagerDialog(QDialog):
         main_layout.setContentsMargins(18, 16, 18, 16)
         main_layout.setSpacing(12)
 
-        # 1. Header Banner
+        # 1. Header
         hdr_layout = QVBoxLayout()
         hdr_layout.setSpacing(3)
-        title_lbl = QLabel("🎨 Управление моделями, параметрами генерации и роутингом", self)
-        title_lbl.setStyleSheet("color: #00F0FF; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;")
+        title_lbl = QLabel("🎨 МОДЕЛИ ГЕНЕРАЦИИ, ПАРАМЕТРЫ ПАЙПЛАЙНА И РОУТИНГ", self)
+        title_lbl.setStyleSheet("""
+            font-size: 15px;
+            font-weight: 800;
+            letter-spacing: 1.2px;
+            color: #00F0FF;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+        """)
         hdr_layout.addWidget(title_lbl)
 
         sub_lbl = QLabel(
-            "Индивидуальные параметры генерации чекпоинтов SD (семплер, шаги, CFG, Hires, денойз) с автонастройкой по Civitai "
-            "и семантическое сопоставление промптов через FastEmbed CPU ONNX.",
+            "Управление моделями Stable Diffusion Forge, точная настройка параметров генерации "
+            "и правила семантического векторного роутинга FastEmbed CPU ONNX.",
             self
         )
-        sub_lbl.setStyleSheet("color: #94A3B8; font-size: 11px;")
-        sub_lbl.setWordWrap(True)
+        sub_lbl.setStyleSheet("font-size: 11px; color: #94A3B8;")
         hdr_layout.addWidget(sub_lbl)
         main_layout.addLayout(hdr_layout)
 
-        # 2. Central Splitter (Left: Table | Right: Editor)
+        # 2. Main 2-column Splitter (Table | Editor)
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setHandleWidth(4)
+        splitter.setChildrenCollapsible(False)
 
         # --- LEFT PANEL: Table of models ---
         left_widget = QFrame(self)
@@ -308,61 +310,58 @@ class ModelsManagerDialog(QDialog):
 
         tbl_bar = QHBoxLayout()
         tbl_bar.setSpacing(8)
-        lbl_tbl = QLabel("<b>Зарегистрированные модели:</b>", left_widget)
-        lbl_tbl.setStyleSheet("color: #38BDF8; font-size: 12px;")
-        tbl_bar.addWidget(lbl_tbl)
-        tbl_bar.addStretch()
 
         self.btn_refresh_forge = PushButton("Сканировать Forge", left_widget, icon=FIF.SYNC)
-        self.btn_refresh_forge.setToolTip("Запросить чекпоинты из Forge (get_models) и обнаружить новые файлы")
+        self.btn_refresh_forge.setToolTip("Опросить работающий сервер SD Forge и обнаружить новые чекпоинты")
         self.btn_refresh_forge.clicked.connect(lambda: self._start_forge_scan(silent=False))
         tbl_bar.addWidget(self.btn_refresh_forge)
 
-        self.btn_civitai = PushButton("Каталог Civitai", left_widget, icon=FIF.GLOBE)
-        self.btn_civitai.setToolTip("Открыть каталог Civitai / Civitai Red для поиска и скачивания моделей")
-        self.btn_civitai.clicked.connect(self._open_civitai_catalog)
-        tbl_bar.addWidget(self.btn_civitai)
+        self.btn_civitai_catalog = PushButton("Каталог Civitai", left_widget, icon=FIF.GLOBE)
+        self.btn_civitai_catalog.setToolTip("Открыть каталог и загрузчик моделей Civitai с автосохранением в Forge")
+        self.btn_civitai_catalog.clicked.connect(self._open_civitai_catalog)
+        tbl_bar.addWidget(self.btn_civitai_catalog)
 
-        self.btn_add_model = PushButton("Добавить", left_widget, icon=FIF.ADD)
-        self.btn_add_model.setToolTip("Добавить новую модель в таблицу")
+        tbl_bar.addStretch()
+
+        self.btn_add_model = PrimaryPushButton("Добавить", left_widget, icon=FIF.ADD)
+        self.btn_add_model.setFixedHeight(30)
         self.btn_add_model.clicked.connect(self._add_empty_model_row)
         tbl_bar.addWidget(self.btn_add_model)
+
         left_layout.addLayout(tbl_bar)
 
         self.table = TableWidget(left_widget)
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels([
-            "Вкл",
-            "Название модели",
-            "Чекпоинт Forge",
-            ""
-        ])
+        self.table.setHorizontalHeaderLabels(["Вкл", "Модель", "Чекпоинт Forge", ""])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 48)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 150)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-
-        self.table.setColumnWidth(0, 48)
-        self.table.setColumnWidth(1, 150)
-        self.table.setColumnWidth(3, 44)
-
+        self.table.setColumnWidth(3, 40)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(TableWidget.SelectionMode.SingleSelection)
-        self.table.currentCellChanged.connect(self._on_table_cell_changed)
-        left_layout.addWidget(self.table, stretch=1)
+        self.table.setShowGrid(False)
 
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self.table.cellChanged.connect(self._on_table_cell_changed)
+
+        left_layout.addWidget(self.table, stretch=1)
         splitter.addWidget(left_widget)
 
         # --- RIGHT PANEL: Form Editor inside ScrollArea ---
         right_scroll = QScrollArea(self)
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        right_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        if right_scroll.viewport():
-            right_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            right_scroll.viewport().setStyleSheet("background: transparent;")
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+        """)
 
         right_container = QFrame()
         right_container.setObjectName("EditorPanel")
@@ -370,55 +369,58 @@ class ModelsManagerDialog(QDialog):
         right_layout.setContentsMargins(16, 14, 16, 14)
         right_layout.setSpacing(12)
 
-        lbl_edit_title = QLabel("⚙️ <b>Редактор параметров модели</b>", right_container)
-        lbl_edit_title.setStyleSheet("color: #00F0FF; font-size: 13px; font-weight: bold;")
+        lbl_edit_title = QLabel("⚙️ ПАРАМЕТРЫ МОДЕЛИ И ПАЙПЛАЙНА", right_container)
+        lbl_edit_title.setStyleSheet("font-size: 13px; font-weight: 700; color: #FFFFFF;")
         right_layout.addWidget(lbl_edit_title)
 
-        # 1. Model Info Form (Checkpoint, Name, Triggers, Default)
         form_info = QFormLayout()
-        form_info.setSpacing(10)
-        form_info.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form_info.setSpacing(8)
 
         self.input_name = LineEdit(right_container)
-        self.input_name.setPlaceholderText("Пользовательское название модели")
+        self.input_name.setPlaceholderText("Понятное имя модели (например: Realistic Vision V6.0)")
         self.input_name.textChanged.connect(self._on_input_name_changed)
-        form_info.addRow("Название:", self.input_name)
+        form_info.addRow("Отображаемое имя:", self.input_name)
 
-        ckpt_row = QHBoxLayout()
-        ckpt_row.setSpacing(8)
+        ckpt_box = QHBoxLayout()
+        ckpt_box.setSpacing(6)
         self.combo_checkpoint = FluentEditableComboBox(right_container)
+        self.combo_checkpoint.setPlaceholderText("Выберите или укажите имя .safetensors")
         for cp in self.available_checkpoints:
             self.combo_checkpoint.addItem(cp)
         self.combo_checkpoint.currentTextChanged.connect(self._on_combo_checkpoint_changed)
-        ckpt_row.addWidget(self.combo_checkpoint, stretch=1)
+        ckpt_box.addWidget(self.combo_checkpoint, stretch=1)
 
         self.btn_autofill_params = PushButton("Автонастройка (Civitai)", right_container, icon=FIF.CLOUD_DOWNLOAD)
         self.btn_autofill_params.setObjectName("AutoFillBtn")
-        self.btn_autofill_params.setToolTip("Запросить рекомендованные автором параметры с Civitai или применить Safe Defaults")
+        self.btn_autofill_params.setToolTip(
+            "Запросить у Civitai рекомендуемые сэмплер, шаги, CFG и негативный промпт по хэшу файла"
+        )
         self.btn_autofill_params.clicked.connect(self._on_autofill_params_clicked)
-        ckpt_row.addWidget(self.btn_autofill_params)
-        form_info.addRow("Чекпоинт Forge:", ckpt_row)
+        ckpt_box.addWidget(self.btn_autofill_params)
 
-        fp8_row = QHBoxLayout()
-        fp8_row.setSpacing(10)
-        self.btn_convert_fp8 = PushButton("⚡ Сжать в FP8 (e4m3fn)", right_container)
-        self.btn_convert_fp8.setObjectName("FP8ConvertBtn")
-        self.btn_convert_fp8.setToolTip("Конвертирует UNet модели SDXL в нативный FP8. Ускоряет загрузку с 90с до 2с и освобождает 4 ГБ VRAM.")
+        self.btn_convert_fp8 = PushButton("⚡ Сжать в FP8 (e4m3fn)", right_container, icon=FIF.SEND)
+        self.btn_convert_fp8.setObjectName("ConvertFP8Btn")
+        self.btn_convert_fp8.setToolTip("Конвертирует модель SDXL в нативный FP8. Освобождает 4 ГБ VRAM.")
         self.btn_convert_fp8.clicked.connect(self._on_start_fp8_conversion)
-        fp8_row.addWidget(self.btn_convert_fp8)
+        ckpt_box.addWidget(self.btn_convert_fp8)
 
-        self.chk_delete_source = CheckBox("Удалить исходный FP16 после успешного сжатия", right_container)
+        form_info.addRow("Файл чекпоинта Forge:", ckpt_box)
+
+        # Чекбокс и прогресс FP8
+        fp8_opts_layout = QHBoxLayout()
+        fp8_opts_layout.setSpacing(10)
+
+        self.chk_delete_source = CheckBox("Заменять исходник (экономия места на диске)", right_container)
         self.chk_delete_source.setChecked(True)
-        self.chk_delete_source.setStyleSheet("color: #94A3B8; font-size: 11px;")
-        fp8_row.addWidget(self.chk_delete_source)
-        fp8_row.addStretch()
-        form_info.addRow("", fp8_row)
+        self.chk_delete_source.setToolTip("После успешного сжатия заменяет исходный файл новым FP8 вариантом")
+        fp8_opts_layout.addWidget(self.chk_delete_source)
+        fp8_opts_layout.addStretch()
+        form_info.addRow("", fp8_opts_layout)
 
         self.progress_fp8 = ProgressBar(right_container)
-        self.progress_fp8.setFixedHeight(4)
         self.progress_fp8.setVisible(False)
         self.lbl_fp8_status = QLabel("", right_container)
-        self.lbl_fp8_status.setStyleSheet("color: #38BDF8; font-size: 11px;")
+        self.lbl_fp8_status.setStyleSheet("color: #A855F7; font-size: 11px; font-weight: 600;")
         self.lbl_fp8_status.setVisible(False)
 
         fp8_progress_layout = QVBoxLayout()
@@ -427,259 +429,216 @@ class ModelsManagerDialog(QDialog):
         fp8_progress_layout.addWidget(self.lbl_fp8_status)
         form_info.addRow("", fp8_progress_layout)
 
-        self.chk_is_default = CheckBox("Использовать по умолчанию (для нейтральных запросов без указания стиля)", right_container)
-        self.chk_is_default.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: 500;")
+        self.edit_style_triggers = LineEdit(right_container)
+        self.edit_style_triggers.setPlaceholderText("cyberpunk, neon, anime, photoreal (через запятую)")
+        self.edit_style_triggers.textChanged.connect(self._on_param_modified)
+        form_info.addRow("Триггеры стиля:", self.edit_style_triggers)
+
+        self.chk_is_default = CheckBox("Модель по умолчанию (для запросов без явного стиля)", right_container)
         self.chk_is_default.toggled.connect(self._on_is_default_toggled)
         form_info.addRow("", self.chk_is_default)
 
-        self.edit_style_triggers = LineEdit(right_container)
-        self.edit_style_triggers.setPlaceholderText("Например: киберпанк, неон, sci-fi, латекс (через запятую)")
-        form_info.addRow("Триггеры стиля:", self.edit_style_triggers)
-
         right_layout.addLayout(form_info)
 
-        # 2. Pipeline Parameters Card
+        # Card: Пайплайн генерации
         card_pipeline = QFrame(right_container)
         card_pipeline.setObjectName("ParamCard")
         pipe_layout = QVBoxLayout(card_pipeline)
         pipe_layout.setContentsMargins(12, 10, 12, 10)
         pipe_layout.setSpacing(10)
 
-        lbl_pipe_hdr = QLabel("⚙️ <b>Параметры рендера (Pipeline)</b>", card_pipeline)
-        lbl_pipe_hdr.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: bold;")
+        lbl_pipe_hdr = QLabel("🎛️ ПАРАМЕТРЫ РЕНДЕРА SD WEBUI FORGE", card_pipeline)
+        lbl_pipe_hdr.setStyleSheet("font-size: 11px; font-weight: 700; color: #38BDF8; letter-spacing: 0.8px;")
         pipe_layout.addWidget(lbl_pipe_hdr)
 
-        # Preset selection row
-        preset_box = QVBoxLayout()
-        preset_box.setSpacing(3)
-        preset_box.addWidget(QLabel("Быстрый пресет:", card_pipeline))
+        preset_box = QHBoxLayout()
+        preset_box.setSpacing(8)
+        preset_box.addWidget(QLabel("Быстрый пресет настроек:", card_pipeline))
+
         self.combo_presets = ComboBox(card_pipeline)
         self.combo_presets.addItems([
-            "Пользовательский",
-            "⚡ SDXL Turbo / DMD2 (LCM, 10 шагов, CFG 1.3)",
-            "🎨 SDXL Classic / Pony (DPM++ 2M, 28 шагов, CFG 5.0)",
-            "📷 SD 1.5 Photoreal (DPM++ SDE, 25 шагов, Hires 1.5x)"
+            "Кастомный / Выбрать...",
+            "⚡ SDXL Turbo (LCM, 10 шагов, CFG 1.3, Skip 2, без HR)",
+            "🎯 SDXL Classic (DPM++ 2M, 28 шагов, CFG 5.0, Skip 2)",
+            "📸 SD 1.5 Photoreal (DPM++ SDE, 25 шагов, CFG 5.5, Skip 1 + Hires)"
         ])
         self.combo_presets.currentIndexChanged.connect(self._on_preset_selected)
-        preset_box.addWidget(self.combo_presets)
+        preset_box.addWidget(self.combo_presets, stretch=1)
         pipe_layout.addLayout(preset_box)
 
-        # Architecture & Scheduler row
+        # Архитектура и Планировщик
         arch_sched_row = QHBoxLayout()
-        arch_sched_row.setSpacing(14)
+        arch_sched_row.setSpacing(12)
 
-        arch_box = QVBoxLayout()
-        arch_box.setSpacing(3)
-        arch_box.addWidget(QLabel("Архитектура:", card_pipeline))
+        arch_row = QHBoxLayout()
+        arch_row.addWidget(QLabel("Архитектура:", card_pipeline))
         self.combo_arch = ComboBox(card_pipeline)
         self.combo_arch.addItems(["SDXL / Pony", "SD 1.5"])
-        self.combo_arch.currentIndexChanged.connect(self._on_param_modified)
-        arch_box.addWidget(self.combo_arch)
-        arch_sched_row.addLayout(arch_box, stretch=1)
+        self.combo_arch.currentTextChanged.connect(self._on_param_modified)
+        arch_row.addWidget(self.combo_arch, stretch=1)
+        arch_sched_row.addLayout(arch_row, stretch=1)
 
-        scheduler_box = QVBoxLayout()
-        scheduler_box.setSpacing(3)
-        scheduler_box.addWidget(QLabel("Планировщик (Scheduler):", card_pipeline))
-        self.combo_scheduler = ComboBox(card_pipeline)
-        self.combo_scheduler.addItems(["Karras", "SGM Uniform", "Exponential", "Normal", "Simple"])
-        self.combo_scheduler.currentIndexChanged.connect(self._on_param_modified)
-        scheduler_box.addWidget(self.combo_scheduler)
-        arch_sched_row.addLayout(scheduler_box, stretch=1)
+        sched_row = QHBoxLayout()
+        sched_row.addWidget(QLabel("Планировщик:", card_pipeline))
+        self.combo_scheduler = FluentEditableComboBox(card_pipeline)
+        self.combo_scheduler.addItems([
+            "Karras", "Exponential", "SGM Uniform", "Simple", "Normal", "Align Your Steps", "Turbo"
+        ])
+        self.combo_scheduler.currentTextChanged.connect(self._on_param_modified)
+        sched_row.addWidget(self.combo_scheduler, stretch=1)
+        arch_sched_row.addLayout(sched_row, stretch=1)
 
         pipe_layout.addLayout(arch_sched_row)
 
-        # Sampler & Upscaler row
+        # Семплер и Апскейлер
         combos_row = QHBoxLayout()
-        combos_row.setSpacing(14)
+        combos_row.setSpacing(12)
 
-        sampler_box = QVBoxLayout()
-        sampler_box.setSpacing(3)
-        sampler_box.addWidget(QLabel("Семплер:", card_pipeline))
-        self.combo_sampler = ComboBox(card_pipeline)
+        samp_row = QHBoxLayout()
+        samp_row.addWidget(QLabel("Семплер:", card_pipeline))
+        self.combo_sampler = FluentEditableComboBox(card_pipeline)
         self.combo_sampler.addItems([
-            "DPM++ 2M Karras",
-            "LCM",
-            "DPM++ 2M",
-            "Euler a",
-            "DPM++ SDE Karras",
-            "Euler",
-            "DDIM"
+            "DPM++ 2M Karras", "DPM++ SDE Karras", "Euler a", "Euler",
+            "LCM", "DPM++ 2M", "DPM++ 2M SDE", "UniPC", "DDIM"
         ])
-        self.combo_sampler.currentIndexChanged.connect(self._on_param_modified)
-        sampler_box.addWidget(self.combo_sampler)
-        combos_row.addLayout(sampler_box, stretch=1)
+        self.combo_sampler.currentTextChanged.connect(self._on_param_modified)
+        samp_row.addWidget(self.combo_sampler, stretch=1)
+        combos_row.addLayout(samp_row, stretch=1)
 
-        upscaler_box = QVBoxLayout()
-        upscaler_box.setSpacing(3)
-        upscaler_box.addWidget(QLabel("Hires.fix апскейлер:", card_pipeline))
-        self.combo_upscaler = ComboBox(card_pipeline)
-        base_upscalers = ["4x-UltraSharp", "R-ESRGAN 4x+ Anime6B", "DAT x2", "Lanczos"]
-        for u in base_upscalers:
-            self.combo_upscaler.addItem(u)
-        upscaler_box.addWidget(self.combo_upscaler)
-        combos_row.addLayout(upscaler_box, stretch=1)
+        up_row = QHBoxLayout()
+        up_row.addWidget(QLabel("Апскейлер Hires:", card_pipeline))
+        self.combo_upscaler = FluentEditableComboBox(card_pipeline)
+        self.combo_upscaler.addItems([
+            "4x-UltraSharp", "R-ESRGAN 4x+", "R-ESRGAN 4x+ Anime6B",
+            "4x_NMKD-Superscale-SP_178000_G", "Latent (bicubic antialiased)", "None"
+        ])
+        self.combo_upscaler.currentTextChanged.connect(self._on_param_modified)
+        up_row.addWidget(self.combo_upscaler, stretch=1)
+        combos_row.addLayout(up_row, stretch=1)
 
         pipe_layout.addLayout(combos_row)
 
-        # Switches row (Hires.fix & ADetailer)
+        # Переключатели: Hires.fix и ADetailer
         switches_row = QHBoxLayout()
-        switches_row.setSpacing(24)
+        switches_row.setSpacing(16)
 
         hr_box = QHBoxLayout()
-        hr_box.setSpacing(8)
-        lbl_hr = QLabel("Hires.fix апскейл:", card_pipeline)
         self.switch_enable_hr = SwitchButton(card_pipeline)
-        self.switch_enable_hr.setOnText("ВКЛ")
-        self.switch_enable_hr.setOffText("ВЫКЛ")
         self.switch_enable_hr.checkedChanged.connect(self._on_param_modified)
-        hr_box.addWidget(lbl_hr)
         hr_box.addWidget(self.switch_enable_hr)
+        hr_box.addWidget(QLabel("Hires.fix (Увеличение разрешения)", card_pipeline))
         switches_row.addLayout(hr_box)
+
+        switches_row.addSpacing(16)
 
         ad_box = QHBoxLayout()
         ad_box.setSpacing(8)
-        self.btn_adetailer_config = PushButton("ADetailer: Настройки ⚙️", card_pipeline)
-        self.btn_adetailer_config.setToolTip("Выбор моделей детекции лица/рук, порогов уверенности и денойза")
+        self.btn_adetailer_config = PushButton("Настроить ADetailer", card_pipeline, icon=FIF.SETTING)
         self.btn_adetailer_config.clicked.connect(self._open_adetailer_dialog)
-        
+        ad_box.addWidget(self.btn_adetailer_config)
+
         self.lbl_ad_status = QLabel("ВКЛ [v8m/v9c]", card_pipeline)
         self.lbl_ad_status.setStyleSheet("color: #00F0FF; font-weight: bold;")
-        
-        ad_box.addWidget(self.btn_adetailer_config)
         ad_box.addWidget(self.lbl_ad_status)
-        switches_row.addLayout(ad_box)
+        ad_box.addStretch()
 
+        switches_row.addLayout(ad_box)
         switches_row.addStretch()
         pipe_layout.addLayout(switches_row)
 
-        # Sliders grid: Steps & CFG Scale | Denoise & Clip Skip
+        # Сетка слайдеров
         grid_sliders = QGridLayout()
-        grid_sliders.setHorizontalSpacing(16)
-        grid_sliders.setVerticalSpacing(8)
+        grid_sliders.setSpacing(8)
+        grid_sliders.setColumnStretch(1, 1)
 
-        # Steps
-        steps_box = QVBoxLayout()
-        steps_box.setSpacing(2)
-        h_steps = QHBoxLayout()
-        h_steps.addWidget(QLabel("Шаги (Steps):", card_pipeline))
-        h_steps.addStretch()
-        self.spin_steps = SamplingSpinBox(card_pipeline)
-        self.spin_steps.setRange(4, 60)
-        self.spin_steps.setValue(25)
-        h_steps.addWidget(self.spin_steps)
-        steps_box.addLayout(h_steps)
-
+        grid_sliders.addWidget(QLabel("Шаги сэмплирования:", card_pipeline), 0, 0)
         self.slider_steps = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
-        self.slider_steps.setRange(4, 60)
+        self.slider_steps.setRange(5, 60)
         self.slider_steps.setValue(25)
         self.slider_steps.valueChanged.connect(self._on_steps_slider_changed)
-        self.slider_steps.sliderMoved.connect(self._on_steps_slider_changed)
+        grid_sliders.addWidget(self.slider_steps, 0, 1)
+        self.spin_steps = SamplingSpinBox(card_pipeline)
+        self.spin_steps.setRange(5, 60)
+        self.spin_steps.setValue(25)
+        self.spin_steps.setFixedWidth(82)
         self.spin_steps.valueChanged.connect(self._on_steps_spin_changed)
-        steps_box.addWidget(self.slider_steps)
-        grid_sliders.addLayout(steps_box, 0, 0)
+        grid_sliders.addWidget(self.spin_steps, 0, 2)
 
-        # CFG Scale
-        cfg_box = QVBoxLayout()
-        cfg_box.setSpacing(2)
-        h_cfg = QHBoxLayout()
-        h_cfg.addWidget(QLabel("CFG Scale:", card_pipeline))
-        h_cfg.addStretch()
-        self.spin_cfg = SamplingDoubleSpinBox(card_pipeline)
-        self.spin_cfg.setRange(1.0, 15.0)
-        self.spin_cfg.setSingleStep(0.5)
-        self.spin_cfg.setDecimals(1)
-        self.spin_cfg.setValue(6.0)
-        h_cfg.addWidget(self.spin_cfg)
-        cfg_box.addLayout(h_cfg)
-
+        grid_sliders.addWidget(QLabel("CFG Scale:", card_pipeline), 1, 0)
         self.slider_cfg = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
         self.slider_cfg.setRange(10, 150)
-        self.slider_cfg.setSingleStep(5)
         self.slider_cfg.setValue(60)
         self.slider_cfg.valueChanged.connect(self._on_cfg_slider_changed)
-        self.slider_cfg.sliderMoved.connect(self._on_cfg_slider_changed)
+        grid_sliders.addWidget(self.slider_cfg, 1, 1)
+        self.spin_cfg = SamplingDoubleSpinBox(card_pipeline)
+        self.spin_cfg.setRange(1.0, 15.0)
+        self.spin_cfg.setDecimals(1)
+        self.spin_cfg.setSingleStep(0.1)
+        self.spin_cfg.setValue(6.0)
+        self.spin_cfg.setFixedWidth(82)
         self.spin_cfg.valueChanged.connect(self._on_cfg_spin_changed)
-        cfg_box.addWidget(self.slider_cfg)
-        grid_sliders.addLayout(cfg_box, 0, 1)
+        grid_sliders.addWidget(self.spin_cfg, 1, 2)
 
-        # Denoise
-        denoise_box = QVBoxLayout()
-        denoise_box.setSpacing(2)
-        h_denoise = QHBoxLayout()
-        h_denoise.addWidget(QLabel("Денойз Hires:", card_pipeline))
-        h_denoise.addStretch()
-        self.spin_hires_denoise = SamplingDoubleSpinBox(card_pipeline)
-        self.spin_hires_denoise.setRange(0.10, 0.70)
-        self.spin_hires_denoise.setSingleStep(0.01)
-        self.spin_hires_denoise.setDecimals(2)
-        self.spin_hires_denoise.setValue(0.32)
-        h_denoise.addWidget(self.spin_hires_denoise)
-        denoise_box.addLayout(h_denoise)
-
+        grid_sliders.addWidget(QLabel("Денойз Hires:", card_pipeline), 2, 0)
         self.slider_hires_denoise = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
-        self.slider_hires_denoise.setRange(10, 70)
-        self.slider_hires_denoise.setSingleStep(1)
+        self.slider_hires_denoise.setRange(10, 90)
         self.slider_hires_denoise.setValue(32)
         self.slider_hires_denoise.valueChanged.connect(self._on_hires_denoise_slider_changed)
-        self.slider_hires_denoise.sliderMoved.connect(self._on_hires_denoise_slider_changed)
+        grid_sliders.addWidget(self.slider_hires_denoise, 2, 1)
+        self.spin_hires_denoise = SamplingDoubleSpinBox(card_pipeline)
+        self.spin_hires_denoise.setRange(0.10, 0.90)
+        self.spin_hires_denoise.setDecimals(2)
+        self.spin_hires_denoise.setSingleStep(0.01)
+        self.spin_hires_denoise.setValue(0.32)
+        self.spin_hires_denoise.setFixedWidth(82)
         self.spin_hires_denoise.valueChanged.connect(self._on_hires_denoise_spin_changed)
-        denoise_box.addWidget(self.slider_hires_denoise)
-        grid_sliders.addLayout(denoise_box, 1, 0)
+        grid_sliders.addWidget(self.spin_hires_denoise, 2, 2)
 
-        # Clip Skip
-        clip_box = QVBoxLayout()
-        clip_box.setSpacing(2)
-        h_clip = QHBoxLayout()
-        h_clip.addWidget(QLabel("Clip Skip:", card_pipeline))
-        h_clip.addStretch()
-        self.spin_clip_skip = SamplingSpinBox(card_pipeline)
-        self.spin_clip_skip.setRange(1, 4)
-        self.spin_clip_skip.setValue(1)
-        h_clip.addWidget(self.spin_clip_skip)
-        clip_box.addLayout(h_clip)
-
+        grid_sliders.addWidget(QLabel("Clip Skip:", card_pipeline), 3, 0)
         self.slider_clip_skip = SamplingSlider(Qt.Orientation.Horizontal, card_pipeline)
         self.slider_clip_skip.setRange(1, 4)
         self.slider_clip_skip.setValue(1)
         self.slider_clip_skip.valueChanged.connect(self._on_clip_skip_slider_changed)
-        self.slider_clip_skip.sliderMoved.connect(self._on_clip_skip_slider_changed)
+        grid_sliders.addWidget(self.slider_clip_skip, 3, 1)
+        self.spin_clip_skip = SamplingSpinBox(card_pipeline)
+        self.spin_clip_skip.setRange(1, 4)
+        self.spin_clip_skip.setValue(1)
+        self.spin_clip_skip.setFixedWidth(82)
         self.spin_clip_skip.valueChanged.connect(self._on_clip_skip_spin_changed)
-        clip_box.addWidget(self.slider_clip_skip)
-        grid_sliders.addLayout(clip_box, 1, 1)
+        grid_sliders.addWidget(self.spin_clip_skip, 3, 2)
 
         pipe_layout.addLayout(grid_sliders)
 
-        # Negative prompt TextEdit
-        pipe_layout.addWidget(QLabel("Негативный промпт по умолчанию:", card_pipeline))
+        pipe_layout.addWidget(QLabel("Базовый негативный промпт модели:", card_pipeline))
         self.input_negative_prompt = FluentTextEdit(card_pipeline)
-        self.input_negative_prompt.setPlaceholderText("worst quality, low quality, bad anatomy, deformed limbs...")
-        self.input_negative_prompt.setFixedHeight(54)
+        self.input_negative_prompt.setFixedHeight(55)
+        self.input_negative_prompt.textChanged.connect(self._on_param_modified)
         pipe_layout.addWidget(self.input_negative_prompt)
 
         right_layout.addWidget(card_pipeline)
 
-        # 3. Vector Routing Card
+        # Card: Семантический роутинг FastEmbed
         card_routing = QFrame(right_container)
         card_routing.setObjectName("ParamCard")
         rout_layout = QVBoxLayout(card_routing)
         rout_layout.setContentsMargins(12, 10, 12, 10)
         rout_layout.setSpacing(8)
 
-        lbl_rout_hdr = QLabel("🧠 <b>Семантический роутинг (FastEmbed CPU)</b>", card_routing)
-        lbl_rout_hdr.setStyleSheet("color: #38BDF8; font-size: 12px; font-weight: bold;")
+        lbl_rout_hdr = QLabel("🧠 СЕМАНТИЧЕСКИЙ РОУТИНГ И ПОДСКАЗКИ ДЛЯ LLM", card_routing)
+        lbl_rout_hdr.setStyleSheet("font-size: 11px; font-weight: 700; color: #00F0FF; letter-spacing: 0.8px;")
         rout_layout.addWidget(lbl_rout_hdr)
 
-        rout_layout.addWidget(QLabel("Описание эстетики / стилистики для FastEmbed:", card_routing))
+        rout_layout.addWidget(QLabel("Описание стиля / ключевые темы FastEmbed:", card_routing))
         self.input_desc = FluentTextEdit(card_routing)
-        self.input_desc.setPlaceholderText("Семантическое описание стилистики, объектов, эстетики для FastEmbed...")
-        self.input_desc.setFixedHeight(64)
+        self.input_desc.setFixedHeight(60)
+        self.input_desc.textChanged.connect(self._on_param_modified)
         rout_layout.addWidget(self.input_desc)
 
-        rout_layout.addWidget(QLabel("Служебные эмбеддинги и триггеры (Textual Inversion, макс. 8 тегов):", card_routing))
+        rout_layout.addWidget(QLabel("Обязательные теги для промпта (Textual Inversion, макс. 8 штук):", card_routing))
         self.input_guidance = FluentTextEdit(card_routing)
-        self.input_guidance.setPlaceholderText("Файлы Textual Inversion, триггер-слова LoRA через запятую (напр.: anime-background-style-v2)...")
-        self.input_guidance.setFixedHeight(54)
+        self.input_guidance.setFixedHeight(45)
         self.input_guidance.textChanged.connect(self._on_input_guidance_changed)
+        self.input_guidance.textChanged.connect(self._on_param_modified)
         rout_layout.addWidget(self.input_guidance)
 
         right_layout.addWidget(card_routing)
@@ -692,29 +651,27 @@ class ModelsManagerDialog(QDialog):
         splitter.setStretchFactor(1, 6)
         main_layout.addWidget(splitter, stretch=1)
 
-        # 4. Live Vector Routing Test Panel
+        # 4. Bottom Test Panel
         test_panel = QFrame(self)
         test_panel.setObjectName("TestPanel")
         test_layout = QVBoxLayout(test_panel)
         test_layout.setContentsMargins(14, 10, 14, 10)
         test_layout.setSpacing(8)
 
-        test_title = QLabel("🧪 <b>Тестовый запрос (проверка векторного сопоставления в реальном времени):</b>", test_panel)
-        test_title.setStyleSheet("color: #38BDF8; font-size: 12px;")
+        test_title = QLabel("🧪 ПРОВЕРКА РОУТИНГА FASTEMBED НА CPU (СЕМАНТИЧЕСКИЙ ТЕСТ)", test_panel)
+        test_title.setStyleSheet("font-size: 11px; font-weight: 700; color: #A855F7; letter-spacing: 0.8px;")
         test_layout.addWidget(test_title)
 
         test_input_row = QHBoxLayout()
-        test_input_row.setSpacing(10)
+        test_input_row.setSpacing(8)
 
         self.input_test_prompt = SearchLineEdit(test_panel)
-        self.input_test_prompt.setPlaceholderText("Введите текст сцены (например: 'cyberpunk girl on neon street' или 'портрет девушки в парке')...")
-        self.input_test_prompt.setClearButtonEnabled(True)
+        self.input_test_prompt.setPlaceholderText("Введите описание сцены для теста (например: киберпанк девушка на фоне неонового дождя)...")
         self.input_test_prompt.returnPressed.connect(self._run_test_match)
-        self.input_test_prompt.searchSignal.connect(self._run_test_match)
         test_input_row.addWidget(self.input_test_prompt, stretch=1)
 
-        self.btn_test_match = PrimaryPushButton("Проверить выбор", test_panel, icon=FIF.SEARCH)
-        self.btn_test_match.setObjectName("TestBtn")
+        self.btn_test_match = PushButton("Проверить выбор", test_panel, icon=FIF.PLAY)
+        self.btn_test_match.setFixedWidth(150)
         self.btn_test_match.clicked.connect(self._run_test_match)
         test_input_row.addWidget(self.btn_test_match)
 
@@ -722,8 +679,6 @@ class ModelsManagerDialog(QDialog):
 
         self.result_badge = RoutingResultBadge(test_panel)
         test_layout.addWidget(self.result_badge)
-        self.lbl_test_result = self.result_badge
-        self.test_result_label = self.result_badge
 
         main_layout.addWidget(test_panel)
 
@@ -748,1485 +703,17 @@ class ModelsManagerDialog(QDialog):
         main_layout.addLayout(actions_row)
         self._update_fp8_button_state()
 
-
-    # ---------------- Synchronized Slider & SpinBox Slots ---------------- #
-    def _on_steps_slider_changed(self, val: int):
-        if self.spin_steps.value() != val:
-            self.spin_steps.blockSignals(True)
-            self.spin_steps.setValue(val)
-            self.spin_steps.blockSignals(False)
-
-    def _on_steps_spin_changed(self, val: int):
-        if self.slider_steps.value() != val:
-            self.slider_steps.blockSignals(True)
-            self.slider_steps.setValue(val)
-            self.slider_steps.blockSignals(False)
-
-    def _on_cfg_slider_changed(self, val: int):
-        target = round(val / 10.0, 1)
-        if abs(self.spin_cfg.value() - target) > 0.01:
-            self.spin_cfg.blockSignals(True)
-            self.spin_cfg.setValue(target)
-            self.spin_cfg.blockSignals(False)
-
-    def _on_cfg_spin_changed(self, val: float):
-        target = int(round(val * 10))
-        if self.slider_cfg.value() != target:
-            self.slider_cfg.blockSignals(True)
-            self.slider_cfg.setValue(target)
-            self.slider_cfg.blockSignals(False)
-
-    def _on_hires_denoise_slider_changed(self, val: int):
-        target = round(val / 100.0, 2)
-        if abs(self.spin_hires_denoise.value() - target) > 0.001:
-            self.spin_hires_denoise.blockSignals(True)
-            self.spin_hires_denoise.setValue(target)
-            self.spin_hires_denoise.blockSignals(False)
-
-    def _on_hires_denoise_spin_changed(self, val: float):
-        target = int(round(val * 100))
-        if self.slider_hires_denoise.value() != target:
-            self.slider_hires_denoise.blockSignals(True)
-            self.slider_hires_denoise.setValue(target)
-            self.slider_hires_denoise.blockSignals(False)
-
-    def _on_clip_skip_slider_changed(self, val: int):
-        if self.spin_clip_skip.value() != val:
-            self.spin_clip_skip.blockSignals(True)
-            self.spin_clip_skip.setValue(val)
-            self.spin_clip_skip.blockSignals(False)
-
-    def _on_clip_skip_spin_changed(self, val: int):
-        if self.slider_clip_skip.value() != val:
-            self.slider_clip_skip.blockSignals(True)
-            self.slider_clip_skip.setValue(val)
-            self.slider_clip_skip.blockSignals(False)
-
-    # ---------------- UI Event Handlers ---------------- #
-    def _on_param_modified(self):
-        """Сбрасывает выпадающий список пресетов в 'Пользовательский' при ручном изменении настроек."""
-        if hasattr(self, "combo_presets") and self.combo_presets.currentIndex() != 0:
-            self.combo_presets.blockSignals(True)
-            self.combo_presets.setCurrentIndex(0)
-            self.combo_presets.blockSignals(False)
-
-    def _on_preset_selected(self, index: int):
-        """
-        Реактивный слот пресетов генерации в один клик.
-        Обновляет параметры формы и синхронизирует их с текущей моделью.
-        """
-        if index <= 0:
-            return
-
-        preset_text = self.combo_presets.currentText()
-
-        if "SDXL Turbo" in preset_text:
-            arch = "SDXL / Pony"
-            sampler = "LCM"
-            scheduler = "Karras"
-            steps = 10
-            cfg = 1.3
-            clip_skip = 2
-            enable_hr = False
-            enable_ad = False
-        elif "SDXL Classic" in preset_text:
-            arch = "SDXL / Pony"
-            sampler = "DPM++ 2M"
-            scheduler = "Karras"
-            steps = 28
-            cfg = 5.0
-            clip_skip = 2
-            enable_hr = False
-            enable_ad = False
-        elif "SD 1.5 Photoreal" in preset_text:
-            arch = "SD 1.5"
-            sampler = "DPM++ SDE Karras"
-            scheduler = "Karras"
-            steps = 25
-            cfg = 5.5
-            clip_skip = 1
-            enable_hr = True
-            enable_ad = True
-        else:
-            return
-
-        # Защита сигналов Qt при обновлении формы
-        self.combo_arch.blockSignals(True)
-        self.combo_sampler.blockSignals(True)
-        self.combo_scheduler.blockSignals(True)
-        self.spin_steps.blockSignals(True)
-        self.slider_steps.blockSignals(True)
-        self.spin_cfg.blockSignals(True)
-        self.slider_cfg.blockSignals(True)
-        self.spin_clip_skip.blockSignals(True)
-        self.slider_clip_skip.blockSignals(True)
-        self.switch_enable_hr.blockSignals(True)
-
-        idx_arch = self.combo_arch.findText(arch)
-        if idx_arch >= 0:
-            self.combo_arch.setCurrentIndex(idx_arch)
-
-        idx_s = self.combo_sampler.findText(sampler)
-        if idx_s >= 0:
-            self.combo_sampler.setCurrentIndex(idx_s)
-        else:
-            self.combo_sampler.addItem(sampler)
-            self.combo_sampler.setCurrentText(sampler)
-
-        idx_sc = self.combo_scheduler.findText(scheduler)
-        if idx_sc >= 0:
-            self.combo_scheduler.setCurrentIndex(idx_sc)
-        else:
-            self.combo_scheduler.addItem(scheduler)
-            self.combo_scheduler.setCurrentText(scheduler)
-
-        self.spin_steps.setValue(steps)
-        self.slider_steps.setValue(steps)
-
-        self.spin_cfg.setValue(cfg)
-        self.slider_cfg.setValue(int(round(cfg * 10)))
-
-        self.spin_clip_skip.setValue(clip_skip)
-        self.slider_clip_skip.setValue(clip_skip)
-
-        self.switch_enable_hr.setChecked(enable_hr)
-        if 0 <= self.current_selected_row < len(self.row_widgets):
-            cur_pipe = self.row_widgets[self.current_selected_row].setdefault("pipeline", {})
-            cur_pipe["enable_adetailer"] = enable_ad
-            self._update_ad_status_label(cur_pipe)
-
-        self.combo_arch.blockSignals(False)
-        self.combo_sampler.blockSignals(False)
-        self.combo_scheduler.blockSignals(False)
-        self.spin_steps.blockSignals(False)
-        self.slider_steps.blockSignals(False)
-        self.spin_cfg.blockSignals(False)
-        self.slider_cfg.blockSignals(False)
-        self.spin_clip_skip.blockSignals(False)
-        self.slider_clip_skip.blockSignals(False)
-        self.switch_enable_hr.blockSignals(False)
-
-        if 0 <= self.current_selected_row < len(self.row_widgets):
-            self._save_form_to_model(self.current_selected_row)
-
-    def _on_input_name_changed(self, text: str):
-        if 0 <= self.current_selected_row < len(self.row_widgets):
-            self.row_widgets[self.current_selected_row]["name"] = text
-            item = self.table.item(self.current_selected_row, 1)
-            if item:
-                item.setText(text)
-
-    def _on_combo_checkpoint_changed(self, text: str):
-        if 0 <= self.current_selected_row < len(self.row_widgets):
-            self.row_widgets[self.current_selected_row]["checkpoint"] = text
-            item = self.table.item(self.current_selected_row, 2)
-            if item:
-                item.setText(text)
-        self._update_fp8_button_state()
-
-    def _on_table_cell_changed(self, cur_row: int, cur_col: int, prev_row: int, prev_col: int):
-        if cur_row != prev_row and cur_row >= 0:
-            if 0 <= prev_row < len(self.row_widgets):
-                self._save_form_to_model(prev_row)
-            self.current_selected_row = cur_row
-            self._load_model_to_form(cur_row)
-
-    def _on_is_default_toggled(self, checked: bool):
-        if checked and 0 <= self.current_selected_row < len(self.row_widgets):
-            for idx, other_r in enumerate(self.row_widgets):
-                if idx != self.current_selected_row:
-                    other_r["is_default"] = False
-
-    def _on_input_guidance_changed(self):
-        text = self.input_guidance.toPlainText()
-        max_len = 160
-        max_tags = 8
-        trimmed = False
-
-        if len(text) > max_len:
-            text = text[:max_len]
-            trimmed = True
-
-        if "," in text:
-            parts = text.split(",")
-            non_empty_tags = [p for p in parts if p.strip()]
-            if len(non_empty_tags) > max_tags:
-                count = 0
-                idx_cut = len(parts)
-                for i, p in enumerate(parts):
-                    if p.strip():
-                        count += 1
-                        if count == max_tags:
-                            idx_cut = i + 1
-                            break
-                text = ",".join(parts[:idx_cut])
-                trimmed = True
-
-        if trimmed:
-            cursor = self.input_guidance.textCursor()
-            pos = cursor.position()
-            self.input_guidance.blockSignals(True)
-            self.input_guidance.setPlainText(text)
-            cursor.setPosition(min(pos, len(text)))
-            self.input_guidance.setTextCursor(cursor)
-            self.input_guidance.blockSignals(False)
-
-    def _save_form_to_model(self, row_idx: int):
-        if row_idx < 0 or row_idx >= len(self.row_widgets):
-            return
-        r = self.row_widgets[row_idx]
-        r["name"] = self.input_name.text().strip()
-        r["checkpoint"] = self.combo_checkpoint.currentText().strip()
-        r["routing_description"] = self.input_desc.toPlainText().strip()
-        guidance_val = self.input_guidance.toPlainText().strip()[:160]
-        if "," in guidance_val:
-            g_parts = [t.strip() for t in guidance_val.split(",") if t.strip()][:8]
-            guidance_val = ", ".join(g_parts)
-        r["llm_guidance"] = guidance_val
-        r["negative_prompt"] = self.input_negative_prompt.toPlainText().strip()
-
-        is_default = self.chk_is_default.isChecked()
-        raw_triggers = [t.strip() for t in self.edit_style_triggers.text().split(",") if t.strip()]
-        r["is_default"] = is_default
-        r["style_triggers"] = raw_triggers
-
-        if is_default:
-            for idx, other_r in enumerate(self.row_widgets):
-                if idx != row_idx:
-                    other_r["is_default"] = False
-
-        arch = "sdxl" if self.combo_arch.currentText().startswith("SDXL") else "sd15"
-        r["architecture"] = arch
-
-        existing_pipe = dict(r.get("pipeline", {}))
-        r["pipeline"] = {
-            **existing_pipe,
-            "architecture": arch,
-            "sampler": self.combo_sampler.currentText(),
-            "scheduler": self.combo_scheduler.currentText(),
-            "steps": self.spin_steps.value(),
-            "cfg_scale": round(self.spin_cfg.value(), 1),
-            "clip_skip": self.spin_clip_skip.value(),
-            "hires_upscaler": self.combo_upscaler.currentText(),
-            "hires_denoise": round(self.spin_hires_denoise.value(), 2),
-            "enable_hr": self.switch_enable_hr.isChecked(),
-            "enable_adetailer": r.get("pipeline", {}).get("enable_adetailer", True),
-            "negative_prompt": self.input_negative_prompt.toPlainText().strip()
-        }
-
-    def _open_adetailer_dialog(self):
-        if self.current_selected_row < 0 or self.current_selected_row >= len(self.row_widgets):
-            return
-        
-        target_model = self.row_widgets[self.current_selected_row]
-        pipe = target_model.setdefault("pipeline", {})
-        if self.current_selected_row < len(self.models):
-            self.models[self.current_selected_row].setdefault("pipeline", pipe)
-        is_xl = "xl" in self.combo_arch.currentText().lower()
-
-        dialog = ADetailerSettingsDialog(pipe, is_xl=is_xl, parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Обновляем словарь pipeline выбранной модели
-            pipe.update(dialog.result_params)
-            if self.current_selected_row < len(self.models):
-                self.models[self.current_selected_row]["pipeline"].update(dialog.result_params)
-            self._update_ad_status_label(pipe)
-            self._on_param_modified()
-
-    def _update_ad_status_label(self, pipe: dict):
-        if not pipe.get("enable_adetailer", True):
-            self.lbl_ad_status.setText("ВЫКЛ")
-            self.lbl_ad_status.setStyleSheet("color: #94A3B8;")
-        else:
-            face_s = pipe.get("adetailer_face_model", "v8m").replace("face_yolo", "").replace(".pt", "")
-            hands_on = pipe.get("adetailer_hands_enabled", True)
-            hand_s = pipe.get("adetailer_hands_model", "v9c").replace("hand_yolo", "").replace(".pt", "") if hands_on else "off"
-            self.lbl_ad_status.setText(f"ВКЛ [{face_s}/{hand_s}]")
-            self.lbl_ad_status.setStyleSheet("color: #00F0FF; font-weight: bold;")
-
-    def _load_model_to_form(self, row_idx: int):
-        if row_idx < 0 or row_idx >= len(self.row_widgets):
-            return
-        r = self.row_widgets[row_idx]
-
-        self.input_name.blockSignals(True)
-        self.combo_checkpoint.blockSignals(True)
-        self.combo_arch.blockSignals(True)
-        self.combo_scheduler.blockSignals(True)
-        self.combo_presets.blockSignals(True)
-        self.combo_sampler.blockSignals(True)
-        self.spin_steps.blockSignals(True)
-        self.slider_steps.blockSignals(True)
-        self.spin_cfg.blockSignals(True)
-        self.slider_cfg.blockSignals(True)
-        self.spin_clip_skip.blockSignals(True)
-        self.slider_clip_skip.blockSignals(True)
-        self.combo_upscaler.blockSignals(True)
-        self.spin_hires_denoise.blockSignals(True)
-        self.slider_hires_denoise.blockSignals(True)
-        self.switch_enable_hr.blockSignals(True)
-        self.input_negative_prompt.blockSignals(True)
-        self.input_desc.blockSignals(True)
-        self.input_guidance.blockSignals(True)
-        self.chk_is_default.blockSignals(True)
-        self.edit_style_triggers.blockSignals(True)
-
-        self.input_name.setText(r.get("name", ""))
-
-        ckpt = r.get("checkpoint", "").strip()
-        idx_c = self.combo_checkpoint.findText(ckpt)
-
-        # Фоллбэк 1: поиск эквивалентного чекпоинта по нормализованному стэму (например, FP8-версии)
-        if idx_c == -1 and ckpt:
-            target_norm = self._normalize_checkpoint_stem(ckpt)
-            for i in range(self.combo_checkpoint.count()):
-                item_norm = self._normalize_checkpoint_stem(self.combo_checkpoint.itemText(i))
-                if target_norm and target_norm == item_norm:
-                    idx_c = i
-                    break
-
-        # Фоллбэк 2: если файла нет в списке Forge, принудительно добавляем его,
-        # чтобы currentIndex гарантированно указывал на текущую модель, а не на предыдущую
-        if idx_c == -1 and ckpt:
-            self.combo_checkpoint.addItem(ckpt)
-            idx_c = self.combo_checkpoint.findText(ckpt)
-
-        if idx_c >= 0:
-            self.combo_checkpoint.setCurrentIndex(idx_c)
-        else:
-            self.combo_checkpoint.setEditText(ckpt)
-
-        pipe = r.get("pipeline", {})
-
-        # Архитектура с фоллбэком на эвристику is_xl_model
-        arch_raw = r.get("architecture") or pipe.get("architecture") or ("sdxl" if is_xl_model(r) else "sd15")
-        if str(arch_raw).lower().startswith("sdxl") or "pony" in str(arch_raw).lower() or (not r.get("architecture") and is_xl_model(r)):
-            idx_arch = self.combo_arch.findText("SDXL / Pony")
-        else:
-            idx_arch = self.combo_arch.findText("SD 1.5")
-        if idx_arch >= 0:
-            self.combo_arch.setCurrentIndex(idx_arch)
-
-        # Планировщик
-        sched_val = pipe.get("scheduler", "Karras")
-        idx_sc = self.combo_scheduler.findText(sched_val)
-        if idx_sc >= 0:
-            self.combo_scheduler.setCurrentIndex(idx_sc)
-        elif sched_val:
-            self.combo_scheduler.addItem(sched_val)
-            self.combo_scheduler.setCurrentText(sched_val)
-
-        # Семплер
-        idx_s = self.combo_sampler.findText(pipe.get("sampler", "DPM++ 2M Karras"))
-        if idx_s >= 0:
-            self.combo_sampler.setCurrentIndex(idx_s)
-        elif pipe.get("sampler"):
-            self.combo_sampler.addItem(pipe["sampler"])
-            self.combo_sampler.setCurrentText(pipe["sampler"])
-
-        steps_val = pipe.get("steps", 25)
-        self.spin_steps.setValue(steps_val)
-        self.slider_steps.setValue(steps_val)
-
-        cfg_val = pipe.get("cfg_scale", 6.0)
-        self.spin_cfg.setValue(cfg_val)
-        self.slider_cfg.setValue(int(round(cfg_val * 10)))
-
-        clip_val = pipe.get("clip_skip", 1)
-        self.spin_clip_skip.setValue(clip_val)
-        self.slider_clip_skip.setValue(clip_val)
-
-        idx_u = self.combo_upscaler.findText(pipe.get("hires_upscaler", "4x-UltraSharp"))
-        if idx_u >= 0:
-            self.combo_upscaler.setCurrentIndex(idx_u)
-        elif pipe.get("hires_upscaler"):
-            self.combo_upscaler.addItem(pipe["hires_upscaler"])
-            self.combo_upscaler.setCurrentText(pipe["hires_upscaler"])
-
-        denoise_val = pipe.get("hires_denoise", 0.32)
-        self.spin_hires_denoise.setValue(denoise_val)
-        self.slider_hires_denoise.setValue(int(round(denoise_val * 100)))
-
-        # Тумблеры Hires.fix и ADetailer
-        enable_hr = bool(pipe.get("enable_hr", False))
-        self.switch_enable_hr.setChecked(enable_hr)
-
-        enable_ad = bool(pipe.get("enable_adetailer", True))
-        self._update_ad_status_label(pipe)
-
-        # Определение соответствия пресету
-        curr_arch = self.combo_arch.currentText()
-        curr_samp = self.combo_sampler.currentText()
-        curr_sched = self.combo_scheduler.currentText()
-        if (curr_arch.startswith("SDXL") and
-            curr_samp == "LCM" and
-            curr_sched == "Karras" and
-            steps_val == 10 and
-            abs(cfg_val - 1.3) < 0.05 and
-            clip_val == 2 and
-            not enable_hr and
-            not enable_ad):
-            self.combo_presets.setCurrentIndex(1)
-        elif (curr_arch.startswith("SDXL") and
-              curr_samp == "DPM++ 2M" and
-              curr_sched == "Karras" and
-              steps_val == 28 and
-              abs(cfg_val - 5.0) < 0.05 and
-              clip_val == 2 and
-              not enable_hr and
-              not enable_ad):
-            self.combo_presets.setCurrentIndex(2)
-        elif (not curr_arch.startswith("SDXL") and
-              curr_samp == "DPM++ SDE Karras" and
-              curr_sched == "Karras" and
-              steps_val == 25 and
-              abs(cfg_val - 5.5) < 0.05 and
-              clip_val == 1 and
-              enable_hr and
-              enable_ad):
-            self.combo_presets.setCurrentIndex(3)
-        else:
-            self.combo_presets.setCurrentIndex(0)
-
-        neg = pipe.get("negative_prompt", r.get("negative_prompt", ""))
-        self.input_negative_prompt.setPlainText(neg)
-
-        self.input_desc.setPlainText(r.get("routing_description", ""))
-        self.input_guidance.setPlainText(r.get("llm_guidance", ""))
-
-        self.chk_is_default.setChecked(bool(r.get("is_default", False)))
-        triggers = r.get("style_triggers", [])
-        self.edit_style_triggers.setText(", ".join(triggers) if isinstance(triggers, list) else str(triggers))
-
-        self.input_name.blockSignals(False)
-        self.combo_checkpoint.blockSignals(False)
-        self.combo_arch.blockSignals(False)
-        self.combo_scheduler.blockSignals(False)
-        self.combo_presets.blockSignals(False)
-        self.combo_sampler.blockSignals(False)
-        self.spin_steps.blockSignals(False)
-        self.slider_steps.blockSignals(False)
-        self.spin_cfg.blockSignals(False)
-        self.slider_cfg.blockSignals(False)
-        self.spin_clip_skip.blockSignals(False)
-        self.slider_clip_skip.blockSignals(False)
-        self.combo_upscaler.blockSignals(False)
-        self.spin_hires_denoise.blockSignals(False)
-        self.slider_hires_denoise.blockSignals(False)
-        self.switch_enable_hr.blockSignals(False)
-        self.input_negative_prompt.blockSignals(False)
-        self.input_desc.blockSignals(False)
-        self.input_guidance.blockSignals(False)
-        self.chk_is_default.blockSignals(False)
-        self.edit_style_triggers.blockSignals(False)
-        self._update_fp8_button_state()
-
-    _populate_form = _load_model_to_form
-
-    def _on_autofill_params_clicked(self):
-        """
-        Запрашивает параметры Civitai в неблокирующем QThread или выставляет Safe Defaults.
-        """
-        if self.current_selected_row < 0 or self.current_selected_row >= len(self.row_widgets):
-            QMessageBox.warning(self, "Внимание", "Сначала выберите модель в списке.")
-            return
-
-        checkpoint = self.combo_checkpoint.currentText().strip()
-        if not checkpoint:
-            QMessageBox.warning(self, "Внимание", "Сначала выберите файл чекпоинта модели.")
-            return
-
-        # Фиксируем целевую строку для защиты от рассинхрона при асинхронном ответе
-        self._autofill_target_row = self.current_selected_row
-
-        self.btn_autofill_params.setEnabled(False)
-        self.btn_autofill_params.setText("Опрос Civitai...")
-        self.btn_autofill_params.setIcon(FIF.SYNC)
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-
-        self._civitai_worker = CivitaiParamsWorker(checkpoint, parent=self)
-        self._civitai_worker.params_ready.connect(self._on_civitai_params_ready)
-        self._civitai_worker.error_occurred.connect(self._on_civitai_params_error)
-        self._civitai_worker.start()
-
-    def _on_civitai_params_ready(self, params: dict):
-        try:
-            target_row = getattr(self, "_autofill_target_row", self.current_selected_row)
-            if target_row < 0 or target_row >= len(self.row_widgets):
-                return
-
-            checkpoint_name = self.combo_checkpoint.currentText().strip() or "модели"
-            status = params.get("status", "default")
-
-            # 1. Если параметры НЕ найдены — спрашиваем пользователя через неоновый MessageBox
-            if status != "success":
-                msg_text = (
-                    f"Не удалось обнаружить параметры для модели «{checkpoint_name}» на Civitai.\n\n"
-                    "Установить рекомендуемые настройки по умолчанию?"
-                )
-                dialog = MessageBox("Civitai: Параметры не найдены", msg_text, self)
-                dialog.yesButton.setText("Да")
-                dialog.cancelButton.setText("Нет")
-
-                if not dialog.exec():
-                    # Пользователь нажал 'Нет' -> оставляем текущие параметры без изменений
-                    InfoBar.warning(
-                        title="Отменено",
-                        content="Текущие параметры модели оставлены без изменений.",
-                        parent=self,
-                        position=InfoBarPosition.TOP_RIGHT,
-                        duration=3500
-                    )
-                    return
-
-            # 2. Подставляем параметры (найденные или дефолтные) в интерфейс
-            is_active = (target_row == self.current_selected_row)
-            if is_active:
-                widgets_to_block = [
-                    self.combo_sampler, self.spin_steps, self.slider_steps,
-                    self.spin_cfg, self.slider_cfg, self.spin_clip_skip,
-                    self.slider_clip_skip, self.combo_upscaler,
-                    self.spin_hires_denoise, self.slider_hires_denoise,
-                    self.input_negative_prompt
-                ]
-                for w in widgets_to_block:
-                    w.blockSignals(True)
-
-                idx_s = self.combo_sampler.findText(params.get("sampler", "DPM++ 2M Karras"))
-                if idx_s >= 0:
-                    self.combo_sampler.setCurrentIndex(idx_s)
-                elif params.get("sampler"):
-                    self.combo_sampler.addItem(params["sampler"])
-                    self.combo_sampler.setCurrentText(params["sampler"])
-
-                steps_val = params.get("steps", 25)
-                self.spin_steps.setValue(steps_val)
-                self.slider_steps.setValue(steps_val)
-
-                cfg_val = params.get("cfg_scale", 6.0)
-                self.spin_cfg.setValue(cfg_val)
-                self.slider_cfg.setValue(int(round(cfg_val * 10)))
-
-                clip_val = params.get("clip_skip", 1)
-                self.spin_clip_skip.setValue(clip_val)
-                self.slider_clip_skip.setValue(clip_val)
-
-                idx_u = self.combo_upscaler.findText(params.get("hires_upscaler", "4x-UltraSharp"))
-                if idx_u >= 0:
-                    self.combo_upscaler.setCurrentIndex(idx_u)
-                elif params.get("hires_upscaler"):
-                    self.combo_upscaler.addItem(params["hires_upscaler"])
-                    self.combo_upscaler.setCurrentText(params["hires_upscaler"])
-
-                denoise_val = params.get("hires_denoise", 0.32)
-                self.spin_hires_denoise.setValue(denoise_val)
-                self.slider_hires_denoise.setValue(int(round(denoise_val * 100)))
-
-                if params.get("negative_prompt"):
-                    self.input_negative_prompt.setPlainText(params["negative_prompt"])
-
-                for w in widgets_to_block:
-                    w.blockSignals(False)
-
-                # Синхронизируем оперативную модель строки (для отображения в бейджах/таблице)
-                self._save_form_to_model(target_row)
-            else:
-                r = self.row_widgets[target_row]
-                pipe = r.setdefault("pipeline", {})
-                for k in ("sampler", "steps", "cfg_scale", "clip_skip", "hires_upscaler", "hires_denoise"):
-                    if k in params:
-                        pipe[k] = params[k]
-                if params.get("negative_prompt"):
-                    pipe["negative_prompt"] = params["negative_prompt"]
-                    r["negative_prompt"] = params["negative_prompt"]
-
-            # 3. Информируем пользователя (БЕЗ сохранения в JSON на диск!)
-            if status == "success":
-                msg = params.get("message", "Параметры успешно получены из Civitai.")
-                InfoBar.success(
-                    title="Параметры Civitai загружены",
-                    content=f"{msg}\nНажмите «Сохранить», чтобы зафиксировать изменения.",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=5000
-                )
-            else:
-                InfoBar.info(
-                    title="Параметры по умолчанию",
-                    content="В форму подставлены стандартные настройки. Нажмите «Сохранить», чтобы зафиксировать.",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=4500
-                )
-
-        except Exception as e:
-            logger.error(f"[ModelsManagerDialog] Сбой автонастройки: {e}", exc_info=True)
-            InfoBar.error(
-                title="Ошибка автонастройки",
-                content=f"Произошла ошибка: {e}",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=4000
-            )
-        finally:
-            self._civitai_worker = None
-            QApplication.restoreOverrideCursor()
-            self.btn_autofill_params.setEnabled(True)
-            self.btn_autofill_params.setText("Автонастройка (Civitai)")
-            self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
-
-    def _on_civitai_params_error(self, err_msg: str):
-        try:
-            logger.error(f"[ModelsManagerDialog] Сбой автонастройки: {err_msg}")
-            InfoBar.error(
-                title="Ошибка сети Civitai",
-                content=f"Не удалось получить данные с сервера Civitai: {err_msg}",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=4500
-            )
-        finally:
-            self._civitai_worker = None
-            QApplication.restoreOverrideCursor()
-            self.btn_autofill_params.setEnabled(True)
-            self.btn_autofill_params.setText("Автонастройка (Civitai)")
-            self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
-
-    # ---------------- FP8 Conversion & Helpers ---------------- #
-    def _resolve_converter_script(self) -> Optional[Path]:
-        """
-        Ищет скрипт конвертации SDXL в FP8 по кандидатам относительно корня проекта.
-        """
-        from config import BASE_DIR
-        candidates = [
-            BASE_DIR / "models" / "convert_sdxl_to_fp8.py",
-            BASE_DIR / "scripts" / "convert_sdxl_to_fp8.py"
-        ]
-        for c in candidates:
-            if c.is_file():
-                return c.resolve()
-        return None
-
-    @staticmethod
-    def _verify_python(py_path: str) -> bool:
-        if not py_path or not Path(py_path).is_file():
-            return False
-        try:
-            res = subprocess.run(
-                [str(py_path), "-c", "import numpy; print('OK')"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            return res.returncode == 0 and "OK" in res.stdout
-        except Exception:
-            return False
-
-    def _resolve_torch_python(self) -> Optional[str]:
-        if getattr(self, "_cached_torch_python", None) and Path(self._cached_torch_python).is_file():
-            return self._cached_torch_python
-        import sys
-        if self._verify_python(sys.executable):
-            self._cached_torch_python = str(Path(sys.executable).resolve())
-            return self._cached_torch_python
-        """
-        Динамически определяет путь к интерпретатору с PyTorch и safetensors:
-        - Проверяет forge_launcher.bat / launcher из настроек Forge.
-        - Проверяет sys.executable.
-        - Если не найдено — запрашивает через QFileDialog.
-        """
-        import sys
-        from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR
-
-        # 1. Поиск в окружении Forge
-        candidates: List[Path] = []
-        if FORGE_LAUNCHER_PATH.exists():
-            launcher_dir = FORGE_LAUNCHER_PATH.parent
-            candidates.extend([
-                launcher_dir / "webui_forge_cu121_torch231" / "system" / "python" / "python.exe",
-                launcher_dir / "system" / "python" / "python.exe",
-                launcher_dir / "python" / "python.exe",
-                launcher_dir / "venv" / "Scripts" / "python.exe",
-            ])
-            try:
-                content = FORGE_LAUNCHER_PATH.read_text(encoding="utf-8", errors="ignore")
-                for line in content.splitlines():
-                    if "set PYTHON=" in line:
-                        val = line.split("set PYTHON=", 1)[1].strip().strip('"')
-                        val_resolved = val.replace("%SYSTEM%", str(launcher_dir / "webui_forge_cu121_torch231" / "system"))
-                        val_resolved = val_resolved.replace("%FORGE%", str(launcher_dir / "webui_forge_cu121_torch231"))
-                        val_resolved = val_resolved.replace("%ROOT%", str(launcher_dir))
-                        val_resolved = val_resolved.replace("%~dp0", str(launcher_dir) + "\\")
-                        candidates.insert(0, Path(val_resolved))
-            except Exception as e:
-                logger.debug(f"Не удалось распарсить {FORGE_LAUNCHER_PATH}: {e}")
-
-        candidates.extend([
-            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "system" / "python" / "python.exe",
-            FORGE_ROOT_DIR / "system" / "python" / "python.exe",
-            FORGE_ROOT_DIR / "python" / "python.exe",
-            FORGE_ROOT_DIR / "venv" / "Scripts" / "python.exe",
-        ])
-
-        for c in candidates:
-            if c.is_file() and self._verify_python(str(c)):
-                self._cached_torch_python = str(c.resolve())
-                return self._cached_torch_python
-
-        # 2. Проверка текущего sys.executable
-        if self._verify_python(sys.executable):
-            return sys.executable
-
-        # 3. Диалог ручного выбора пользователем
-        from PyQt6.QtWidgets import QFileDialog
-        chosen, _ = QFileDialog.getOpenFileName(
-            self,
-            "Выберите интерпретатор Python с PyTorch и safetensors",
-            str(FORGE_ROOT_DIR if FORGE_ROOT_DIR.exists() else Path.home()),
-            "Python Executable (python.exe);;All Files (*.*)"
-        )
-        if chosen and self._verify_python(chosen):
-            return chosen
-
-        return None
-
-    def _resolve_selected_checkpoint_path(self, ckpt_name: str) -> Optional[Path]:
-        """
-        Находит полный путь к чекпоинту: сначала мгновенно на локальном диске (0 мс),
-        затем через кеш installed_checkpoints без блокировки GUI.
-        """
-        if not ckpt_name:
-            return None
-
-        p_raw = Path(ckpt_name)
-        if p_raw.is_absolute() and p_raw.is_file():
-            return p_raw.resolve()
-
-        clean_name = p_raw.name.lower()
-
-        # 0. Мгновенная локальная проверка на диске (0 мс, исключает сетевые задержки HTTP)
-        from config import FORGE_ROOT_DIR
-        local_dirs = [
-            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion",
-            FORGE_ROOT_DIR / "webui" / "models" / "Stable-diffusion",
-            FORGE_ROOT_DIR / "models" / "Stable-diffusion",
-            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
-        ]
-        for ld in local_dirs:
-            if ld and ld.is_dir():
-                direct_file = ld / p_raw.name
-                if direct_file.is_file():
-                    return direct_file.resolve()
-
-        # 1. Запрос списка установленных чекпоинтов через ForgeClient
-        try:
-            installed = self.forge_client.get_installed_checkpoints() or []
-        except Exception:
-            installed = []
-
-        for item in installed:
-            p = Path(item)
-            if p.name.lower() == clean_name:
-                if p.is_absolute() and p.is_file():
-                    return p
-                elif p.is_file():
-                    return p.resolve()
-
-        # 2. Поиск в моделях Forge API (get_models)
-        try:
-            raw_models = self.forge_client.get_models() or []
-        except Exception:
-            raw_models = []
-
-        for item in raw_models:
-            if isinstance(item, dict):
-                fn = item.get("filename")
-                if fn:
-                    p = Path(fn)
-                    if p.name.lower() == clean_name and p.is_file():
-                        return p
-
-        # 3. Поиск по локальным каталогам Forge
-        from config import FORGE_ROOT_DIR, BASE_DIR
-        local_dirs = [
-            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion",
-            FORGE_ROOT_DIR / "webui" / "models" / "Stable-diffusion",
-            FORGE_ROOT_DIR / "models" / "Stable-diffusion",
-            BASE_DIR / "models"
-        ]
-        for d in local_dirs:
-            candidate = d / Path(ckpt_name).name
-            if candidate.is_file():
-                return candidate.resolve()
-
-        # 4. Если сам ckpt_name является валидным файлом
-        p_raw = Path(ckpt_name)
-        if p_raw.is_absolute() and p_raw.is_file():
-            return p_raw.resolve()
-
-        return None
-
-    def _update_fp8_button_state(self):
-        """
-        Обновляет доступность кнопки конвертации FP8 (O(1) без блокирующего сетевого и дискового I/O).
-        Кнопка активна, только если выбранный чекпоинт является файлом .safetensors
-        и еще не содержит явных маркеров квантования.
-        """
-        if not hasattr(self, "btn_convert_fp8"):
-            return
-        if self._fp8_worker is not None and self._fp8_worker.isRunning():
-            self.btn_convert_fp8.setEnabled(False)
-            return
-
-        ckpt = self.combo_checkpoint.currentText().strip()
-        is_safetensors = ckpt.lower().endswith(".safetensors")
-        is_already_fp8 = any(k in ckpt.lower() for k in ("_fp8", "-fp8", "e4m3fn", "_quant"))
-
-        self.btn_convert_fp8.setEnabled(bool(is_safetensors and not is_already_fp8))
-        self.btn_convert_fp8.setToolTip("Конвертирует UNet модели SDXL в нативный FP8. Освобождает 4 ГБ VRAM.")
-
-    def _on_start_fp8_conversion(self):
-        """
-        Запускает асинхронное сжатие выбранного чекпоинта SDXL в нативный FP8.
-        """
-        if self._fp8_worker is not None and self._fp8_worker.isRunning():
-            return
-
-        ckpt_name = self.combo_checkpoint.currentText().strip()
-        if not ckpt_name:
-            InfoBar.warning("Внимание", "Сначала выберите файл чекпоинта.", parent=self, position=InfoBarPosition.TOP)
-            return
-
-        # 1. Разрешение скрипта конвертера
-        script_path = self._resolve_converter_script()
-        if not script_path:
-            InfoBar.error("Ошибка", "Скрипт convert_sdxl_to_fp8.py не найден в папках models/ или scripts/.", parent=self, position=InfoBarPosition.TOP)
-            return
-
-        # 2. Разрешение пути к исходному файлу чекпоинта
-        ckpt_path = self._resolve_selected_checkpoint_path(ckpt_name)
-        if not ckpt_path or not ckpt_path.is_file():
-            InfoBar.error("Ошибка", f"Файл чекпоинта '{ckpt_name}' не найден на диске.", parent=self, position=InfoBarPosition.TOP)
-            return
-
-        # Pre-flight Size Guard: проверка на случай случайного повторного сжатия уже компактной модели
-        try:
-            file_size_gb = ckpt_path.stat().st_size / (1024 ** 3)
-            if file_size_gb < 4.5:
-                reply = QMessageBox.question(
-                    self,
-                    "Модель уже оптимизирована",
-                    f"Чекпоинт '{ckpt_name}' уже имеет компактный размер ({file_size_gb:.1f} ГБ, типичный SDXL FP16 ~6.6 ГБ).\n\n"
-                    f"Похоже, модель уже сжата в FP8.\nВы действительно хотите запустить сжатие повторно?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
-        except Exception as e:
-            logger.debug(f"Pre-flight size check error: {e}")
-
-        # 3. Разрешение интерпретатора Python с PyTorch
-        python_exe = self._resolve_torch_python()
-        if not python_exe:
-            InfoBar.warning("Внимание", "Не найден интерпретатор Python с модулями PyTorch и safetensors.", parent=self, position=InfoBarPosition.TOP)
-            return
-
-        # Фиксация контекста задачи конвертации
-        self._fp8_target_row = self.current_selected_row
-        self._fp8_source_path = ckpt_path
-        self._fp8_source_name = ckpt_name
-
-        # Блокировка UI для исключения гонок фокуса и случайных переключений
-        self.btn_convert_fp8.setEnabled(False)
-        self.btn_convert_fp8.setText("⚡ Сжатие в процессе...")
-        self.combo_checkpoint.setEnabled(False)
-        self.table.setEnabled(False)
-        if hasattr(self, "btn_add_model"):
-            self.btn_add_model.setEnabled(False)
-        if hasattr(self, "btn_remove_model"):
-            self.btn_remove_model.setEnabled(False)
-        self.progress_fp8.setVisible(True)
-        self.progress_fp8.setRange(0, 0)
-        self.lbl_fp8_status.setVisible(True)
-        self.lbl_fp8_status.setText("Запуск конвертера FP8 (e4m3fn)...")
-        QApplication.processEvents()
-
-        self._fp8_worker = FP8ConvertWorker(python_exe, script_path, ckpt_path, parent=self)
-        self._fp8_worker.progress_updated.connect(self._on_fp8_progress)
-        self._fp8_worker.conversion_finished.connect(self._on_fp8_finished)
-        self._fp8_worker.conversion_failed.connect(self._on_fp8_failed)
-        self._fp8_worker.start()
-
-    def _on_fp8_progress(self, msg: str):
-        """Отображает текущий прогресс конвертации в UI."""
-        self.lbl_fp8_status.setText(msg)
-        match = re.search(r"(\d+)/(\d+)", msg)
-        if match:
-            cur, total = int(match.group(1)), int(match.group(2))
-            self.progress_fp8.setRange(0, total)
-            self.progress_fp8.setValue(cur)
-
-    def _on_fp8_finished(self, new_file_path: str):
-        """Обрабатывает успешное завершение конвертации в FP8 с поддержкой Atomic In-Place Swap."""
-        new_path = Path(new_file_path)
-        new_name = new_path.name
-
-        source_path = getattr(self, "_fp8_source_path", None)
-        target_row = getattr(self, "_fp8_target_row", self.current_selected_row)
-        if not source_path:
-            orig_name = getattr(self, "_fp8_source_name", "") or self.combo_checkpoint.currentText().strip()
-            source_path = self._resolve_selected_checkpoint_path(orig_name)
-
-        # 1. Валидация целостности созданного FP8 файла
-        if not (new_path.is_file() and new_path.stat().st_size > 0):
-            logger.error(f"[FP8] Сжатый файл отсутствует или пуст: {new_path}")
-            self._on_fp8_failed("Созданный файл поврежден или имеет нулевой размер.")
-            return
-
-        final_checkpoint_name = new_name
-
-        # 2. Обработка режима перезаписи (Atomic In-Place Swap) или сохранения исходника
-        if self.chk_delete_source.isChecked() and source_path and source_path.is_file():
-            # Security Guard: Проверка родства имен перед удалением (Name Affinity Guard)
-            src_norm = self._normalize_checkpoint_stem(source_path.name)
-            new_norm = self._normalize_checkpoint_stem(new_path.name)
-            if src_norm != new_norm:
-                logger.critical(
-                    f"[FP8 Security Guard] ЗАПРЕЩЕНО удаление/замена: имена стэмов не совпадают! "
-                    f"Исходник: '{source_path.name}' ({src_norm}) != Новый: '{new_path.name}' ({new_norm})"
-                )
-                InfoBar.error(
-                    "Ошибка безопасности",
-                    "Обнаружено несоответствие имен исходного и сжатого файла. Исходник сохранен.",
-                    parent=self,
-                    position=InfoBarPosition.TOP
-                )
-            else:
-                # Безопасный Atomic In-Place Swap: удаляем старый и ставим новый на его место с исходным именем
-                try:
-                    deleted = False
-                    try:
-                        import send2trash
-                        send2trash.send2trash(str(source_path))
-                        deleted = True
-                    except (ImportError, Exception):
-                        try:
-                            os.remove(source_path)
-                            deleted = True
-                        except Exception as e:
-                            logger.warning(f"Не удалось удалить исходный файл {source_path}: {e}")
-
-                    if deleted:
-                        if new_path.resolve() != source_path.resolve():
-                            import os as _os
-                            _os.replace(new_path, source_path)
-                            final_checkpoint_name = source_path.name
-                            logger.info(f"[FP8] Файл успешно заменен с сохранением исходного имени: {final_checkpoint_name}")
-                except Exception as e:
-                    logger.error(f"[FP8] Ошибка при замене исходного файла: {e}", exc_info=True)
-
-        # 3. Вызов refresh_checkpoints в Forge
-        try:
-            self.forge_client.refresh_checkpoints()
-        except Exception as e:
-            logger.debug(f"refresh_checkpoints error: {e}")
-
-        # 4. Обновление списков доступных чекпоинтов
-        if final_checkpoint_name not in self.available_checkpoints:
-            self.available_checkpoints.append(final_checkpoint_name)
-
-        self.combo_checkpoint.blockSignals(True)
-        if self.combo_checkpoint.findText(final_checkpoint_name) == -1:
-            self.combo_checkpoint.addItem(final_checkpoint_name)
-        idx_final = self.combo_checkpoint.findText(final_checkpoint_name)
-        if idx_final >= 0:
-            self.combo_checkpoint.setCurrentIndex(idx_final)
-        else:
-            self.combo_checkpoint.setEditText(final_checkpoint_name)
-        self.combo_checkpoint.blockSignals(False)
-
-        # 5. Обновление записи строго в строке target_row (защита от рассинхрона фокуса)
-        if 0 <= target_row < len(self.row_widgets):
-            r = self.row_widgets[target_row]
-            r["checkpoint"] = final_checkpoint_name
-            item = self.table.item(target_row, 2)
-            if item:
-                item.setText(final_checkpoint_name)
-
-        # Фиксация изменений в data/art_director_models.json
-        if hasattr(self, "_save_models_to_json"):
-            self._save_models_to_json()
-
-        # 6. Автоматическое применение пресета SDXL (Turbo или Classic)
-        turbo_markers = ("turbo", "dmd", "lightning", "hyper", "lcm")
-        is_turbo = any(m in final_checkpoint_name.lower() or m in self.input_name.text().lower() for m in turbo_markers)
-        if is_turbo:
-            self.combo_presets.setCurrentIndex(1)
-        else:
-            self.combo_presets.setCurrentIndex(2)
-
-        # 7. Восстановление состояния UI и разблокировка контролов
-        self.table.setEnabled(True)
-        self.combo_checkpoint.setEnabled(True)
-        if hasattr(self, "btn_add_model"):
-            self.btn_add_model.setEnabled(True)
-        if hasattr(self, "btn_remove_model"):
-            self.btn_remove_model.setEnabled(True)
-        self.btn_convert_fp8.setText("⚡ Сжать в FP8 (e4m3fn)")
-        self._update_fp8_button_state()
-        self.progress_fp8.setVisible(False)
-        self.lbl_fp8_status.setVisible(False)
-        self._fp8_worker = None
-        self._fp8_source_path = None
-        self._fp8_source_name = ""
-        self._fp8_target_row = -1
-
-        InfoBar.success(
-            "Конвертация завершена",
-            f"Чекпоинт успешно оптимизирован в FP8: {final_checkpoint_name}",
-            parent=self,
-            position=InfoBarPosition.TOP,
-            duration=4000
-        )
-
-    def _on_fp8_failed(self, err_msg: str):
-        """Обрабатывает сбой конвертации в FP8 с полной разблокировкой UI."""
-        self.table.setEnabled(True)
-        self.combo_checkpoint.setEnabled(True)
-        if hasattr(self, "btn_add_model"):
-            self.btn_add_model.setEnabled(True)
-        if hasattr(self, "btn_remove_model"):
-            self.btn_remove_model.setEnabled(True)
-        self.btn_convert_fp8.setText("⚡ Сжать в FP8 (e4m3fn)")
-        self._update_fp8_button_state()
-        self.progress_fp8.setVisible(False)
-        self.lbl_fp8_status.setVisible(False)
-        self._fp8_worker = None
-        self._fp8_source_path = None
-        self._fp8_source_name = ""
-        self._fp8_target_row = -1
-
-        logger.error(f"[ModelsManagerDialog] Сбой сжатия FP8:\n{err_msg}")
-        try:
-            from qfluentwidgets import MessageBox
-            w = MessageBox(
-                "Сбой сжатия FP8",
-                f"Не удалось сжать чекпоинт в FP8.\n\nДетали ошибки:\n{err_msg}\n\n(Полный лог сохранен в logs/neonroute.log)",
-                self
-            )
-            w.yesButton.setText("Закрыть")
-            w.cancelButton.setVisible(False)
-            w.exec()
-        except Exception:
-            InfoBar.error(
-                "Сбой сжатия FP8",
-                f"Ошибка: {err_msg}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=8000
-            )
-
-    def _start_forge_scan(self, silent: bool = False):
-        """Запускает фоновое сканирование Forge без блокировки главного потока интерфейса."""
-        if self._scan_worker is not None and self._scan_worker.isRunning():
-            return
-
-        self._scan_silent = silent
-        if not silent:
-            self.btn_refresh_forge.setEnabled(False)
-            self.btn_refresh_forge.setText("Опрос Forge...")
-            self.btn_refresh_forge.setIcon(FIF.SYNC)
-
-        self._scan_worker = ForgeScanWorker(self.forge_client, parent=self)
-        self._scan_worker.scan_completed.connect(self._on_forge_scan_completed)
-        self._scan_worker.start()
-
-    def _on_forge_scan_completed(self, raw_models: list, installed_list: list, upscalers: list):
-        if not getattr(self, "_scan_silent", True):
-            self.btn_refresh_forge.setEnabled(True)
-            self.btn_refresh_forge.setText("Сканировать Forge")
-            self.btn_refresh_forge.setIcon(FIF.SYNC)
-
-        # 1. Обновление списка апскейлеров новыми данными из Forge
-        if upscalers:
-            curr_up = self.combo_upscaler.currentText()
-            self.combo_upscaler.blockSignals(True)
-            for u in upscalers:
-                if self.combo_upscaler.findText(u) == -1:
-                    self.combo_upscaler.addItem(u)
-            idx_up = self.combo_upscaler.findText(curr_up)
-            if idx_up >= 0:
-                self.combo_upscaler.setCurrentIndex(idx_up)
-            self.combo_upscaler.blockSignals(False)
-
-        # 2. Сбор и сопоставление чекпоинтов
-        found_checkpoints: List[str] = []
-        if raw_models:
-            for item in raw_models:
-                if isinstance(item, dict):
-                    fn = item.get("filename")
-                    title = item.get("title")
-                    model_name = item.get("model_name")
-                    name = Path(fn).name if fn else (title or model_name)
-                    if name and name not in found_checkpoints:
-                        found_checkpoints.append(name)
-
-        if installed_list:
-            for cp in installed_list:
-                cp_name = Path(cp).name
-                if cp_name and cp_name not in found_checkpoints:
-                    found_checkpoints.append(cp_name)
-
-        if not found_checkpoints:
-            found_checkpoints = list(self.available_checkpoints)
-
-        self.available_checkpoints = found_checkpoints
-
-        # 3. Обновление комбобокса чекпоинтов в форме редактора
-        curr = self.combo_checkpoint.currentText().strip()
-        self.combo_checkpoint.blockSignals(True)
-        self.combo_checkpoint.clear()
-        for cp in self.available_checkpoints:
-            self.combo_checkpoint.addItem(cp)
-        if curr and self.combo_checkpoint.findText(curr) == -1:
-            self.combo_checkpoint.addItem(curr)
-        idx = self.combo_checkpoint.findText(curr)
-        if idx >= 0:
-            self.combo_checkpoint.setCurrentIndex(idx)
-        elif curr:
-            self.combo_checkpoint.setEditText(curr)
-        self.combo_checkpoint.blockSignals(False)
-
-        # 4. Авторегистрация новых чекпоинтов
-        existing_ckpts = {Path(r.get("checkpoint", "")).name.lower() for r in self.row_widgets}
-        new_added = 0
-        if raw_models or installed_list:
-            for cp in found_checkpoints:
-                cp_norm = self._normalize_checkpoint_stem(cp)
-
-                # Проверяем, есть ли уже модель с таким нормализованным именем в существующих карточках
-                matched_row = None
-                for r in self.row_widgets:
-                    existing_norm = self._normalize_checkpoint_stem(r.get("checkpoint", ""))
-                    existing_id_norm = self._normalize_checkpoint_stem(r.get("id", "").replace("auto_", ""))
-                    if cp_norm in (existing_norm, existing_id_norm):
-                        matched_row = r
-                        break
-
-                if matched_row is not None:
-                    # Модель уже существует в базе. Если на диске появился FP8 или актуальный файл,
-                    # тихо обновляем путь к чекпоинту без сброса пользовательских настроек (шаги, CFG, промпты)
-                    if matched_row.get("checkpoint") != cp:
-                        # Обновляем только если текущий файл физически отсутствует или cp является fp8-версией
-                        matched_row["checkpoint"] = cp
-                    continue
-
-                if Path(cp).name.lower() not in existing_ckpts:
-                    stem = Path(cp).stem
-                    is_xl = is_xl_model(cp)
-                    if is_xl:
-                        new_model_data = {
-                            "id": f"auto_{re.sub(r'[^a-zA-Z0-9_]', '_', stem.lower()).strip('_')}",
-                            "name": stem,
-                            "architecture": "sdxl",
-                            "checkpoint": cp,
-                            "routing_description": "Новая SDXL модель (требуется настройка описания для роутинга)",
-                            "llm_guidance": "",
-                            "negative_prompt": self._get_default_negative(cp, stem),
-                            "active": True,
-                            "pipeline": {
-                                "architecture": "sdxl",
-                                "sampler": "LCM",
-                                "scheduler": "Karras",
-                                "steps": 10,
-                                "cfg_scale": 1.3,
-                                "clip_skip": 2,
-                                "hires_upscaler": "4x-UltraSharp",
-                                "hires_denoise": 0.32,
-                                "enable_hr": False,
-                                "enable_adetailer": False,
-                                "negative_prompt": self._get_default_negative(cp, stem)
-                            }
-                        }
-                    else:
-                        new_model_data = {
-                            "id": f"auto_{re.sub(r'[^a-zA-Z0-9_]', '_', stem.lower()).strip('_')}",
-                            "name": stem,
-                            "architecture": "sd15",
-                            "checkpoint": cp,
-                            "routing_description": "Новая модель (требуется настройка описания для роутинга)",
-                            "llm_guidance": "",
-                            "negative_prompt": self._get_default_negative(cp, stem),
-                            "active": True,
-                            "pipeline": {
-                                "architecture": "sd15",
-                                "sampler": "DPM++ 2M Karras",
-                                "scheduler": "Karras",
-                                "steps": 25,
-                                "cfg_scale": 6.0,
-                                "clip_skip": 1,
-                                "hires_upscaler": "4x-UltraSharp",
-                                "hires_denoise": 0.32,
-                                "enable_hr": False,
-                                "enable_adetailer": False,
-                                "negative_prompt": self._get_default_negative(cp, stem)
-                            }
-                        }
-                    self._add_model_row(new_model_data)
-                    existing_ckpts.add(Path(cp).name.lower())
-                    new_added += 1
-
-        if new_added > 0:
-            self._save_models_to_json()
-
-        if not getattr(self, "_scan_silent", True):
-            msg = f"Успешно получено {len(found_checkpoints)} чекпоинтов из SD Forge."
-            if new_added > 0:
-                msg += f"\n\nАвтоматически добавлено новых моделей: {new_added}."
-            QMessageBox.information(self, "Сканирование чекпоинтов Forge", msg)
-
-        self._scan_worker = None
-
-    def _scan_forge_checkpoints(self, silent: bool = False):
-        """Псевдоним для обратной совместимости."""
-        self._start_forge_scan(silent=silent)
-
-    def _open_civitai_catalog(self):
-        """Открывает нативный браузер каталога Civitai / Civitai Red."""
-        from ui.dialogs.civitai_catalog_dialog import CivitaiCatalogDialog
-        target_dir = None
-        if self.available_checkpoints:
-            installed_list = self.forge_client.get_installed_checkpoints()
-            if installed_list:
-                target_dir = Path(installed_list[0]).parent
-        dlg = CivitaiCatalogDialog(target_dir=target_dir, parent=self)
-        dlg.model_installed.connect(self._on_civitai_model_installed)
-        try:
-            dlg.exec()
-        finally:
-            try:
-                dlg.model_installed.disconnect(self._on_civitai_model_installed)
-            except Exception:
-                pass
-
-    def _on_civitai_model_installed(self, model_info: dict):
-        """Автоматически регистрирует скачанную с Civitai модель в списке роутера."""
-        ckpt_name = model_info.get("filename", "")
-        if ckpt_name and ckpt_name not in self.available_checkpoints:
-            self.available_checkpoints.append(ckpt_name)
-            self.combo_checkpoint.addItem(ckpt_name)
-
-        is_xl = is_xl_model(ckpt_name)
-        arch = "sdxl" if is_xl else "sd15"
-        new_data = {
-            "id": f"civitai_{model_info.get('id', uuid.uuid4().hex[:6])}",
-            "name": model_info.get("name", "Новая модель"),
-            "architecture": arch,
-            "checkpoint": ckpt_name,
-            "routing_description": model_info.get("description", ""),
-            "llm_guidance": model_info.get("guidance", ""),
-            "negative_prompt": self._get_default_negative(ckpt_name, model_info.get("name", "")),
-            "active": True,
-            "triggers": model_info.get("triggers", []),
-            "pipeline": {
-                "architecture": arch,
-                "sampler": model_info.get("sampler", "LCM" if is_xl else "DPM++ 2M Karras"),
-                "scheduler": model_info.get("scheduler", "Karras"),
-                "steps": model_info.get("steps", 10 if is_xl else 25),
-                "cfg_scale": model_info.get("cfg_scale", 1.3 if is_xl else 6.0),
-                "clip_skip": model_info.get("clip_skip", 2 if is_xl else 1),
-                "hires_upscaler": "4x-UltraSharp",
-                "hires_denoise": 0.32,
-                "enable_hr": False,
-                "enable_adetailer": False,
-                "negative_prompt": self._get_default_negative(ckpt_name, model_info.get("name", ""))
-            }
-        }
-        self._add_model_row(new_data)
-        new_row = self.table.rowCount() - 1
-        self.table.selectRow(new_row)
-        self.current_selected_row = new_row
-        self._load_model_to_form(new_row)
-        self.table.scrollToBottom()
-
-    def _populate_table(self):
-        """Заполняет таблицу моделями и активирует первую строку."""
-        self.table.setRowCount(0)
-        self.row_widgets.clear()
-        for m in self.models:
-            self._add_model_row(m)
-
-        if self.table.rowCount() > 0:
-            self.table.selectRow(0)
-            self.current_selected_row = 0
-            self._load_model_to_form(0)
-
-    def _add_model_row(self, model_data: Dict[str, Any]):
-        """Добавляет строку модели с современными элементами управления."""
-        row_idx = self.table.rowCount()
-        self.table.insertRow(row_idx)
-        self.table.setRowHeight(row_idx, 40)
-
-        model_id = model_data.get("id") or f"model_{uuid.uuid4().hex[:6]}"
-        is_active = model_data.get("active", model_data.get("is_active", True))
-        name = model_data.get("name", "")
-        checkpoint = model_data.get("checkpoint", "")
-        desc = model_data.get("routing_description") or model_data.get("description", "")
-        guidance = model_data.get("llm_guidance", "")
-        neg_val = model_data.get("negative_prompt", "").strip() or self._get_default_negative(checkpoint, model_id)
-
-        pipeline_data = model_data.get("pipeline")
-        if not pipeline_data or not isinstance(pipeline_data, dict):
-            pipeline_data = {
-                "sampler": "DPM++ 2M Karras",
-                "steps": 25,
-                "cfg_scale": 6.0,
-                "clip_skip": 1,
-                "hires_upscaler": "4x-UltraSharp",
-                "hires_denoise": 0.32,
-                "negative_prompt": neg_val
-            }
-
-        # Col 0: Active in auto-router CheckBox
-        chk_container = QWidget()
-        chk_layout = QHBoxLayout(chk_container)
-        chk_layout.setContentsMargins(6, 0, 6, 0)
-        chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chk = CheckBox(chk_container)
-        chk.setChecked(bool(is_active))
-        chk.setToolTip("Включить модель в автоматический семантический роутер")
-        chk_layout.addWidget(chk)
-        self.table.setCellWidget(row_idx, 0, chk_container)
-
-        # Col 1: Model Name
-        from PyQt6.QtWidgets import QTableWidgetItem
-        item_name = QTableWidgetItem(name)
-        item_name.setFlags(item_name.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.table.setItem(row_idx, 1, item_name)
-
-        # Col 2: Checkpoint
-        item_ckpt = QTableWidgetItem(checkpoint)
-        item_ckpt.setFlags(item_ckpt.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.table.setItem(row_idx, 2, item_ckpt)
-
-        # Col 3: Delete Button (TransparentToolButton with red hover)
-        del_container = QWidget()
-        del_layout = QHBoxLayout(del_container)
-        del_layout.setContentsMargins(4, 0, 4, 0)
-        del_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn_del = TransparentToolButton(FIF.DELETE, del_container)
-        btn_del.setToolTip("Удалить модель из реестра")
-        btn_del.setFixedSize(28, 28)
-        btn_del.setStyleSheet("""
-            TransparentToolButton {
-                border-radius: 4px;
-                padding: 2px;
-            }
-            TransparentToolButton:hover {
-                background-color: rgba(239, 68, 68, 0.25);
-            }
-        """)
-        btn_del.clicked.connect(lambda _, r_id=model_id: self._remove_model_by_id(r_id))
-        del_layout.addWidget(btn_del)
-        self.table.setCellWidget(row_idx, 3, del_container)
-
-        is_default = bool(model_data.get("is_default", False))
-        style_triggers = model_data.get("style_triggers", [])
-        if isinstance(style_triggers, str):
-            style_triggers = [t.strip() for t in style_triggers.split(",") if t.strip()]
-        elif isinstance(style_triggers, list):
-            style_triggers = [str(t).strip() for t in style_triggers if str(t).strip()]
-        else:
-            style_triggers = []
-
-        arch = model_data.get("architecture") or pipeline_data.get("architecture") or ("sdxl" if is_xl_model(model_data) else "sd15")
-        if "architecture" not in pipeline_data:
-            pipeline_data["architecture"] = arch
-
-        row_info = {
-            "id": model_id,
-            "chk": chk,
-            "name": name,
-            "architecture": arch,
-            "checkpoint": checkpoint,
-            "routing_description": desc,
-            "llm_guidance": guidance,
-            "negative_prompt": neg_val,
-            "is_default": is_default,
-            "style_triggers": style_triggers,
-            "pipeline": pipeline_data,
-            "triggers": model_data.get("triggers", []),
-            "item_name": item_name,
-            "item_ckpt": item_ckpt
-        }
-        self.row_widgets.append(row_info)
-
-    def _add_empty_model_row(self):
-        """Добавляет пустой шаблон новой модели."""
-        if self.current_selected_row >= 0:
-            self._save_form_to_model(self.current_selected_row)
-
-        new_ckpt = self.available_checkpoints[0] if self.available_checkpoints else ""
-        is_xl = is_xl_model(new_ckpt) if new_ckpt else False
-        arch = "sdxl" if is_xl else "sd15"
-        new_data = {
-            "id": f"model_{uuid.uuid4().hex[:6]}",
-            "name": "Новая модель",
-            "architecture": arch,
-            "checkpoint": new_ckpt,
-            "routing_description": "",
-            "llm_guidance": "",
-            "negative_prompt": self._get_default_negative(new_ckpt, ""),
-            "is_default": False,
-            "style_triggers": [],
-            "active": True,
-            "pipeline": {
-                "architecture": arch,
-                "sampler": "LCM" if is_xl else "DPM++ 2M Karras",
-                "scheduler": "Karras",
-                "steps": 10 if is_xl else 25,
-                "cfg_scale": 1.3 if is_xl else 6.0,
-                "clip_skip": 2 if is_xl else 1,
-                "hires_upscaler": "4x-UltraSharp",
-                "hires_denoise": 0.32,
-                "enable_hr": False,
-                "enable_adetailer": False,
-                "negative_prompt": self._get_default_negative(new_ckpt, "")
-            }
-        }
-        self._add_model_row(new_data)
-        new_row = self.table.rowCount() - 1
-        self.table.selectRow(new_row)
-        self.current_selected_row = new_row
-        self._load_model_to_form(new_row)
-        self.table.scrollToBottom()
-
-    def _remove_model_by_id(self, model_id: str):
-        """Удаляет модель из таблицы."""
-        idx = next((i for i, r in enumerate(self.row_widgets) if r["id"] == model_id), -1)
-        if idx == -1:
-            return
-
-        model_name = self.row_widgets[idx].get("name") or model_id
-        reply = QMessageBox.question(
-            self,
-            "Удаление модели",
-            f"Вы уверены, что хотите удалить модель '{model_name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.table.removeRow(idx)
-            self.row_widgets.pop(idx)
-            if self.row_widgets:
-                next_row = min(idx, len(self.row_widgets) - 1)
-                self.table.selectRow(next_row)
-                self.current_selected_row = next_row
-                self._load_model_to_form(next_row)
-            else:
-                self.current_selected_row = -1
-
+    def _on_table_selection_changed(self):
+        selected_rows = self.table.selectionModel().selectedRows()
+        if selected_rows:
+            new_row = selected_rows[0].row()
+            if new_row != self.current_selected_row:
+                if 0 <= self.current_selected_row < len(self.row_widgets):
+                    self._save_form_to_model(self.current_selected_row)
+                self.current_selected_row = new_row
+                self._load_model_to_form(new_row)
+
+    # ---------------- Semantic Routing Test Slots ---------------- #
     def _run_test_match(self):
         """Запускает неблокирующее тестирование маршрутизации тестового запроса."""
         if self._test_worker is not None and self._test_worker.isRunning():
@@ -2302,6 +789,7 @@ class ModelsManagerDialog(QDialog):
         """Псевдоним для _on_test_prompt_clicked."""
         return self._on_test_prompt_clicked()
 
+    # ---------------- Persistence & Synchronization ---------------- #
     def _save_models_to_json(self):
         """
         Сохраняет текущие профили моделей в data/art_director_models.json без модальных окон.
@@ -2383,93 +871,10 @@ class ModelsManagerDialog(QDialog):
         """
         Сохраняет модели в data/art_director_models.json и синхронизирует кэш FastEmbed.
         """
-        if self.current_selected_row >= 0:
-            self._save_form_to_model(self.current_selected_row)
-
-        models_to_save: List[Dict[str, Any]] = []
-
-        for idx, r in enumerate(self.row_widgets):
-            m_id = r["id"]
-            name = r.get("name", "").strip()
-            ckpt = r.get("checkpoint", "").strip()
-            desc = r.get("routing_description", "").strip()
-            guidance = r.get("llm_guidance", "").strip()
-            is_active = r["chk"].isChecked()
-
-            if not name and not ckpt:
-                continue
-
-            if not name:
-                name = Path(ckpt).stem if ckpt else m_id
-
-            pipe = dict(r.get("pipeline", {}))
-            if idx == self.current_selected_row:
-                arch_cur = "sdxl" if self.combo_arch.currentText().startswith("SDXL") else "sd15"
-                pipe = {
-                    **pipe,
-                    "architecture": arch_cur,
-                    "sampler": self.combo_sampler.currentText(),
-                    "scheduler": self.combo_scheduler.currentText(),
-                    "steps": self.spin_steps.value(),
-                    "cfg_scale": round(self.spin_cfg.value(), 1),
-                    "clip_skip": self.spin_clip_skip.value(),
-                    "hires_upscaler": self.combo_upscaler.currentText(),
-                    "hires_denoise": round(self.spin_hires_denoise.value(), 2),
-                    "enable_hr": self.switch_enable_hr.isChecked(),
-                    "negative_prompt": self.input_negative_prompt.toPlainText().strip()
-                }
-
-            neg = pipe.get("negative_prompt") or r.get("negative_prompt", "")
-            arch = r.get("architecture") or pipe.get("architecture") or ("sdxl" if is_xl_model(r) else "sd15")
-
-            model_item = {
-                "id": m_id,
-                "name": name,
-                "architecture": arch,
-                "checkpoint": ckpt,
-                "routing_description": desc,
-                "llm_guidance": guidance,
-                "negative_prompt": neg,
-                "is_default": bool(r.get("is_default", False)),
-                "style_triggers": r.get("style_triggers", []),
-                "active": is_active,
-                "triggers": r.get("triggers", []),
-                "pipeline": {
-                    "architecture": arch,
-                    "sampler": pipe.get("sampler", self.combo_sampler.currentText()),
-                    "scheduler": pipe.get("scheduler", self.combo_scheduler.currentText()),
-                    "steps": pipe.get("steps", self.spin_steps.value()),
-                    "cfg_scale": round(pipe.get("cfg_scale", self.spin_cfg.value()), 1),
-                    "clip_skip": pipe.get("clip_skip", self.spin_clip_skip.value()),
-                    "hires_upscaler": pipe.get("hires_upscaler", self.combo_upscaler.currentText()),
-                    "hires_denoise": round(pipe.get("hires_denoise", self.spin_hires_denoise.value()), 2),
-                    "enable_hr": pipe.get("enable_hr", self.switch_enable_hr.isChecked()),
-                    "enable_adetailer": pipe.get("enable_adetailer", True),
-                    "adetailer_face_model": pipe.get("adetailer_face_model", "face_yolov8m.pt"),
-                    "adetailer_face_confidence": pipe.get("adetailer_face_confidence", 0.44),
-                    "adetailer_face_denoise": pipe.get("adetailer_face_denoise", 0.32),
-                    "adetailer_face_inpaint_size": pipe.get("adetailer_face_inpaint_size", pipe.get("adetailer_inpaint_size", 768)),
-                    "adetailer_inpaint_size": pipe.get("adetailer_face_inpaint_size", pipe.get("adetailer_inpaint_size", 768)),
-                    "adetailer_hands_enabled": pipe.get("adetailer_hands_enabled", True),
-                    "adetailer_hands_model": pipe.get("adetailer_hands_model", "hand_yolov9c.pt"),
-                    "adetailer_hands_confidence": pipe.get("adetailer_hands_confidence", 0.38),
-                    "adetailer_hands_denoise": pipe.get("adetailer_hands_denoise", 0.40),
-                    "adetailer_hands_inpaint_size": pipe.get("adetailer_hands_inpaint_size", 512),
-                    "adetailer_hands_mask_blur": pipe.get("adetailer_hands_mask_blur", 8),
-                    "adetailer_hands_prompt": pipe.get("adetailer_hands_prompt", ""),
-                    "adetailer_hands_negative_prompt": pipe.get("adetailer_hands_negative_prompt", ""),
-                    "negative_prompt": neg
-                }
-            }
-            models_to_save.append(model_item)
-
-        if not models_to_save:
+        self._save_models_to_json()
+        if not self.models:
             QMessageBox.warning(self, "Ошибка", "Таблица моделей пуста.")
             return
-
-        # 1. Запись в data/art_director_models.json
-        self.router.save_profiles(models_to_save)
-        save_art_director_models(models_to_save)
 
         # 2. Обновление FastEmbed эмбеддингов
         if self.art_director and hasattr(self.art_director, "router") and self.art_director.router:
@@ -2480,14 +885,14 @@ class ModelsManagerDialog(QDialog):
         # 3. Синхронизация реестра моделей Forge
         sync_registry_with_user_config()
 
-        self.models = models_to_save
         QMessageBox.information(
             self,
             "Сохранено",
-            f"Успешно сохранено {len(models_to_save)} моделей в data/art_director_models.json.\n"
+            f"Успешно сохранено {len(self.models)} моделей в data/art_director_models.json.\n"
             "Векторные эмбеддинги роутера обновлены!"
         )
 
+    # ---------------- Lifecycle & Thread Safety ---------------- #
     def _stop_all_workers(self):
         """Безопасная остановка всех фоновых потоков менеджера моделей."""
         workers = [self._scan_worker, self._test_worker, self._civitai_worker, self._fp8_worker]
@@ -2495,7 +900,6 @@ class ModelsManagerDialog(QDialog):
             if worker is None:
                 continue
 
-            # 1) Отключение сигналов от слотов диалога
             for sig_name in (
                 "scan_completed", "scan_failed", "result_ready", "error_occurred",
                 "params_ready", "progress_updated", "conversion_finished", "conversion_failed"
@@ -2507,7 +911,6 @@ class ModelsManagerDialog(QDialog):
                     except Exception:
                         pass
 
-            # 2) Если поддерживается — вызов stop()/abort() или requestInterruption()
             if hasattr(worker, "abort"):
                 try:
                     worker.abort()
@@ -2524,29 +927,19 @@ class ModelsManagerDialog(QDialog):
             except Exception:
                 pass
 
-            # 3) Вызов thread.quit()
             try:
                 worker.quit()
             except Exception:
                 pass
 
-            # 4) Вызов thread.wait(200)
             try:
                 if worker.isRunning():
                     worker.wait(200)
             except Exception:
                 pass
 
-            # 5) Если thread.isRunning() — сделай thread.setParent(None), чтобы сборщик мусора окна не триггерил abort Qt
-            try:
-                if worker.isRunning():
-                    worker.setParent(None)
-                    _MODELS_MANAGER_ORPHANED_WORKERS.append(worker)
-                    worker.finished.connect(
-                        lambda w=worker: _MODELS_MANAGER_ORPHANED_WORKERS.remove(w) if w in _MODELS_MANAGER_ORPHANED_WORKERS else None
-                    )
-            except Exception:
-                pass
+            # Безопасная изоляция еще активных потоков без NameError
+            register_orphaned_worker(worker)
 
         self._scan_worker = None
         self._test_worker = None
@@ -2564,6 +957,5 @@ class ModelsManagerDialog(QDialog):
     def accept(self):
         self._stop_all_workers()
         super().accept()
-
 
     _on_save_clicked = _save_all
