@@ -4,7 +4,7 @@ Parses LLM streaming output with <think>...</think> tags on CPU (0 MB VRAM).
 Features:
 1. States: NORMAL_TEXT, IN_THINK, THINK_FINISHED.
 2. Safe boundary buffering for tags broken across network chunks (e.g. '<th' + 'ink>').
-3. Fail-safe circuit breaker: forces </think> closure if thought length exceeds 1800 chars / ~450 tokens.
+3. Fail-safe circuit breaker: forces </think> closure if thought length exceeds 16384 chars / ~4096 tokens.
 4. Duration and token count calculation for ThoughtSpoilerWidget and session persistence.
 """
 
@@ -26,8 +26,8 @@ class ThoughtStreamParser:
     и чистового ответа модели в реальном времени.
     """
 
-    MAX_THINK_CHARS = 1800
-    MAX_THINK_TOKENS = 450
+    MAX_THINK_CHARS = 16384
+    MAX_THINK_TOKENS = 4096
 
     THINK_OPEN_TAG = "<think>"
     THINK_CLOSE_TAG = "</think>"

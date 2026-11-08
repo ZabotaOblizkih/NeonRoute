@@ -88,10 +88,11 @@ def test_split_tags_across_chunks():
 def test_failsafe_limit_triggered():
     parser = ThoughtStreamParser()
     # Модель «забыла» закрыть тег </think> и генерирует гигантский поток рассуждений
+    half_limit = parser.MAX_THINK_CHARS // 2 + 500
     chunks = [
         "<think>",
-        "Бесконечные мысли: " + ("X" * 1000),
-        "Продолжение мыслей: " + ("Y" * 1200),
+        "Бесконечные мысли: " + ("X" * half_limit),
+        "Продолжение мыслей: " + ("Y" * half_limit),
         "Хвост сообщения после превышения лимита."
     ]
 

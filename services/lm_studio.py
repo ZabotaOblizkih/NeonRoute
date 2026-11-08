@@ -618,6 +618,7 @@ class LMStudioClient(QObject):
                 accumulated = []
                 first_token_time = None
                 tokens_count = 0
+                in_reasoning_stream = False
 
                 try:
                     for line_bytes in resp.iter_lines(decode_unicode=False):
@@ -637,30 +638,54 @@ class LMStudioClient(QObject):
                                 if not choices:
                                     continue
                                 delta = choices[0].get("delta", {})
-                                content_piece = delta.get("content", "")
-                                if not content_piece:
+                                rc_piece = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                                content_piece = delta.get("content") or ""
+
+                                if not rc_piece and not content_piece:
                                     continue
 
-                                if content_piece:
+                                pieces_to_emit = []
+                                if rc_piece:
+                                    if not in_reasoning_stream:
+                                        in_reasoning_stream = True
+                                        pieces_to_emit.append("<think>")
+                                    pieces_to_emit.append(rc_piece)
+                                elif content_piece:
+                                    if in_reasoning_stream:
+                                        in_reasoning_stream = False
+                                        pieces_to_emit.append("</think>")
+                                    pieces_to_emit.append(content_piece)
+
+                                for piece in pieces_to_emit:
                                     if first_token_time is None:
                                         first_token_time = time.time()
                                         ttft = first_token_time - t_start
                                         logger.info(f"[LMS-TELEMETRY] Time to First Token (TTFT): {ttft:.2f} сек {_get_vram_telemetry_str()}")
                                     tokens_count += 1
+                                    accumulated.append(piece)
 
-                                accumulated.append(content_piece)
+                                    if chunk_callback and callable(chunk_callback):
+                                        try:
+                                            chunk_callback(piece)
+                                        except Exception as _cb_err:
+                                            logger.debug(f"Error in chunk_callback: {_cb_err}")
 
-                                if chunk_callback and callable(chunk_callback):
-                                    try:
-                                        chunk_callback(content_piece)
-                                    except Exception as _cb_err:
-                                        logger.debug(f"Error in chunk_callback: {_cb_err}")
-
-                                if emit_signal:
-                                    self.token_streamed.emit(content_piece)
+                                    if emit_signal:
+                                        self.token_streamed.emit(piece)
 
                             except Exception:
                                 continue
+                    if in_reasoning_stream:
+                        in_reasoning_stream = False
+                        accumulated.append("</think>")
+                        if chunk_callback and callable(chunk_callback):
+                            try:
+                                chunk_callback("</think>")
+                            except Exception:
+                                pass
+                        if emit_signal:
+                            self.token_streamed.emit("</think>")
+
                     if self._is_aborted:
                         raise InterruptedError("Запрос к LM Studio был прерван пользователем.")
                 except Exception as stream_err:
@@ -683,7 +708,11 @@ class LMStudioClient(QObject):
                     data = json.loads(raw_text)
                     choices = data.get("choices", [])
                     if choices:
-                        content = choices[0].get("message", {}).get("content", "") or ""
+                        msg = choices[0].get("message", {})
+                        content = msg.get("content", "") or ""
+                        reasoning = msg.get("reasoning_content", "") or msg.get("reasoning", "") or ""
+                        if reasoning and "<think>" not in content:
+                            content = f"<think>\n{reasoning}\n</think>\n{content}"
                     usage = data.get("usage", {})
                     prompt_tokens = usage.get("prompt_tokens", 0)
                     completion_tokens = usage.get("completion_tokens", 0)
