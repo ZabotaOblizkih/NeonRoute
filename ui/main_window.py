@@ -278,10 +278,25 @@ class MainWindow(
     def chat_scroll_content(self) -> Optional[QWidget]:
         return getattr(self, "chat_container", None)
 
-    def menuBar(self) -> ClickOnlyMenuBar:
-        if not hasattr(self, "_menu_bar") or self._menu_bar is None:
-            self._menu_bar = ClickOnlyMenuBar(self)
-        return self._menu_bar
+
+    def _open_main_settings_menu(self, target_widget=None):
+        """Открывает неоновое всплывающее меню настроек над шестеренкой сайдбара."""
+        menu = MenuBuilder.create_settings_menu(self)
+        if target_widget:
+            global_pos = target_widget.mapToGlobal(QPoint(0, 0))
+            menu_hint = menu.sizeHint()
+            popup_pos = QPoint(
+                global_pos.x(),
+                max(10, global_pos.y() - menu_hint.height() - 4)
+            )
+            menu.exec(popup_pos, ani=True)
+        else:
+            from PyQt6.QtGui import QCursor
+            menu.exec(QCursor.pos(), ani=True)
+
+    def menuBar(self):
+        """Меню перенесено на кнопку-шестеренку в сайдбар, верхний MenuBar полностью отключен."""
+        return None
 
     # --- Единый источник правды (SSOT): делегирование в self.ui_context ---
     @property
@@ -353,6 +368,8 @@ class MainWindow(
             self.titleBar.titleLabel.clear()
             self.titleBar.titleLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         if hasattr(self.titleBar, "iconLabel") and self.titleBar.iconLabel:
+            self.titleBar.iconLabel.setVisible(False)
+            self.titleBar.iconLabel.clear()
             self.titleBar.iconLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         central_widget = QWidget(self)
@@ -365,32 +382,10 @@ class MainWindow(
         root_layout.setContentsMargins(0, self.titleBar.height(), 0, 0)
         root_layout.setSpacing(0)
 
-        # 0.2 Menu Bar strictly under TitleBar (Click-only opening)
-        self._menu_bar = ClickOnlyMenuBar(central_widget)
-        self._menu_bar.setFixedHeight(30)
-        root_layout.addWidget(self._menu_bar, 0)
-
-        MenuBuilder.setup_menus(self)
-        help_menu = None
-        for action in self.menuBar().actions():
-            if action.text().replace("&", "") == "Справка":
-                help_menu = action.menu()
-                break
-        if not help_menu:
-            help_menu = self.menuBar().addMenu("Справка")
-
-        if not any("Проверка компонентов" in a.text() for a in help_menu.actions()):
-            act_check_deps = help_menu.addAction("Проверка компонентов...")
-            act_check_deps.setStatusTip("Проверить наличие Git и библиотек для режима Инженер")
-            act_check_deps.triggered.connect(self.open_dependency_dialog)
-
-        # Register menu action shortcuts on MainWindow for global window interception (Ctrl+N, Ctrl+Q, etc.)
-        for action in self.menuBar().actions():
-            menu = action.menu()
-            if menu:
-                for sub_action in menu.actions():
-                    if sub_action.shortcut().toString():
-                        self.addAction(sub_action)
+        # 0.2 Меню перенесено на кнопку-шестеренку [FIF.SETTING] в нижнюю панель сайдбара
+        self.setMenuBar(None)
+        self._menu_bar = None
+        MenuBuilder.setup_shortcuts(self)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.main_splitter.setHandleWidth(1)

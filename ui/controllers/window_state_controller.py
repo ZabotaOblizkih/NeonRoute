@@ -57,8 +57,8 @@ class WindowStateMixin:
                 self.sidebar.setVisible(True)
             if self.statusBar():
                 self.statusBar().setVisible(True)
-            if self.menuBar():
-                self.menuBar().setVisible(True)
+            if getattr(self, '_menu_bar', None):
+                self._menu_bar.setVisible(True)
             if hasattr(self, "floating_close_btn"):
                 self.floating_close_btn.setVisible(False)
             if hasattr(self, "btn_fullscreen"):
@@ -68,8 +68,8 @@ class WindowStateMixin:
                 self.sidebar.setVisible(False)
             if self.statusBar():
                 self.statusBar().setVisible(False)
-            if self.menuBar():
-                self.menuBar().setVisible(False)
+            if getattr(self, '_menu_bar', None):
+                self._menu_bar.setVisible(False)
             self.showFullScreen()
             if hasattr(self, "floating_close_btn"):
                 self.floating_close_btn.setVisible(True)

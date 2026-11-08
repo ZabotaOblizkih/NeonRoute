@@ -47,44 +47,35 @@ class ChatSessionItemWidget(QWidget):
         self._setup_ui(title)
 
     def sizeHint(self) -> QSize:
-        return QSize(240, 56)
+        return QSize(240, 50)
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(200, 54)
+        return QSize(200, 48)
 
     def _setup_ui(self, title: str):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet("background: transparent;")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 6, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 4, 8, 4)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # 1. Circular Avatar (30x30)
         self.avatar_lbl = QLabel(self)
         self.avatar_lbl.setFixedSize(30, 30)
         self.avatar_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(self.avatar_lbl)
+        layout.addWidget(self.avatar_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        # 2. Text layout (Title + Badge chip)
-        text_layout = QVBoxLayout()
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(4)
-
+        # 2. Текст названия диалога, идеально отцентрованный по вертикали
         self.title_lbl = QLabel(title, self)
-        self.title_lbl.setMinimumHeight(18)
+        self.title_lbl.setMinimumHeight(20)
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        text_layout.addWidget(self.title_lbl)
-
-        # Mode Chip via QFluentWidgets InfoBadge (Soft/Pill style)
-        self.badge_lbl = InfoBadge(self)
-        self.badge_lbl.setFixedHeight(21)
-        self.badge_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        text_layout.addWidget(self.badge_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.title_lbl.setStyleSheet("color: #F1F5F9; font-weight: 600; font-size: 13px; background: transparent;")
 
         self._apply_theme_and_avatar()
 
-        layout.addLayout(text_layout, stretch=1)
+        layout.addWidget(self.title_lbl, stretch=1, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # 3. Compact Delete button with soft hover
         self.btn_del = TransparentToolButton(FIF.DELETE, self)
@@ -115,39 +106,20 @@ class ChatSessionItemWidget(QWidget):
         is_rp = (raw_mode in ("roleplay", "rp")) and not is_engineer
         p = Path(self.avatar_path) if self.avatar_path and Path(self.avatar_path).exists() else None
 
+        title_qss = "color: #F1F5F9; font-weight: 600; font-size: 13px; background: transparent;"
+        self.title_lbl.setStyleSheet(title_qss)
+
         if is_engineer:
             pix = render_circular_avatar(p, "Инженер", size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
-            self.title_lbl.setStyleSheet("color: #F59E0B; font-weight: 600; font-size: 12px; background: transparent;")
-            self.badge_lbl.setText("🛠️ Инженер")
-            self.badge_lbl.setCustomBackgroundColor(QColor(245, 158, 11, 38), QColor(245, 158, 11, 38))
-            self.badge_lbl.setStyleSheet(
-                "color: #FBBF24; font-size: 11px; font-weight: 600; padding: 2px 10px; "
-                "border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 9px; background: transparent;"
-            )
         elif is_rp:
             name_seed = self.char_name or "Roleplay"
             pix = render_circular_avatar(p, name_seed, size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
-            self.title_lbl.setStyleSheet("color: #E879F9; font-weight: 600; font-size: 12px; background: transparent;")
-            badge_text = f"🎭 {self.char_name}" if self.char_name else "🎭 Ролевой чат"
-            self.badge_lbl.setText(badge_text)
-            self.badge_lbl.setCustomBackgroundColor(QColor(192, 132, 252, 40), QColor(192, 132, 252, 40))
-            self.badge_lbl.setStyleSheet(
-                "color: #D8B4FE; font-size: 11px; font-weight: 600; padding: 2px 10px; "
-                "border: 1px solid rgba(192, 132, 252, 0.35); border-radius: 9px; background: transparent;"
-            )
         else:
             # Ассистент
             pix = render_circular_avatar(p, "Элария", size=30, is_user=False)
             self.avatar_lbl.setPixmap(pix)
-            self.title_lbl.setStyleSheet("color: #38BDF8; font-weight: 600; font-size: 12px; background: transparent;")
-            self.badge_lbl.setText("⚡ Ассистент")
-            self.badge_lbl.setCustomBackgroundColor(QColor(0, 240, 255, 34), QColor(0, 240, 255, 34))
-            self.badge_lbl.setStyleSheet(
-                "color: #00F0FF; font-size: 11px; font-weight: 600; padding: 2px 10px; "
-                "border: 1px solid rgba(0, 240, 255, 0.35); border-radius: 9px; background: transparent;"
-            )
 
     def update_avatar(self, avatar_path: Optional[str]):
         self.avatar_path = avatar_path

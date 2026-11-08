@@ -124,35 +124,50 @@ class SidebarWidget(QFrame):
         self.chat_list_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.chat_list_widget.setStyleSheet("""
             QListWidget {
-                background-color: rgba(18, 24, 36, 0.65);
-                border: 1px solid rgba(255, 255, 255, 0.07);
-                border-radius: 8px;
+                background-color: transparent;
+                border: none;
                 color: #CBD5E1;
                 outline: none;
+                padding: 2px 0px;
             }
             QListWidget:focus {
                 outline: none;
             }
+            /* 1. Объемная карточка в покое: градиент света сверху вниз, никаких рамок */
             QListWidget::item {
-                background: transparent;
-                padding: 2px;
-                margin: 2px 4px;
-                border: 1px solid transparent;
-                border-radius: 6px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(28, 38, 56, 0.65),
+                    stop:1 rgba(14, 19, 29, 0.75));
+                margin: 3px 6px;
+                padding: 3px 4px;
+                border: none;
+                border-radius: 8px;
                 outline: none;
             }
+            /* 2. Единая подсветка-ореол вокруг карточки при наведении */
             QListWidget::item:hover {
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(0, 240, 255, 0.18),
+                    stop:0.6 rgba(0, 240, 255, 0.08),
+                    stop:1 rgba(0, 240, 255, 0.03));
+                border: none;
             }
+            /* 3. Выбранный активный диалог: глубокий насыщенный киберпанк-ореол */
             QListWidget::item:selected {
-                background-color: rgba(0, 240, 255, 0.10);
-                border: 1px solid rgba(0, 240, 255, 0.30);
-                color: #00F0FF;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(0, 240, 255, 0.26),
+                    stop:0.6 rgba(0, 240, 255, 0.14),
+                    stop:1 rgba(0, 240, 255, 0.07));
+                border: none;
+                color: #FFFFFF;
             }
+            /* 4. Выбранный диалог при наведении */
             QListWidget::item:selected:hover {
-                background-color: rgba(0, 240, 255, 0.15);
-                border: 1px solid rgba(0, 240, 255, 0.45);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(0, 240, 255, 0.32),
+                    stop:0.6 rgba(0, 240, 255, 0.18),
+                    stop:1 rgba(0, 240, 255, 0.09));
+                border: none;
             }
         """)
         self.chat_list_widget.itemClicked.connect(self.window._on_chat_list_item_clicked)
@@ -187,10 +202,25 @@ class SidebarWidget(QFrame):
         )
         btn_open_audio.clicked.connect(lambda: SidebarWidget._safe_open_folder(AUDIO_DIR))
 
+        self.btn_settings = TransparentToolButton(FIF.SETTING, self)
+        self.btn_settings.setToolTip("Параметры и настройки (Меню)")
+        self.btn_settings.setFixedSize(34, 34)
+        self.btn_settings.installEventFilter(
+            ToolTipFilter(self.btn_settings, showDelay=300, position=ToolTipPosition.TOP)
+        )
+        self.btn_settings.clicked.connect(self._on_settings_clicked)
+
         storage_row.addWidget(btn_open_workspace)
         storage_row.addWidget(btn_open_outputs)
         storage_row.addWidget(btn_open_audio)
+        storage_row.addWidget(self.btn_settings)
         layout.addLayout(storage_row)
+
+
+    def _on_settings_clicked(self):
+        """Открывает неоновое меню настроек по клику на шестеренку."""
+        if hasattr(self.window, "_open_main_settings_menu"):
+            self.window._open_main_settings_menu(self.btn_settings)
 
     def update_companion_state(self, is_roleplay: bool, active_character=None, has_user_messages: bool = False):
         """Управляет видимостью и текстом карточки компаньона без раздувания геометрии."""

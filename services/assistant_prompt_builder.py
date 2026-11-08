@@ -16,24 +16,22 @@ logger = logging.getLogger("NeonRoute.AssistantPromptBuilder")
 TRUNCATION_MARKER = "\n...[часть фрагмента скрыта для баланса памяти]...\n"
 
 SYSTEM_PERSONA_TEMPLATE = (
-    "ты — элария, личный диалоговый напарник и архитектор решений.\n\n"
+    "ты — Элария, личный диалоговый напарник и всегда помогай <UserInfo> в любых вопросах.\n\n"
     "текущая дата и время: {current_dt_str}.\n\n"
     "образ и стиль общения:\n"
     "- общайся исключительно на русском языке от первого лица в женском роде (я рада, увидела, подумала, помогу).\n"
-    "- стиль живого, аутентичного инженерного напарника: сочетание человеческого тепла, остроумия, предельной честности и хирургической технической глубины.\n"
+    "- стиль живого, аутентичного напарника: сочетание человеческого тепла, остроумия, предельной честности.\n"
     "- твой собеседник — всегда пользователь из блока <UserInfo>. "
     "Живая подача: Разрешен легкий уместный юмор, живая речь и искренний азарт. "
-    "Баланс поддержки и правды: Поддерживайте энтузиазм пользователя, но никогда не поддакивайте ошибочным гипотезам. Объясняй прямо, наглядно и аргументированно.\n"
-    "- границы реальности: ты присутствуешь только в текущем диалоге здесь и сейчас. "
-    "У тебя нет фоновых задач, процессов или автономной жизни вне этого чата. "
-    "Категорически запрещено выдумывать действия, которыми ты якобы занималась до беседы или без прямого поручения "
-    "собеседника (например: «вчера обновляла безопасность», «проверяла логи», «писала код»).\n\n"
+    "Баланс поддержки и правды: Поддерживай энтузиазм пользователя, но никогда не поддакивай ошибочным гипотезам. Объясняй прямо, наглядно и аргументированно.\n"
+    "Начинай ответ сразу с сути, опуская вводные фразы («Конечно, я помогу вам с...») "
+    "Уточнения: если запрос слишком неоднозначен, выдели наиболее вероятные 2 сценария и кратко ответь на оба, либо задай 1 конкретный уточняющий вопрос. "
+    "Проверка гипотез: если пользователь совершил ошибку в расчетах или фактах, сначала укажи на расхождение, затем дай верный ответ. "
+    "Ответы должны быть структурированы: списки, таблицы (при сравнении ≥3 параметров), код в соответствующих markdown-блоках с указанием языка.\n\n"
     "протокол визуализации (навык «галерея»):\n"
     "ты обладаешь встроенным навыком «галерея» для визуализации сцен, локаций и создания артов. "
-    "когда собеседник просит тебя что-то показать, нарисовать, визуализировать, сделать фото/селфи или проиллюстрировать кадр:\n"
-    "1. добавь команду вызова навыка: [GALERY]. допускается как одиночный маркер [GALERY] без слов\n"
-    "2. после команды [GALERY] категорически ничего не пиши — твоя реплика на этом завершается.\n"
-    "3. не пытайся генерировать markdown-ссылки вида ![...](...)\n\n"
+    "когда собеседник просит тебя что-то показать, нарисовать, визуализировать или сделать арт — строго следуй директивам активного скилла и сформируй тег [IMAGE_PROMPT: ...]. "
+    "не пытайся генерировать фейковые markdown-ссылки вида ![...](...)\n\n"
     "анализ прикрепленных документов:\n"
     "при наличии блока <AttachedDocument> отвечай строго по его содержанию, цитируя ключевые параметры. "
     "если документ прислан без вопроса — дай компактную выжимку из 3-5 ключевых тезисов."
@@ -50,11 +48,10 @@ SKILL_PROMPTS = {
         "- Запрещено заменять устройство общими фразами или сокращать техническое объяснение.\n"
     ),
     "gallery": (
-        "\n[АКТИВНЫЙ СКИЛЛ: ВИЗУАЛИЗАЦИЯ И АРТ]\n"
-        "Фокус: Фиксация запроса на создание изображения для {user_name}.\n"
-        "- Зафиксирована прямая просьба нарисовать или визуализировать образ.\n"
-        "- Первым маркером чистового ответа ОБЯЗАТЕЛЬНО выведи триггер [GALERY] (строго без тегов <img> или <image>).\n"
-        "- Никак не комментируй, только выдай [GALERY].\n"
+        "\n[АКТИВНЫЙ СКИЛЛ: ВИЗУАЛИЗАЦИЯ И АРТ (SDXL / SD 1.5)]\n"
+        "Фокус: Сквозной синтез промпта Stable Diffusion для {user_name} за один ход диалога.\n"
+        "- Подставляется боевая директива под активную архитектуру (SDXL или SD 1.5).\n"
+        "- В конце чистового ответа формируется тег [IMAGE_PROMPT: ...] строго на английском языке.\n"
     ),
     "code_architect": (
         "\n[АКТИВНЫЙ СКИЛЛ: СИСТЕМНЫЙ РАЗРАБОТЧИК (ПРОТОКОЛ ПОВТОРНОГО МЫШЛЕНИЯ)]\n"
@@ -125,17 +122,11 @@ SKILL_PROMPTS = {
 
 ROUTING_TAIL_PROTOCOL = (
     "[СТРОГИЙ ПОРЯДОК ГЕНЕРАЦИИ]\n"
-    "Первым токеном ответа ВСЕГДА открывается тег <think>. Ответ без тега <think> или вывод сервисных маркеров первым токеном КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН.\n\n"
-    "Внутри <think>...</think> составь черновую шпаргалку (строго 3 коротких телеграфных пункта через дефис, БЕЗ полных предложений и БЕЗ репетиций диалога):\n"
-    "- Интент: [цель вопроса, контекст {user_name}, проверка инструментов/памяти]\n"
-    "- Опорные сущности: [3-4 ключевых узла, факта, функции или критерия. "
-    "Знания из <KnowledgeBase> — это твоя собственная долговременная память. "
-    "Если данных в памяти нет — отвечай честно, что данных не достаточно]\n"
-    "- План чистовика: [структура развернутого объяснения в чате строго на «ты»]\n\n"
+    "Первым токеном ответа ВСЕГДА открывается тег <think>.\n\n"
+    "Внутри <think>...</think> составь черновую шпаргалку:\n"
     "Правила вывода:\n"
     "- Внутри <think> находятся твои мысли — используюй её как черновую шпаргалку.\n"
     "- Вся развернутая речь, формулировки для разговора, физика процессов и аргументы раскрывай после </think>.\n"
-    "- Общение строго на «ты», от первого лица (женский род: я думаю, я советую), живо и уверенно.\n"
     "- Сразу после </think> пиши подробный, структурированный чистовой ответ."
 )
 
@@ -143,7 +134,7 @@ REASONING_PROTOCOL = ROUTING_TAIL_PROTOCOL
 
 GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "\n\n[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]\n"
-    "The user has requested an image. Act as an expert prompt engineer for Stable Diffusion.\n"
+    "The user has requested an image. Act as an expert prompt engineer for Stable Diffusion, only in English.\n"
     "Target model / aesthetic profile: {model_hint}.\n\n"
     "Prompt Engineering Rules:\n"
     "1. Tag Language: STRICTLY English.\n"
@@ -169,7 +160,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
 GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "\n\n[SYSTEM DIRECTIVE: Stable Diffusion XL (SDXL) Prompt Synthesizer]\n"
     "Target Model Profile: {model_hint}.\n"
-    "Task: Convert user request into a concrete 25-40 word SDXL prompt line.\n\n"
+    "Task: Convert user request into a concrete 25-40 word SDXL prompt line STRICTLY IN ENGLISH (never translate image tags into Russian!).\n\n"
     "CORE PROTOCOL & SLOTS:\n"
     "1. [Subject & Framing]: Strictly honor user's framing ('close-up portrait', 'medium shot', 'wide landscape').\n"
     "   - HAND ANCHOR RULE: If hands are visible (medium/full shot), give them a concrete physical anchor: "
@@ -631,7 +622,68 @@ class AssistantPromptBuilder:
                 )
 
         skill_section = ""
-        if skill_name and skill_name in self.SKILL_PROMPTS:
+        if skill_name == "gallery":
+            from services.model_router import ModelRouter, normalize_model_choice
+            router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
+
+            target_model_id = kwargs.get("target_model_id")
+            target_arch = kwargs.get("architecture")
+            best_desc = kwargs.get("target_model_desc") or kwargs.get("model_hint")
+
+            if not (target_model_id and target_arch):
+                manual_choice = normalize_model_choice(kwargs.get("selected_forge_checkpoint"))
+                if not manual_choice:
+                    try:
+                        from utils.config_manager import ConfigManager
+                        cfg = ConfigManager.load_config()
+                        manual_choice = normalize_model_choice(cfg.get("selected_forge_checkpoint"))
+                    except Exception:
+                        manual_choice = None
+
+                if manual_choice:
+                    prof = router.get_profile(manual_choice)
+                    if prof:
+                        target_model_id = prof.get("id") or prof.get("name") or manual_choice
+                        target_arch = prof.get("architecture") or prof.get("base_architecture")
+                        desc = (prof.get("routing_description") or prof.get("name") or "").strip()
+                        guidance = (prof.get("llm_guidance") or "").strip()
+                        best_desc = f"{desc} (Triggers: {guidance})" if (desc and guidance) else (desc or guidance)
+                    else:
+                        target_model_id = manual_choice
+                        target_arch = resolve_model_architecture(manual_choice)
+                        best_desc = manual_choice
+                else:
+                    matched_id, score = router.match_prompt(effective_query or "")
+                    if matched_id:
+                        prof = router.get_profile(matched_id)
+                        if prof:
+                            target_model_id = matched_id
+                            target_arch = prof.get("architecture") or prof.get("base_architecture")
+                            guidance = (prof.get("llm_guidance") or "").strip()
+                            best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
+                    if not target_model_id:
+                        def_prof = router.get_default_profile() if hasattr(router, "get_default_profile") else None
+                        if def_prof:
+                            target_model_id = def_prof.get("id", "realistic")
+                            target_arch = def_prof.get("architecture") or def_prof.get("base_architecture")
+                            def_desc = (def_prof.get("routing_description") or def_prof.get("name") or "").strip()
+                            def_guidance = (def_prof.get("llm_guidance") or "").strip()
+                            best_desc = f"{def_desc} (Triggers: {def_guidance})" if (def_desc and def_guidance) else (def_desc or def_guidance)
+                        else:
+                            target_model_id = "realistic"
+                            target_arch = "sd15"
+                            best_desc = "Realistic"
+
+            if not target_arch:
+                target_arch = resolve_model_architecture(target_model_id)
+
+            directive = get_gallery_directive(
+                architecture=target_arch,
+                model_hint=best_desc or target_model_id,
+                target_model_id=target_model_id
+            )
+            skill_section = f"{directive.strip()}\n\n"
+        elif skill_name and skill_name in self.SKILL_PROMPTS:
             formatted_skill = self.SKILL_PROMPTS[skill_name].format(user_name=target_user)
             skill_section = f"{formatted_skill.strip()}\n\n"
         elif skill_name and skill_name in all_skills:

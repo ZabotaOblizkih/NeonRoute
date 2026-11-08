@@ -988,7 +988,7 @@ class AssistantFlowControllerMixin:
             "is_roleplay": False,
             "is_engineer": False,
             "context_length": 4096,
-            "max_tokens": 512,
+            "max_tokens": 2000,
             "stream": False
         }
 
@@ -1016,6 +1016,24 @@ class AssistantFlowControllerMixin:
         self.is_busy = False
         if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer and self._stream_flush_timer.isActive():
             self._stream_flush_timer.stop()
+
+        # ── ВНЕОЧЕРЕДНОЙ ПЕРЕХВАТ 0: Служебный Gallery Art Pass (Zero Pollution) ──
+        # Фоновый синтез промпта SD не должен загрязнять или перезаписывать бабл чата!
+        if getattr(self, "_is_running_gallery_art_pass", False):
+            self._is_running_gallery_art_pass = False
+            target_widget = getattr(self, "_pending_gallery_art_widget", None)
+            user_query = getattr(self, "_pending_gallery_user_query", "")
+            self._pending_gallery_art_widget = None
+            self._pending_gallery_user_query = None
+
+            img_match = RE_IMAGE_TAG.search(text)
+            if img_match:
+                extracted = re.sub(r'^[\s\*_\-\#]+', '', img_match.group(1)).strip()
+                self._dispatch_art_to_forge(extracted, target_widget, user_query)
+            else:
+                if target_widget and hasattr(target_widget, "hide_art_loading_placeholder"):
+                    target_widget.hide_art_loading_placeholder()
+            return
 
         # 1. Финализация потокового парсера мыслей <think>...</think>
         thought_data = None
@@ -1093,21 +1111,7 @@ class AssistantFlowControllerMixin:
             if existing_bubble_text and existing_bubble_text != "Связь с моделью обновлена. Я готова, о чём поговорим?":
                 text = existing_bubble_text
 
-        if getattr(self, "_is_running_gallery_art_pass", False):
-            self._is_running_gallery_art_pass = False
-            target_widget = getattr(self, "_pending_gallery_art_widget", None)
-            user_query = getattr(self, "_pending_gallery_user_query", "")
-            self._pending_gallery_art_widget = None
-            self._pending_gallery_user_query = None
-
-            img_match = RE_IMAGE_TAG.search(text)
-            if img_match:
-                extracted = re.sub(r'^[\s\*_\-\#]+', '', img_match.group(1)).strip()
-                self._dispatch_art_to_forge(extracted, target_widget, user_query)
-            else:
-                if target_widget and hasattr(target_widget, "hide_art_loading_placeholder"):
-                    target_widget.hide_art_loading_placeholder()
-            return
+        # (Блок gallery_art_pass перемещен в самое начало метода для Zero Pollution)
 
         gallery_match = RE_GALLERY_TRIGGER.search(text)
         has_gallery = gallery_match is not None
@@ -1236,8 +1240,8 @@ class AssistantFlowControllerMixin:
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()
 
-        # ── ВТОРОЙ ПРОХОД: [GALERY] ──
-        if has_gallery:
+        # ── ВТОРОЙ ПРОХОД: [GALERY] (только если модель не выдала готовый тег [IMAGE_PROMPT]) ──
+        if has_gallery and not extracted_image_prompt:
             self._pending_gallery_art_widget = msg_widget
             target_query = getattr(self, "_current_user_request", "")
             if not target_query and hasattr(self, "chat_history") and self.chat_history:

@@ -622,14 +622,14 @@ class ForgeClient(QObject):
             logger.warning(err_msg)
             raise ForgeOfflineError(err_msg)
 
-        self._checkpoint_unloaded = False
-        # Switch checkpoint if specified
+        # Switch checkpoint if specified or reload previously unloaded checkpoint
         if checkpoint:
             self.set_model(checkpoint)
         elif getattr(self, "_checkpoint_unloaded", False):
             self.reload_checkpoint()
         else:
             self._wait_for_vram_clear()
+        self._checkpoint_unloaded = False
 
         # Detect if model is MoP DMD SDXL
         target_model_name = (checkpoint or "").lower()
@@ -901,7 +901,7 @@ class ForgeClient(QObject):
                 t0 = time.time()
                 resp = self._current_session.post(
                     f"{self.base_url}/sdapi/v1/txt2img",
-                    json=p,
+                    json=copy.deepcopy(p),
                     timeout=120
                 )
                 elapsed = time.time() - t0
@@ -1073,7 +1073,8 @@ class ForgeClient(QObject):
             raise ForgeOfflineError(err_msg)
         finally:
             stop_poller.set()
-            poller_thread.join(timeout=0.8)
+            if poller_thread.is_alive():
+                poller_thread.join(timeout=0.05)
             if self._current_session:
                 self._current_session.close()
                 self._current_session = None

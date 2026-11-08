@@ -23,6 +23,15 @@ logger = logging.getLogger("NeonRoute.LMStudio")
 _LMS_SOCKET_LOCK = threading.RLock()
 
 
+def _is_default_model_placeholder(model_name: Optional[str]) -> bool:
+    if not model_name:
+        return True
+    s = str(model_name).strip().lower()
+    if s.endswith((".gguf", ".bin", ".safetensors")) or "/" in s or "\\" in s:
+        return False
+    return s.startswith("default") or s == "auto"
+
+
 class ModelNotFoundError(RuntimeError):
     """Выбрасывается, когда запрашиваемая модель отсутствует в локальном хранилище LM Studio."""
     def __init__(self, model_name: str):
@@ -202,7 +211,7 @@ class LMStudioClient(QObject):
         if not available_ids:
             raise RuntimeError("LM Studio вернул пустой список идентификаторов моделей.")
 
-        if preferred_model and not preferred_model.startswith("default"):
+        if preferred_model and not _is_default_model_placeholder(preferred_model):
             return preferred_model
 
         chosen_id = available_ids[0]
@@ -223,9 +232,11 @@ class LMStudioClient(QObject):
         """Полная выгрузка моделей из VRAM с обновлением флага состояния."""
         logger.info("Unloading LM Studio / LLM models to free VRAM...")
 
+        unload_ok = False
         if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
             try:
-                self.process_manager.evict_llm_for_forge_sync()
+                evict_res = self.process_manager.evict_llm_for_forge_sync()
+                unload_ok = (evict_res is not False)
             except Exception as e:
                 logger.warning(f"Failed to evict LLM via process_manager: {e}")
         else:
@@ -237,6 +248,7 @@ class LMStudioClient(QObject):
                     try:
                         r = requests.post(ep, json={}, timeout=0.8)
                         if r.status_code in (200, 204):
+                            unload_ok = True
                             break
                     except Exception:
                         continue
@@ -261,9 +273,15 @@ class LMStudioClient(QObject):
                     startupinfo=startupinfo,
                     creationflags=creationflags
                 )
+                if res_unl.returncode == 0:
+                    unload_ok = True
                 logger.info(f"CLI unload completed (code {res_unl.returncode}): {res_unl.stdout.strip() or res_unl.stderr.strip()} {_get_vram_telemetry_str()}")
             except Exception as e:
                 logger.warning(f"Failed to unload LMS models via CLI: {e}")
+
+        if not unload_ok:
+            self._is_model_unloaded = False
+            return False
 
         self._is_model_unloaded = True
         self._current_ctx = 0
@@ -290,7 +308,7 @@ class LMStudioClient(QObject):
         """
         with self._reload_lock:
             target_model = preferred_model or getattr(self, "_last_loaded_model_id", None)
-            if not target_model or str(target_model).startswith("default"):
+            if _is_default_model_placeholder(target_model):
                 if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
                     try:
                         from utils.config_manager import ConfigManager
@@ -298,7 +316,7 @@ class LMStudioClient(QObject):
                         target_model = app_cfg.get("active_model")
                     except Exception:
                         pass
-                if not target_model or str(target_model).startswith("default"):
+                if _is_default_model_placeholder(target_model):
                     catalog = self.get_models()
                     target_model = catalog[0] if catalog else None
 
@@ -329,10 +347,10 @@ class LMStudioClient(QObject):
             # Если модель уже выгружена (_is_model_unloaded=True), не тратим 2.4с на ConnectTimeout к закрытому порту 1234
             is_healthy = False if getattr(self, "_is_model_unloaded", False) else self.check_health()[0]
             if is_healthy and self.is_model_loaded(model_name):
-                # Для автономного сервера без process_manager или при достаточном контексте
-                has_pm_headless = bool(self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server())
-                current_ctx = getattr(self, "_current_loaded_ctx", 0) or target_ctx
-                if not has_pm_headless or current_ctx >= target_ctx:
+                # Проверяем достаточность загруженного контекста как для headless, так и для standalone LM Studio
+                raw_loaded_ctx = getattr(self, "_current_loaded_ctx", 0)
+                if raw_loaded_ctx >= target_ctx or (raw_loaded_ctx == 0 and not context_length):
+                    current_ctx = raw_loaded_ctx or target_ctx
                     self._is_model_unloaded = False
                     self._last_loaded_model_id = model_name
                     self._current_loaded_ctx = current_ctx
@@ -468,7 +486,7 @@ class LMStudioClient(QObject):
         chunk_callback = kwargs.pop("chunk_callback", None)
         with _LMS_SOCKET_LOCK:
             target_m = model or getattr(self, "_last_loaded_model_id", None)
-            if not target_m or target_m.startswith("default"):
+            if _is_default_model_placeholder(target_m):
                 target_m = self.get_active_model_id(None)
 
             current_ctx = getattr(self, "_current_loaded_ctx", 8192)
@@ -480,8 +498,11 @@ class LMStudioClient(QObject):
             m_key = "engineer" if is_eng else ("roleplay" if is_roleplay else "assistant")
             def_ctx = MODE_PROFILES.get(m_key, {}).get("context_length", 14336)
 
+            has_pm_headless = bool(self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server())
             if context_length:
                 target_ctx = int(context_length)
+            elif not has_pm_headless and current_ctx > 0:
+                target_ctx = int(current_ctx)
             else:
                 target_ctx = int(app_cfg.get(f"context_length_{m_key}", def_ctx))
             target_ctx = min(target_ctx, HARDWARE_MAX_CONTEXT_LENGTH)
@@ -607,6 +628,16 @@ class LMStudioClient(QObject):
                 if "No models loaded" in resp_text or "not found" in resp_lower or "model not loaded" in resp_lower:
                     logger.warning(f"[LMStudio] Модель '{active_model_id}' не найдена или не загружена: {resp_text}")
                     raise ModelNotFoundError(model or active_model_id or "активная модель")
+
+                if resp.status_code == 400 and (
+                    "jinja exception" in resp_lower
+                    or "conversation roles must alternate" in resp_lower
+                    or "roles must alternate" in resp_lower
+                    or "unable to generate parser for this template" in resp_lower
+                ):
+                    friendly_switch_msg = "Вы сменили модель, начните новый диалог, чтобы продолжить"
+                    logger.warning(f"[LMStudio] Несовместимость шаблона при смене модели ('{active_model_id}'): {friendly_switch_msg}")
+                    raise RuntimeError(friendly_switch_msg)
 
                 err_text = f"Ошибка LM Studio [HTTP {resp.status_code}]: {resp.text}"
                 logger.error(err_text)

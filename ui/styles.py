@@ -268,13 +268,21 @@ QScrollBar::handle:horizontal {
     border-radius: 4px;
 }
 
-/* Status Bar */
+/* Status Bar (Fluent Cyberpunk Glassmorphism) */
 QStatusBar {
-    background-color: #080A0F;
-    border-top: 1px solid #171E2D;
-    color: #7A8BA6;
-    font-size: 12px;
-    padding: 2px 6px;
+    background-color: rgba(10, 13, 20, 0.78);
+    border-top: 1px solid rgba(0, 240, 255, 0.16);
+    color: #94A3B8;
+    font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
+    font-size: 11px;
+    min-height: 34px;
+    max-height: 34px;
+    padding: 2px 10px;
+}
+QStatusBar::item {
+    border: none;
+    margin: 0px 4px;
+    padding: 0px;
 }
 
 /* Slider */

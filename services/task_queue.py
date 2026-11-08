@@ -213,8 +213,12 @@ class TaskQueueWorker(QThread):
                         logger.info(f"Task aborted with exception (expected): {e}")
                         self.task_aborted.emit(task.id)
                     else:
-                        logger.error(f"Task failed: {task.name} - Error: {e}", exc_info=True)
-                        self.task_failed.emit(task.id, str(e))
+                        err_str = str(e)
+                        if "Вы сменили модель, начните новый диалог, чтобы продолжить" in err_str:
+                            logger.warning(f"Task stopped (model switched): {task.name} - {err_str}")
+                        else:
+                            logger.error(f"Task failed: {task.name} - Error: {e}", exc_info=True)
+                        self.task_failed.emit(task.id, err_str)
                 finally:
                     with self._lock:
                         self._current_task = None

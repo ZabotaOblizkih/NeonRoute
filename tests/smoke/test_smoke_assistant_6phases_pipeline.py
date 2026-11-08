@@ -1,3 +1,6 @@
+from ui.controllers.assistant_flow_controller import RE_IMAGE_TAG, RE_GALLERY_TRIGGER
+from services.art_director import VisualIntent, TargetSubject
+from services.art_director.director import ArtDirector
 import json
 import pytest
 from pathlib import Path
@@ -202,3 +205,81 @@ def test_smoke_assistant_6phases_pipeline(isolated_pipeline_env):
     assert snapshot_token_b in sys_prompt_b, "[Фаза 3 Сессия B] Снимок не попал в скомпилированный промпт"
     assert "SECRET_PAYLOAD_PHASE1" not in sys_prompt_b, "[УТЕЧКА]: Данные Фазы 1 утекли в системный промпт Сессии B"
     print("[Изоляция сессий] OK - утечек маркера и снимка между Сессией A и B не обнаружено")
+
+
+def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
+    """Сквозной смоук-тест однопроходного конвейера арт-скилла 'gallery' (Single-Turn Skill Injection)."""
+    sm = SessionManager.get_instance()
+    if hasattr(sm, "history_dir"):
+        sm.history_dir = isolated_pipeline_env["sessions_dir"]
+
+    # ── 1. Входящий запрос на арт ──
+    art_query = "Нарисуй мне концепт-арт неонового футуристического города под дождем"
+
+    # ── 2. Векторный и эвристический роутинг в 'gallery' ──
+    router = SkillRouter.get_instance()
+    skill_id, score, reason = router.route(art_query)
+    assert skill_id == "gallery", f"[Арт-Скилл] Ожидался скилл 'gallery', получен: {skill_id}"
+    assert score >= 0.5, f"[Арт-Скилл] Недостаточный скор: {score}"
+
+    # ── 3. Сборка системного окна с директивой SD 1.5 ──
+    builder = AssistantPromptBuilder.get_instance()
+    sys_prompt_sd15 = builder.build(
+        user_name="Тест",
+        user_query=art_query,
+        target_model_id="dreamshaper_8",
+        architecture="sd15"
+    )
+    assert "[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]" in sys_prompt_sd15
+    assert "[GALERY]" not in sys_prompt_sd15
+    assert "dreamshaper_8" in sys_prompt_sd15
+    assert "Tag Language: STRICTLY English" in sys_prompt_sd15
+
+    # Проверка авто-определения модели
+    sys_prompt_auto = builder.build(user_name="Тест", user_query=art_query)
+    assert "[SYSTEM DIRECTIVE:" in sys_prompt_auto
+    assert "--model " in sys_prompt_auto
+
+    # ── 4. Сборка системного окна с директивой SDXL ──
+    sys_prompt_sdxl = builder.build(
+        user_name="Тест",
+        user_query=art_query,
+        architecture="sdxl",
+        target_model_id="pony_diffusion",
+        target_model_desc="Pony Diffusion V6"
+    )
+    assert "[SYSTEM DIRECTIVE: Stable Diffusion XL" in sys_prompt_sdxl
+    assert "HAND ANCHOR RULE" in sys_prompt_sdxl
+    assert "pony_diffusion" in sys_prompt_sdxl
+
+    # ── 5. Эмуляция чистового вывода модели за один ход ──
+    simulated_llm_output = (
+        "<think>\nПланирую композицию города.\n</think>\n"
+        "Секунду, перевожу образ в кадр...\n"
+        "[IMAGE_PROMPT: futuristic rain-lashed cityscape, neon signs reflecting on wet pavement, towering skyscrapers with glowing holographic interfaces, rainy night atmosphere --ar wide --model dreamshaper_8]"
+    )
+
+    # ── 6. Проверка извлечения тега и блокировки второго прохода боевыми регулярками ──
+    match_image = RE_IMAGE_TAG.search(simulated_llm_output)
+    assert match_image is not None, "[Арт-Скилл] Боевая регулярка RE_IMAGE_TAG не нашла тег"
+    extracted_prompt = match_image.group(1).strip()
+    assert "futuristic rain-lashed cityscape" in extracted_prompt
+
+    has_gallery = RE_GALLERY_TRIGGER.search(simulated_llm_output) is not None
+    should_run_second_pass = bool(has_gallery and not extracted_prompt)
+    assert should_run_second_pass is False, "[Арт-Скилл] Ошибка: сработал флаг второго прохода!"
+
+    # ── 7. Сквозная генерация GenerationPlan в ArtDirector ──
+    director = ArtDirector()
+    v_intent = VisualIntent(
+        prompt=extracted_prompt,
+        target_subject=TargetSubject.SCENE_OBJECT,
+        suggested_model="dreamshaper_8",
+        mode="assistant"
+    )
+    plan = director.plan_from_visual_intent(visual_intent=v_intent)
+    assert plan is not None
+    assert "futuristic rain-lashed cityscape" in plan.positive_prompt
+    assert plan.width > 0 and plan.height > 0
+    assert plan.negative_prompt is not None
+    assert plan.target_checkpoint is not None

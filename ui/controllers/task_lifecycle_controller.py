@@ -405,6 +405,33 @@ class TaskLifecycleMixin:
             self.statusBar().showMessage(f"Модель «{missing_name}» не найдена.", 5000)
             return
 
+        # Проверка на ошибку шаблона при смене модели в активном диалоге
+        is_model_switched_template_err = (
+            "Вы сменили модель, начните новый диалог, чтобы продолжить" in error_msg
+            or "Jinja Exception" in error_msg
+            or "conversation roles must alternate" in error_msg
+            or "Unable to generate parser for this template" in error_msg
+        )
+        if is_model_switched_template_err:
+            friendly_switch_text = "Вы сменили модель, начните новый диалог, чтобы продолжить"
+            logger.info(f"[NeonRoute.TaskLifecycle] Заглушка смены модели: {friendly_switch_text}")
+            sender_name = (
+                getattr(self.active_character, "name", "Элария")
+                if hasattr(self, "active_character") and self.active_character
+                else "Элария"
+            )
+            if getattr(self, "_turn_bubble", None) is not None:
+                try:
+                    self._turn_bubble.set_text(friendly_switch_text)
+                except Exception:
+                    self._append_message(sender_name, friendly_switch_text, is_user=False)
+                self._turn_bubble = None
+            else:
+                self._append_message(sender_name, friendly_switch_text, is_user=False)
+
+            self.statusBar().showMessage(friendly_switch_text, 6000)
+            return
+
         # Для всех остальных непредвиденных ошибок сохраняется стандартный лог:
         logger.error(f"[NeonRoute.TaskQueue] Task failed: {task_id} - {error_msg}")
         if "ForgeOfflineError" in error_msg or "SD WebUI Forge не запущен" in error_msg:
