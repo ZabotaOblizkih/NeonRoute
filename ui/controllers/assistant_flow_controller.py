@@ -1264,15 +1264,22 @@ class AssistantFlowControllerMixin:
             if hasattr(self, "chat_stream") and hasattr(self.chat_stream, "set_knowledge_sources"):
                 self.chat_stream.set_knowledge_sources(sources)
 
-        # Активация киберпанк-лоадера ожидания кадра в бабле
-        if has_gallery and hasattr(msg_widget, "show_art_loading_placeholder"):
+        # Активация киберпанк-лоадера ожидания кадра в бабле (для [GALLERY] и [IMAGE_PROMPT])
+        if (has_gallery or extracted_image_prompt) and hasattr(msg_widget, "show_art_loading_placeholder"):
             msg_widget.show_art_loading_placeholder()
+
+        # Формируем контент для памяти модели: сохраняем [IMAGE_PROMPT: ...]
+        memory_content = text
+        if extracted_image_prompt and "[IMAGE_PROMPT:" not in memory_content:
+            memory_content = text + "\n\n[IMAGE_PROMPT: " + extracted_image_prompt + "]"
+            memory_content = memory_content.strip()
 
         print(f"[DIAG_THINK][3. FINALIZE] thought_data is None: {thought_data is None}")
         if thought_data:
             print(f"[DIAG_THINK][3. FINALIZE] thought content preview: {repr(thought_data.get('content', ''))[:120]}")
-        print(f"[DIAG_THINK][3. FINALIZE] raw text preview: {repr(text)[:120]}")
-        self._sync_turn(role="assistant", content=text, replace_last=True, thought=thought_data)
+        print(f"[DIAG_THINK][3. FINALIZE] raw text preview (UI): {repr(text)[:120]}")
+        print(f"[DIAG_THINK][3. FINALIZE] memory text preview (LLM): {repr(memory_content)[:120]}")
+        self._sync_turn(role="assistant", content=memory_content, replace_last=True, thought=thought_data)
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()
 
@@ -1319,4 +1326,3 @@ class AssistantFlowControllerMixin:
                 MemoryExtractor.extract_facts_async(clean_messages, context=self)
         except Exception as e:
             logger.warning(f"[AssistantFlow] Ошибка вызова экстракции памяти: {e}")
-

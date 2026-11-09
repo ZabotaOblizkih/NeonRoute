@@ -129,6 +129,9 @@ class ChatBubbleBuilderMixin:
     def _render_stored_message(self, msg: dict, target_index: Optional[int] = None) -> ChatMessageWidget:
         sender = msg.get("sender", "NeonRoute")
         text = msg.get("text", "")
+        # Очистка технического тега генерации перед выводом в UI бабл (в памяти модели тег сохраняется)
+        if not msg.get("is_user", False) and text:
+            text = re.sub(r'\[IMAGE[\s_-]PROMPT:[^\]]+\]', '', text, flags=re.IGNORECASE).strip()
         # Если в истории остался пустой ответ ИИ, восстанавливаем видимый текст
         if not text and not msg.get("is_user") and not msg.get("image_path"):
             text = msg.get("translated_text") or "..." 

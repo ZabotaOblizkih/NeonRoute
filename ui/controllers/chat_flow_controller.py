@@ -969,20 +969,24 @@ class ChatFlowControllerMixin:
         buf = self._stream_token_buffer
         bubble = getattr(self, "_turn_bubble", None)
 
-        # Регулярные выражения для потокового подавления арт-триггеров
+        # Регулярные выражения для потокового подавления арт-триггеров и тегов генерации
         re_gallery_full = re.compile(r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ|ГАЛЕРИЯ|ГАЛЛЕРЕЯ|ГАЛЛЕРИЯ)\]', re.IGNORECASE)
         re_gallery_prefix = re.compile(r'\[(?:[gGгГ][a-zA-Zа-яА-ЯёЁ]{0,9})?$', re.IGNORECASE)
+        re_image_full = re.compile(r'\[IMAGE[\s_-]PROMPT:[^\s\]][^\]]*\]', re.IGNORECASE)
+        re_image_prefix = re.compile(r'\[(?:image|img)[\s_-]?[^\]]*$', re.IGNORECASE)
 
-        # 1. Мгновенная активация киберпанк-лоадера и вырезание готового тега из потока
-        if re_gallery_full.search(buf):
+        # 1. Мгновенная активация киберпанк-лоадера и вырезание готовых тегов из экранного потока
+        has_art_trigger = bool(re_gallery_full.search(buf) or re_image_full.search(buf) or re_image_prefix.search(buf))
+        if has_art_trigger:
             if bubble is not None and hasattr(bubble, "show_art_loading_placeholder"):
                 bubble.show_art_loading_placeholder()
             buf = re_gallery_full.sub('', buf)
+            buf = re_image_full.sub('', buf)
 
         # 2. Скользящее окно: удержание незавершенного префикса маркера от вывода на экран
         chunk_to_render = buf
         if not force:
-            partial_match = re_gallery_prefix.search(buf)
+            partial_match = re_gallery_prefix.search(buf) or re_image_prefix.search(buf)
             if partial_match:
                 split_idx = partial_match.start()
                 chunk_to_render = buf[:split_idx]
