@@ -108,8 +108,8 @@ class HeaderAvatarWidget(QLabel):
         super().mouseReleaseEvent(event)
 
 class ChatHeaderWidget(QFrame):
-    def __init__(self, window: 'MainWindow'):
-        super().__init__(window)
+    def __init__(self, window: 'MainWindow', parent=None):
+        super().__init__(parent or window)
         self.window = window
         self.setObjectName("ChatHeaderBar")
         self.setStyleSheet("""

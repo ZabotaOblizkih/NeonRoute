@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
 
 class ChatStreamWidget(QWidget):
-    def __init__(self, window: 'MainWindow'):
-        super().__init__(window)
+    def __init__(self, window: 'MainWindow', parent=None):
+        super().__init__(parent or window)
         self.window = window
         self.font_size: int = self.window.app_config.get("chat_font_size", 13)
         self._btn_load_more: Optional[QPushButton] = None

@@ -29,6 +29,7 @@ _LAZY_EXPORTS = {
     "ChubCatalogDialog": (".chub_catalog_dialog", "ChubCatalogDialog"),
     "CardVisualSetupDialog": (".card_visual_setup_dialog", "CardVisualSetupDialog"),
     "CampaignInfoDialog": (".campaign_info_dialog", "CampaignInfoDialog"),
+    "SettingsDialog": (".settings_dialog", "SettingsDialog"),
 }
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from .chub_catalog_dialog import ChubCatalogDialog
     from .card_visual_setup_dialog import CardVisualSetupDialog
     from .campaign_info_dialog import CampaignInfoDialog
+    from .settings_dialog import SettingsDialog
 
 
 def __getattr__(name: str) -> Any:

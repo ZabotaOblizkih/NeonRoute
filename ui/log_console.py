@@ -1,28 +1,55 @@
 """
-Log Console Dialog for NeonRoute.
-Provides real-time terminal log viewer, syntax coloring by log level,
-and clipboard export capabilities.
-Displays strictly the current application runtime session logs.
+ui/log_console.py
+=================
+Современная консоль логов и отладки для NeonRoute в стиле Fluent Design.
+- Наследуется от FramelessDialog с мягкими закругленными углами (border-radius: 14px)
+- Кастомная шапка FluentTitleBar с кнопкой закрытия [X] в правом верхнем углу
+- Динамическая адаптивная палитра (Material You / Fluent Tint) под цвет активных обоев
+- Живой терминал логов с подсветкой синтаксиса уровней (INFO, WARNING, ERROR, CRITICAL, DEBUG)
+- Фильтрация по уровням логов через SegmentedWidget (Все / INFO / WARNING / ERROR / DEBUG)
+- Быстрый живой поиск по тексту логов через SearchLineEdit
+- Fluent-кнопки управления: Копировать, Очистить, Экспорт в файл, Закрыть
+- Потокобезопасная передача записей через QtLogHandler и QueuedConnection
 """
 
+import os
 import html
 import logging
 from collections import deque
-from typing import Optional, Tuple
+from typing import Optional, Dict
+
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCursor, QPixmap, QCursor
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
-    QPlainTextEdit, QLabel, QApplication
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPlainTextEdit,
+    QLabel,
+    QApplication,
+    QFileDialog,
+)
+from qframelesswindow import FramelessDialog
+from qfluentwidgets import (
+    FluentTitleBar,
+    PushButton,
+    PrimaryPushButton,
+    SearchLineEdit,
+    SegmentedWidget,
+    CaptionLabel,
+    BodyLabel,
+    FluentIcon as FIF,
 )
 
-# Lightweight ring buffer storing up to 2000 events strictly for the current app run (~2MB RAM)
-_CURRENT_SESSION_LOGS = deque(maxlen=2000)
+from ui.common.palette_utils import extract_adaptive_palette
+
+# Кольцевой буфер событий текущей сессии приложения (до 4000 записей)
+_CURRENT_SESSION_LOGS = deque(maxlen=4000)
 
 
 class QtLogHandler(QObject, logging.Handler):
     """
-    Thread-safe logging.Handler that emits PyQt signals when new log records arrive.
+    Потокобезопасный logging.Handler, транслирующий записи логов в Qt-сигнал.
     """
     log_record_signal = pyqtSignal(str, str)  # formatted_message, levelname
 
@@ -44,7 +71,7 @@ _GLOBAL_QT_HANDLER: Optional[QtLogHandler] = None
 
 
 def setup_global_log_handler() -> QtLogHandler:
-    """Initializes and registers the singleton QtLogHandler on root logger."""
+    """Инициализирует и регистрирует синглтон QtLogHandler на корневом логгере."""
     global _GLOBAL_QT_HANDLER
     if _GLOBAL_QT_HANDLER is None:
         _GLOBAL_QT_HANDLER = QtLogHandler()
@@ -53,108 +80,285 @@ def setup_global_log_handler() -> QtLogHandler:
     return _GLOBAL_QT_HANDLER
 
 
-class LogConsoleDialog(QDialog):
+class LogConsoleDialog(FramelessDialog):
     """
-    Interactive dark terminal dialog displaying current session application logs in real-time.
+    Современная интерактивная консоль текущей сессии приложения NeonRoute в стиле Fluent Design.
     """
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Консоль логов — NeonRoute (Текущая сессия)")
-        self.resize(880, 540)
-        self.setMinimumSize(640, 400)
+        super().__init__(parent=parent)
+        self.window = parent
+        self.setWindowTitle("Консоль логов и отладки — NeonRoute")
+        self.resize(920, 580)
+        self.setMinimumSize(700, 420)
 
+        # 1. Custom Fluent TitleBar с [X] в правом верхнем углу
+        title_bar = FluentTitleBar(self)
+        self.setTitleBar(title_bar)
+        self.titleBar.setFixedHeight(46)
+        if hasattr(self.titleBar, "minBtn") and self.titleBar.minBtn:
+            self.titleBar.minBtn.hide()
+        if hasattr(self.titleBar, "maxBtn") and self.titleBar.maxBtn:
+            self.titleBar.maxBtn.hide()
+        if hasattr(self.titleBar, "closeBtn") and self.titleBar.closeBtn:
+            self.titleBar.closeBtn.setVisible(True)
+            try:
+                self.titleBar.closeBtn.clicked.disconnect()
+            except Exception:
+                pass
+            self.titleBar.closeBtn.clicked.connect(self.close)
+
+        # 2. Инициализация состояния фильтров
+        self._active_filter = "ALL"
+        self._search_text = ""
+        self._current_palette: Dict[str, str] = {}
+
+        self.setObjectName("LogConsoleDialog")
         self._setup_ui()
+        self.update_adaptive_palette()
         self._load_session_logs()
         self._connect_logger()
 
-    def _setup_ui(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #080B10;
-                color: #CBD5E1;
-            }
-            QPlainTextEdit {
-                background-color: #04060A;
-                color: #CBD5E1;
-                border: 1px solid #1E283D;
-                border-radius: 6px;
-                padding: 10px;
-                font-family: 'Consolas', 'Cascadia Code', 'Courier New', monospace;
+    def _resolve_pixmap(self) -> Optional[QPixmap]:
+        """Ищет активные обои в иерархии родительских окон."""
+        p = self.parent()
+        while p:
+            if hasattr(p, "background_pixmap") and p.background_pixmap:
+                return p.background_pixmap
+            if hasattr(p, "window") and hasattr(p.window, "background_pixmap") and p.window.background_pixmap:
+                return p.window.background_pixmap
+            if hasattr(p, "_bg_render_cache") and p._bg_render_cache:
+                return p._bg_render_cache
+            p = p.parent()
+        return None
+
+    def update_adaptive_palette(self):
+        """
+        Адаптирует цветовую палитру окна, карточки терминала и кнопок под активные обои.
+        """
+        pixmap = self._resolve_pixmap()
+        palette = extract_adaptive_palette(pixmap)
+        self._current_palette = palette
+
+        self.setStyleSheet(f"""
+            LogConsoleDialog#LogConsoleDialog {{
+                background-color: {palette['bg']};
+                border: 1px solid {palette['border']};
+                border-radius: 14px;
+            }}
+            FluentTitleBar {{
+                background-color: {palette['bg']};
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }}
+            FluentTitleBar QLabel {{
+                color: #F8FAFC;
+                font-family: 'Segoe UI', -apple-system, sans-serif;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QWidget#LogConsoleBodyWidget {{
+                background-color: {palette['bg']};
+                border-bottom-left-radius: 14px;
+                border-bottom-right-radius: 14px;
+            }}
+            #LogConsoleDialog QWidget {{
+                background-color: transparent;
+                color: #E2E8F0;
+            }}
+            QPlainTextEdit#LogTerminal {{
+                background-color: {palette['terminal_bg']};
+                border: 1px solid {palette['terminal_border']};
+                border-radius: 10px;
+                color: #E2E8F0;
+                font-family: 'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
                 font-size: 12px;
                 line-height: 1.45;
-            }
-            QPushButton {
-                background-color: #141C2A;
-                color: #E2E8F0;
-                border: 1px solid #24344D;
+                padding: 10px;
+                selection-background-color: {palette['accent']};
+                selection-color: #0A0D14;
+            }}
+            SearchLineEdit {{
+                background-color: {palette['card']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 6px;
-                padding: 6px 16px;
+                color: #F8FAFC;
+                padding-left: 8px;
+            }}
+            SearchLineEdit:focus {{
+                border-color: {palette['accent']};
+            }}
+            PushButton, PrimaryPushButton {{
+                background-color: {palette['btn']};
+                border: 1px solid {palette['btn_border']};
+                border-radius: 6px;
+                color: #F8FAFC;
                 font-weight: 500;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #1C273C;
-                border-color: #00F0FF;
-                color: #00F0FF;
-            }
-            QPushButton:pressed {
-                background-color: #0F1622;
-            }
+                font-size: 12px;
+                padding: 5px 14px;
+            }}
+            PushButton:hover, PrimaryPushButton:hover {{
+                background-color: {palette['btn_hover']};
+                border-color: {palette['btn_hover']};
+                color: {palette['btn_hover_text']};
+                font-weight: 600;
+            }}
+            PushButton:pressed, PrimaryPushButton:pressed {{
+                background-color: {palette['card_hover']};
+                border-color: {palette['border']};
+                color: #F8FAFC;
+            }}
+            #LogConsoleDialog QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            #LogConsoleDialog QScrollBar::handle:vertical {{
+                background: {palette['border']};
+                min-height: 24px;
+                border-radius: 4px;
+            }}
+            #LogConsoleDialog QScrollBar::handle:vertical:hover {{
+                background: {palette['accent']};
+            }}
         """)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+    def _setup_ui(self):
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # Header bar
-        header_layout = QHBoxLayout()
-        title_lbl = QLabel("🖥️ Журнал текущей сессии (Live Console)")
-        title_lbl.setStyleSheet("font-weight: bold; font-size: 13px; color: #00F0FF;")
-        header_layout.addWidget(title_lbl)
+        # Контейнер содержимого под шапкой
+        body_widget = QWidget(self)
+        body_widget.setObjectName("LogConsoleBodyWidget")
+        body_layout = QVBoxLayout(body_widget)
+        body_layout.setContentsMargins(18, 12, 18, 16)
+        body_layout.setSpacing(12)
 
-        header_layout.addStretch()
+        # --- 1. Панель фильтров и поиска ---
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setSpacing(10)
 
-        self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
-        header_layout.addWidget(self.status_lbl)
+        # Сегментированный переключатель уровней логов
+        self.level_filter = SegmentedWidget(body_widget)
+        self.level_filter.addItem("ALL", "Все")
+        self.level_filter.addItem("INFO", "Info")
+        self.level_filter.addItem("WARNING", "Warning")
+        self.level_filter.addItem("ERROR", "Error")
+        self.level_filter.addItem("DEBUG", "Debug")
+        self.level_filter.setCurrentItem("ALL")
+        self.level_filter.currentItemChanged.connect(self._on_filter_changed)
+        toolbar_layout.addWidget(self.level_filter)
 
-        layout.addLayout(header_layout)
+        # Поле поиска
+        self.search_box = SearchLineEdit(body_widget)
+        self.search_box.setPlaceholderText("Поиск по тексту логов...")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.setFixedWidth(240)
+        self.search_box.textChanged.connect(self._on_search_changed)
+        toolbar_layout.addWidget(self.search_box)
 
-        # Log Text Box
-        self.text_edit = QPlainTextEdit(self)
+        toolbar_layout.addStretch(1)
+
+        # Счетчик событий
+        self.lbl_count = CaptionLabel("Событий: 0", body_widget)
+        self.lbl_count.setStyleSheet("color: #94A3B8; font-size: 12px; font-weight: 500;")
+        toolbar_layout.addWidget(self.lbl_count)
+
+        body_layout.addLayout(toolbar_layout)
+
+        # --- 2. Терминальное поле вывода логов ---
+        self.text_edit = QPlainTextEdit(body_widget)
+        self.text_edit.setObjectName("LogTerminal")
         self.text_edit.setReadOnly(True)
         self.text_edit.setMaximumBlockCount(4000)
-        layout.addWidget(self.text_edit, stretch=1)
+        body_layout.addWidget(self.text_edit, stretch=1)
 
-        # Buttons
-        btn_layout = QHBoxLayout()
+        # --- 3. Нижняя панель действий и статус ---
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setSpacing(10)
 
-        self.btn_copy = QPushButton("📋 Копировать логи")
-        self.btn_copy.setToolTip("Скопировать весь текст логов в буфер обмена")
+        self.btn_copy = PushButton("📋 Копировать логи", body_widget)
+        self.btn_copy.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_copy.setToolTip("Скопировать отображаемые логи в буфер обмена")
         self.btn_copy.clicked.connect(self._copy_logs)
-        btn_layout.addWidget(self.btn_copy)
+        bottom_layout.addWidget(self.btn_copy)
 
-        self.btn_clear = QPushButton("🧹 Очистить")
-        self.btn_clear.setToolTip("Очистить виджет консоли")
+        self.btn_clear = PushButton("🧹 Очистить", body_widget)
+        self.btn_clear.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_clear.setToolTip("Очистить буфер журнала сессии")
         self.btn_clear.clicked.connect(self._clear_logs)
-        btn_layout.addWidget(self.btn_clear)
+        bottom_layout.addWidget(self.btn_clear)
 
-        btn_layout.addStretch()
+        self.btn_export = PushButton("💾 Сохранить в файл...", body_widget)
+        self.btn_export.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_export.setToolTip("Экспортировать логи сессии в текстовый файл (.log)")
+        self.btn_export.clicked.connect(self._export_logs)
+        bottom_layout.addWidget(self.btn_export)
 
-        self.btn_close = QPushButton("Закрыть")
+        bottom_layout.addStretch(1)
+
+        # Индикатор статуса
+        self.status_lbl = CaptionLabel("", body_widget)
+        self.status_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
+        bottom_layout.addWidget(self.status_lbl)
+
+        self.btn_close = PushButton("Закрыть", body_widget)
+        self.btn_close.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_close.clicked.connect(self.close)
-        btn_layout.addWidget(self.btn_close)
+        bottom_layout.addWidget(self.btn_close)
 
-        layout.addLayout(btn_layout)
+        body_layout.addLayout(bottom_layout)
+
+        root_layout.addWidget(self.titleBar)
+        root_layout.addWidget(body_widget, 1)
+
+    def _on_filter_changed(self, route_key: str):
+        """Обрабатывает выбор категории фильтра."""
+        self._active_filter = route_key
+        self._refresh_log_view()
+
+    def _on_search_changed(self, text: str):
+        """Обрабатывает изменение поискового запроса."""
+        self._search_text = text
+        self._refresh_log_view()
 
     def _load_session_logs(self):
-        """Populates the console strictly from current runtime session buffer."""
+        """Загружает логи из буфера текущей сессии."""
+        self._refresh_log_view()
+
+    def _refresh_log_view(self):
+        """Перерисовывает содержимое консоли с учетом активного фильтра и поиска."""
         self.text_edit.clear()
+        query = self._search_text.lower().strip()
+        filter_level = self._active_filter.upper()
+
+        color_map = {
+            "INFO": "#38BDF8",      # Sky Cyan
+            "WARNING": "#FBBF24",   # Amber
+            "ERROR": "#F43F5E",     # Crimson
+            "CRITICAL": "#FF0055",  # Neon Crimson
+            "DEBUG": "#94A3B8"      # Slate Light
+        }
+
         for msg, level in _CURRENT_SESSION_LOGS:
-            self._append_formatted_log(msg, level)
+            lvl_upper = level.upper()
+            if filter_level != "ALL" and lvl_upper != filter_level:
+                continue
+            if query and query not in msg.lower():
+                continue
+
+            color = color_map.get(lvl_upper, "#CBD5E1")
+            escaped = html.escape(msg)
+            self.text_edit.appendHtml(
+                f"<div style='color: {color}; margin: 1px 0; white-space: pre-wrap;'>{escaped}</div>"
+            )
+
+        self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
+        self._update_counter()
 
     def _connect_logger(self):
+        """Подключает сигнал живого поступления логов."""
         handler = setup_global_log_handler()
         handler.log_record_signal.connect(
             self._append_formatted_log,
@@ -162,26 +366,98 @@ class LogConsoleDialog(QDialog):
         )
 
     def _append_formatted_log(self, text: str, levelname: str):
-        color_map = {
-            "INFO": "#38BDF8",      # Sky Cyan
-            "WARNING": "#FBBF24",   # Amber
-            "ERROR": "#F43F5E",     # Crimson
-            "CRITICAL": "#FF0055",  # Neon Crimson
-            "DEBUG": "#64748B"      # Slate
-        }
-        color = color_map.get(levelname.upper(), "#CBD5E1")
+        """Добавляет одну запись лога в реальном времени, если она удовлетворяет фильтрам."""
+        query = self._search_text.lower().strip()
+        filter_level = self._active_filter.upper()
+        lvl_upper = levelname.upper()
 
-        escaped = html.escape(text)
-        # white-space: pre-wrap сохраняет переносы \n и отступы в HTML-виджете
-        colored_html = f"<div style='color: {color}; margin: 1px 0; white-space: pre-wrap;'>{escaped}</div>"
-        self.text_edit.appendHtml(colored_html)
-        self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
+        matches_filter = (filter_level == "ALL" or lvl_upper == filter_level)
+        matches_query = (not query or query in text.lower())
+
+        if matches_filter and matches_query:
+            color_map = {
+                "INFO": "#38BDF8",
+                "WARNING": "#FBBF24",
+                "ERROR": "#F43F5E",
+                "CRITICAL": "#FF0055",
+                "DEBUG": "#94A3B8"
+            }
+            color = color_map.get(lvl_upper, "#CBD5E1")
+            escaped = html.escape(text)
+            colored_html = f"<div style='color: {color}; margin: 1px 0; white-space: pre-wrap;'>{escaped}</div>"
+            self.text_edit.appendHtml(colored_html)
+            self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
+
+        self._update_counter()
+
+    def _update_counter(self):
+        total = len(_CURRENT_SESSION_LOGS)
+        self.lbl_count.setText(f"Событий: {total}")
 
     def _copy_logs(self):
+        """Копирует содержимое консоли в буфер обмена."""
         clipboard = QApplication.clipboard()
         clipboard.setText(self.text_edit.toPlainText())
         self.status_lbl.setText("Логи скопированы в буфер обмена!")
 
     def _clear_logs(self):
+        """Очищает консоль и текущий буфер логов."""
+        _CURRENT_SESSION_LOGS.clear()
         self.text_edit.clear()
+        self._update_counter()
         self.status_lbl.setText("Консоль логов очищена.")
+
+    def _export_logs(self):
+        """Экспорт текущих логов в файл."""
+        from datetime import datetime
+        default_name = f"neonroute_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить логи текущей сессии",
+            default_name,
+            "Log Files (*.log);;Text Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(self.text_edit.toPlainText())
+                self.status_lbl.setText(f"Файл сохранен: {os.path.basename(file_path)}")
+            except Exception as e:
+                self.status_lbl.setText(f"Ошибка экспорта: {e}")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Гарантируем корректное отображение кнопки закрытия [X]
+        if hasattr(self, "titleBar") and self.titleBar:
+            if hasattr(self.titleBar, "minBtn") and self.titleBar.minBtn:
+                self.titleBar.minBtn.hide()
+            if hasattr(self.titleBar, "maxBtn") and self.titleBar.maxBtn:
+                self.titleBar.maxBtn.hide()
+            if hasattr(self.titleBar, "closeBtn") and self.titleBar.closeBtn:
+                self.titleBar.closeBtn.setVisible(True)
+
+        self.update_adaptive_palette()
+
+        if self.parent():
+            try:
+                parent_geom = self.parent().geometry()
+                x = parent_geom.x() + (parent_geom.width() - self.width()) // 2
+                y = parent_geom.y() + (parent_geom.height() - self.height()) // 2
+                self.move(max(20, x), max(20, y))
+            except Exception:
+                pass
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        try:
+            handler = setup_global_log_handler()
+            handler.log_record_signal.disconnect(self._append_formatted_log)
+        except Exception:
+            pass
+        super().closeEvent(event)

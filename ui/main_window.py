@@ -264,19 +264,28 @@ class MainWindow(
 
 
     def _open_main_settings_menu(self, target_widget=None):
-        """Открывает неоновое всплывающее меню настроек над шестеренкой сайдбара."""
-        menu = MenuBuilder.create_settings_menu(self)
-        if target_widget:
-            global_pos = target_widget.mapToGlobal(QPoint(0, 0))
-            menu_hint = menu.sizeHint()
-            popup_pos = QPoint(
-                global_pos.x(),
-                max(10, global_pos.y() - menu_hint.height() - 4)
-            )
-            menu.exec(popup_pos, ani=True)
-        else:
-            from PyQt6.QtGui import QCursor
-            menu.exec(QCursor.pos(), ani=True)
+        """Открывает современное окно параметров и настроек в стиле Fluent Design."""
+        try:
+            from ui.dialogs.settings_dialog import SettingsDialog
+            dialog = SettingsDialog(self)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Ошибка при открытии окна настроек: {e}", exc_info=True)
+            try:
+                menu = MenuBuilder.create_settings_menu(self)
+                if target_widget:
+                    global_pos = target_widget.mapToGlobal(QPoint(0, 0))
+                    menu_hint = menu.sizeHint()
+                    popup_pos = QPoint(
+                        global_pos.x(),
+                        max(10, global_pos.y() - menu_hint.height() - 4)
+                    )
+                    menu.exec(popup_pos, ani=True)
+                else:
+                    from PyQt6.QtGui import QCursor
+                    menu.exec(QCursor.pos(), ani=True)
+            except Exception:
+                pass
 
     def menuBar(self):
         """Меню перенесено на кнопку-шестеренку в сайдбар, верхний MenuBar полностью отключен."""
@@ -415,7 +424,10 @@ class MainWindow(
         self._workspace_inspector: Optional[WorkspaceInspectorWidget] = None
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([280, 920, 0])
+        if self.main_splitter.count() >= 3:
+            self.main_splitter.setSizes([280, 920, 0])
+        else:
+            self.main_splitter.setSizes([280, 920])
 
         # 3. Status Bar
         self._setup_status_bar()
@@ -433,7 +445,7 @@ class MainWindow(
         layout.setSpacing(0)
 
         # Chat Header Bar Component
-        self.chat_header_bar = ChatHeaderWidget(window=self)
+        self.chat_header_bar = ChatHeaderWidget(window=self, parent=container)
         layout.addWidget(self.chat_header_bar)
 
         # Aliases for 100% backward compatibility
@@ -475,7 +487,7 @@ class MainWindow(
         self.floating_close_btn.setVisible(False)
 
         # Search Bar Widget (Docked right below header)
-        self.search_bar_widget = SearchBarWidget(self)
+        self.search_bar_widget = SearchBarWidget(container)
         self.search_bar_widget.setVisible(False)
         self.search_bar_widget.query_changed.connect(self._on_search_query_changed)
         self.search_bar_widget.find_next.connect(self._search_next)
@@ -484,7 +496,7 @@ class MainWindow(
         layout.addWidget(self.search_bar_widget)
 
         # Chat Stream Area Component
-        self.chat_stream = ChatStreamWidget(window=self)
+        self.chat_stream = ChatStreamWidget(window=self, parent=container)
         layout.addWidget(self.chat_stream, stretch=1)
 
         # Aliases for 100% backward compatibility with mixins
@@ -514,7 +526,7 @@ class MainWindow(
             self.scroll_area.viewport().installEventFilter(self)
 
         # Bottom Input Capsule Component
-        self.input_panel = ChatInputPanel(window=self)
+        self.input_panel = ChatInputPanel(window=self, parent=container)
         layout.addWidget(self.input_panel)
 
         # Aliases for 100% backward compatibility
@@ -674,7 +686,10 @@ class MainWindow(
             if getattr(self, "_workspace_inspector", None) is not None:
                 self._workspace_inspector.setVisible(False)
             chat_w = max(600, total_w - sidebar_w)
-            self.main_splitter.setSizes([sidebar_w, chat_w, 0])
+            if self.main_splitter.count() >= 3:
+                self.main_splitter.setSizes([sidebar_w, chat_w, 0])
+            else:
+                self.main_splitter.setSizes([sidebar_w, chat_w])
 
     @property
     def workspace_inspector(self) -> WorkspaceInspectorWidget:

@@ -32,11 +32,6 @@ class ChatBackgroundViewport(QWidget):
             pixmap = None
         self._bg_pixmap = pixmap
         self._dim_alpha = max(20, min(240, alpha))
-        # Если картинка задана — выключаем сквозную прозрачность, чтобы буфер рисовался
-        if self._bg_pixmap is not None:
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        else:
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._update_scaled_pixmap()
         self.update()
 
@@ -73,6 +68,11 @@ class ChatBackgroundViewport(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         if self._scaled_pixmap and not self._scaled_pixmap.isNull():
+            # Очищаем буфер перед выводом нового изображения
+            painter.setCompositionMode(QPainter.CompositionMode.Clear)
+            painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+            painter.setCompositionMode(QPainter.CompositionMode.SourceOver)
+
             # Center the scaled wallpaper
             x = (self.width() - self._scaled_pixmap.width()) // 2
             y = (self.height() - self._scaled_pixmap.height()) // 2
@@ -81,8 +81,10 @@ class ChatBackgroundViewport(QWidget):
             # Apply adaptive darkening layer
             painter.fillRect(self.rect(), QColor(10, 12, 18, self._dim_alpha))
         else:
-            # Когда картинки нет — оставляем прозрачным для просвечивания дефолтного окна
-            painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+            # Когда картинки нет — гарантированно стираем пиксели уходящего фона
+            painter.setCompositionMode(QPainter.CompositionMode.Clear)
+            painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+            painter.setCompositionMode(QPainter.CompositionMode.SourceOver)
         painter.end()
 
     def _show_context_menu(self, pos):

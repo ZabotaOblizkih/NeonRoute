@@ -203,7 +203,7 @@ class SidebarWidget(QFrame):
         btn_open_audio.clicked.connect(lambda: SidebarWidget._safe_open_folder(AUDIO_DIR))
 
         self.btn_settings = TransparentToolButton(FIF.SETTING, self)
-        self.btn_settings.setToolTip("Параметры и настройки (Меню)")
+        self.btn_settings.setToolTip("Параметры и настройки")
         self.btn_settings.setFixedSize(34, 34)
         self.btn_settings.installEventFilter(
             ToolTipFilter(self.btn_settings, showDelay=300, position=ToolTipPosition.TOP)

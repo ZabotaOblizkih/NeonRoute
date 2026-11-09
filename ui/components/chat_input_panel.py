@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 
 class ChatInputPanel(QFrame):
-    def __init__(self, window: 'MainWindow'):
-        super().__init__(window)
+    def __init__(self, window: 'MainWindow', parent=None):
+        super().__init__(parent or window)
         self.window = window
         self.attached_files: List[Path] = []
         self.setObjectName("InputAreaContainer")

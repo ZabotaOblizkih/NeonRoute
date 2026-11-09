@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtWidgets import (
-    QMessageBox, QInputDialog, QDialog, QFileDialog, QLabel
+    QApplication, QMessageBox, QInputDialog, QDialog, QFileDialog, QLabel
 )
 from PyQt6.QtGui import QPixmap, QCursor
 
@@ -221,10 +221,20 @@ class DialogControllerMixin:
         self.update()
         self.statusBar().showMessage("Фон окна сброшен к стандартной теме.", 3000)
 
-    def _open_log_console_dialog(self):
+    def _open_log_console_dialog(self, parent=None):
         """Opens live log viewer dialog."""
+        from PyQt6.QtWidgets import QApplication
+        active_modal = parent or QApplication.activeModalWidget()
+        if active_modal and active_modal is not self:
+            from ui.log_console import LogConsoleDialog
+            dialog = LogConsoleDialog(active_modal)
+            dialog.exec()
+            return
+
         if self._log_console_dialog is None:
             self._log_console_dialog = LogConsoleDialog(self)
+        if self._log_console_dialog.isMinimized():
+            self._log_console_dialog.showNormal()
         self._log_console_dialog.show()
         self._log_console_dialog.raise_()
         self._log_console_dialog.activateWindow()
@@ -266,7 +276,7 @@ class DialogControllerMixin:
         dlg = DependencyDialog(parent=self)
         dlg.exec()
 
-    def _open_global_model_sampling_dialog(self):
+    def _open_global_model_sampling_dialog(self, parent=None):
         """Opens ModelSamplingDialog for setting persistent defaults in config.json."""
         from services.session_manager import get_default_sampling_params
         from utils.config_manager import ConfigManager
@@ -276,12 +286,14 @@ class DialogControllerMixin:
         current_defaults = get_default_sampling_params(active_mode)
 
         from ui.dialogs.model_sampling_dialog import ModelSamplingDialog
+        active_modal = parent or QApplication.activeModalWidget()
+        parent_widget = active_modal if active_modal else self
         dlg = ModelSamplingDialog(
             current_params=current_defaults,
             mode=self.current_mode,
             is_engineer_mode=is_eng,
             is_global_defaults=True,
-            parent=self
+            parent=parent_widget
         )
         if dlg.exec():
             new_params = dlg.get_sampling_params()
@@ -314,7 +326,7 @@ class DialogControllerMixin:
                 4000
             )
 
-    def _open_model_sampling_dialog(self):
+    def _open_model_sampling_dialog(self, parent=None):
         """Opens ModelSamplingDialog to adjust sampling strictly for the active session."""
         if not self.current_session:
             return
@@ -323,12 +335,14 @@ class DialogControllerMixin:
             current_params["is_dm_mode"] = self.current_session.get("is_dm_mode", False)
         is_eng = self.is_engineer_mode_active()
         from ui.dialogs.model_sampling_dialog import ModelSamplingDialog
+        active_modal = parent or QApplication.activeModalWidget()
+        parent_widget = active_modal if active_modal else self
         dlg = ModelSamplingDialog(
             current_params=current_params,
             mode=self.current_mode,
             is_engineer_mode=is_eng,
             is_global_defaults=False,
-            parent=self
+            parent=parent_widget
         )
         if dlg.exec():
             new_params = dlg.get_sampling_params()
@@ -394,7 +408,7 @@ class DialogControllerMixin:
             self._update_header_for_current_state()
             self.statusBar().showMessage(f"Имя изменено на '{new_name}'.", 4000)
 
-    def _open_chat_media_gallery(self):
+    def _open_chat_media_gallery(self, parent=None):
         # Агрегация всех сгенерированных артов из всех чатов
         all_images = []
         sessions_dir = OUTPUTS_DIR / "sessions"
@@ -406,12 +420,15 @@ class DialogControllerMixin:
             if img_p.is_file() and img_p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
                 all_images.append(img_p)
 
+        active_modal = parent or QApplication.activeModalWidget()
+        target_parent = active_modal or self
+
         from ui.dialogs.media_gallery_dialog import ChatMediaGalleryDialog
         dlg = ChatMediaGalleryDialog(
             session_id="all_sessions",
             session_title="Общая галерея",
             image_paths=all_images,
-            parent=self
+            parent=target_parent
         )
         dlg.exec()
 
@@ -435,5 +452,18 @@ class DialogControllerMixin:
             dlg.exec()
         except Exception as e:
             logger.error(f"Не удалось открыть диалог компонентов: {e}")
+
+    def _open_settings_dialog(self, initial_route: str = "system"):
+        """Открывает главное окно параметров и настроек Fluent Design."""
+        try:
+            from ui.dialogs.settings_dialog import SettingsDialog
+            dialog = SettingsDialog(self)
+            if initial_route:
+                route_map = {"system": 0, "appearance": 1, "dialogs": 2, "help": 3}
+                idx = route_map.get(initial_route, 0)
+                dialog.switch_to_page(idx)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Не удалось открыть окно настроек: {e}", exc_info=True)
 
 __all__ = ["DialogControllerMixin"]
