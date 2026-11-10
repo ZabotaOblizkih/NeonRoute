@@ -45,13 +45,25 @@ SKILL_PROMPTS = {
         "Фокус: Физическая строгость, кинематика и детальное устройство узлов на «ты» с {user_name}.\n"
         "- Опирайся на точные компоненты: ведущий и ведомый раздвижные конические шкивы, клиновидный ремень или цепь, гидропривод конусов, изменение радиуса обкатки.\n"
         "- Подробно раскрой в чате физику процессов: синхронное схождение/расхождение пар конусов, бесступенчатое изменение передаточного отношения без разрыва потока мощности.\n"
-        "- Запрещено заменять устройство общими фразами или сокращать техническое объяснение.\n"
+        "- Запрещено заменять устройство общими фразами или сокращать техническое объяснение.\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Как устроен клиноременный вариатор (CVT) и почему там нет ступеней?»\n"
+        "Ответ: «Механизм состоит из двух пар конических шкивов (ведущего на валу двигателя и ведомого на приводе) и наборного стального клиновидного ремня. Каждый шкив образован неподвижным и осевым подвижным конусом.\n"
+        "Физика передачи:\n"
+        "1. Гидропривод под давлением смещает подвижный конус ведущего шкива к неподвижному.\n"
+        "2. Угол скоса конусов выталкивает клиновидный ремень наружу, увеличивая рабочий радиус обкатки R1.\n"
+        "3. Ведомый шкив синхронно раздвигает конусы под действием пружины и стравливания давления — ремень опускается ближе к оси (R2 уменьшается).\n"
+        "4. Передаточное отношение (i = R2 / R1) меняется плавно и непрерывно от ~2.5 до ~0.4 трением сжатия без прерывания силового потока.»\n"
     ),
     "gallery": (
         "\n[АКТИВНЫЙ СКИЛЛ: ВИЗУАЛИЗАЦИЯ И АРТ (SDXL / SD 1.5)]\n"
         "Фокус: Сквозной синтез промпта Stable Diffusion для {user_name} за один ход диалога.\n"
         "- Подставляется боевая директива под активную архитектуру (SDXL или SD 1.5).\n"
-        "- В конце чистового ответа формируется тег [IMAGE_PROMPT: ...] строго на английском языке.\n"
+        "- В конце чистового ответа формируется тег [IMAGE_PROMPT: ...] строго на английском языке.\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Нарисуй киберпанк-девушку самурая на ночной улице под дождем.»\n"
+        "Ответ: «Секунду, перевожу образ в кадр и настраиваю неоновые отражения.\n\n"
+        "[IMAGE_PROMPT: 1girl, solo, female cyberpunk samurai, high-tech tactical armor, carbon fiber katana strapped to back, fingers resting on sword hilt, neon-lit neo-tokyo alleyway, night, heavy rain, wet asphalt reflections, sharp rim lighting, volumetric fog, cinematic composition, detailed facial features --neg glasses, casual clothes, umbrella, deformed hands, extra fingers --ar portrait --model realistic]»\n"
     ),
     "code_architect": (
         "\n[АКТИВНЫЙ СКИЛЛ: СИСТЕМНЫЙ РАЗРАБОТЧИК (ПРОТОКОЛ ПОВТОРНОГО МЫШЛЕНИЯ)]\n"
@@ -63,7 +75,37 @@ SKILL_PROMPTS = {
         "- Правила чистового вывода:\n"
         "  1. Сразу выдавай рабочий production-ready код с явной типизацией (Type Hints), соблюдением PEP8/идиом и обработкой исключений.\n"
         "  2. Сначала готовый блок кода, затем — краткие точечные пояснения ключевых архитектурных решений строго по пунктам.\n"
-        "  3. Категорически запрещены вводные фразы ни о чем («Конечно, вот код...», «Программирование — это важно»).\n"
+        "  3. Категорически запрещены вводные фразы ни о чем («Конечно, вот код...», «Программирование — это важно»).\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Напиши функцию безопасного чтения JSON с обработкой ошибок.»\n"
+        "Ответ:\n"
+        "```python\n"
+        "import json\n"
+        "import logging\n"
+        "from pathlib import Path\n"
+        "from typing import Any, Optional\n"
+        "\n"
+        "logger = logging.getLogger(__name__)\n"
+        "\n"
+        "def load_json_safe(file_path: Path | str, default: Optional[Any] = None) -> Any:\n"
+        "    path = Path(file_path)\n"
+        "    if not path.is_file():\n"
+        "        logger.warning(\"Файл не найден: %s\", path)\n"
+        "        return default\n"
+        "    try:\n"
+        "        with path.open(\"r\", encoding=\"utf-8\") as f:\n"
+        "            return json.load(f)\n"
+        "    except (json.JSONDecodeError, UnicodeDecodeError) as err:\n"
+        "        logger.error(\"Ошибка парсинга JSON в %s: %s\", path, err)\n"
+        "        return default\n"
+        "    except OSError as err:\n"
+        "        logger.error(\"Ошибка ввода-вывода при чтении %s: %s\", path, err)\n"
+        "        return default\n"
+        "```\n"
+        "Архитектурные решения:\n"
+        "1. Изоляция сбоев: перехват синтаксических ошибок JSON, UnicodeDecodeError и блокировок дескрипторов ОС (OSError).\n"
+        "2. Типизация: объединение Path | str (Python 3.10+) и безопасный возврат default.\n"
+        "3. Ресурсная безопасность: менеджер with гарантирует закрытие файла при любых исключениях.»\n"
     ),
     "text_crafter": (
         "\n[АКТИВНЫЙ СКИЛЛ: ТЕКСТОВЫЙ РЕДАКТОР (ИНФОСТИЛЬ И РИТМ)]\n"
@@ -76,7 +118,15 @@ SKILL_PROMPTS = {
         "  1. Сразу выдавай готовый чистовой текст. Категорически запрещены любые реплики вежливости перед ним («Вот отличный вариант...», «Я отредактировала твой текст...»).\n"
         "  2. Безжалостно переводи пассивный залог в активный («решение принято нами» -> «мы решили»), вычищай бюрократический мусор и слабые глаголы.\n"
         "  3. Сохраняй реальные факты, цифры и замысел {user_name}, убирая только словесную шелуху и усиливая подачу.\n"
-        "  4. Если нужны варианты темы письма или цепляющих заголовков — дай 2-3 коротких варианта строго в конце под чертой.\n"
+        "  4. Если нужны варианты темы письма или цепляющих заголовков — дай 2-3 коротких варианта строго в конце под чертой.\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Отредактируй: Нами было принято решение о переносе релиза ввиду технических сбоев на серверах.»\n"
+        "Ответ: «Мы переносим релиз: упали серверы, чиним инфраструктуру. Назовем новую дату, как только закончим тесты под нагрузкой.\n\n"
+        "---\n"
+        "Варианты темы письма:\n"
+        "1. Перенос релиза: сбой серверов\n"
+        "2. Чиним инфраструктуру. Релиз сдвигается\n"
+        "3. Статус техработ и новая дата релиза»\n"
     ),
     "analyst_logic": (
         "\n[АКТИВНЫЙ СКИЛЛ: АНАЛИТИК И ЛОГИК (СТРЕСС-ТЕСТ РЕШЕНИЙ)]\n"
@@ -90,7 +140,17 @@ SKILL_PROMPTS = {
         "  2. При сравнении от 2 вариантов обязательно сведи ключевые отличия в компактную Markdown-таблицу:\n"
         "     | Критерий | Вариант А | Вариант Б |\n"
         "  3. Четко разделяй проверенные факты и вероятностные допущения.\n"
-        "  4. Завершай ответ четким вердиктом по правилу: «Если тебе важнее [критерий 1] — выбирай [А], если в приоритете [критерий 2] — однозначно [Б]».\n"
+        "  4. Завершай ответ четким вердиктом по правилу: «Если тебе важнее [критерий 1] — выбирай [А], если в приоритете [критерий 2] — однозначно [Б]».\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Что выбрать для хранения сессий: SQLite WAL или JSON-файлы?»\n"
+        "Ответ: «| Критерий | SQLite (режим WAL) | Плоские файлы JSON |\n"
+        "| :--- | :--- | :--- |\n"
+        "| Атомарность | Встроенная транзакционность (ACID) | Ручная замена через временный файл |\n"
+        "| Нагрузка на диск | Запись только страницы 4 КБ в лог | Полная перезапись всего файла сессии |\n"
+        "| Конкурентный доступ | Читатели не блокируют запись | Риск WinError 32 блокировок |\n\n"
+        "- Проверенный факт: SQLite WAL коммитит транзакцию за ~0.2 мс, сброс JSON через fsync требует от 10 мс.\n"
+        "- Допущение: При размере истории до 20 сообщений разница в отзывчивости для пользователя незаметна.\n\n"
+        "Вердикт: если в приоритете скорость стриминга и надежность при сбоях — однозначно SQLite WAL; если критична правка истории диалогов блокнотом — JSON.»\n"
     ),
     "wellness_bio": (
         "\n[АКТИВНЫЙ СКИЛЛ: БИОМЕХАНИКА И ЭРГОНОМИКА (ФИЗИОЛОГИЧЕСКИЙ ФИЛЬТР)]\n"
@@ -103,7 +163,15 @@ SKILL_PROMPTS = {
         "  1. Опирайся на законы сохранения энергии и физику рычагов опорно-двигательного аппарата, а не на абстрактный «ЗОЖ».\n"
         "  2. При вопросах по эргономике давай точные физические ориентиры (высота монитора на уровне глаз, угол в локтях и коленях 90°, поясничный подпор).\n"
         "  3. При расчете калоража указывай базовую формулу (Миффлина — Сан-Жеора) и честный диапазон погрешности трекеров.\n"
-        "  4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО назначать лекарственные препараты, дозировки добавок или экстремальные диеты.\n"
+        "  4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО назначать лекарственные препараты, дозировки добавок или экстремальные диеты.\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Устает шея и трапеция при долгой работе за ноутбуком. Как сесть правильно?»\n"
+        "Ответ: «При наклоне головы вперед на 30 градусов нагрузка на шейный отдел позвоночника возрастает с 5 кг (нейтраль) до 18–20 кг за счет рычага силы тяжести. Трапециевидная мышца переходит в непрерывный изометрический спазм.\n\n"
+        "Юстировка рабочего места:\n"
+        "1. Высота экрана: верхняя треть дисплея строго на уровне глаз (для ноутбука необходима подставка и внешняя клавиатура).\n"
+        "2. Руки: угол в локтях 90–100 градусов, предплечья полностью лежат на столешнице, плечи опущены.\n"
+        "3. Стопы: плотно стоят на полу, угол в коленях около 90 градусов.\n\n"
+        "Ограничение: если онемение отдает в пальцы или возникает резкая простреливающая боль — это клинический повод обратиться к неврологу, а не менять угол наклона кресла.»\n"
     ),
     "tutor_feynman": (
         "\n[АКТИВНЫЙ СКИЛЛ: ПЕДАГОГ (МЕТОД ФЕЙНМАНА)]\n"
@@ -116,7 +184,12 @@ SKILL_PROMPTS = {
         "  1. Объясняй так, будто собеседник впервые сталкивается с темой. Запрещено использовать сложный термин без его мгновенной расшифровки через осязаемый предмет.\n"
         "  2. Сначала дай понятную бытовую аналогию, затем объясни, как этот же принцип работает в самой технологии или физическом процессе.\n"
         "  3. Избегай снисходительного тона: общение на равных, живо, с опорой на наглядность.\n"
-        "  4. Завершай объяснение одним коротким, легким вопросом-загадкой, проверяющим, уловлена ли интуитивная суть идеи.\n"
+        "  4. Завершай объяснение одним коротким, легким вопросом-загадкой, проверяющим, уловлена ли интуитивная суть идеи.\n\n"
+        "Эталонный образец ответа:\n"
+        "Вопрос: «Что такое KV-кэш в нейросетях простыми словами?»\n"
+        "Ответ: «Представь, что ты читаешь длинную книгу и на отдельный стикер выписываешь имена персонажей с номерами страниц, где они появились. Когда в десятой главе написано «он вернулся», ты не перечитываешь книгу с первой страницы — ты просто сверяешься со стикером.\n\n"
+        "В нейросети каждое прочитанное слово превращается в два вектора: Key (о чем это слово) и Value (какой в нем смысл). Без кэша модель на каждом новом сгенерированном слове пересчитывала бы всю историю диалога заново. С KV-кэшем вычисленные векторы прошлых слов остаются в видеопамяти, и видеокарта тратит вычисления только на один новый входящий токен.\n\n"
+        "Вопрос на интуицию: почему при диалоге на 30 000 слов видеопамять начинает резко таять, даже если сама нейросеть больше не стала?»\n"
     )
 }
 
@@ -387,7 +460,7 @@ class AssistantPromptBuilder:
     @staticmethod
     def build_knowledge_context(
         docs: Optional[List[Any]],
-        max_chars_per_doc: int = 2400,
+        max_chars_per_doc: int = 3600,
         max_total_chars: int = 7500
     ) -> str:
         if not docs:
@@ -613,79 +686,13 @@ class AssistantPromptBuilder:
                     f"Оценка: {score:.3f} | Причина: {reason} | Запрос: {effective_query[:60]}..."
                 )
 
-        skill_section = ""
-        if skill_name == "gallery":
-            from services.model_router import ModelRouter, normalize_model_choice
-            router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-
-            target_model_id = kwargs.get("target_model_id")
-            target_arch = kwargs.get("architecture")
-            best_desc = kwargs.get("target_model_desc") or kwargs.get("model_hint")
-
-            if not (target_model_id and target_arch):
-                manual_choice = normalize_model_choice(kwargs.get("selected_forge_checkpoint"))
-                if not manual_choice:
-                    try:
-                        from utils.config_manager import ConfigManager
-                        cfg = ConfigManager.load_config()
-                        manual_choice = normalize_model_choice(cfg.get("selected_forge_checkpoint"))
-                    except Exception:
-                        manual_choice = None
-
-                if manual_choice:
-                    prof = router.get_profile(manual_choice)
-                    if prof:
-                        target_model_id = prof.get("id") or prof.get("name") or manual_choice
-                        target_arch = prof.get("architecture") or prof.get("base_architecture")
-                        desc = (prof.get("routing_description") or prof.get("name") or "").strip()
-                        guidance = (prof.get("llm_guidance") or "").strip()
-                        best_desc = f"{desc} (Triggers: {guidance})" if (desc and guidance) else (desc or guidance)
-                    else:
-                        target_model_id = manual_choice
-                        target_arch = resolve_model_architecture(manual_choice)
-                        best_desc = manual_choice
-                else:
-                    matched_id, score = router.match_prompt(effective_query or "")
-                    if matched_id:
-                        prof = router.get_profile(matched_id)
-                        if prof:
-                            target_model_id = matched_id
-                            target_arch = prof.get("architecture") or prof.get("base_architecture")
-                            guidance = (prof.get("llm_guidance") or "").strip()
-                            best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
-                    if not target_model_id:
-                        def_prof = router.get_default_profile() if hasattr(router, "get_default_profile") else None
-                        if def_prof:
-                            target_model_id = def_prof.get("id", "realistic")
-                            target_arch = def_prof.get("architecture") or def_prof.get("base_architecture")
-                            def_desc = (def_prof.get("routing_description") or def_prof.get("name") or "").strip()
-                            def_guidance = (def_prof.get("llm_guidance") or "").strip()
-                            best_desc = f"{def_desc} (Triggers: {def_guidance})" if (def_desc and def_guidance) else (def_desc or def_guidance)
-                        else:
-                            target_model_id = "realistic"
-                            target_arch = "sd15"
-                            best_desc = "Realistic"
-
-            if not target_arch:
-                target_arch = resolve_model_architecture(target_model_id)
-
-            directive = get_gallery_directive(
-                architecture=target_arch,
-                model_hint=best_desc or target_model_id,
-                target_model_id=target_model_id
-            )
-            skill_section = f"{directive.strip()}\n\n"
-        elif skill_name and skill_name in self.SKILL_PROMPTS:
-            formatted_skill = self.SKILL_PROMPTS[skill_name].format(user_name=target_user)
-            skill_section = f"{formatted_skill.strip()}\n\n"
-        elif skill_name and skill_name in all_skills:
-            skill_meta = all_skills[skill_name]
-            raw_prompt = skill_meta.get("system_prompt", "")
-            if raw_prompt:
-                if "{user_name}" in raw_prompt:
-                    raw_prompt = raw_prompt.format(user_name=target_user)
-                title = skill_meta.get("title", skill_name)
-                skill_section = f"\n[АКТИВНЫЙ СКИЛЛ: {title}]\n{raw_prompt.strip()}\n\n"
+        skill_section = self._resolve_skill_section(
+            skill_name=skill_name,
+            target_user=target_user,
+            effective_query=effective_query or "",
+            all_skills=all_skills,
+            **kwargs
+        )
 
         # 8. ROUTING_TAIL_PROTOCOL
         tail_section = self.ROUTING_TAIL_PROTOCOL.format(user_name=target_user)
@@ -702,6 +709,152 @@ class AssistantPromptBuilder:
         ]
 
         return "".join(part for part in prompt_parts if part).strip()
+
+    def _resolve_gallery_skill_section(
+        self,
+        effective_query: str = "",
+        **kwargs
+    ) -> tuple[str, str, Optional[str]]:
+        """Разрешает активную модель/архитектуру Forge и формирует боевую директиву для gallery."""
+        from services.model_router import ModelRouter, normalize_model_choice
+        router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
+
+        target_model_id = kwargs.get("target_model_id")
+        target_arch = kwargs.get("architecture")
+        best_desc = kwargs.get("target_model_desc") or kwargs.get("model_hint")
+        manual_choice = normalize_model_choice(kwargs.get("selected_forge_checkpoint"))
+
+        if not (target_model_id and target_arch):
+            if not manual_choice:
+                try:
+                    from utils.config_manager import ConfigManager
+                    cfg = ConfigManager.load_config()
+                    manual_choice = normalize_model_choice(cfg.get("selected_forge_checkpoint"))
+                except Exception:
+                    manual_choice = None
+
+            if manual_choice:
+                prof = router.get_profile(manual_choice)
+                if prof:
+                    target_model_id = prof.get("id") or prof.get("name") or manual_choice
+                    target_arch = prof.get("architecture") or prof.get("base_architecture")
+                    desc = (prof.get("routing_description") or prof.get("name") or "").strip()
+                    guidance = (prof.get("llm_guidance") or "").strip()
+                    best_desc = f"{desc} (Triggers: {guidance})" if (desc and guidance) else (desc or guidance)
+                else:
+                    target_model_id = manual_choice
+                    target_arch = resolve_model_architecture(manual_choice)
+                    best_desc = manual_choice
+            else:
+                matched_id, _score = router.match_prompt(effective_query or "")
+                if matched_id:
+                    prof = router.get_profile(matched_id)
+                    if prof:
+                        target_model_id = matched_id
+                        target_arch = prof.get("architecture") or prof.get("base_architecture")
+                        guidance = (prof.get("llm_guidance") or "").strip()
+                        best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
+                if not target_model_id:
+                    def_prof = router.get_default_profile() if hasattr(router, "get_default_profile") else None
+                    if def_prof:
+                        target_model_id = def_prof.get("id", "realistic")
+                        target_arch = def_prof.get("architecture") or def_prof.get("base_architecture")
+                        def_desc = (def_prof.get("routing_description") or def_prof.get("name") or "").strip()
+                        def_guidance = (def_prof.get("llm_guidance") or "").strip()
+                        best_desc = f"{def_desc} (Triggers: {def_guidance})" if (def_desc and def_guidance) else (def_desc or def_guidance)
+                    else:
+                        target_model_id = "realistic"
+                        target_arch = "sd15"
+                        best_desc = "Realistic"
+
+        if not target_arch:
+            target_arch = resolve_model_architecture(target_model_id)
+
+        directive = get_gallery_directive(
+            architecture=target_arch,
+            model_hint=best_desc or target_model_id,
+            target_model_id=target_model_id
+        )
+        return directive, target_arch, manual_choice
+
+    def _resolve_skill_section(
+        self,
+        skill_name: Optional[str],
+        target_user: str,
+        effective_query: str = "",
+        all_skills: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> str:
+        """Возвращает реальный текстовый блок скилла, подставляемый в системный промпт LLM."""
+        if not skill_name:
+            return ""
+
+        if skill_name == "gallery":
+            directive, _arch, _manual = self._resolve_gallery_skill_section(
+                effective_query=effective_query,
+                **kwargs
+            )
+            return f"{directive.strip()}\n\n"
+
+        if skill_name in self.SKILL_PROMPTS:
+            formatted_skill = self.SKILL_PROMPTS[skill_name].format(user_name=target_user)
+            return f"{formatted_skill.strip()}\n\n"
+
+        skills_map = all_skills if all_skills is not None else (
+            self.router.get_all_skills() if (hasattr(self, "router") and self.router and hasattr(self.router, "get_all_skills")) else {}
+        )
+        if skill_name in skills_map:
+            skill_meta = skills_map[skill_name]
+            raw_prompt = skill_meta.get("system_prompt", "")
+            if raw_prompt:
+                if "{user_name}" in raw_prompt:
+                    raw_prompt = raw_prompt.format(user_name=target_user)
+                title = skill_meta.get("title", skill_name)
+                return f"\n[АКТИВНЫЙ СКИЛЛ: {title}]\n{raw_prompt.strip()}\n\n"
+
+        return ""
+
+    @_PromptBuilderMethod
+    def get_effective_skill_prompt(
+        self,
+        skill_id: str,
+        user_name: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Возвращает реальный промпт скилла, который подставляется в LLM при его активации.
+        Единый источник истины (SSOT) для предпросмотра в «Знаниях Эларии».
+        """
+        if not skill_id:
+            return ""
+
+        target_user = user_name.strip() if (user_name and user_name.strip()) else ""
+        if not target_user:
+            try:
+                from utils.config_manager import ConfigManager
+                cfg = ConfigManager.load_config()
+                target_user = str(cfg.get("user_name") or "").strip() or "Пользователь"
+            except Exception:
+                target_user = "Пользователь"
+
+        if skill_id == "gallery":
+            directive, target_arch, manual_choice = self._resolve_gallery_skill_section(**kwargs)
+            parts = [directive.strip()]
+            if not manual_choice:
+                alt_arch = "sdxl" if target_arch == "sd15" else "sd15"
+                alt_template = GALLERY_DIRECTIVES_BY_ARCH.get(alt_arch, "")
+                if alt_template:
+                    parts.append(
+                        f"--- Альтернативный шаблон (если Арт-директор выберет {alt_arch.upper()}) ---\n"
+                        f"{alt_template.strip()}"
+                    )
+            return "\n\n".join(parts)
+
+        return self._resolve_skill_section(
+            skill_name=skill_id,
+            target_user=target_user,
+            **kwargs
+        ).strip()
 
     @staticmethod
     def build_gallery_art_prompt(
