@@ -93,10 +93,36 @@ def test_smoke_assistant_6phases_pipeline(isolated_pipeline_env):
             active_assistant_skill=routed_skill,
             include_memory=False
         )
-    assert "[identity & persona]" in sys_prompt_a.lower() or "элария" in sys_prompt_a.lower(), (
-        "[Фаза 3] Системный блок не содержит базовую персону Эларии"
+    assert sys_prompt_a.startswith("[identity & persona]"), (
+        "[Фаза 3] Нарушен Primacy-контракт: системный промпт должен начинаться строго с [identity & persona]"
     )
-    print(f"[Фаза 3: Сборка контекста] OK - промпт сформирован ({len(sys_prompt_a)} симв.), персона проверена")
+    assert "элария" in sys_prompt_a.lower(), "[Фаза 3] Системный блок не содержит базовую персону Эларии"
+
+    # Проверка полного канонического порядка всех секций AssistantPromptBuilder (Primacy -> Context -> Recency)
+    full_contract_prompt = AssistantPromptBuilder.get_instance().build(
+        user_name="Алекс",
+        active_persona={"bio": "Системный архитектор"},
+        relevant_facts=["Ценит строгую типизацию"],
+        matched_knowledge_docs=[{"filename": "arch.md", "content": "Инвариант: 0 утечек"}],
+        attached_document="Параметр: 42 ГГц",
+        attached_document_name="spec.txt",
+        is_excel=True,
+        manual_skill="code_architect"
+    )
+    expected_hierarchy = [
+        "[identity & persona]",
+        "\n<UserInfo>\n",
+        "\n<PassiveMemory>\n",
+        "\n<KnowledgeBase>\n",
+        "\n<AttachedDocument filename=",
+        "User requested an Excel spreadsheet",
+        "[АКТИВНЫЙ СКИЛЛ: РАЗРАБОТКА И АРХИТЕКТУРА КОДА"
+    ]
+    positions = [full_contract_prompt.index(marker) for marker in expected_hierarchy]
+    assert positions == sorted(positions), (
+        f"[Фаза 3] Нарушена иерархия секций в AssistantPromptBuilder! Позиции: {list(zip(expected_hierarchy, positions))}"
+    )
+    print(f"[Фаза 3: Сборка контекста] OK - промпт сформирован ({len(sys_prompt_a)} симв.), персона и иерархия 7 секций проверены")
 
     # ── ФАЗА 4: Параметры шлюза и формирование полезной нагрузки ──
     cfg = ConfigManager.load_config()
@@ -230,10 +256,13 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
         target_model_id="dreamshaper_8",
         architecture="sd15"
     )
-    assert "[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]" in sys_prompt_sd15
+    assert sys_prompt_sd15.startswith("[identity & persona]")
+    assert "пиши теги на английском" in sys_prompt_sd15
+    assert sys_prompt_sd15.index("[identity & persona]") < sys_prompt_sd15.index("\n<UserInfo>\n") < sys_prompt_sd15.index("[SYSTEM DIRECTIVE:")
+    assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in sys_prompt_sd15
     assert "[GALERY]" not in sys_prompt_sd15
     assert "dreamshaper_8" in sys_prompt_sd15
-    assert "Tag Language: STRICTLY English" in sys_prompt_sd15
+    assert "1. LANGUAGE: English tags only" in sys_prompt_sd15
 
     # Проверка авто-определения модели
     sys_prompt_auto = builder.build(user_name="Тест", user_query=art_query)
@@ -248,8 +277,8 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
         target_model_id="pony_diffusion",
         target_model_desc="Pony Diffusion V6"
     )
-    assert "[SYSTEM DIRECTIVE: Stable Diffusion XL" in sys_prompt_sdxl
-    assert "HAND ANCHOR RULE" in sys_prompt_sdxl
+    assert "[SYSTEM DIRECTIVE: Image Tag Translator]" in sys_prompt_sdxl
+    assert "TRANSLATION RULES:" in sys_prompt_sdxl
     assert "pony_diffusion" in sys_prompt_sdxl
 
     # ── 5. Эмуляция чистового вывода модели за один ход ──

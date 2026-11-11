@@ -15,7 +15,7 @@ from services.rp_cast_manager import RPCastManager
 from services.rp_cast_extractor import RPCastExtractor
 from services.regex_filter import TextRegexFilter
 from services.task_queue import InferenceTask
-from services.model_router import ModelRouter
+from services.assistant_flow import prepare_roleplay_inline_art_intent
 from services.art_director import VisualIntent, TargetSubject
 from ui.components.chat_bubble import ChatMessageWidget
 
@@ -306,12 +306,12 @@ class RoleplayFlowControllerMixin:
         text = re.sub(r'(?:\s*--model\s+[a-zA-Z0-9_\-]+)+\s*$', '', text).strip()
 
         # Поиск и парсинг тега [IMAGE_PROMPT: ...]
-        img_match = RE_IMAGE_TAG.search(text)
-        extracted_image_prompt = None
-        if img_match:
-            extracted_image_prompt = img_match.group(1).strip()
+        extracted_image_prompt, clean_text = TextRegexFilter.extract_image_prompt(
+            text,
+            strip_thoughts=True,
+        )
+        if extracted_image_prompt is not None:
             # Срезаем все теги [IMAGE_PROMPT: ...], сохраняя окружающий художественный текст
-            clean_text = RE_IMAGE_TAG.sub('', text).strip()
             if clean_text:
                 text = clean_text
             else:
@@ -353,47 +353,17 @@ class RoleplayFlowControllerMixin:
 
         # Обработка визуального кадра сцены
         if extracted_image_prompt:
-            raw_prompt = extracted_image_prompt.strip()
-            router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-            active_models = {
-                str(m.get("id", "")).lower().strip(): m.get("id")
-                for m in router.profiles if m.get("active", True) and m.get("id")
-            }
+            sess_id_cur = self.current_session.get("id") if getattr(self, "current_session", None) else None
+            v_intent, pref_style = prepare_roleplay_inline_art_intent(
+                extracted_image_prompt=extracted_image_prompt,
+                user_query=getattr(self, "_current_user_request", ""),
+                selected_forge_checkpoint=getattr(self, "selected_forge_checkpoint", None),
+                session_id=sess_id_cur,
+            )
 
-            model_match = re.search(r'(?:--model|--style)[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', raw_prompt, re.I)
-            llm_style = model_match.group(1).lower().strip() if model_match else None
-            raw_prompt = re.sub(r'(?:--model|--style)[:=\s]+["\']?[a-zA-Z0-9_\-]+["\']?', '', raw_prompt, flags=re.I).strip(' ,')
-
-            neg_match = re.search(r'(?:--neg|--negative)[:=\s]+(.*?)(?=(?:--model|--style|$))', raw_prompt, re.I)
-            custom_neg = neg_match.group(1).strip().strip(' ,') if neg_match else ""
-            raw_prompt = re.sub(r'(?:--neg|--negative)[:=\s]+.*?(?=(?:--model|--style|$))', '', raw_prompt, flags=re.I).strip(' ,')
-
-            from services.model_router import normalize_model_choice
-            norm_combo = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
-            if norm_combo:
-                pref_style = norm_combo
-            elif llm_style and llm_style in active_models:
-                pref_style = active_models[llm_style]
-            else:
-                pref_style = None
-
-            # Ambiguity Gate: предотвращение генерации без визуальных объектов
-            words = [w for w in re.findall(r'\b[а-яА-ЯёЁa-zA-Z0-9_-]+\b', raw_prompt.lower()) if len(w) > 2]
-            stop_words = {"нарисуй", "покажи", "сделай", "картинку", "изображение", "арт", "draw", "picture", "image"}
-            meaningful = [w for w in words if w not in stop_words]
-
-            if meaningful:
+            if v_intent is not None:
+                raw_prompt = v_intent.prompt
                 active_c_name = getattr(self.active_character, "name", None)
-                v_intent = VisualIntent(
-                    prompt=raw_prompt,
-                    target_subject=TargetSubject.COMPANION,
-                    user_neg=custom_neg,
-                    suggested_model=pref_style,
-                    seed=-1,
-                    raw_user_query=getattr(self, "_current_user_request", ""),
-                    session_id=self.current_session.get("id") if getattr(self, "current_session", None) else None,
-                    mode="roleplay"
-                )
                 msg_widget.visual_intent = v_intent
                 msg_widget.art_source = "inline_tag"
                 if hasattr(msg_widget, "set_scene_art_state"):
@@ -679,13 +649,17 @@ class RoleplayFlowControllerMixin:
 
         logger.info(f"\n[RoleplayFlow.CinemaPrompt] <<< СЫРОЙ ВЫХОД LLM:\n{raw_text}\n")
 
-        raw_text_clean = raw_text.strip()
-        match = re.search(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', raw_text_clean, re.IGNORECASE)
-        if match:
-            prompt_content = match.group(1).strip()
+        raw_text_clean = TextRegexFilter.strip_thought_blocks(raw_text, mask_code=True).strip()
+        extracted_prompt, _ = TextRegexFilter.extract_image_prompt(
+            raw_text_clean,
+            strip_thoughts=False,
+            allow_markdown_fallback=True,
+        )
+        if extracted_prompt is not None:
+            prompt_content = extracted_prompt
         else:
-            line_match = re.search(r'(?:^|\n)[\s*#_-]*IMAGE[\s_-]PROMPT:\s*([^\n\r]+)', raw_text_clean, re.IGNORECASE)
-            prompt_content = line_match.group(1).strip() if line_match else raw_text_clean
+            line_matches = list(re.finditer(r'(?:^|\n)[\s*#_-]*IMAGE[\s_-]PROMPT:\s*([^\n\r]+)', raw_text_clean, re.IGNORECASE))
+            prompt_content = line_matches[-1].group(1).strip() if line_matches else raw_text_clean
 
         # Отсекаем описательные блоки Description и пустые переносы
         prompt_content = re.split(r'\[(?:Description|Narrative|Scene)\]|(?:\n\s*\n)', prompt_content, flags=re.IGNORECASE)[0]

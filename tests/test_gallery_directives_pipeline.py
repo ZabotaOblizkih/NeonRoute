@@ -31,8 +31,8 @@ def test_gallery_directives_registry():
     assert "sdxl" in GALLERY_DIRECTIVES_BY_ARCH
     # Обратная совместимость для внешних модулей
     assert GALLERY_SKILL_DIRECTIVE_TEMPLATE == GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
-    assert "Stable Diffusion XL" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
-    assert "Stable Diffusion]" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
+    assert "[SYSTEM DIRECTIVE: Image Tag Translator]" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
+    assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
 
 
 def test_resolve_model_architecture_from_profile():
@@ -67,7 +67,7 @@ def test_build_gallery_art_prompt_sdxl():
         target_model_desc="photorealism",
         architecture="sdxl"
     )
-    assert "Stable Diffusion XL" in prompt
+    assert "[SYSTEM DIRECTIVE: Image Tag Translator]" in prompt
     assert "--model juggernaut_xl" in prompt
     assert "девушка у окна" in prompt
 
@@ -80,8 +80,8 @@ def test_build_gallery_art_prompt_sd15():
         target_model_desc="artistic",
         architecture="sd15"
     )
-    assert "[SYSTEM DIRECTIVE: Image Generation for Stable Diffusion]" in prompt
-    assert "35–60 evocative Danbooru" in prompt
+    assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in prompt
+    assert "15 to 30 detailed tags" in prompt
     assert "--model dreamshaper_8" in prompt
     assert "пейзаж заката" in prompt
 

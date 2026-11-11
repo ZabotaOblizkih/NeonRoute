@@ -15,240 +15,30 @@ from services.token_budget_manager import TokenBudgetManager
 from services.regex_filter import TextRegexFilter
 from services.task_queue import InferenceTask
 from services.model_router import ModelRouter, normalize_model_choice
-from services.art_director import VisualIntent, TargetSubject
+from services.art_director import (
+    VisualIntent,
+    TargetSubject,
+    parse_image_prompt_flags,
+    detect_elaria_self_portrait_intent,
+)
 from services.assistant_prompt_builder import AssistantPromptBuilder
+from services.assistant_flow import (
+    RE_IMAGE_TAG,
+    RE_GALLERY_TRIGGER,
+    build_assistant_visual_intent,
+    prepare_assistant_art_dispatch,
+    resolve_gallery_art_temperature,
+    sanitize_assistant_art_and_markdown,
+    sanitize_messages_for_memory,
+    should_trigger_assistant_art,
+    _build_pending_knowledge_sources,
+    run_assistant_inference_deferred,
+)
 from services.document_parser import DocumentParser, ParsedDocument
 from services.thought_stream_parser import ThoughtStreamParser, ThinkParserState
 from ui.components.chat_bubble import ChatMessageWidget
 
 logger = logging.getLogger("NeonRoute.AssistantFlow")
-
-RE_IMAGE_TAG = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', re.IGNORECASE)
-RE_GALLERY_TRIGGER = re.compile(
-    r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ|ГАЛЕРИЯ|ГАЛЛЕРЕЯ|ГАЛЛЕРИЯ)\]',
-    re.IGNORECASE
-)
-
-
-
-def sanitize_messages_for_memory(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Очищает историю сообщений от системных блоков базы знаний (<KnowledgeBase>, <Document>,
-    <AttachedDocument>, цитат и технических сниппетов) перед передачей в MemoryExtractor.
-    Гарантирует, что мануалы и таблицы не загрязняют долговременную память пользователя в LanceDB.
-    """
-    if not messages:
-        return []
-
-    sanitized: List[Dict[str, Any]] = []
-    patterns = [
-        re.compile(r"<KnowledgeBase>[\s\S]*?</KnowledgeBase>", re.IGNORECASE),
-        re.compile(r"<Document[\s\S]*?</Document>", re.IGNORECASE),
-        re.compile(r"<AttachedDocument[\s\S]*?</AttachedDocument>", re.IGNORECASE),
-        re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE),
-        re.compile(r"\[Источник:\s*[^\]]+\]", re.IGNORECASE),
-        re.compile(r"\[Документ:\s*[^\]]+\]", re.IGNORECASE),
-        re.compile(r"\[Chunk\s*#?[0-9a-zA-Z_-]+\]", re.IGNORECASE),
-    ]
-
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        m_copy = dict(m)
-        raw_text = str(m_copy.get("text") or m_copy.get("content") or "")
-
-        clean_text = raw_text
-        for pat in patterns:
-            clean_text = pat.sub("", clean_text)
-
-        clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
-
-        if clean_text:
-            if "content" in m:
-                m_copy["content"] = clean_text
-            if "text" in m:
-                m_copy["text"] = clean_text
-            if "content" not in m and "text" not in m:
-                m_copy["content"] = clean_text
-            sanitized.append(m_copy)
-
-    return sanitized
-
-
-
-def run_assistant_inference_deferred(
-    prompt: Optional[str] = None,
-    user_prompt: Optional[str] = None,
-    session_id: Optional[str] = None,
-    messages: Optional[List[Dict[str, Any]]] = None,
-    lm_client: Optional[Any] = None,
-    controller: Optional[Any] = None,
-    **kwargs
-) -> Any:
-    """
-    Фоновый исполнитель задачи Ассистента с отложенной сборкой контекста (Deferred RAG).
-    Выполняется в рабочем потоке TaskQueueWorker:
-    - Если messages уже передан: прямой вызов lm_client.chat_completion без повторного RAG.
-    - Если messages is None: асинхронный поиск в KnowledgeManager и MemoryDB,
-      сборка системного промпта и контекста через SessionManager, затем инференс.
-    """
-    client = lm_client or (getattr(controller, "lm_client", None) if controller else None)
-    if client is None:
-        raise ValueError("[DeferredRAG] Отсутствует lm_client для выполнения задачи инференса.")
-
-    # ── ВЕТКА 1: ГОТОВЫЙ КОНТЕКСТ (LEGACY / ТЕСТЫ) ──
-    if messages is not None:
-        call_kwargs = dict(kwargs)
-        call_kwargs["messages"] = messages
-        for k in [
-            "controller", "user_prompt", "prompt", "session_id", "history_limit",
-            "effective_user_name", "include_memory", "vision_content", "art_guidance",
-            "enable_reasoning", "session_persona_id", "is_excel", "is_word",
-            "lm_client", "history"
-        ]:
-            call_kwargs.pop(k, None)
-        return client.chat_completion(**call_kwargs)
-
-    # ── ВЕТКА 2: ОТЛОЖЕННАЯ СБОРКА КОНТЕКСТА В ПОТОКЕ ВОРКЕРА ──
-    actual_prompt = user_prompt or prompt or ""
-
-    # 1. Поиск в базе знаний KnowledgeManager (CPU/фоновый поток)
-    matched_knowledge_docs: List[Dict[str, Any]] = []
-    knowledge_block = ""
-    if actual_prompt:
-        try:
-            from services.knowledge_manager import KnowledgeManager
-            from services.assistant_prompt_builder import AssistantPromptBuilder
-            matched_knowledge_docs = KnowledgeManager.find_relevant_documents(actual_prompt, threshold=0.3)
-            if matched_knowledge_docs:
-                for doc in matched_knowledge_docs:
-                    fname = doc.get("filename", "")
-                    if fname and not doc.get("content_snippet"):
-                        snippet = KnowledgeManager.get_document_knowledge_snippet(fname, max_chars=2000)
-                        if snippet:
-                            doc["content_snippet"] = snippet
-                knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
-                matched_names = [d.get("filename") for d in matched_knowledge_docs]
-                logger.info(f"[AssistantFlow.Deferred] База знаний: найдено {len(matched_knowledge_docs)} релевантных док.: {matched_names}")
-        except Exception as e_km:
-            logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска по базе знаний: {e_km}")
-
-    curr_sess = getattr(controller, "current_session", None) if controller else None
-    if matched_knowledge_docs:
-        pending_sources = [
-            {
-                "filename": doc.get("filename", ""),
-                "chunk_id": doc.get("chunk_id", doc.get("best_chunk_id", 0)),
-                "snippet": (doc.get("snippet") or doc.get("content_snippet") or doc.get("content") or "")[:300],
-                "score": float(doc.get("score", doc.get("relevance_score", 0.0)))
-            }
-            for doc in matched_knowledge_docs
-        ]
-        if controller:
-            controller._pending_knowledge_sources = pending_sources
-            if curr_sess and isinstance(curr_sess, dict):
-                curr_sess["active_knowledge_docs"] = matched_knowledge_docs
-    elif not matched_knowledge_docs and curr_sess and isinstance(curr_sess, dict) and curr_sess.get("active_knowledge_docs"):
-        matched_knowledge_docs = curr_sess["active_knowledge_docs"]
-        from services.assistant_prompt_builder import AssistantPromptBuilder
-        knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
-    elif controller:
-        controller._pending_knowledge_sources = None
-
-    # 2. Определение флага reasoning
-    enable_reasoning = kwargs.get("enable_reasoning")
-    if enable_reasoning is None:
-        enable_reasoning = bool(matched_knowledge_docs)
-        if controller:
-            if hasattr(controller, "reasoning_switch") and hasattr(controller.reasoning_switch, "isChecked"):
-                enable_reasoning = enable_reasoning or controller.reasoning_switch.isChecked()
-            elif hasattr(controller, "enable_reasoning_switch") and hasattr(controller.enable_reasoning_switch, "isChecked"):
-                enable_reasoning = enable_reasoning or controller.enable_reasoning_switch.isChecked()
-            elif getattr(controller, "_enable_reasoning", False):
-                enable_reasoning = True
-
-    # 3. Подготовка среза истории диалога
-    history = kwargs.get("history")
-    if history is None:
-        if controller and hasattr(controller, "chat_history") and controller.chat_history:
-            history = controller.chat_history
-        elif session_id:
-            try:
-                s = SessionManager.get_instance().load_session(session_id)
-                history = s.get("chat_history", []) if s else []
-            except Exception:
-                history = []
-        else:
-            history = []
-    if history is None:
-        history = []
-
-    effective_history_limit = kwargs.get("history_limit", 60)
-    from services.assistant_prompt_builder import AssistantPromptBuilder
-    if actual_prompt and (not history or history[-1].get("content") != actual_prompt):
-        full_history = list(history) + [{"role": "user", "content": actual_prompt}]
-    else:
-        full_history = list(history)
-    history_slice = AssistantPromptBuilder.slice_history(full_history, max_history_messages=effective_history_limit)
-
-    # 4. Пользователь и персона
-    effective_user_name = kwargs.get("effective_user_name")
-    sess_persona_id = kwargs.get("session_persona_id")
-    if not effective_user_name:
-        if sess_persona_id is None and curr_sess and isinstance(curr_sess, dict):
-            sess_persona_id = curr_sess.get("user_persona_id")
-        active_p = SessionManager.get_active_user_persona(is_roleplay=False, session_persona_id=sess_persona_id)
-        effective_user_name = active_p.get("name") or "Пользователь"
-
-    # 5. Сборка сообщений через SessionManager (включая memory_db.search_relevant_facts)
-    assembled_messages = SessionManager.get_lm_studio_messages(
-        history=history_slice,
-        is_roleplay=False,
-        character_card=None,
-        is_excel=kwargs.get("is_excel", False),
-        is_word=kwargs.get("is_word", False),
-        vision_content=kwargs.get("vision_content"),
-        history_limit=effective_history_limit,
-        user_name=effective_user_name,
-        include_memory=kwargs.get("include_memory", True),
-        session_id=session_id,
-        session_persona_id=sess_persona_id,
-        is_engineer=False,
-        world_facts=None,
-        art_guidance=kwargs.get("art_guidance"),
-        active_cast_block="",
-        recalled_lore_block="",
-        meta_context_block="",
-        is_dm_mode=False,
-        knowledge_block=knowledge_block,
-        matched_knowledge_docs=matched_knowledge_docs,
-        enable_reasoning=enable_reasoning,
-        user_query=actual_prompt,
-        task_text=actual_prompt
-    )
-
-    # Дополнительная страховка наличия KnowledgeBase и REASONING_PROTOCOL в системном промпте
-    if assembled_messages and assembled_messages[0].get("role") == "system":
-        sys_content = assembled_messages[0].get("content", "")
-        if knowledge_block and "<KnowledgeBase>" not in sys_content:
-            sys_content = f"{sys_content}\n\n{knowledge_block}"
-        # Нативное мышление модели работает через шаблон GGUF без принудительной инъекции <think> в промпт
-        assembled_messages[0]["content"] = sys_content
-
-    # 6. Делегирование в LM Studio
-    call_kwargs = dict(kwargs)
-    call_kwargs["messages"] = assembled_messages
-    call_kwargs["is_roleplay"] = False
-    call_kwargs["is_engineer"] = False
-    for k in [
-        "controller", "user_prompt", "prompt", "session_id", "history_limit",
-        "effective_user_name", "include_memory", "vision_content", "art_guidance",
-        "enable_reasoning", "session_persona_id", "is_excel", "is_word",
-        "lm_client", "history"
-    ]:
-        call_kwargs.pop(k, None)
-
-    return client.chat_completion(**call_kwargs)
 
 
 class AssistantFlowControllerMixin:
@@ -422,31 +212,7 @@ class AssistantFlowControllerMixin:
     @staticmethod
     def _should_trigger_assistant_art(user_query: str) -> bool:
         """Проверяет наличие явных запросов на визуализацию для Эларии (без ролевых триггеров)."""
-        q = (user_query or "").strip().lower()
-        if not q:
-            return False
-
-        # Защита от ложных срабатываний на коде и документах
-        exclusions = (
-            "excel", "эксель", "таблиц", ".xlsx", "docx", "ворд", "word",
-            "код", "скрипт", "pygame", "matplotlib", "график", "диаграмм",
-            "баз данных", "sql", "функци", "класс", ".py"
-        )
-        if any(w in q for w in exclusions):
-            return False
-
-        explicit_triggers = (
-            "нарисуй", "нарисуешь", "нарисовать",
-            "сфотографируй", "сфоткай", "сделай фото", "сделай снимок", "сделай кадр",
-            "сгенерируй", "сгенерируешь", "генерация арта",
-            "изобрази", "изобразишь", "начерти", "начертишь",
-            "иллюстрируй", "проиллюстрируй", "проиллюстрируешь",
-            "отрисуй", "зарисуй", "набросай", "визуализируй",
-            "сделай арт", "создай арт", "сделай картинку", "создай картинку", "покажи картинку",
-            "покажи рисунок", "покажи арт", "нарисуй мне", "сделай портрет",
-            "draw", "paint", "sketch", "render", "take a photo", "generate art"
-        )
-        return any(w in q for w in explicit_triggers)
+        return should_trigger_assistant_art(user_query)
 
     @staticmethod
     def _get_ephemeral_art_directive(target_model_id: str = "realistic", target_model_desc: str = "", is_roleplay: bool = False) -> str:
@@ -641,6 +407,7 @@ class AssistantFlowControllerMixin:
             "history_limit": effective_history_limit,
             "effective_user_name": effective_user_name,
             "session_persona_id": sess_persona_id,
+            "selected_forge_checkpoint": getattr(self, "selected_forge_checkpoint", None),
             "controller": self,
             "lm_client": self.lm_client
         }
@@ -681,34 +448,6 @@ class AssistantFlowControllerMixin:
                     target_widget = w
                     break
 
-        raw_prompt = extracted_image_prompt.strip()
-        router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-        active_models = {
-            str(m.get("id", "")).lower().strip(): m.get("id")
-            for m in router.profiles if m.get("active", True) and m.get("id")
-        }
-
-        model_match = re.search(r'(?:--model|--style)[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', raw_prompt, re.I)
-        llm_style = model_match.group(1).lower().strip() if model_match else None
-        raw_prompt = re.sub(r'(?:--model|--style)[:=\s]+["\']?[a-zA-Z0-9_\-]+["\']?', '', raw_prompt, flags=re.I).strip(' ,')
-
-        neg_match = re.search(r'(?:--neg|--negative)[:=\s]+(.*?)(?=(?:--model|--style|--ar|$))', raw_prompt, re.I)
-        custom_neg = neg_match.group(1).strip().strip(' ,') if neg_match else ""
-        raw_prompt = re.sub(r'(?:--neg|--negative)[:=\s]+.*?(?=(?:--model|--style|--ar|$))', '', raw_prompt, flags=re.I).strip(' ,')
-
-        ar_match = re.search(r'--ar[:=\s]+([a-zA-Z0-9:]+)', raw_prompt, re.I)
-        extracted_ar = ar_match.group(1).lower().strip() if ar_match else None
-        raw_prompt = re.sub(r'--ar[:=\s]+[a-zA-Z0-9:]+', '', raw_prompt, flags=re.I).strip(' ,')
-
-        # Разрешение модели: если в GUI выбран конкретный чекпоинт — передаем его, иначе None (для роутера)
-        norm_combo = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
-        if norm_combo:
-            effective_style = norm_combo
-        elif llm_style and llm_style in active_models:
-            effective_style = active_models[llm_style]
-        else:
-            effective_style = None
-
         # Извлечение исходного запроса пользователя
         last_req = (raw_user_query or "").strip()
         if not last_req:
@@ -718,52 +457,22 @@ class AssistantFlowControllerMixin:
                 if _h.get("role") == "user":
                     last_req = str(_h.get("content", "")).strip()
                     break
-        low_u = last_req.lower()
 
-        # Безопасное определение автопортрета (отсекаем вежливое обращение по имени)
-        clean_user_intent = re.sub(r'^\s*элари[яею]?\b[\s,:-]*', '', low_u, flags=re.I).strip()
-        is_self_portrait = bool(
-            any(k in clean_user_intent for k in (
-                "себя", "твой портрет", "свой портрет", "твой образ", "свой образ",
-                "как ты выглядишь", "сделай селфи", "твое селфи", "твоё селфи", "автопортрет"
-            ))
-            or re.search(r'\b(нарисуй|покажи|изобрази)\s+элари[юея]\b', low_u, re.I)
-            or re.search(r'\b(elaria|элария)\b', raw_prompt, re.I)
+        cur_sess = getattr(self, "current_session", None)
+        sess_id = cur_sess.get("id") if isinstance(cur_sess, dict) else None
+        last_meta = getattr(self, "_last_art_meta", None) or None
+
+        v_intent, effective_style, _is_self, target_char = prepare_assistant_art_dispatch(
+            extracted_image_prompt=extracted_image_prompt,
+            user_query=last_req,
+            selected_forge_checkpoint=getattr(self, "selected_forge_checkpoint", None),
+            session=cur_sess if isinstance(cur_sess, dict) else None,
+            last_art_meta=last_meta,
+            session_id=sess_id,
         )
-
-        # Определение сида (Seed Lock)
-        last_gen = getattr(self, "_last_art_meta", {}) or (
-            self.current_session.get("last_generation", {}) if getattr(self, "current_session", None) else {}
-        )
-        base_seed = last_gen.get("seed", -1)
-        is_seed_lock = bool(base_seed and base_seed > 0 and (
-            any(k in low_u for k in [
-                "такую же", "такой же", "такое же", "ту же", "тот же",
-                "в той же позе", "в этой же позе", "в том же ракурсе",
-                "оставь как есть", "оставь позу", "оставь лицо",
-                "то же самое", "тоже самое"
-            ]) or
-            re.search(r'\bповтори\b', low_u)
-        ))
-        target_seed = base_seed if is_seed_lock else -1
-
-        target_subject = TargetSubject.ELARIA if is_self_portrait else TargetSubject.SCENE_OBJECT
-
-        v_intent = VisualIntent(
-            prompt=raw_prompt,
-            target_subject=target_subject,
-            user_neg=custom_neg,
-            suggested_model=effective_style,
-            seed=target_seed,
-            aspect_ratio=extracted_ar,
-            raw_user_query=last_req,
-            session_id=self.current_session.get("id") if getattr(self, "current_session", None) else None,
-            mode="assistant"
-        )
+        raw_prompt = v_intent.prompt
         if target_widget is not None:
             target_widget.visual_intent = v_intent
-
-        target_char = "Элария" if is_self_portrait else None
 
         if hasattr(self, "pill_forge") and self.pill_forge.is_online:
             self._on_scene_art_requested(
@@ -905,46 +614,15 @@ class AssistantFlowControllerMixin:
         return True
 
     def _enqueue_gallery_art_pass(self, user_query: str):
-        best_model_id = ""
+        best_model_id = "default"
         best_desc = ""
         target_arch = None
         try:
-            router = ModelRouter.get_instance() if hasattr(ModelRouter, "get_instance") else ModelRouter()
-            # 1. Проверяем ручной выбор модели в GUI/шапке
-            manual_choice = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
-            if manual_choice:
-                prof = router.get_profile(manual_choice)
-                if prof:
-                    best_model_id = prof.get("id") or prof.get("name") or manual_choice
-                    target_arch = prof.get("architecture") or prof.get("base_architecture")
-                    desc = (prof.get("routing_description") or prof.get("name") or "").strip()
-                    guidance = (prof.get("llm_guidance") or "").strip()
-                    best_desc = f"{desc} (Triggers: {guidance})" if (desc and guidance) else (desc or guidance)
-                else:
-                    best_model_id = manual_choice
-                    best_desc = manual_choice
-            else:
-                # 2. Режим "✨ Арт-директор (Авто)" - матчим запрос пользователя
-                matched_id, score = router.match_prompt(user_query)
-                if matched_id:
-                    prof = router.get_profile(matched_id)
-                    if prof:
-                        best_model_id = matched_id
-                        target_arch = prof.get("architecture") or prof.get("base_architecture")
-                        guidance = (prof.get("llm_guidance") or "").strip()
-                        best_desc = guidance if guidance else (prof.get("routing_description") or prof.get("name") or "")
-            
-            # 3. Fallback: если модель не найдена - берем универсальный дефолт из профилей
-            if not best_model_id:
-                def_prof = router.get_default_profile() if hasattr(router, "get_default_profile") else None
-                if def_prof:
-                    best_model_id = def_prof.get("id", "default")
-                    target_arch = def_prof.get("architecture") or def_prof.get("base_architecture")
-                    def_desc = (def_prof.get("routing_description") or def_prof.get("name") or "").strip()
-                    def_guidance = (def_prof.get("llm_guidance") or "").strip()
-                    best_desc = f"{def_desc} (Triggers: {def_guidance})" if (def_desc and def_guidance) else (def_desc or def_guidance)
-                else:
-                    best_model_id = "default"
+            best_model_id, target_arch, best_desc, _ = AssistantPromptBuilder.resolve_gallery_target_profile(
+                effective_query=user_query,
+                selected_forge_checkpoint=getattr(self, "selected_forge_checkpoint", None),
+                check_config_fallback=False,
+            )
         except Exception as e:
             logger.warning(f"Failed to resolve target gallery model: {e}")
             best_model_id = "default"
@@ -964,21 +642,10 @@ class AssistantFlowControllerMixin:
                 model_name = None
 
         session = getattr(self, "current_session", {}) or {}
-        session_sampling = session.get("sampling_params") if isinstance(session.get("sampling_params"), dict) else {}
         cfg_defaults = getattr(self, "app_config", {}).get("default_sampling_assistant", {}) if hasattr(self, "app_config") and isinstance(self.app_config, dict) else {}
         mode_prof = getattr(self, "mode_profile", {}) if hasattr(self, "mode_profile") and isinstance(self.mode_profile, dict) else {}
-        profile_sampling = mode_prof.get("sampling") if isinstance(mode_prof.get("sampling"), dict) else cfg_defaults
-
-        resolved_temp = (
-            session_sampling.get("temperature")
-            or profile_sampling.get("temperature")
-            or 0.8
-        )
-
-        try:
-            target_temperature = float(resolved_temp)
-        except (TypeError, ValueError):
-            target_temperature = 0.8
+        effective_profile = mode_prof if isinstance(mode_prof.get("sampling"), dict) else {"sampling": cfg_defaults}
+        target_temperature = resolve_gallery_art_temperature(session=session, profile=effective_profile)
 
         logger.info(
             f"[AssistantFlow] Starting Gallery Art Pass for query: '{user_query}' "
@@ -1031,9 +698,12 @@ class AssistantFlowControllerMixin:
             self._pending_gallery_art_widget = None
             self._pending_gallery_user_query = None
 
-            img_match = RE_IMAGE_TAG.search(text)
-            if img_match:
-                extracted = re.sub(r'^[\s\*_\-\#]+', '', img_match.group(1)).strip()
+            extracted, _ = TextRegexFilter.extract_image_prompt(
+                text,
+                strip_thoughts=True,
+                allow_markdown_fallback=True,
+            )
+            if extracted:
                 self._dispatch_art_to_forge(extracted, target_widget, user_query)
             else:
                 if target_widget and hasattr(target_widget, "hide_art_loading_placeholder"):
@@ -1063,14 +733,20 @@ class AssistantFlowControllerMixin:
 
         # ── [HistorySanitizer] Санитайзер истории и тегов рассуждений ──
         # Фаза 1: Спасение мыслей в thought_data (Rescue to UI spoiler, включая множественные и неявные теги)
+        # Маскируем блоки Markdown-кода, чтобы упоминания <thought>/<think> внутри `...` не резали ответ
         re_thought_body = r"<(think|analyze|thought|reasoning)>([\s\S]*?)(?:</\1>|$)"
         re_thought_clean = r"<(think|analyze|thought|reasoning)>[\s\S]*?(?:</\1>|$)"
         re_implicit_close = r"^([\s\S]*?)</(think|analyze|thought|reasoning)>"
+        masked_thought_src, thought_placeholders = TextRegexFilter.mask_markdown_code(text)
 
         if thought_data is None:
-            matches = list(re.finditer(re_thought_body, text, flags=re.IGNORECASE))
+            matches = list(re.finditer(re_thought_body, masked_thought_src, flags=re.IGNORECASE))
             if matches:
-                th_parts = [m.group(2).strip() for m in matches if m.group(2).strip()]
+                th_parts = [
+                    TextRegexFilter.restore_markdown_code(m.group(2), thought_placeholders).strip()
+                    for m in matches
+                ]
+                th_parts = [p for p in th_parts if p]
                 th_body = "\n\n".join(th_parts)
                 tag_name = matches[0].group(1).lower()
                 if th_body:
@@ -1087,9 +763,9 @@ class AssistantFlowControllerMixin:
                         )
                     logger.info(f"[HistorySanitizer] Спасён блок мыслей из тега <{tag_name}> ({len(th_body)} симв.) и направлен в UI спойлер.")
             else:
-                imp_match = re.search(re_implicit_close, text, flags=re.IGNORECASE)
+                imp_match = re.search(re_implicit_close, masked_thought_src, flags=re.IGNORECASE)
                 if imp_match:
-                    th_body = imp_match.group(1).strip()
+                    th_body = TextRegexFilter.restore_markdown_code(imp_match.group(1), thought_placeholders).strip()
                     tag_name = imp_match.group(2).lower()
                     if th_body:
                         thought_data = {
@@ -1109,15 +785,18 @@ class AssistantFlowControllerMixin:
 
         # Фаза 2: Очистка текста ответа от тегов (включая осиротевшие закрывающие </think>)
         had_tags = bool(
-            re.search(re_thought_clean, text, flags=re.IGNORECASE)
-            or re.search(re_implicit_close, text, flags=re.IGNORECASE)
+            re.search(re_thought_clean, masked_thought_src, flags=re.IGNORECASE)
+            or re.search(re_implicit_close, masked_thought_src, flags=re.IGNORECASE)
         )
-        cleaned_text = re.sub(re_thought_clean, "", text, flags=re.IGNORECASE)
-        cleaned_text = re.sub(re_implicit_close, "", cleaned_text, flags=re.IGNORECASE)
-        cleaned_text = re.sub(r"</?(think|analyze|thought|reasoning)>", "", cleaned_text, flags=re.IGNORECASE).strip()
+        cleaned_masked = re.sub(re_thought_clean, "", masked_thought_src, flags=re.IGNORECASE)
+        cleaned_masked = re.sub(re_implicit_close, "", cleaned_masked, flags=re.IGNORECASE)
+        cleaned_masked = re.sub(r"</?(think|analyze|thought|reasoning)>", "", cleaned_masked, flags=re.IGNORECASE)
+        cleaned_text = TextRegexFilter.restore_markdown_code(cleaned_masked, thought_placeholders).strip()
 
         if not cleaned_text and parser_normal_text:
-            cleaned_text = re.sub(r"</?(think|analyze|thought|reasoning)>", "", parser_normal_text, flags=re.IGNORECASE).strip()
+            masked_norm, norm_placeholders = TextRegexFilter.mask_markdown_code(parser_normal_text)
+            cleaned_norm = re.sub(r"</?(think|analyze|thought|reasoning)>", "", masked_norm, flags=re.IGNORECASE)
+            cleaned_text = TextRegexFilter.restore_markdown_code(cleaned_norm, norm_placeholders).strip()
 
         # Фаза 3: Защита от утечки мыслей в бабл при исчерпании max_tokens на этапе рассуждений
         if not cleaned_text and thought_data and thought_data.get("content"):
@@ -1148,36 +827,15 @@ class AssistantFlowControllerMixin:
                 text = existing_bubble_text
 
         # (Блок gallery_art_pass перемещен в самое начало метода для Zero Pollution)
-
-        gallery_match = RE_GALLERY_TRIGGER.search(text)
-        has_gallery = gallery_match is not None
-        if has_gallery:
-            # Вырезаем сам маркер из любой позиции (в начале, в середине или в конце)
-            text = RE_GALLERY_TRIGGER.sub('', text)
-            # Вырезаем любые фейковые markdown-картинки вида ![alt](url)
-            text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-            # Схлопываем избыточные переносы строк
-            text = re.sub(r'\n{3,}', '\n\n', text).strip()
-            # Если текста после очистки не осталось — оставляем пустую строку (без заглушек)
-            if not text:
-                text = ""
-
-        # Очистка от сгенерированных моделью фейковых Markdown-картинок вида ![alt](url)
-        text = re.sub(r'!\[.*?\]\(.*?\)', '', text).strip()
-
-        img_match = RE_IMAGE_TAG.search(text)
-        extracted_image_prompt = None
-        if img_match:
-            extracted_image_prompt = re.sub(r'^[\s\*_\-\#]+', '', img_match.group(1)).strip()
-            clean_text = RE_IMAGE_TAG.sub('', text)
-            clean_text = re.sub(r'(?:\n\s*)(?:Элария|Assistant|Пользователь|User)\s*:\s*$', '', clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
-            text = clean_text
-
-        text = TextRegexFilter.process_output(text)
-        text = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', text).strip()
-        text = re.sub(r'(?:\s*--(?:model|style|ar|neg|negative)\s+[^\n]+)+$', '', text, flags=re.I).strip()
-        text = re.sub(r'(?:\*\*|__)?(?:Positive\s+Prompt|Позитивный\s+промпт)[:\s*]*', '', text, flags=re.IGNORECASE).strip()
+        user_req = getattr(self, "_current_user_request", "")
+        user_asked_art = bool(
+            getattr(self, "_is_running_gallery_art_pass", False)
+            or self._should_trigger_assistant_art(user_req)
+        )
+        text, has_gallery, extracted_image_prompt = sanitize_assistant_art_and_markdown(
+            text,
+            user_requested_art=user_asked_art,
+        )
 
         msg_widget = getattr(self, "_turn_bubble", None)
         if msg_widget is None:
