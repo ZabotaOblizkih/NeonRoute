@@ -364,6 +364,51 @@ def run_assistant_inference_deferred(
     return client.chat_completion(**call_kwargs)
 
 
+def resolve_effective_thinking(
+    mode: str,
+    model_name: str,
+    active_skill: Optional[str] = None,
+    explicit_override: Optional[bool] = None
+) -> Optional[bool]:
+    """
+    Единый резолвер режима размышлений (Thinking / Reasoning):
+    - Если explicit_override is not None -> вернуть explicit_override.
+    - Если active_skill == 'gallery' -> вернуть False (принудительное отключение мыслей для SDXL).
+    - Проверить _is_thinking_model по THINKING_MODEL_KEYWORDS. Если модель не из списка и thinking_mode == 'auto', вернуть None.
+    - Прочитать thinking_mode из ConfigManager.load_config().get('thinking_mode', 'auto'):
+      - 'off' -> False
+      - 'on' -> True
+      - 'auto' -> True для mode == 'engineer', False для mode in ('assistant', 'roleplay').
+    """
+    if explicit_override is not None:
+        return bool(explicit_override)
+
+    if active_skill == "gallery":
+        return False
+
+    from config import THINKING_MODEL_KEYWORDS
+    from utils.config_manager import ConfigManager
+
+    _model_lower = str(model_name or "").lower()
+    _is_thinking_model = any(k in _model_lower for k in THINKING_MODEL_KEYWORDS)
+
+    cfg = ConfigManager.load_config()
+    thinking_mode = str(cfg.get("thinking_mode", "auto")).lower().strip()
+
+    if not _is_thinking_model and thinking_mode == "auto":
+        return None
+
+    if thinking_mode == "off":
+        return False
+    elif thinking_mode == "on":
+        return True
+    else:  # "auto"
+        norm_mode = (mode or "assistant").lower().strip()
+        if norm_mode.startswith("eng"):
+            return True
+        return False
+
+
 def resolve_gallery_art_temperature(
     session: Optional[Dict[str, Any]] = None,
     req: Optional[Any] = None,

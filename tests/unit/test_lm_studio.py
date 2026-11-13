@@ -580,3 +580,70 @@ class TestChatCompletion:
             lms_client.chat_completion(messages=[{"role": "user", "content": "hi"}])
         assert "Не удалось подключиться к LM Studio" in str(exc.value)
         assert len(errors_emitted) > 0
+
+    def test_chat_completion_thinking_mode_payload_chat_template_kwargs(self, lms_client, monkeypatch):
+        captured_payloads = []
+
+        def mock_post(url, *args, **kwargs):
+            captured_payloads.append(kwargs.get("json", {}))
+            mock_resp = MagicMock(status_code=200)
+            mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "ok"}}]}', b"data: [DONE]"]
+            return mock_resp
+
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        self._patch_session_post(monkeypatch, lms_client, mock_post)
+
+        # enable_thinking=True
+        lms_client.chat_completion(
+            messages=[{"role": "user", "content": "test thinking"}],
+            model="test-model",
+            enable_thinking=True
+        )
+        assert len(captured_payloads) == 1
+        assert captured_payloads[0]["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "thinking": True
+        }
+
+        # enable_thinking=False
+        captured_payloads.clear()
+        lms_client.chat_completion(
+            messages=[{"role": "user", "content": "test thinking"}],
+            model="generic-model",
+            enable_thinking=False
+        )
+        assert len(captured_payloads) == 1
+        assert captured_payloads[0]["chat_template_kwargs"] == {
+            "enable_thinking": False,
+            "thinking": False
+        }
+
+    def test_chat_completion_qwen3_prefill_when_thinking_false(self, lms_client, monkeypatch):
+        captured_payloads = []
+
+        def mock_post(url, *args, **kwargs):
+            captured_payloads.append(kwargs.get("json", {}))
+            mock_resp = MagicMock(status_code=200)
+            mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "ok"}}]}', b"data: [DONE]"]
+            return mock_resp
+
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        self._patch_session_post(monkeypatch, lms_client, mock_post)
+
+        input_messages = [{"role": "user", "content": "напиши функцию"}]
+        original_copy = list(input_messages)
+
+        lms_client.chat_completion(
+            messages=input_messages,
+            model="Qwen3.5-35B-A3B-Instruct-GGUF",
+            enable_thinking=False
+        )
+
+        assert len(captured_payloads) == 1
+        sent_messages = captured_payloads[0]["messages"]
+        # Проверяем, что в payload добавлен assistant prefill
+        assert sent_messages[-1] == {"role": "assistant", "content": "<think>\n\n</think>\n\n"}
+        # Проверяем, что исходный список messages НЕ был мутирован
+        assert input_messages == original_copy
+        assert len(input_messages) == 1
+

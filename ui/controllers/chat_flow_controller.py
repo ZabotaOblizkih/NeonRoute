@@ -924,6 +924,15 @@ class ChatFlowControllerMixin:
 
         target_ctx_len = mode_profile.get("context_length", 8192)
 
+        from services.assistant_flow import resolve_effective_thinking
+        mode_str = "engineer" if is_eng else ("roleplay" if is_roleplay else "assistant")
+        enable_thinking = resolve_effective_thinking(
+            mode=mode_str,
+            model_name=model_name,
+            active_skill=None,
+            explicit_override=None
+        )
+
         llm_kwargs = {
             "messages": messages,
             "model": model_name,
@@ -943,7 +952,8 @@ class ChatFlowControllerMixin:
             "dry_penalty_last_n": 0,
             "xtc_probability": xtc_prob,
             "xtc_threshold": xtc_thresh,
-            "stream": True
+            "stream": True,
+            "enable_thinking": enable_thinking
         }
 
         task = InferenceTask(
@@ -969,32 +979,18 @@ class ChatFlowControllerMixin:
         buf = self._stream_token_buffer
         bubble = getattr(self, "_turn_bubble", None)
 
-        # Регулярные выражения для потокового подавления арт-триггеров и тегов генерации
-        re_gallery_full = re.compile(r'\[(?:GALERY|GALLERY|ГАЛЕРЕЯ|ГАЛЕРИЯ|ГАЛЛЕРЕЯ|ГАЛЛЕРИЯ)\]', re.IGNORECASE)
-        re_gallery_prefix = re.compile(r'\[(?:[gGгГ][a-zA-Zа-яА-ЯёЁ]{0,9})?$', re.IGNORECASE)
-        re_image_full = re.compile(r'\[IMAGE[\s_-]PROMPT:[^\s\]][^\]]*\]', re.IGNORECASE)
-        re_image_prefix = re.compile(r'\[(?:image|img)[\s_-]?[^\]]*$', re.IGNORECASE)
+        from services.assistant_flow import StreamArtTagFilter
+        art_filter = getattr(self, "_stream_art_filter", None)
+        if art_filter is None:
+            art_filter = StreamArtTagFilter()
+            self._stream_art_filter = art_filter
 
-        # 1. Мгновенная активация киберпанк-лоадера и вырезание готовых тегов из экранного потока
-        has_art_trigger = bool(re_gallery_full.search(buf) or re_image_full.search(buf) or re_image_prefix.search(buf))
-        if has_art_trigger:
-            if bubble is not None and hasattr(bubble, "show_art_loading_placeholder"):
-                bubble.show_art_loading_placeholder()
-            buf = re_gallery_full.sub('', buf)
-            buf = re_image_full.sub('', buf)
+        prior_text = getattr(bubble, "raw_text", "") if bubble is not None else ""
+        chunk_to_render, has_art_trigger = art_filter.process_buffer(buf, prior_text=prior_text, force=force)
+        self._stream_token_buffer = art_filter.buffer
 
-        # 2. Скользящее окно: удержание незавершенного префикса маркера от вывода на экран
-        chunk_to_render = buf
-        if not force:
-            partial_match = re_gallery_prefix.search(buf) or re_image_prefix.search(buf)
-            if partial_match:
-                split_idx = partial_match.start()
-                chunk_to_render = buf[:split_idx]
-                self._stream_token_buffer = buf[split_idx:]
-            else:
-                self._stream_token_buffer = ""
-        else:
-            self._stream_token_buffer = ""
+        if has_art_trigger and bubble is not None and hasattr(bubble, "show_art_loading_placeholder"):
+            bubble.show_art_loading_placeholder()
 
         if not chunk_to_render:
             return
@@ -1468,6 +1464,8 @@ class ChatFlowControllerMixin:
         if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer is not None:
             self._stream_flush_timer.stop()
         self._stream_token_buffer = ""
+        if hasattr(self, "_stream_art_filter") and self._stream_art_filter is not None:
+            self._stream_art_filter.reset()
         self._current_streaming_widget = None
 
         if getattr(self, "_last_llm_msg_text", None) == text:
@@ -1575,7 +1573,7 @@ class ChatFlowControllerMixin:
 
         # 4. Если инструментов нет — стандартный вывод отчета инженера
         from services.regex_filter import TextRegexFilter
-        clean_text = TextRegexFilter.process_output(text).strip()
+        clean_text = TextRegexFilter.process_output(text, format_dialogue_dashes=False).strip()
         if self._turn_bubble is not None:
             try:
                 self._turn_bubble.set_text(clean_text)

@@ -363,6 +363,33 @@ class AssistantFlowControllerMixin:
             if effective_max_tokens == 1024:
                 effective_max_tokens = 2048
 
+        # Определение активного скилла для точечного сэмплинга
+        sess_meta = curr_sess.get("metadata", {}) if isinstance(curr_sess, dict) else {}
+        active_skill = (
+            getattr(self, "active_assistant_skill", None)
+            or (sess_meta.get("active_assistant_skill") if isinstance(sess_meta, dict) else None)
+        )
+        if not active_skill or active_skill == "auto":
+            from services.assistant_prompt_builder import AssistantPromptBuilder
+            builder = AssistantPromptBuilder.get_instance()
+            if builder and hasattr(builder, "router") and builder.router and _req:
+                routed_skill, _, _ = builder.router.route(_req)
+                if routed_skill:
+                    active_skill = routed_skill
+
+        from services.assistant_flow import resolve_effective_thinking
+        enable_thinking = resolve_effective_thinking(
+            mode="assistant",
+            model_name=model_name,
+            active_skill=active_skill,
+            explicit_override=enable_reasoning
+        )
+
+        # Точечный override строго на время генерации SDXL (gallery) в Фазе 1
+        if active_skill == "gallery":
+            temp = 0.4
+            enable_thinking = False
+
         if _should_art:
             target_max_tokens = 512
         elif not is_custom or "max_tokens" not in sampling:
@@ -399,6 +426,7 @@ class AssistantFlowControllerMixin:
             "xtc_probability": xtc_prob,
             "xtc_threshold": xtc_thresh,
             "stream": True,
+            "enable_thinking": enable_thinking,
             "is_excel": is_excel,
             "is_word": is_word,
             "vision_content": vision_content,
@@ -642,20 +670,26 @@ class AssistantFlowControllerMixin:
                 model_name = None
 
         session = getattr(self, "current_session", {}) or {}
-        cfg_defaults = getattr(self, "app_config", {}).get("default_sampling_assistant", {}) if hasattr(self, "app_config") and isinstance(self.app_config, dict) else {}
-        mode_prof = getattr(self, "mode_profile", {}) if hasattr(self, "mode_profile") and isinstance(self.mode_profile, dict) else {}
-        effective_profile = mode_prof if isinstance(mode_prof.get("sampling"), dict) else {"sampling": cfg_defaults}
-        target_temperature = resolve_gallery_art_temperature(session=session, profile=effective_profile)
+        session_sampling = session.get("sampling_params") if isinstance(session, dict) and isinstance(session.get("sampling_params"), dict) else {}
+        custom_art_temp = session_sampling.get("art_temperature") or session_sampling.get("temperature")
+        if custom_art_temp is not None:
+            try:
+                target_temperature = float(custom_art_temp)
+            except (TypeError, ValueError):
+                target_temperature = 0.4
+        else:
+            target_temperature = 0.4
 
         logger.info(
             f"[AssistantFlow] Starting Gallery Art Pass for query: '{user_query}' "
-            f"(target_model='{best_model_id}', temperature={target_temperature})"
+            f"(target_model='{best_model_id}', temperature={target_temperature}, enable_thinking=False)"
         )
 
         llm_kwargs = {
             "messages": messages,
             "model": model_name,
             "temperature": target_temperature,
+            "enable_thinking": False,
             "stop": ["\n\nПользователь:", "\n\nUser:"],
             "is_roleplay": False,
             "is_engineer": False,
@@ -738,6 +772,8 @@ class AssistantFlowControllerMixin:
         re_thought_clean = r"<(think|analyze|thought|reasoning)>[\s\S]*?(?:</\1>|$)"
         re_implicit_close = r"^([\s\S]*?)</(think|analyze|thought|reasoning)>"
         masked_thought_src, thought_placeholders = TextRegexFilter.mask_markdown_code(text)
+        # Защита от артефакта повторного/одинокого закрывающего тега в самом начале ответа
+        masked_thought_src = re.sub(r"^\s*</(think|analyze|thought|reasoning)>\s*", "", masked_thought_src, flags=re.IGNORECASE)
 
         if thought_data is None:
             matches = list(re.finditer(re_thought_body, masked_thought_src, flags=re.IGNORECASE))

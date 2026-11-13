@@ -25,7 +25,7 @@ class DummyAssistantFlow(AssistantFlowControllerMixin):
 def test_enqueue_gallery_art_pass_custom_session_temperature():
     """
     Проверка, что при session['sampling_params']['temperature'] = 0.85
-    в вызов Gallery Art Pass (llm_kwargs) уходит temperature=0.85.
+    в вызов Gallery Art Pass (llm_kwargs) уходит temperature=0.85 и enable_thinking=False.
     """
     flow = DummyAssistantFlow()
     flow.current_session = {
@@ -39,13 +39,13 @@ def test_enqueue_gallery_art_pass_custom_session_temperature():
     enqueued_task = flow.task_queue.enqueue.call_args[0][0]
     assert enqueued_task.name == "Gallery Art Pass"
     assert enqueued_task.kwargs["temperature"] == pytest.approx(0.85)
-    assert enqueued_task.kwargs["temperature"] != 0.40
+    assert enqueued_task.kwargs["enable_thinking"] is False
 
 
 def test_enqueue_gallery_art_pass_empty_session_default_temperature():
     """
-    Проверка, что при пустой сессии выставляется безопасный дефолт 0.8
-    (или дефолт профиля, если сессия пуста и нет кастомных настроек).
+    Проверка, что при отсутствии кастомной температуры в сессии срабатывает
+    временный per-request override temperature=0.4 и enable_thinking=False.
     """
     flow = DummyAssistantFlow()
     flow.current_session = {}
@@ -57,24 +57,30 @@ def test_enqueue_gallery_art_pass_empty_session_default_temperature():
     assert flow.task_queue.enqueue.called
     enqueued_task = flow.task_queue.enqueue.call_args[0][0]
     assert enqueued_task.name == "Gallery Art Pass"
-    assert enqueued_task.kwargs["temperature"] == pytest.approx(0.8)
-    assert enqueued_task.kwargs["temperature"] != 0.40
+    assert enqueued_task.kwargs["temperature"] == pytest.approx(0.4)
+    assert enqueued_task.kwargs["enable_thinking"] is False
 
 
-def test_enqueue_gallery_art_pass_profile_sampling_fallback():
-    """
-    Проверка, что если в сессии нет temperature, но в mode_profile задано 0.75,
-    подхватывается температура профиля 0.75.
-    """
-    flow = DummyAssistantFlow()
-    flow.current_session = {}
-    flow.mode_profile = {"sampling": {"temperature": 0.75}}
+def test_resolve_effective_thinking_logic():
+    """Проверяет все ветви резолвера resolve_effective_thinking."""
+    from services.assistant_flow import resolve_effective_thinking
 
-    flow._enqueue_gallery_art_pass(user_query="нарисуй космический корабль")
+    # 1. explicit_override
+    assert resolve_effective_thinking("assistant", "qwen3.5", explicit_override=True) is True
+    assert resolve_effective_thinking("engineer", "qwen3.5", explicit_override=False) is False
 
-    assert flow.task_queue.enqueue.called
-    enqueued_task = flow.task_queue.enqueue.call_args[0][0]
-    assert enqueued_task.kwargs["temperature"] == pytest.approx(0.75)
+    # 2. active_skill == 'gallery'
+    assert resolve_effective_thinking("engineer", "qwen3.5", active_skill="gallery") is False
+    assert resolve_effective_thinking("assistant", "r1", active_skill="gallery") is False
+
+    # 3. non-thinking model in auto mode returns None
+    assert resolve_effective_thinking("assistant", "llama-3-8b", active_skill=None) is None
+
+    # 4. thinking model in auto mode: True for engineer, False for assistant/roleplay
+    assert resolve_effective_thinking("engineer", "Qwen3.5-35B", active_skill=None) is True
+    assert resolve_effective_thinking("assistant", "Qwen3.5-35B", active_skill=None) is False
+    assert resolve_effective_thinking("roleplay", "DeepSeek-R1-Distill", active_skill=None) is False
+
 
 
 def test_resolve_gallery_art_temperature_pure():

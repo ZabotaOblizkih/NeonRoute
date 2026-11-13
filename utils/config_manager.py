@@ -89,7 +89,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 6. LLM Engine & Hardware Autotune Settings
     "hardware_autotune_done": False,
     "kv_cache_type": "q8_0",             # Допустимые: "q8_0", "q4_0", "f16"
-    "flash_attention_enabled": True
+    "flash_attention_enabled": True,
+    "thinking_mode": "auto"              # Допустимые: "auto", "on", "off"
 }
 
 

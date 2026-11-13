@@ -85,6 +85,12 @@ class ThoughtStreamParser:
                     and (not open_match or close_match.start() < open_match.start())
                 ):
                     pre_thought = self.normal_text + combined[:close_match.start()]
+                    if not pre_thought.strip():
+                        # Одинокий закрывающий тег в самом начале ответа (без мыслей) — вырезаем до передачи в UI-стрим
+                        self.normal_text = ""
+                        combined = combined[close_match.end():].lstrip("\r\n")
+                        continue
+
                     self.normal_text = ""
                     if self.start_time is None:
                         self.start_time = time.time()

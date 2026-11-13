@@ -136,6 +136,36 @@ def test_message_without_think_tags():
     assert parser.get_thought_data() is None
 
 
+def test_lone_starting_closing_think_tag_stripped():
+    """
+    Проверяет, что одинокий закрывающий тег </think> в самом начале потока
+    (например, артефакт модели после assistant prefill) вырезается без эмита событий мыслей.
+    """
+    parser = ThoughtStreamParser()
+    chunks = [
+        "</think>\n\n",
+        "Конечно, вот готовый ",
+        "результат работы."
+    ]
+
+    events = []
+    for c in chunks:
+        events.extend(parser.feed(c))
+    events.extend(parser.finalize())
+
+    ev_types = [e[0] for e in events]
+    assert "start_think" not in ev_types
+    assert "thought_chunk" not in ev_types
+    assert "end_think" not in ev_types
+
+    assert parser.state == ThinkParserState.NORMAL_TEXT
+    assert parser.thought_text == ""
+    assert "</think>" not in parser.normal_text
+    assert "Конечно, вот готовый результат работы." in parser.normal_text
+    assert parser.get_thought_data() is None
+
+
+
 def test_session_persistence_thought_block(tmp_path, monkeypatch):
     history_tmp = tmp_path / "history"
     outputs_tmp = tmp_path / "outputs"

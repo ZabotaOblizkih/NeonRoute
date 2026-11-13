@@ -242,6 +242,14 @@ class RoleplayFlowControllerMixin:
         except (ValueError, TypeError):
             target_max_tokens = min(default_max_tok, MASTER_MAX_RESPONSE_TOKENS)
 
+        from services.assistant_flow import resolve_effective_thinking
+        enable_thinking = resolve_effective_thinking(
+            mode="roleplay",
+            model_name=model_name,
+            active_skill=None,
+            explicit_override=None
+        )
+
         llm_kwargs = {
             "user_prompt": _req,
             "prompt": _req,
@@ -252,6 +260,7 @@ class RoleplayFlowControllerMixin:
             "stop": None,
             "is_roleplay": True,
             "is_engineer": False,
+            "enable_thinking": enable_thinking,
             "context_length": target_ctx_len,
             "max_tokens": target_max_tokens,
             "min_p": min_p,

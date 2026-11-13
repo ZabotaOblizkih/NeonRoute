@@ -101,6 +101,10 @@ FORGE_EXTRA_ARGS = []
 FORGE_ENABLE_VAE_TILING = False
 FORGE_SDXL_FP8_ENABLED = True
 
+# Reasoning & Thinking Model Configuration
+DEFAULT_THINKING_MODE = "auto"
+THINKING_MODEL_KEYWORDS = ("r1", "qwq", "qwen3", "gemma-4", "gemma4", "think", "reasoning")
+
 # Strict 8 GB VRAM Safety Controls
 # Maximum heavy tasks executed at once: strictly 1
 # Sliding dialog context window for Assistant (6 user-assistant pairs to minimize prefill latency)

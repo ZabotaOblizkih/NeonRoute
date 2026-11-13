@@ -8,13 +8,14 @@ and Structured Outputs (response_format).
 
 import re
 import json
+import queue
 import logging
 import threading
 import time
 import requests
 from requests.adapters import HTTPAdapter
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Iterator
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -476,6 +477,7 @@ class LMStudioClient(QObject):
         stream: bool = True,
         stop: Optional[List[str]] = None,
         is_roleplay: Optional[bool] = None,
+        enable_thinking: Optional[bool] = None,
         **kwargs
     ) -> str:
         """
@@ -484,6 +486,8 @@ class LMStudioClient(QObject):
         """
         is_eng = kwargs.pop("is_engineer", False)
         chunk_callback = kwargs.pop("chunk_callback", None)
+        if enable_thinking is None and "enable_thinking" in kwargs:
+            enable_thinking = kwargs.pop("enable_thinking")
         with _LMS_SOCKET_LOCK:
             target_m = model or getattr(self, "_last_loaded_model_id", None)
             if _is_default_model_placeholder(target_m):
@@ -529,8 +533,16 @@ class LMStudioClient(QObject):
         logger.info(f"Sending chat completion to LM Studio for '{active_model_id}' (stream={stream}) {_get_vram_telemetry_str()}...")
 
         from services.session_manager import SessionManager
+        from services.context_window_builder import ContextWindowBuilder
 
-        est_tokens = sum(SessionManager._estimate_message_tokens(m) for m in messages if isinstance(m, dict))
+        req_messages = list(messages or [])
+        req_messages = ContextWindowBuilder.sanitize_messages_for_strict_template(
+            req_messages,
+            prepend_scene_start_for_assistant=(is_roleplay is not False),
+        )
+        req_messages = list(req_messages)
+
+        est_tokens = sum(SessionManager._estimate_message_tokens(m) for m in req_messages if isinstance(m, dict))
 
         context_limit = max(target_ctx, getattr(self, "_current_loaded_ctx", target_ctx))
         requested = min(int(max_tokens or 1536), MASTER_MAX_RESPONSE_TOKENS)
@@ -539,11 +551,24 @@ class LMStudioClient(QObject):
 
         payload: Dict[str, Any] = {
             "model": active_model_id,
-            "messages": messages,
+            "messages": req_messages,
             "temperature": float(temperature),
             "stream": stream,
             "cache_prompt": bool(kwargs.get("cache_prompt", True))
         }
+
+        if enable_thinking is not None:
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": bool(enable_thinking),
+                "thinking": bool(enable_thinking),
+            }
+            if enable_thinking is False:
+                _target_lower = str(active_model_id or "").lower()
+                if any(k in _target_lower for k in ("qwen3", "r1", "qwq")):
+                    has_last_assistant = bool(req_messages and req_messages[-1].get("role") == "assistant")
+                    if not has_last_assistant:
+                        req_messages.append({"role": "assistant", "content": "<think>\n\n</think>\n\n"})
+                        payload["messages"] = req_messages
         if stop:
             payload["stop"] = stop
         if safe_max_tokens > 0:
@@ -636,7 +661,11 @@ class LMStudioClient(QObject):
                     or "unable to generate parser for this template" in resp_lower
                 ):
                     friendly_switch_msg = "Вы сменили модель, начните новый диалог, чтобы продолжить"
-                    logger.warning(f"[LMStudio] Несовместимость шаблона при смене модели ('{active_model_id}'): {friendly_switch_msg}")
+                    raw_detail = resp_text.strip().replace("\n", " ")[:300]
+                    logger.warning(
+                        f"[LMStudio] Ошибка шаблона чата ('{active_model_id}'): {raw_detail} | "
+                        f"Сообщение пользователю: {friendly_switch_msg}"
+                    )
                     raise RuntimeError(friendly_switch_msg)
 
                 err_text = f"Ошибка LM Studio [HTTP {resp.status_code}]: {resp.text}"
@@ -795,3 +824,43 @@ class LMStudioClient(QObject):
         finally:
             self._current_session = None
             self._active_response = None
+
+    def stream_chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        **kwargs
+    ) -> Iterator[str]:
+        """
+        Streams completion token chunks by invoking chat_completion with chunk_callback
+        in a background thread and yielding chunks synchronously.
+        """
+        q: queue.Queue = queue.Queue()
+        sentinel = object()
+
+        def _worker():
+            try:
+                call_kwargs = dict(kwargs)
+                call_kwargs.pop("stream", None)
+                call_kwargs.pop("emit_signal", None)
+                call_kwargs.pop("chunk_callback", None)
+                self.chat_completion(
+                    messages=messages,
+                    chunk_callback=lambda tok: q.put(tok),
+                    stream=True,
+                    emit_signal=False,
+                    **call_kwargs
+                )
+            except Exception as exc:
+                q.put(exc)
+            finally:
+                q.put(sentinel)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+        while True:
+            item = q.get()
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
