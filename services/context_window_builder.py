@@ -243,8 +243,164 @@ class ContextWindowBuilder:
             session_id=session_id,
             session_metadata=kwargs.get("session_metadata"),
             active_assistant_skill=kwargs.get("active_assistant_skill"),
+            selected_forge_checkpoint=kwargs.get("selected_forge_checkpoint"),
             custom_prompt=custom_system_prompt
         )
+
+    @staticmethod
+    def _merge_message_content(prev_content: Any, next_content: Any) -> Any:
+        """Безопасно объединяет содержимое двух соседних сообщений с одинаковой ролью (str/list)."""
+        if isinstance(prev_content, list) and isinstance(next_content, list):
+            return [dict(p) if isinstance(p, dict) else p for p in prev_content] + [
+                dict(p) if isinstance(p, dict) else p for p in next_content
+            ]
+        if isinstance(prev_content, list):
+            merged = [dict(p) if isinstance(p, dict) else p for p in prev_content]
+            next_str = str(next_content or "").strip()
+            if next_str:
+                for p in reversed(merged):
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        base = str(p.get("text") or "").strip()
+                        p["text"] = f"{base}\n\n{next_str}" if base else next_str
+                        return merged
+                merged.append({"type": "text", "text": next_str})
+            return merged
+        if isinstance(next_content, list):
+            merged = [dict(p) if isinstance(p, dict) else p for p in next_content]
+            prev_str = str(prev_content or "").strip()
+            if prev_str:
+                for p in merged:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        base = str(p.get("text") or "").strip()
+                        p["text"] = f"{prev_str}\n\n{base}" if base else prev_str
+                        return merged
+                merged.insert(0, {"type": "text", "text": prev_str})
+            return merged
+        prev_str = str(prev_content or "").strip()
+        next_str = str(next_content or "").strip()
+        if prev_str and next_str:
+            return f"{prev_str}\n\n{next_str}"
+        return prev_str or next_str
+
+    @staticmethod
+    def normalize_role_alternation(
+        history: List[Dict[str, Any]],
+        strip_leading_assistant: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Гарантирует корректное чередование ролей (user/assistant) в истории диалога:
+        - При strip_leading_assistant=True отбрасывает ведущие реплики assistant
+          (например, UI-приветствие в режиме Ассистента или остаток после срезки по токен-бюджету).
+        - Объединяет подряд идущие сообщения с одинаковой ролью (включая multimodal list-контент),
+          исключая HTTP 400 ошибки шаблона вроде 'Conversation roles must alternate'.
+        """
+        if not history:
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for raw_m in history:
+            if not isinstance(raw_m, dict):
+                continue
+            m = dict(raw_m)
+            role = m.get("role") or ("user" if m.get("is_user") else "assistant")
+            m["role"] = role
+
+            if strip_leading_assistant and not normalized and role == "assistant":
+                continue
+
+            if normalized and normalized[-1].get("role") == role:
+                prev = normalized[-1]
+                prev_content = prev.get("content")
+                cur_content = m.get("content")
+                if role == "assistant" and isinstance(prev_content, str) and isinstance(cur_content, str):
+                    if "<think>" in cur_content and "<think>" in prev_content:
+                        prev_content = re.sub(r'<think>.*?</think>', '', prev_content, flags=re.DOTALL).strip()
+                prev["content"] = ContextWindowBuilder._merge_message_content(prev_content, cur_content)
+                if m.get("thought") is not None:
+                    prev["thought"] = dict(m["thought"]) if isinstance(m["thought"], dict) else m["thought"]
+            else:
+                normalized.append(m)
+
+        return normalized
+
+    @staticmethod
+    def sanitize_messages_for_strict_template(
+        messages: List[Dict[str, Any]],
+        prepend_scene_start_for_assistant: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Приводит финальный OpenAI-список messages к виду, совместимому со строгими
+        Jinja-шаблонами (Mistral-Nemo, Gemma, Llama-3 и др.):
+        - допускает ровно одно опциональное system-сообщение строго на индексе 0;
+        - промежуточные system-инъекции (например, RP Depth-1 якорь перед репликой игрока)
+          аккуратно вливаются в ближайшее последующее user-сообщение (или в system[0]);
+        - при первом сообщении диалога с ролью assistant (first_mes в РП) либо предваряет
+          его синтетическим ходом user ('[Начало сцены]') при prepend_scene_start_for_assistant=True,
+          либо отбрасывает при False;
+        - объединяет подряд идущие сообщения с одинаковой ролью.
+        Если входной список уже строго валиден — возвращает его без изменений.
+        """
+        if not messages:
+            return messages
+
+        has_head_sys = isinstance(messages[0], dict) and messages[0].get("role") == "system"
+        conv_slice = messages[1:] if has_head_sys else messages
+
+        already_valid = True
+        expected_role = "user"
+        for m in conv_slice:
+            if not isinstance(m, dict):
+                already_valid = False
+                break
+            r = m.get("role")
+            if r != expected_role:
+                already_valid = False
+                break
+            expected_role = "assistant" if expected_role == "user" else "user"
+
+        if already_valid:
+            return messages
+
+        head_sys = dict(messages[0]) if has_head_sys else None
+        conv_no_sys: List[Dict[str, Any]] = []
+        pending_sys: List[str] = []
+
+        for raw_m in conv_slice:
+            if not isinstance(raw_m, dict):
+                continue
+            m = dict(raw_m)
+            role = m.get("role") or ("user" if m.get("is_user") else "assistant")
+            m["role"] = role
+
+            if role == "system":
+                sys_txt = str(m.get("content") or "").strip()
+                if sys_txt:
+                    pending_sys.append(sys_txt)
+                continue
+
+            if role == "user" and pending_sys:
+                anchor_prefix = "\n\n".join(pending_sys)
+                pending_sys.clear()
+                m["content"] = ContextWindowBuilder._merge_message_content(anchor_prefix, m.get("content"))
+
+            conv_no_sys.append(m)
+
+        if pending_sys:
+            extra_sys = "\n\n".join(pending_sys)
+            if head_sys is not None:
+                head_sys["content"] = ContextWindowBuilder._merge_message_content(head_sys.get("content"), extra_sys)
+            else:
+                head_sys = {"role": "system", "content": extra_sys}
+
+        conv_clean = ContextWindowBuilder.normalize_role_alternation(
+            conv_no_sys,
+            strip_leading_assistant=not prepend_scene_start_for_assistant,
+        )
+
+        if prepend_scene_start_for_assistant and conv_clean and conv_clean[0].get("role") == "assistant":
+            conv_clean = [{"role": "user", "content": "[Начало сцены]"}] + conv_clean
+
+        return ([head_sys] if head_sys is not None else []) + conv_clean
 
     @staticmethod
     def prepare_history_for_llm(
@@ -359,8 +515,20 @@ class ContextWindowBuilder:
                                 clean_parts.append(part)
                         content_val = clean_parts
 
-            if isinstance(content_val, str) and not content_val and role == "assistant":
-                continue
+            if role == "assistant" and isinstance(content_val, str):
+                saved_prompt = m.get("image_prompt")
+                if not saved_prompt and isinstance(m.get("generation_params"), dict):
+                    saved_prompt = m["generation_params"].get("positive_prompt") or m["generation_params"].get("prompt")
+                if saved_prompt and "[IMAGE_PROMPT:" not in content_val:
+                    if not content_val or content_val.startswith("Секунду, перевожу образ в кадр"):
+                        content_val = f"[IMAGE_PROMPT: {saved_prompt}]"
+                    else:
+                        content_val = f"{content_val}\n\n[IMAGE_PROMPT: {saved_prompt}]"
+                elif not content_val:
+                    if m.get("image_path") or m.get("file_paths"):
+                        content_val = "[Generated image]"
+                    else:
+                        continue
 
             normalized_history.append({"role": role, "content": content_val})
 
@@ -783,6 +951,7 @@ class ContextWindowBuilder:
                 knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
                 matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
                 enable_reasoning=enable_reasoning or kwargs.get("enable_reasoning", False),
+                selected_forge_checkpoint=kwargs.get("selected_forge_checkpoint"),
                 custom_system_prompt=kwargs.get("custom_system_prompt")
             )
             safe_user_name = str(user_name).strip() if user_name else "пользователь"
@@ -824,6 +993,11 @@ class ContextWindowBuilder:
                         payload_list.append(p_copy)
                     recent_history[i] = {"role": "user", "content": payload_list}
                     break
+
+        recent_history = ContextWindowBuilder.normalize_role_alternation(
+            recent_history,
+            strip_leading_assistant=not is_roleplay,
+        )
 
         messages.extend(recent_history)
 

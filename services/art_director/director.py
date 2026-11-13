@@ -18,6 +18,8 @@ from services.art_director.vram_policy import (
     calculate_max_hires_canvas_area,
     resolve_forge_offload_policy,
     resolve_checkpoint_file_size_mb,
+    resolve_safe_hires_scale,
+    resolve_hires_second_pass_steps,
     format_vram_planner_log,
 )
 from services.forge_client import is_sdxl_checkpoint
@@ -516,7 +518,9 @@ class ArtDirector:
         enable_ad = bool(base_ad or wants_hands) and not is_bg
         hands_on = (bool(model_pipeline.get("adetailer_hands_enabled", True)) or wants_hands) and enable_ad
 
-        default_inpaint = 768 if is_xl else 512
+        from services.art_director.vram_policy import resolve_hardware_vram_budget
+        total_vram_gb, _ = resolve_hardware_vram_budget()
+        default_inpaint = 512 if (not is_xl or (total_vram_gb and total_vram_gb <= 8.5)) else 768
         face_inpaint_sz = int(
             model_pipeline.get("adetailer_face_inpaint_size")
             or model_pipeline.get("adetailer_inpaint_size")
@@ -606,6 +610,18 @@ class ArtDirector:
                 if getattr(plan, "adetailer_hands_enabled", False)
                 else 512,
             )
+            monitor = getattr(self, "system_monitor", None)
+            total_vram_gb, _ = resolve_hardware_vram_budget(monitor)
+            hr_on = bool(getattr(plan, "enable_hr", False))
+            plan_w = int(getattr(plan, "width", 512) or 512)
+            plan_h = int(getattr(plan, "height", 512) or 512)
+            hr_scale_val = float(getattr(plan, "hr_scale", 1.0) or 1.0)
+            hr_area = int(round(plan_w * plan_h * (hr_scale_val ** 2)))
+            vae_tile = bool(
+                FORGE_ENABLE_VAE_TILING
+                or (is_xl and (total_vram_gb <= 8.5 or hr_on))
+                or (not is_xl and hr_on and hr_area > 1_300_000)
+            )
             pol = resolve_forge_offload_policy(
                 width=int(getattr(plan, "width", 512) or 512),
                 height=int(getattr(plan, "height", 512) or 512),
@@ -613,13 +629,13 @@ class ArtDirector:
                 is_fp8=is_fp8,
                 enable_adetailer=bool(getattr(plan, "enable_adetailer", False)),
                 active_lora_count=lora_count,
-                system_monitor=getattr(self, "system_monitor", None),
+                system_monitor=monitor,
                 enable_hr=bool(getattr(plan, "enable_hr", False)),
                 hr_scale=float(getattr(plan, "hr_scale", 1.0) or 1.0),
                 hr_upscaler=str(getattr(plan, "hr_upscaler", "Latent") or "Latent"),
                 enable_hand_adetailer=bool(getattr(plan, "adetailer_hands_enabled", False)),
                 ad_inpaint_size=inpaint_sz,
-                vae_tiling=bool(FORGE_ENABLE_VAE_TILING),
+                vae_tiling=vae_tile,
                 checkpoint_size_mb=resolve_checkpoint_file_size_mb(ckpt),
             )
             if pol.get("force_disable_hr") and getattr(plan, "enable_hr", False):
@@ -640,54 +656,149 @@ class ArtDirector:
         except Exception as e:
             logger.debug(f"[VRAM-Planner] Ошибка расчёта паспорта: {e}")
 
+    def _resolve_hires_policy_for_plan(
+        self,
+        width: int,
+        height: int,
+        architecture: str,
+        checkpoint: str = "",
+        enable_adetailer: bool = False,
+        enable_hand_adetailer: bool = False,
+        requested_enable_hr: bool = False,
+        requested_hr_scale: float = 1.0,
+        hr_upscaler: str = "Latent",
+        ad_inpaint_size: int = 512,
+        active_lora_count: int = 0,
+    ) -> Dict[str, Any]:
+        """Единый адаптивный резолвер политики Hires.fix с выводом диагностического паспорта."""
+        from config import FORGE_ENABLE_VAE_TILING
+        from utils.config_manager import ConfigManager
+        from services.art_director.vram_policy import (
+            DEFAULT_FORGE_RESERVE_MB,
+            estimate_active_model_weights_mb,
+        )
+
+        cfg = ConfigManager.load_config()
+        sdxl_fp8_enabled = bool(cfg.get("forge_sdxl_fp8_enabled", True))
+        is_xl = "xl" in str(architecture).lower() or is_sdxl_checkpoint(checkpoint)
+        is_fp8 = bool(is_xl and sdxl_fp8_enabled)
+        ckpt_mb = resolve_checkpoint_file_size_mb(checkpoint)
+
+        monitor = getattr(self, "system_monitor", None)
+        total_vram_gb, os_reserve_mb = resolve_hardware_vram_budget(monitor)
+        usable_vram_mb = max(0, int(round(total_vram_gb * 1024.0)) - int(os_reserve_mb) - DEFAULT_FORGE_RESERVE_MB)
+        hr_area_est = int(round(width * height * (float(requested_hr_scale or 1.0) ** 2)))
+        vae_tile = bool(
+            FORGE_ENABLE_VAE_TILING
+            or (is_xl and (total_vram_gb <= 8.5 or float(requested_hr_scale or 1.0) > 1.0))
+            or (not is_xl and float(requested_hr_scale or 1.0) > 1.0 and hr_area_est > 1_300_000)
+        )
+
+        model_mb = estimate_active_model_weights_mb(
+            architecture="sdxl" if is_xl else "sd15",
+            is_fp8=is_fp8,
+            checkpoint_size_mb=ckpt_mb,
+        )
+
+        ad_label = (
+            "Face+Hands" if (enable_adetailer and enable_hand_adetailer)
+            else ("Face" if enable_adetailer else "OFF")
+        )
+
+        req_scale = float(requested_hr_scale or 1.0)
+        if not requested_enable_hr or req_scale <= 1.0:
+            allowed = False
+            eff_scale = 1.0
+            hr_w, hr_h = width, height
+            max_area = 0
+            reason = "отключено в профиле (scale <= 1.0)"
+            res = {
+                "allowed": False,
+                "effective_scale": 1.0,
+                "requested_scale": req_scale,
+                "hr_width": width,
+                "hr_height": height,
+                "max_area": 0,
+                "policy": None,
+                "reason": reason,
+            }
+        else:
+            res = resolve_safe_hires_scale(
+                width=width,
+                height=height,
+                requested_hr_scale=req_scale,
+                architecture="sdxl" if is_xl else "sd15",
+                is_fp8=is_fp8,
+                enable_adetailer=enable_adetailer,
+                enable_hand_adetailer=enable_hand_adetailer,
+                active_lora_count=active_lora_count,
+                hr_upscaler=hr_upscaler,
+                vae_tiling=vae_tile,
+                checkpoint_size_mb=ckpt_mb,
+                system_monitor=monitor,
+                ad_inpaint_size=ad_inpaint_size,
+            )
+            allowed = bool(res.get("allowed", False))
+            eff_scale = float(res.get("effective_scale", 1.0)) if allowed else 1.0
+            hr_w = int(res.get("hr_width", width)) if allowed else width
+            hr_h = int(res.get("hr_height", height)) if allowed else height
+            max_area = int(res.get("max_area", 0))
+            reason = str(res.get("reason", ""))
+
+        base_area = width * height
+        ratio = max(width / height, height / width) if (height > 0 and width > 0) else 1.0
+        hr_area = hr_w * hr_h
+        arch_str = "SDXL" if is_xl else "SD15"
+
+        logger.info(
+            f"[Forge VRAM Policy Diagnostic Passport]\n"
+            f"  ├── 1. Аппаратный профиль : Total VRAM = {total_vram_gb:.1f} GB | Резерв ОС = {os_reserve_mb} MB | Usable = {usable_vram_mb} MB\n"
+            f"  ├── 2. Пайплайн и модель  : Arch = {arch_str} | FP8 = {is_fp8} ({model_mb} MB) | ADetailer = {ad_label} | VAETile = {vae_tile}\n"
+            f"  ├── 3. Базовый холст      : {width}x{height} ({base_area:,} px) | Ratio = {ratio:.2f} | Потолок Hires = {max_area:,} px\n"
+            f"  └── 4. Вердикт Hires.fix  : Allowed = {allowed} | Scale: {req_scale:.2f}x -> {eff_scale:.2f}x ({hr_w}x{hr_h}, {hr_area:,} px) | Причина: {reason}"
+        )
+
+        return res
+
     def _is_resolution_safe_for_hires(
         self,
         width: int,
         height: int,
         architecture: str,
         checkpoint: str = "",
-        enable_adetailer: bool = False
+        enable_adetailer: bool = False,
+        hr_scale: float = 1.0,
     ) -> bool:
-        """Динамическая проверка безопасности второго прохода Hires.fix."""
+        """Динамическая проверка безопасности Hires.fix (сохранена для обратной совместимости)."""
         from utils.config_manager import ConfigManager
+        from config import FORGE_ENABLE_VAE_TILING
+
         config = ConfigManager.load_config()
-        sdxl_fp8_enabled = config.get("forge_sdxl_fp8_enabled", True)
-        is_fp8 = is_sdxl_checkpoint(checkpoint) and sdxl_fp8_enabled
+        sdxl_fp8_enabled = bool(config.get("forge_sdxl_fp8_enabled", True))
+        is_xl = "xl" in str(architecture).lower() or is_sdxl_checkpoint(checkpoint)
+        is_fp8 = bool(is_xl and sdxl_fp8_enabled)
 
         monitor = getattr(self, "system_monitor", None)
         total_vram_gb, os_reserve_mb = resolve_hardware_vram_budget(monitor)
-
-        max_area = calculate_max_hires_canvas_area(
-            architecture=architecture,
-            is_fp8=is_fp8,
-            total_vram_gb=total_vram_gb,
-            os_reserve_mb=os_reserve_mb,
-            enable_adetailer=enable_adetailer
+        hr_area_est = int(round(width * height * (float(hr_scale or 1.0) ** 2)))
+        vae_tile = bool(
+            FORGE_ENABLE_VAE_TILING
+            or (is_xl and (total_vram_gb <= 8.5 or float(hr_scale or 1.0) > 1.0))
+            or (not is_xl and float(hr_scale or 1.0) > 1.0 and hr_area_est > 1_300_000)
         )
 
-        ratio = max(width / height, height / width) if (height > 0 and width > 0) else 1.0
-        effective_area = int((width * height) * (1.0 + (ratio - 1.5) * 0.3)) if ratio > 1.5 else (width * height)
-
-        hires_safe = is_hires_safe(
+        return is_hires_safe(
             width=width,
             height=height,
-            architecture=architecture,
+            architecture="sdxl" if is_xl else "sd15",
             is_fp8=is_fp8,
             total_vram_gb=total_vram_gb,
             os_reserve_mb=os_reserve_mb,
-            enable_adetailer=enable_adetailer
+            enable_adetailer=enable_adetailer,
+            hr_scale=hr_scale,
+            checkpoint_size_mb=resolve_checkpoint_file_size_mb(checkpoint),
+            vae_tiling=vae_tile,
         )
-
-        arch_str = str(architecture).upper() if architecture else "SD15"
-        logger.info(
-            f"[Forge VRAM Policy Diagnostic Passport]\n"
-            f"  ├── 1. Аппаратный профиль : Total VRAM = {total_vram_gb:.1f} GB | Резерв ОС = {os_reserve_mb} MB\n"
-            f"  ├── 2. Пайплайн и модель  : Arch = {arch_str} | FP8 = {is_fp8} | ADetailer = {enable_adetailer}\n"
-            f"  ├── 3. Геометрия холста   : {width}x{height} ({width * height:,} px) | Ratio = {ratio:.2f} (Eff Area: {effective_area:,} px)\n"
-            f"  └── 4. Вердикт Hires.fix  : Allowed = {hires_safe} | Потолок площади = {max_area:,} px"
-        )
-
-        return hires_safe
 
     def plan_from_visual_intent(
         self,
@@ -1027,35 +1138,47 @@ class ArtDirector:
         enable_ad = ad_cfg["enable_adetailer"]
         hands_enabled = ad_cfg["hands_enabled"]
 
-        # Определение доступности Hires.fix через динамическую политику VRAM
-        hires_safe = self._is_resolution_safe_for_hires(
+        if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
+            req_enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
+            req_hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if req_enable_hr else 1.0
+        else:
+            if arch_cfg.get("is_xl"):
+                req_hr_scale = 1.0
+                req_enable_hr = False
+            else:
+                req_hr_scale = float(model_pipeline.get("hr_scale", 1.5))
+                req_enable_hr = True if not is_bg else False
+
+        if _is_xl_v:
+            default_upscaler = "Latent"
+        else:
+            default_upscaler = canon.hr_upscaler if (canon and canon.hr_upscaler) else "R-ESRGAN 4x+"
+        hr_upscaler = model_pipeline.get("hires_upscaler", default_upscaler)
+        denoising_strength = float(model_pipeline.get("hires_denoise", 0.35))
+        configured_hr_steps = model_pipeline.get("hr_second_pass_steps")
+        hr_second_pass_steps = resolve_hires_second_pass_steps(
+            base_steps=steps,
+            denoising_strength=denoising_strength,
+            configured_steps=configured_hr_steps if (configured_hr_steps is not None and int(configured_hr_steps) > 0) else None,
+        )
+
+        # Адаптивный резолвер Hires.fix под реальный бюджет VRAM с диагностическим паспортом
+        hires_res = self._resolve_hires_policy_for_plan(
             width=width,
             height=height,
             architecture=arch_cfg.get("architecture") or ("sdxl" if arch_cfg.get("is_xl") else "sd15"),
             checkpoint=target_ckpt,
-            enable_adetailer=enable_ad  # флаг активности ADetailer для кадра
+            enable_adetailer=enable_ad,
+            enable_hand_adetailer=hands_enabled,
+            requested_enable_hr=req_enable_hr,
+            requested_hr_scale=req_hr_scale,
+            hr_upscaler=hr_upscaler,
+            ad_inpaint_size=ad_cfg.get("face_inpaint_size", 512),
+            active_lora_count=len(all_loras_in_prompt) if "all_loras_in_prompt" in locals() else 0,
         )
 
-        if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
-            enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
-            hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
-        else:
-            if arch_cfg.get("is_xl"):
-                hr_scale = 1.0
-                enable_hr = False
-            else:
-                hr_scale = float(model_pipeline.get("hr_scale", 1.5))
-                enable_hr = True if not is_bg else False
-
-        # Аппаратный предохранитель VRAM: если разрешение небезопасно для текущей топологии GPU,
-        # Hires.fix принудительно отключается со сбросом множителя до 1.0
-        if not hires_safe:
-            enable_hr = False
-            hr_scale = 1.0
-
-        hr_upscaler = model_pipeline.get("hires_upscaler", canon.hr_upscaler or "R-ESRGAN 4x+")
-        denoising_strength = float(model_pipeline.get("hires_denoise", 0.35))
-        hr_second_pass_steps = int(model_pipeline.get("hr_second_pass_steps", canon.hr_second_pass_steps or 14))
+        enable_hr = bool(hires_res.get("allowed", False))
+        hr_scale = float(hires_res.get("effective_scale", 1.0)) if enable_hr else 1.0
 
         custom_base_neg = (
             (model_pipeline.get("negative_prompt") if isinstance(model_pipeline, dict) else "")
@@ -1175,13 +1298,19 @@ class ArtDirector:
         p_sched = getattr(plan, "scheduler", "Karras")
         p_clip = getattr(plan, "clip_skip", 1)
         p_seed = getattr(plan, "seed", -1)
+        p_hr_steps = getattr(plan, "hr_second_pass_steps", hr_second_pass_steps)
+        hires_diag = (
+            f" (Hires.fix {p_scale}x -> {int(round(p_w * p_scale))}x{int(round(p_h * p_scale))}, steps={p_hr_steps}, denoise={p_denoise})"
+            if getattr(plan, "enable_hr", False)
+            else f" (Hires.fix {p_scale}x -> {int(round(p_w * p_scale))}x{int(round(p_h * p_scale))})"
+        )
 
         logger.info(
             f"\n================ [ART DIRECTOR: PLAN FROM VISUAL INTENT] ================\n"
             f"[PROMPT CLEAN]    : \"{p_pos}\"\n"
             f"[NEGATIVE]        : \"{p_neg}\"\n"
             f"[PROFILE / CKPT]  : {p_title} ({p_style}) -> {p_ckpt}\n"
-            f"[RESOLUTION]      : {p_w}x{p_h} (Hires.fix {p_scale}x -> {int(p_w*p_scale)}x{int(p_h*p_scale)}) | Archetype={p_arch}\n"
+            f"[RESOLUTION]      : {p_w}x{p_h}{hires_diag} | Archetype={p_arch}\n"
             f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise} | "
             f"Sampler={p_sampler} | Scheduler={p_sched} | ClipSkip={p_clip} | Seed={p_seed}\n"
             f"[ADETAILER FACE]  : {ad_face_info}\n"
@@ -1565,6 +1694,7 @@ class ArtDirector:
         plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
         plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
         _is_xl_p = ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt))
+        _is_xl_v = _is_xl_p
 
         # Единый резолвинг ADetailer (SSOT до расчёта Hires.fix и сборки плана)
         ad_cfg = self._resolve_adetailer_pipeline(
@@ -1577,35 +1707,47 @@ class ArtDirector:
         enable_ad = ad_cfg["enable_adetailer"]
         hands_enabled = ad_cfg["hands_enabled"]
 
-        # Определение доступности Hires.fix через динамическую политику VRAM
-        hires_safe = self._is_resolution_safe_for_hires(
+        if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
+            req_enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
+            req_hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if req_enable_hr else 1.0
+        else:
+            if arch_cfg.get("is_xl"):
+                req_hr_scale = 1.0
+                req_enable_hr = False
+            else:
+                req_hr_scale = float(model_pipeline.get("hr_scale", 1.5))
+                req_enable_hr = True if not is_bg else False
+
+        if _is_xl_v:
+            default_upscaler = "Latent"
+        else:
+            default_upscaler = canon.hr_upscaler if (canon and canon.hr_upscaler) else "R-ESRGAN 4x+"
+        hr_upscaler = model_pipeline.get("hires_upscaler", default_upscaler)
+        hr_denoise = float(model_pipeline.get("hires_denoise", 0.35))
+        configured_hr_steps = model_pipeline.get("hr_second_pass_steps")
+        hr_second_pass_steps = resolve_hires_second_pass_steps(
+            base_steps=int(model_pipeline.get("steps", canon.recommended_steps)),
+            denoising_strength=hr_denoise,
+            configured_steps=configured_hr_steps if (configured_hr_steps is not None and int(configured_hr_steps) > 0) else None,
+        )
+
+        # Адаптивный резолвер Hires.fix под реальный бюджет VRAM с диагностическим паспортом
+        hires_res = self._resolve_hires_policy_for_plan(
             width=width,
             height=height,
             architecture=arch_cfg.get("architecture") or ("sdxl" if arch_cfg.get("is_xl") else "sd15"),
             checkpoint=target_ckpt,
-            enable_adetailer=enable_ad  # флаг активности ADetailer для кадра
+            enable_adetailer=enable_ad,
+            enable_hand_adetailer=hands_enabled,
+            requested_enable_hr=req_enable_hr,
+            requested_hr_scale=req_hr_scale,
+            hr_upscaler=hr_upscaler,
+            ad_inpaint_size=ad_cfg.get("face_inpaint_size", 512),
+            active_lora_count=len(all_loras_in_prompt) if "all_loras_in_prompt" in locals() else 0,
         )
 
-        if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
-            enable_hr = bool(model_pipeline["enable_hr"]) and not is_bg
-            hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
-        else:
-            if arch_cfg.get("is_xl"):
-                hr_scale = 1.0
-                enable_hr = False
-            else:
-                hr_scale = float(model_pipeline.get("hr_scale", 1.5))
-                enable_hr = True if not is_bg else False
-
-        # Аппаратный предохранитель VRAM: если разрешение небезопасно для текущей топологии GPU,
-        # Hires.fix принудительно отключается со сбросом множителя до 1.0
-        if not hires_safe:
-            enable_hr = False
-            hr_scale = 1.0
-
-        hr_upscaler = model_pipeline.get("hires_upscaler", canon.hr_upscaler or "R-ESRGAN 4x+")
-        hr_denoise = float(model_pipeline.get("hires_denoise", 0.35))
-        hr_second_pass_steps = int(model_pipeline.get("hr_second_pass_steps", canon.hr_second_pass_steps or 14))
+        enable_hr = bool(hires_res.get("allowed", False))
+        hr_scale = float(hires_res.get("effective_scale", 1.0)) if enable_hr else 1.0
 
         raw_sampler = model_pipeline.get("sampler", canon.sampler_name if canon else "DPM++ 2M")
         custom_scheduler = model_pipeline.get("scheduler")
@@ -1691,6 +1833,12 @@ class ArtDirector:
         p_sched = getattr(plan, "scheduler", "Karras")
         p_clip = getattr(plan, "clip_skip", 1)
         p_seed = getattr(plan, "seed", -1)
+        p_hr_steps = getattr(plan, "hr_second_pass_steps", hr_second_pass_steps)
+        hires_diag = (
+            f" (Hires.fix {p_scale}x -> {int(round(p_w * p_scale))}x{int(round(p_h * p_scale))}, steps={p_hr_steps}, denoise={p_denoise})"
+            if getattr(plan, "enable_hr", False)
+            else f" (Hires.fix {p_scale}x -> {int(round(p_w * p_scale))}x{int(round(p_h * p_scale))})"
+        )
 
         logger.info(
             f"\n======================= [ART DIRECTOR: PLAN GENERATION] =======================\n"
@@ -1698,7 +1846,7 @@ class ArtDirector:
             f"[PROMPT CLEAN]    : \"{p_pos}\"\n"
             f"[NEGATIVE]        : \"{p_neg}\"\n"
             f"[PROFILE / CKPT]  : {p_title} ({p_style}) -> {p_ckpt}\n"
-            f"[RESOLUTION]      : {p_w}x{p_h} (Hires.fix {p_scale}x -> {int(p_w*p_scale)}x{int(p_h*p_scale)}) | Archetype={p_arch}\n"
+            f"[RESOLUTION]      : {p_w}x{p_h}{hires_diag} | Archetype={p_arch}\n"
             f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise} | "
             f"Sampler={p_sampler} | Scheduler={p_sched} | ClipSkip={p_clip} | Seed={p_seed}\n"
             f"[ADETAILER FACE]  : {ad_face_info}\n"
@@ -1869,22 +2017,9 @@ class ArtDirector:
             sampler_name = raw_sampler
             scheduler = canon.scheduler if canon else "Karras"
 
-        if "enable_hr" in user_params:
-            enable_hr = bool(user_params["enable_hr"])
-            hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5))) if enable_hr else 1.0
-        elif "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
-            enable_hr = bool(model_pipeline["enable_hr"])
-            hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
-        elif is_xl:
-            enable_hr = False
-            hr_scale = 1.0
-        else:
-            enable_hr = True
-            hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5)))
-
-        hr_denoise = float(user_params.get("denoising_strength", model_pipeline.get("hires_denoise", 0.35)))
-        hr_upscaler = user_params.get("hr_upscaler", model_pipeline.get("hires_upscaler", canon.hr_upscaler or "R-ESRGAN 4x+"))
-        hr_second_pass_steps = int(user_params.get("hr_second_pass_steps", model_pipeline.get("hr_second_pass_steps", canon.hr_second_pass_steps or 14)))
+        default_w, default_h = (1024, 1024) if is_xl else (512, 768)
+        width = int(user_params.get("width", default_w))
+        height = int(user_params.get("height", default_h))
 
         ad_cfg = self._resolve_adetailer_pipeline(
             model_pipeline=model_pipeline,
@@ -1900,9 +2035,54 @@ class ArtDirector:
             enable_ad = bool(ad_cfg["enable_adetailer"])
             hands_enabled = bool(ad_cfg["hands_enabled"])
 
-        default_w, default_h = (1024, 1024) if is_xl else (512, 768)
-        width = int(user_params.get("width", default_w))
-        height = int(user_params.get("height", default_h))
+        if "enable_hr" in user_params:
+            req_enable_hr = bool(user_params["enable_hr"])
+            req_hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5))) if req_enable_hr else 1.0
+        elif "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
+            req_enable_hr = bool(model_pipeline["enable_hr"])
+            req_hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if req_enable_hr else 1.0
+        elif is_xl:
+            req_enable_hr = False
+            req_hr_scale = 1.0
+        else:
+            req_enable_hr = True
+            req_hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5)))
+
+        hr_denoise = float(user_params.get("denoising_strength", model_pipeline.get("hires_denoise", 0.35)))
+        if is_xl:
+            default_upscaler = "Latent"
+        else:
+            default_upscaler = canon.hr_upscaler if (canon and canon.hr_upscaler) else "R-ESRGAN 4x+"
+        hr_upscaler = user_params.get("hr_upscaler", model_pipeline.get("hires_upscaler", default_upscaler))
+        raw_hr_steps = user_params.get("hr_second_pass_steps") if user_params.get("hr_second_pass_steps") is not None else model_pipeline.get("hr_second_pass_steps")
+        hr_second_pass_steps = resolve_hires_second_pass_steps(
+            base_steps=steps,
+            denoising_strength=hr_denoise,
+            configured_steps=raw_hr_steps if (raw_hr_steps is not None and int(raw_hr_steps) > 0) else None,
+        )
+
+        # Адаптивный резолвер Hires.fix под реальный бюджет VRAM с диагностическим паспортом
+        hires_res = self._resolve_hires_policy_for_plan(
+            width=width,
+            height=height,
+            architecture="sdxl" if is_xl else "sd15",
+            checkpoint=target_ckpt,
+            enable_adetailer=enable_ad,
+            enable_hand_adetailer=hands_enabled,
+            requested_enable_hr=req_enable_hr,
+            requested_hr_scale=req_hr_scale,
+            hr_upscaler=hr_upscaler,
+            ad_inpaint_size=ad_cfg.get("face_inpaint_size", 512),
+            active_lora_count=len(re.findall(r'<lora:[^>]+>', pos_raw)),
+        )
+
+        enable_hr = bool(hires_res.get("allowed", False))
+        hr_scale = float(hires_res.get("effective_scale", 1.0)) if enable_hr else 1.0
+
+        hires_diag = (
+            f" (Hires.fix {hr_scale}x -> {int(round(width * hr_scale))}x{int(round(height * hr_scale))}, steps={hr_second_pass_steps}, denoise={hr_denoise})"
+            if enable_hr else f" (Hires.fix {hr_scale}x -> {int(round(width * hr_scale))}x{int(round(height * hr_scale))})"
+        )
 
         logger.info(
             f"\n"
@@ -1910,13 +2090,14 @@ class ArtDirector:
             f"[POSITIVE]  : \"{final_positive}\"\n"
             f"[NEGATIVE]  : \"{final_negative}\"\n"
             f"[CKPT]      : {target_ckpt} ({plan_model_id})\n"
-            f"[INFERENCE] : Steps={steps} | CFG={cfg_scale} | Sampler={sampler_name}/{scheduler} | ClipSkip={clip_skip} | Seed={effective_seed} | Size={width}x{height}\n"
-            f"[HIRES.FIX] : Enable={enable_hr} | Scale={hr_scale}x | Denoise={hr_denoise} | Upscaler={hr_upscaler}\n"
+            f"[RESOLUTION]: {width}x{height}{hires_diag}\n"
+            f"[INFERENCE] : Steps={steps} | CFG={cfg_scale} | Sampler={sampler_name}/{scheduler} | ClipSkip={clip_skip} | Seed={effective_seed}\n"
+            f"[HIRES.FIX] : Enable={enable_hr} | Scale={hr_scale}x | Steps={hr_second_pass_steps} | Denoise={hr_denoise} | Upscaler={hr_upscaler}\n"
             f"[ADETAILER] : Face={'ON' if enable_ad else 'OFF'} | Hands={'ON' if hands_enabled else 'OFF'}\n"
             f"==========================================================================="
         )
 
-        return GenerationPlan(
+        plan = GenerationPlan(
             style=plan_model_id,
             target_model_key=plan_model_id,
             model_title=plan_model_title,
@@ -1961,6 +2142,12 @@ class ArtDirector:
             adetailer_hands_prompt=final_positive if hands_enabled else None,
             adetailer_hands_negative_prompt=final_negative if hands_enabled else None,
         )
+        self._log_vram_planner_passport(
+            plan=plan,
+            architecture="sdxl" if is_xl else "sd15",
+            lora_count=len(re.findall(r'<lora:[^>]+>', pos_raw)),
+        )
+        return plan
     def build_scene_background_plan(
         self,
         location_prompt: str,

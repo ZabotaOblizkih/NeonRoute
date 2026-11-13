@@ -57,6 +57,9 @@ class VisualIntent:
         d = asdict(self)
         d["target_subject"] = self.target_subject.value
         d["is_self_portrait"] = self.is_self_portrait
+        cc = d.get("character_card")
+        if cc is not None and not isinstance(cc, dict):
+            d["character_card"] = cc.to_dict() if hasattr(cc, "to_dict") else None
         return d
 
     def get(self, key: str, default: Any = None) -> Any:

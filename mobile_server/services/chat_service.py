@@ -28,7 +28,7 @@ from services.assistant_flow import (
     sanitize_assistant_art_and_markdown,
     should_trigger_assistant_art,
 )
-from services.assistant_prompt_builder import AssistantPromptBuilder
+from services.assistant_prompt_builder import AssistantPromptBuilder, IMAGE_GENERATION_SKILLS
 from services.context_window_builder import ContextWindowBuilder
 from services.lm_studio import LMStudioClient
 from services.mode_coordinator import AppMode
@@ -95,14 +95,15 @@ def build_chat_context_and_params(
             SkillRouter.get_instance(embedder=emb)
 
         routed_skill, _, _ = skill_router.route(user_text)
-        is_gallery_skill = routed_skill == "gallery"
+        is_art_skill = routed_skill in IMAGE_GENERATION_SKILLS
+        profile["active_assistant_skill"] = routed_skill
 
         context_msgs, _, _ = assemble_assistant_context(
             actual_prompt=user_text,
             session_id=session_id,
             curr_sess=session,
             history=session.get("chat_history", []),
-            include_memory=not is_gallery_skill,
+            include_memory=not is_art_skill,
             active_assistant_skill=routed_skill,
             selected_forge_checkpoint=selected_ckpt,
         )
@@ -159,7 +160,7 @@ def build_chat_context_and_params(
     )
     sampling_params["enable_thinking"] = enable_thinking
 
-    if target_mode == AppMode.ASSISTANT and routed_skill == "gallery":
+    if target_mode == AppMode.ASSISTANT and routed_skill in IMAGE_GENERATION_SKILLS:
         sampling_params["temperature"] = 0.4
         sampling_params["enable_thinking"] = False
 
@@ -355,9 +356,20 @@ def _trigger_gallery_art_pass(
     target_msg_id: Optional[str] = None,
     forge_client: Optional[Any] = None,
     art_director: Optional[Any] = None,
+    active_skill: Optional[str] = None,
+    previous_image_prompt: Optional[str] = None,
 ) -> None:
     """Runs Gallery Art Pass tag generation and Forge rendering sequentially via TaskQueueWorker."""
     selected_ckpt = get_session_forge_model(session_id, session)
+
+    effective_skill = active_skill
+    if not effective_skill or effective_skill not in IMAGE_GENERATION_SKILLS:
+        skill_router = SkillRouter.get_instance()
+        if skill_router and user_text:
+            routed, _, _ = skill_router.route(user_text)
+            effective_skill = routed if routed in IMAGE_GENERATION_SKILLS else "gallery"
+        else:
+            effective_skill = "gallery"
 
     class _ReqProxy:
         pass
@@ -370,6 +382,11 @@ def _trigger_gallery_art_pass(
             forge = forge_client or get_forge_client()
             ad = art_director or get_art_director()
             available_models = forge.get_models() if forge else []
+            prev_prompt = previous_image_prompt
+            if prev_prompt is None and isinstance(session, dict):
+                from services.assistant_flow import extract_last_image_prompt
+                prev_prompt = extract_last_image_prompt(session.get("chat_history") or session.get("messages"))
+
             plan = build_gallery_art_plan(
                 user_query=user_text,
                 lm_client=lm_client,
@@ -382,7 +399,39 @@ def _trigger_gallery_art_pass(
                 mode=target_mode.value,
                 check_config_fallback=False,
                 available_models=available_models,
+                active_skill=effective_skill,
+                previous_image_prompt=prev_prompt,
             )
+
+            if plan and getattr(plan, "positive_prompt", None):
+                art_prompt_tag = f"[IMAGE_PROMPT: {plan.positive_prompt}]"
+                if isinstance(session, dict):
+                    c_hist = session.get("chat_history", [])
+                    if isinstance(c_hist, list):
+                        for h_msg in reversed(c_hist):
+                            if h_msg.get("role") == "assistant":
+                                cur_c = str(h_msg.get("content") or "").strip()
+                                if cur_c.startswith("Секунду, перевожу образ в кадр"):
+                                    h_msg["content"] = art_prompt_tag
+                                elif "[IMAGE_PROMPT:" not in cur_c:
+                                    h_msg["content"] = f"{cur_c}\n\n{art_prompt_tag}".strip()
+                                break
+                    s_msgs = session.get("messages", [])
+                    if isinstance(s_msgs, list):
+                        for s_msg in reversed(s_msgs):
+                            if s_msg.get("id") == target_msg_id or s_msg.get("role") == "assistant" or not s_msg.get("is_user"):
+                                s_msg["image_prompt"] = plan.positive_prompt
+                                cur_t = str(s_msg.get("text") if s_msg.get("text") is not None else s_msg.get("content", "")).strip()
+                                if cur_t.startswith("Секунду, перевожу образ в кадр"):
+                                    s_msg["content"] = art_prompt_tag
+                                    if "text" in s_msg:
+                                        s_msg["text"] = art_prompt_tag
+                                elif "[IMAGE_PROMPT:" not in cur_t:
+                                    s_msg["content"] = f"{cur_t}\n\n{art_prompt_tag}".strip() if cur_t else art_prompt_tag
+                                    if "text" in s_msg:
+                                        s_msg["text"] = s_msg["content"]
+                                break
+                    SessionManager.save_session(session)
 
             def _run_forge():
                 try:
@@ -628,6 +677,8 @@ async def stream_chat_sse(
                     }
                     if thought_data:
                         asst_msg["thought"] = thought_data
+                    if extracted_image_prompt:
+                        asst_msg["image_prompt"] = extracted_image_prompt
                     if rp_visual_intent is not None and hasattr(rp_visual_intent, "to_dict"):
                         asst_msg["visual_intent"] = rp_visual_intent.to_dict()
 
@@ -706,6 +757,7 @@ async def stream_chat_sse(
                             target_msg_id=asst_msg_id,
                             forge_client=forge,
                             art_director=ad,
+                            active_skill=profile.get("active_assistant_skill") or "gallery",
                         )
                     else:
                         yield {

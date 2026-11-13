@@ -150,8 +150,8 @@ class GenerationPlan:
             "enable_adetailer": self.enable_adetailer,
             "enable_hand_adetailer": getattr(self, "adetailer_hands_enabled", False),
             "ad_denoising_strength": getattr(self, "adetailer_face_denoise", 0.32),
-            "ad_prompt": self.ad_prompt,
-            "ad_negative_prompt": self.ad_negative_prompt,
+            "ad_prompt": self.prompt or self.positive_prompt or "",
+            "ad_negative_prompt": self.negative_prompt or "",
             "ad_mask_blur": self.ad_mask_blur,
             "output_dir": output_dir,
             "session_id": session_id
@@ -159,10 +159,16 @@ class GenerationPlan:
 
         alwayson = {}
         if getattr(self, "enable_adetailer", True):
-            base_steps = getattr(self, "steps", 25)
-            # Для LCM / DMD (<= 8 шагов) даем не более 4 шагов, для классических 25 шагов - 10-12
-            ad_face_steps = min(12, max(4, int(base_steps * 0.5)))
-            ad_hand_steps = min(10, max(4, int(base_steps * 0.4)))
+            base_steps = max(1, int(getattr(self, "steps", 25) or 25))
+            if base_steps <= 10:
+                ad_face_steps = max(10, base_steps + 4)
+                ad_hand_steps = max(12, base_steps + 6)
+            else:
+                ad_face_steps = min(16, max(10, int(base_steps * 0.55)))
+                ad_hand_steps = min(16, max(12, int(base_steps * 0.55)))
+
+            shared_ad_prompt = self.prompt or self.positive_prompt or ""
+            shared_ad_negative = self.negative_prompt or ""
 
             face_model_name = getattr(self, "adetailer_face_model", "face_yolov8m.pt")
             face_inpaint_sz = int(
@@ -171,41 +177,37 @@ class GenerationPlan:
             )
             face_slot = {
                 "ad_model": face_model_name,
+                "ad_prompt": shared_ad_prompt,
+                "ad_negative_prompt": shared_ad_negative,
                 "ad_confidence": getattr(self, "adetailer_face_confidence", 0.44),
                 "ad_denoising_strength": getattr(self, "adetailer_face_denoise", 0.35),
+                "ad_use_steps": False,
                 "ad_steps": ad_face_steps,
+                "ad_use_cfg_scale": False,
                 "ad_inpaint_only_masked": True,
+                "ad_use_inpaint_width_height": True,
                 "ad_inpaint_width": face_inpaint_sz,
                 "ad_inpaint_height": face_inpaint_sz,
             }
-            if getattr(self, "ad_prompt", None):
-                face_slot["ad_prompt"] = self.ad_prompt
-            if getattr(self, "ad_negative_prompt", None):
-                face_slot["ad_negative_prompt"] = self.ad_negative_prompt
 
             hands_active = bool(
                 getattr(self, "adetailer_hands_enabled", False)
                 or getattr(self, "adetailer_hands", False)
-                or getattr(self, "adetailer_hands_prompt", None)
-                or getattr(self, "adetailer_hands_negative_prompt", None)
             )
             hand_model_name = getattr(self, "adetailer_hands_model", "hand_yolov9c.pt")
             hand_sz = getattr(self, "adetailer_hands_inpaint_size", 512)
-            default_h_prompt = "detailed hand, realistic fingers, anatomically correct, sharp focus"
-            default_h_neg = "face, head, eyes, mouth, portrait, woman, girl, body, extra digits, fewer digits, deformed fingers"
-            hand_prompt = getattr(self, "adetailer_hands_prompt", None) or default_h_prompt
-            # Удалить префикс [SEP], если он остался в дефолтах или конфиге
-            hand_prompt = hand_prompt.replace("[SEP]", "").strip()
-            hand_negative = getattr(self, "adetailer_hands_negative_prompt", None) or default_h_neg
             hand_slot = {
                 "ad_model": hand_model_name,
-                "ad_prompt": hand_prompt,
-                "ad_negative_prompt": hand_negative,
+                "ad_prompt": shared_ad_prompt,
+                "ad_negative_prompt": shared_ad_negative,
                 "ad_confidence": getattr(self, "adetailer_hands_confidence", 0.38),
                 "ad_denoising_strength": getattr(self, "adetailer_hands_denoise", 0.40),
+                "ad_use_steps": False,
                 "ad_steps": ad_hand_steps,
+                "ad_use_cfg_scale": False,
                 "ad_mask_blur": getattr(self, "adetailer_hands_mask_blur", 8),
                 "ad_inpaint_only_masked": True,
+                "ad_use_inpaint_width_height": True,
                 "ad_inpaint_width": hand_sz,
                 "ad_inpaint_height": hand_sz,
             }

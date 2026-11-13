@@ -8,12 +8,16 @@ from .geometry import (
 from .prompting import (
     HUMAN_KEYWORDS,
     ELARIA_VISUAL_DNA,
+    ParsedImagePrompt,
     build_negative_prompt,
     parse_user_negative_trigger,
+    parse_image_prompt_flags,
+    detect_elaria_self_portrait_intent,
     sanitize_and_translate_tags,
 )
 from .contracts import TargetSubject, VisualIntent, SceneAnalysisContract
 from .director import ArtDirector, ModelRegistrySelector
+from .vram_policy import resolve_hires_second_pass_steps
 from services.forge_models import MODEL_REGISTRY
 
 from services.entity_mapper import (
@@ -49,8 +53,11 @@ __all__ = [
     "resolve_dimensions",
     "HUMAN_KEYWORDS",
     "ELARIA_VISUAL_DNA",
+    "ParsedImagePrompt",
     "build_negative_prompt",
     "parse_user_negative_trigger",
+    "parse_image_prompt_flags",
+    "detect_elaria_self_portrait_intent",
     "sanitize_and_translate_tags",
     "CATEGORIZED_ENTITIES",
     "FALLBACK_ENTITY_MAP",
@@ -65,4 +72,5 @@ __all__ = [
     "find_anime_model",
     "find_realistic_vision_model",
     "sanitize_negative_for_model",
+    "resolve_hires_second_pass_steps",
 ]

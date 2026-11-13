@@ -9,8 +9,9 @@ ASPECT_RATIO_BUCKETS_SD15: Dict[str, Dict[str, Any]] = {
     "solo":      {"width": 512, "height": 768, "extra_neg": "", "force_ad": True},
     "closeup":   {"width": 512, "height": 512, "extra_neg": "", "force_ad": True},
     "pair":      {"width": 768, "height": 512, "extra_neg": "", "force_ad": True},
-    "scenery":   {"width": 768, "height": 512, "extra_neg": "", "force_ad": False},
-    "cinematic": {"width": 768, "height": 448, "extra_neg": "", "force_ad": False},
+    "scenery":   {"width": 768, "height": 512, "extra_neg": "", "force_ad": True},
+    "cinematic": {"width": 768, "height": 448, "extra_neg": "", "force_ad": True},
+    "ultrawide": {"width": 768, "height": 320, "extra_neg": "", "force_ad": True},
 }
 
 ASPECT_RATIO_BUCKETS_SDXL: Dict[str, Dict[str, Any]] = {
@@ -18,8 +19,9 @@ ASPECT_RATIO_BUCKETS_SDXL: Dict[str, Dict[str, Any]] = {
     "solo":      {"width": 896,  "height": 1152, "extra_neg": "", "force_ad": True},
     "closeup":   {"width": 1024, "height": 1024, "extra_neg": "", "force_ad": True},
     "pair":      {"width": 1152, "height": 896,  "extra_neg": "", "force_ad": True},
-    "scenery":   {"width": 1216, "height": 832,  "extra_neg": "", "force_ad": False},
-    "cinematic": {"width": 1344, "height": 768,  "extra_neg": "", "force_ad": False},
+    "scenery":   {"width": 1216, "height": 832,  "extra_neg": "", "force_ad": True},
+    "cinematic": {"width": 1344, "height": 768,  "extra_neg": "", "force_ad": True},
+    "ultrawide": {"width": 1536, "height": 640,  "extra_neg": "", "force_ad": True},
 }
 
 ASPECT_RATIO_BUCKETS = ASPECT_RATIO_BUCKETS_SD15
@@ -92,7 +94,7 @@ def detect_scene_archetype(prompt: str) -> str:
         return "scenery"
 
     fullbody_markers = (
-        "full body", "full-body", "standing", "full length", "head to toe", "long shot", "entire body", "boots", "dress"
+        "full body", "full-body", "full length", "head to toe"
     )
     if any(m in p for m in fullbody_markers):
         return "fullbody"

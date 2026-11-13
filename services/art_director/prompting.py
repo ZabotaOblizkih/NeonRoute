@@ -1,6 +1,8 @@
 import re
 import logging
 import threading
+from dataclasses import dataclass
+from typing import Optional
 from services.direct_command_parser import parse_user_negative_trigger
 
 logger = logging.getLogger("NeonRoute.ArtDirector.Prompting")
@@ -15,7 +17,7 @@ ELARIA_VISUAL_DNA = (
 HUMAN_KEYWORDS = (
     "1boy", "1girl", "android", "angel", "assassin", "bare", "bare shoulders", "bikini",
     "blushing", "boudoir", "boy", "bra", "bride", "bust shot", "catgirl", "cheerleader",
-    "cleavage", "collarbone", "corset", "cosplay", "cowboy shot", "curvy", "cyborg",
+    "cleavage", "collarbone", "corset", "cosplay", "curvy", "cyborg",
     "dancer", "dark elf", "demon", "demoness", "drow", "elf", "elven", "empress",
     "erotic", "exposed skin", "expression", "eyes", "face", "female", "freckles",
     "full body", "gaze", "geisha", "girl", "goddess", "guy", "headshot", "heroine",
@@ -26,7 +28,7 @@ HUMAN_KEYWORDS = (
     "person", "portrait", "posing", "priestess", "princess", "queen", "reclining",
     "rogue", "schoolgirl", "seductive", "sensual", "siren", "smile", "smirk",
     "sorceress", "stockings", "student", "succubus", "sultry", "swimsuit", "tan skin",
-    "thighhighs", "undressing", "upper body", "valkyrie", "vampire", "vampiress",
+    "thigh-up shot", "thighhighs", "undressing", "upper body", "valkyrie", "vampire", "vampiress",
     "voluptuous", "waifu", "warrior", "witch", "wizard", "woman"
 )
 
@@ -138,4 +140,122 @@ def sanitize_and_translate_tags(prompt_text: str) -> str:
 def warmup_argos():
     """No-op stub for backward compatibility after Argos Translate removal."""
     pass
+
+
+@dataclass
+class ParsedImagePrompt:
+    """Результат разбора директивы [IMAGE_PROMPT: ...] с флагами."""
+    prompt: str
+    negative: str = ""
+    model_style: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    is_self_portrait: bool = False
+
+
+_RE_IMG_MODEL_FLAG = re.compile(r'(?:--model|--style)[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', re.IGNORECASE)
+_RE_IMG_NEG_FLAG = re.compile(
+    r'(?:--neg|--negative)[:=\s]+(.*?)(?=(?:\s*--(?:model|style|ar|self|subject|hands)\b|$))',
+    re.IGNORECASE,
+)
+_RE_IMG_AR_FLAG = re.compile(r'--ar[:=\s]+([a-zA-Z0-9:]+)', re.IGNORECASE)
+_RE_IMG_SELF_FLAG = re.compile(r'(?:^|[\s,])--self\b', re.IGNORECASE)
+_RE_IMG_SUBJECT_FLAG = re.compile(r'--subject[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', re.IGNORECASE)
+
+
+def parse_image_prompt_flags(raw_prompt: str) -> ParsedImagePrompt:
+    """
+    Единый SSOT-парсер флагов внутри [IMAGE_PROMPT: ...]:
+    извлекает --model/--style, --neg/--negative, --ar и маркер автопортрета --self / --subject elaria.
+    """
+    text = (raw_prompt or "").strip()
+    if not text:
+        return ParsedImagePrompt(prompt="")
+
+    is_self_flag = bool(_RE_IMG_SELF_FLAG.search(text))
+    subj_match = _RE_IMG_SUBJECT_FLAG.search(text)
+    if subj_match and subj_match.group(1).strip().lower() in ("elaria", "self", "assistant"):
+        is_self_flag = True
+
+    neg_match = _RE_IMG_NEG_FLAG.search(text)
+    custom_neg = neg_match.group(1).strip().strip(' ,') if neg_match else ""
+    if neg_match:
+        text = _RE_IMG_NEG_FLAG.sub('', text)
+
+    model_match = _RE_IMG_MODEL_FLAG.search(text)
+    model_style = model_match.group(1).lower().strip() if model_match else None
+    if model_match:
+        text = _RE_IMG_MODEL_FLAG.sub('', text)
+
+    ar_match = _RE_IMG_AR_FLAG.search(text)
+    aspect_ratio = ar_match.group(1).lower().strip() if ar_match else None
+    if ar_match:
+        text = _RE_IMG_AR_FLAG.sub('', text)
+
+    text = _RE_IMG_SELF_FLAG.sub('', text)
+    text = _RE_IMG_SUBJECT_FLAG.sub('', text)
+    text = re.sub(r',\s*,+', ',', text)
+    text = re.sub(r'\s{2,}', ' ', text).strip(' ,')
+
+    return ParsedImagePrompt(
+        prompt=text,
+        negative=custom_neg,
+        model_style=model_style,
+        aspect_ratio=aspect_ratio,
+        is_self_portrait=is_self_flag,
+    )
+
+
+_RE_LEADING_ELARIA_VOCATIVE = re.compile(r'^\s*элари[яею]?\b[\s,:-]*', re.IGNORECASE)
+_RE_SELF_DIRECT_CMD = re.compile(
+    r'(?:^|[.!?]\s*)(?:пожалуйста\s+)?(?:а\s+|ну\s+|можешь\s+|давай\s+)?'
+    r'(?:нарисуй|нарисуешь|нарисовать|изобрази|изобразишь|изобразить|'
+    r'покажи|покажешь|показать|сгенерируй|сгенерируешь|сгенерировать|'
+    r'сделай|сделать|сфоткай|сфоткать|сфотографируй|сфотографировать|'
+    r'отрисуй|отрисовать)'
+    r'(?:\s+(?:мне|нам|пожалуйста|просто|ка|ли))*\s+'
+    r'(?:(?:саму\s+)?себя|тебя|свой\s+(?:портрет|образ|автопортрет))\b',
+    re.IGNORECASE,
+)
+_RE_ELARIA_DIRECT_OBJ = re.compile(
+    r'\b(?:нарисуй|нарисуешь|нарисовать|покажи|покажешь|показать|'
+    r'изобрази|изобразишь|изобразить|сфоткай|сфотографируй|отрисуй)\s+'
+    r'(?:мне\s+)?(?:элари[юея]|саму\s+себя)\b',
+    re.IGNORECASE,
+)
+_RE_SELF_PHRASES = re.compile(
+    r'\b(?:как\s+ты\s+выглядишь|твой\s+(?:портрет|образ|автопортрет)|'
+    r'тво[её]\s+(?:селфи|фото)|сделай\s+селфи|свой\s+автопортрет)\b'
+    r'|^\s*автопортрет\s*$',
+    re.IGNORECASE,
+)
+_RE_PROMPT_ELARIA_NAME = re.compile(r'\b(elaria|элария)\b', re.IGNORECASE)
+
+
+def detect_elaria_self_portrait_intent(
+    user_query: str = "",
+    raw_prompt: str = "",
+    has_self_flag: bool = False,
+) -> bool:
+    """
+    Определяет, запрашивается ли автопортрет Эларии.
+    Приоритет 1: явный семантический флаг --self / --subject elaria от LLM.
+    Приоритет 2: упоминание имени Elaria/Элария в самом SD-промпте.
+    Приоритет 3: строгий синтаксический фоллбэк по пользовательской команде
+    (исключает ложные срабатывания на 'девушка держит себя в руках' и т.п.).
+    """
+    if has_self_flag:
+        return True
+    if raw_prompt and _RE_PROMPT_ELARIA_NAME.search(raw_prompt):
+        return True
+
+    low_u = (user_query or "").strip().lower()
+    if not low_u:
+        return False
+
+    clean_user_intent = _RE_LEADING_ELARIA_VOCATIVE.sub('', low_u).strip()
+    return bool(
+        _RE_SELF_DIRECT_CMD.search(clean_user_intent)
+        or _RE_ELARIA_DIRECT_OBJ.search(low_u)
+        or _RE_SELF_PHRASES.search(clean_user_intent)
+    )
 

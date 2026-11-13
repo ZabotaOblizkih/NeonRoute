@@ -21,7 +21,7 @@ from services.art_director import (
     parse_image_prompt_flags,
     detect_elaria_self_portrait_intent,
 )
-from services.assistant_prompt_builder import AssistantPromptBuilder
+from services.assistant_prompt_builder import AssistantPromptBuilder, IMAGE_GENERATION_SKILLS
 from services.assistant_flow import (
     RE_IMAGE_TAG,
     RE_GALLERY_TRIGGER,
@@ -370,7 +370,7 @@ class AssistantFlowControllerMixin:
             or (sess_meta.get("active_assistant_skill") if isinstance(sess_meta, dict) else None)
         )
         if not active_skill or active_skill == "auto":
-            from services.assistant_prompt_builder import AssistantPromptBuilder
+            from services.assistant_prompt_builder import AssistantPromptBuilder, IMAGE_GENERATION_SKILLS
             builder = AssistantPromptBuilder.get_instance()
             if builder and hasattr(builder, "router") and builder.router and _req:
                 routed_skill, _, _ = builder.router.route(_req)
@@ -385,8 +385,8 @@ class AssistantFlowControllerMixin:
             explicit_override=enable_reasoning
         )
 
-        # Точечный override строго на время генерации SDXL (gallery) в Фазе 1
-        if active_skill == "gallery":
+        # Точечный override строго на время генерации SDXL (gallery / cinematic) в Фазе 1
+        if active_skill in IMAGE_GENERATION_SKILLS:
             temp = 0.4
             enable_thinking = False
 
@@ -633,6 +633,11 @@ class AssistantFlowControllerMixin:
                 for m in reversed(messages):
                     if not m.get("is_user") and m.get("role") in ("assistant", None):
                         m["image_path"] = str(img_path)
+                        if gen_params:
+                            m["generation_params"] = gen_params
+                            pos = gen_params.get("positive_prompt") or gen_params.get("prompt")
+                            if pos:
+                                m["image_prompt"] = pos
                         if m.get("content") == "Связь с моделью обновлена. Я готова, о чём поговорим?":
                             m["content"] = ""
                         break
@@ -641,7 +646,25 @@ class AssistantFlowControllerMixin:
 
         return True
 
-    def _enqueue_gallery_art_pass(self, user_query: str):
+    def _enqueue_gallery_art_pass(self, user_query: str, previous_image_prompt: Optional[str] = None):
+        # Resolve active art skill (gallery or cinematic)
+        session = getattr(self, "current_session", {}) or {}
+        sess_meta = session.get("metadata", {}) if isinstance(session, dict) else {}
+        active_skill = (
+            getattr(self, "active_assistant_skill", None)
+            or (sess_meta.get("active_assistant_skill") if isinstance(sess_meta, dict) else None)
+        )
+        if not active_skill or active_skill == "auto" or active_skill not in IMAGE_GENERATION_SKILLS:
+            builder = AssistantPromptBuilder.get_instance()
+            if builder and hasattr(builder, "router") and builder.router and user_query:
+                routed_skill, _, _ = builder.router.route(user_query)
+                if routed_skill in IMAGE_GENERATION_SKILLS:
+                    active_skill = routed_skill
+                else:
+                    active_skill = "gallery"
+            else:
+                active_skill = "gallery"
+
         best_model_id = "default"
         best_desc = ""
         target_arch = None
@@ -655,13 +678,22 @@ class AssistantFlowControllerMixin:
             logger.warning(f"Failed to resolve target gallery model: {e}")
             best_model_id = "default"
 
+        if previous_image_prompt is None:
+            hist_cand = getattr(self, "chat_history", None) or (self.current_session.get("messages") if getattr(self, "current_session", None) else None)
+            from services.assistant_flow import extract_last_image_prompt
+            previous_image_prompt = extract_last_image_prompt(hist_cand)
+
         full_prompt = AssistantPromptBuilder.build_gallery_art_prompt(
             user_query=user_query,
             target_model_id=best_model_id,
             target_model_desc=best_desc,
-            architecture=target_arch
+            architecture=target_arch,
+            skill_name=active_skill,
         )
-        messages = [{"role": "user", "content": full_prompt}]
+        messages = []
+        if previous_image_prompt:
+            messages.append({"role": "assistant", "content": f"[IMAGE_PROMPT: {previous_image_prompt}]"})
+        messages.append({"role": "user", "content": full_prompt})
 
         model_name = None
         if hasattr(self, "lm_combo") and self.lm_combo:
@@ -669,7 +701,6 @@ class AssistantFlowControllerMixin:
             if model_name.startswith("default"):
                 model_name = None
 
-        session = getattr(self, "current_session", {}) or {}
         session_sampling = session.get("sampling_params") if isinstance(session, dict) and isinstance(session.get("sampling_params"), dict) else {}
         custom_art_temp = session_sampling.get("art_temperature") or session_sampling.get("temperature")
         if custom_art_temp is not None:
@@ -682,7 +713,7 @@ class AssistantFlowControllerMixin:
 
         logger.info(
             f"[AssistantFlow] Starting Gallery Art Pass for query: '{user_query}' "
-            f"(target_model='{best_model_id}', temperature={target_temperature}, enable_thinking=False)"
+            f"(target_model='{best_model_id}', skill='{active_skill}', temperature={target_temperature}, enable_thinking=False)"
         )
 
         llm_kwargs = {
@@ -738,6 +769,28 @@ class AssistantFlowControllerMixin:
                 allow_markdown_fallback=True,
             )
             if extracted:
+                prompt_tag = f"[IMAGE_PROMPT: {extracted}]"
+                if hasattr(self, "chat_history") and isinstance(self.chat_history, list):
+                    for h_msg in reversed(self.chat_history):
+                        if h_msg.get("role") == "assistant":
+                            cur_c = str(h_msg.get("content") or "").strip()
+                            if "[IMAGE_PROMPT:" not in cur_c:
+                                h_msg["content"] = f"{cur_c}\n\n{prompt_tag}".strip() if cur_c else prompt_tag
+                            break
+
+                if getattr(self, "current_session", None) and isinstance(self.current_session, dict):
+                    msgs = self.current_session.get("messages", [])
+                    if isinstance(msgs, list):
+                        for m in reversed(msgs):
+                            if not m.get("is_user") and m.get("role") in ("assistant", None):
+                                cur_t = str(m.get("text") or "").strip()
+                                if "[IMAGE_PROMPT:" not in cur_t:
+                                    m["text"] = f"{cur_t}\n\n{prompt_tag}".strip() if cur_t else prompt_tag
+                                m["image_prompt"] = extracted
+                                break
+                    if hasattr(self, "_save_current_session"):
+                        self._save_current_session()
+
                 self._dispatch_art_to_forge(extracted, target_widget, user_query)
             else:
                 if target_widget and hasattr(target_widget, "hide_art_loading_placeholder"):

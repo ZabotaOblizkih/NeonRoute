@@ -164,7 +164,8 @@ class SessionManager:
         is_model_locked: bool = False,
         user_persona_id: Optional[str] = None,
         background_image: Optional[str] = None,
-        custom_system_prompt: Optional[str] = None
+        custom_system_prompt: Optional[str] = None,
+        append_greeting: bool = False,
     ) -> Dict[str, Any]:
         now = datetime.now()
         now_iso = now.isoformat()
@@ -237,6 +238,23 @@ class SessionManager:
             "is_dm_mode": is_card_dm,
             "custom_system_prompt": custom_system_prompt or ""
         }
+        if append_greeting and card_obj:
+            greet = getattr(card_obj, "first_mes_ru", None) or getattr(card_obj, "first_mes", None)
+            if greet and str(greet).strip():
+                from services.macro_engine import MacroEngine
+                active_p = SessionManager.get_active_user_persona(
+                    is_roleplay=(str(mode).lower() == "roleplay"),
+                    session_persona_id=user_persona_id,
+                )
+                u_name = active_p.get("name") or "Игрок"
+                greet_clean = MacroEngine.process(str(greet).strip(), user_name=u_name, char_name=card_obj.name)
+                new_sess["messages"].append({
+                    "id": str(uuid.uuid4()),
+                    "role": "assistant",
+                    "content": greet_clean,
+                    "timestamp": now_iso,
+                })
+                new_sess["chat_history"].append({"role": "assistant", "content": greet_clean})
         SessionManager.set_active_session(new_sess)
         return new_sess
 
@@ -523,6 +541,135 @@ class SessionManager:
                     pass
 
     @staticmethod
+    def resolve_character_card_path(
+        identifier: Optional[str] = None,
+        char_data: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Path]:
+        """Единый резолвер JSON-файла карточки персонажа в CHARACTERS_DIR."""
+        if not CHARACTERS_DIR.exists():
+            return None
+
+        cd = char_data if isinstance(char_data, dict) else {}
+        char_name = cd.get("name")
+        target_id = cd.get("id") or (identifier.strip() if isinstance(identifier, str) and identifier.strip() else None)
+        av_path_str = cd.get("avatar_path")
+
+        candidate_files: List[Path] = []
+        if av_path_str:
+            av_p = Path(av_path_str)
+            candidate_files.extend([
+                av_p.with_suffix(".json"),
+                CHARACTERS_DIR / f"{av_p.stem.replace('_avatar', '')}.json",
+                CHARACTERS_DIR / f"{av_p.stem}.json",
+            ])
+        if target_id:
+            candidate_files.append(CHARACTERS_DIR / f"{target_id}.json")
+        if char_name:
+            candidate_files.append(CHARACTERS_DIR / f"{char_name}.json")
+            safe_name = "".join(c for c in char_name if c.isalnum() or c in (' ', '_', '-')).strip()
+            if safe_name:
+                candidate_files.append(CHARACTERS_DIR / f"{safe_name}.json")
+
+        for cp in candidate_files:
+            if cp.exists() and cp.is_file():
+                return cp
+
+        id_low = target_id.lower() if target_id else ""
+        name_low = char_name.strip().lower() if char_name else ""
+        for f_cand in CHARACTERS_DIR.glob("*.json"):
+            if (name_low and f_cand.stem.lower() == name_low) or (id_low and (f_cand.stem.lower() == id_low or id_low in f_cand.name.lower())):
+                return f_cand
+            try:
+                with open(f_cand, "r", encoding="utf-8") as jf:
+                    cd_raw = json.load(jf)
+                target = cd_raw.get("data", cd_raw) if ("spec" in cd_raw or "data" in cd_raw) else cd_raw
+                if (target_id and target.get("id") == target_id) or (name_low and str(target.get("name", "")).strip().lower() == name_low):
+                    return f_cand
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def resolve_character_avatar_path(
+        character_id: Optional[str] = None,
+        char_data: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Path]:
+        """Единый резолвер PNG-аватара персонажа в CHARACTERS_DIR."""
+        cd = char_data if isinstance(char_data, dict) else {}
+        av_path_str = cd.get("avatar_path")
+        if av_path_str:
+            av_p = Path(av_path_str)
+            if av_p.exists() and av_p.is_file():
+                return av_p
+
+        candidates: List[Path] = []
+        cid = (character_id or cd.get("id") or "").strip()
+        char_name = (cd.get("name") or "").strip()
+        if cid:
+            candidates.extend([
+                CHARACTERS_DIR / f"{cid}_avatar.png",
+                CHARACTERS_DIR / f"{cid}.png",
+            ])
+        if char_name:
+            safe = "".join(c for c in char_name if c.isalnum() or c in (' ', '_', '-')).strip()
+            candidates.extend([
+                CHARACTERS_DIR / f"{char_name}_avatar.png",
+                CHARACTERS_DIR / f"{char_name}.png",
+                CHARACTERS_DIR / f"{safe}_avatar.png",
+                CHARACTERS_DIR / f"{safe}.png",
+            ])
+
+        for cand in candidates:
+            if cand.exists() and cand.is_file():
+                return cand
+
+        if cid and CHARACTERS_DIR.exists():
+            cid_low = cid.lower()
+            try:
+                for p in CHARACTERS_DIR.iterdir():
+                    if p.is_file() and p.suffix.lower() == ".png" and cid_low in p.stem.lower():
+                        return p
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def reconstruct_chat_history_from_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Reconstructs minimal chat_history ([{'role': ..., 'content': ...}]) from session messages,
+        preserving [IMAGE_PROMPT: ...] tags and art placeholders so LLM context and role alternation
+        are not broken when chat_history is empty or missing.
+        """
+        if not messages or not isinstance(messages, list):
+            return []
+        reconstructed = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role") or ("user" if m.get("is_user") else "assistant")
+            c_text = str(m.get("text") if m.get("text") is not None else m.get("content", "")).strip()
+
+            if role == "assistant":
+                saved_prompt = m.get("image_prompt")
+                if not saved_prompt and isinstance(m.get("generation_params"), dict):
+                    saved_prompt = m["generation_params"].get("positive_prompt") or m["generation_params"].get("prompt")
+                if saved_prompt:
+                    prompt_tag = f"[IMAGE_PROMPT: {saved_prompt}]"
+                    if "[IMAGE_PROMPT:" not in c_text:
+                        if c_text and not c_text.startswith("Секунду, перевожу образ в кадр"):
+                            c_text = f"{c_text}\n\n{prompt_tag}".strip()
+                        else:
+                            c_text = prompt_tag
+                elif not c_text and (m.get("image_path") or m.get("file_paths")):
+                    c_text = "[Generated image]"
+
+            entry: Dict[str, Any] = {"role": role, "content": c_text}
+            if not m.get("is_user") and m.get("thought"):
+                entry["thought"] = dict(m["thought"]) if isinstance(m["thought"], dict) else m["thought"]
+            reconstructed.append(entry)
+        return reconstructed
+
+    @staticmethod
     def load_session(session_id: str) -> Optional[Dict[str, Any]]:
         file_path = HISTORY_DIR / f"chat_{session_id}.json"
         if not file_path.exists():
@@ -552,6 +699,9 @@ class SessionManager:
                         if isinstance(m, dict) and not m.get("id"):
                             m["id"] = str(uuid.uuid4())
 
+                if not data.get("chat_history") and data.get("messages"):
+                    data["chat_history"] = SessionManager.reconstruct_chat_history_from_messages(data["messages"])
+
                 if "world_facts" not in data or not isinstance(data.get("world_facts"), list):
                     data["world_facts"] = []
 
@@ -576,42 +726,7 @@ class SessionManager:
                     )
                     if needs_ru:
                         try:
-                            card_path = None
-                            char_name = char_data.get("name")
-                            av_path_str = char_data.get("avatar_path")
-                            candidate_files = []
-                            if av_path_str:
-                                av_p = Path(av_path_str)
-                                candidate_files.append(av_p.with_suffix(".json"))
-                                candidate_files.append(CHARACTERS_DIR / f"{av_p.stem.replace('_avatar', '')}.json")
-                                candidate_files.append(CHARACTERS_DIR / f"{av_p.stem}.json")
-                            if char_name:
-                                candidate_files.append(CHARACTERS_DIR / f"{char_name}.json")
-                                safe_name = "".join(c for c in char_name if c.isalnum() or c in (' ', '_', '-')).strip()
-                                if safe_name:
-                                    candidate_files.append(CHARACTERS_DIR / f"{safe_name}.json")
-
-                            for cp in candidate_files:
-                                if cp.exists() and cp.is_file():
-                                    card_path = cp
-                                    break
-
-                            if not card_path and CHARACTERS_DIR.exists() and (char_name or char_data.get("id")):
-                                target_id = char_data.get("id")
-                                for f_cand in CHARACTERS_DIR.glob("*.json"):
-                                    if char_name and f_cand.stem.lower() == char_name.lower():
-                                        card_path = f_cand
-                                        break
-                                    try:
-                                        with open(f_cand, "r", encoding="utf-8") as jf:
-                                            cd_raw = json.load(jf)
-                                        target = cd_raw.get("data", cd_raw) if ("spec" in cd_raw or "data" in cd_raw) else cd_raw
-                                        if (target_id and target.get("id") == target_id) or (char_name and target.get("name", "").strip().lower() == char_name.strip().lower()):
-                                            card_path = f_cand
-                                            break
-                                    except Exception:
-                                        continue
-
+                            card_path = SessionManager.resolve_character_card_path(char_data=char_data)
                             if card_path:
                                 parsed_card = TavernParser.parse_file(card_path)
                                 for field in ("description_ru", "personality_ru", "scenario_ru", "mes_example_ru", "first_mes_ru"):
@@ -662,7 +777,7 @@ class SessionManager:
             return None
 
     @staticmethod
-    def list_sessions() -> List[Dict[str, Any]]:
+    def list_sessions(include_message_count: bool = False) -> List[Dict[str, Any]]:
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         sessions = []
 
@@ -681,10 +796,14 @@ class SessionManager:
             logger.debug(f"[SessionManager] Ошибка автоочистки сиротских cast_*.json: {e}")
 
         sqlite_headers = {}
+        sqlite_msg_counts: Dict[str, int] = {}
         try:
             with SessionManager._get_sqlite_conn() as conn:
                 for r in conn.execute("SELECT id, file_mtime, header_json FROM chat_sessions").fetchall():
                     sqlite_headers[r["id"]] = (float(r["file_mtime"] or 0.0), r["header_json"])
+                if include_message_count:
+                    for r in conn.execute("SELECT session_id, COUNT(*) AS cnt FROM chat_messages GROUP BY session_id").fetchall():
+                        sqlite_msg_counts[str(r["session_id"])] = int(r["cnt"] or 0)
         except Exception:
             pass
 
@@ -693,13 +812,18 @@ class SessionManager:
                 sid_guess = p.stem.replace("chat_", "")
                 p_mtime = p.stat().st_mtime
                 cached_entry = sqlite_headers.get(sid_guess)
+                msg_count = 0
                 if cached_entry and abs(p_mtime - cached_entry[0]) <= 1.0:
                     data = json.loads(cached_entry[1])
+                    if include_message_count:
+                        msg_count = sqlite_msg_counts.get(sid_guess, 0)
                 else:
                     with open(p, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     if isinstance(data, dict) and "id" in data:
                         SessionManager._save_session_to_sqlite(data, file_mtime=p_mtime)
+                    if include_message_count and isinstance(data, dict):
+                        msg_count = len(data.get("messages") or data.get("chat_history") or [])
 
                 session_id = data.get("id", p.stem.replace("chat_", ""))
                 if session_id.startswith("test_") or "test_sess" in p.name:
@@ -717,7 +841,7 @@ class SessionManager:
                 else:
                     clean_title = raw_title
 
-                sessions.append({
+                entry = {
                     "id": session_id,
                     "character_id": data.get("character_id") or (char_data.get("id") if char_data else None),
                     "title": clean_title,
@@ -731,7 +855,10 @@ class SessionManager:
                     "background_image": data.get("background_image"),
                     "updated_at": data.get("updated_at", ""),
                     "created_at": data.get("created_at", "")
-                })
+                }
+                if include_message_count:
+                    entry["message_count"] = msg_count
+                sessions.append(entry)
             except Exception as e:
                 logger.debug(f"Skipping unreadable session file {p}: {e}")
 
