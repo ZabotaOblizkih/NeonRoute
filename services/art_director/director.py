@@ -12,7 +12,14 @@ from services.forge_models import (
 )
 from services.direct_command_parser import parse_direct_command_params
 from services.art_director.lora_manager import LoraManager, extract_lora_metadata
-from services.art_director.vram_policy import is_hires_safe, resolve_hardware_vram_budget, calculate_max_hires_canvas_area
+from services.art_director.vram_policy import (
+    is_hires_safe,
+    resolve_hardware_vram_budget,
+    calculate_max_hires_canvas_area,
+    resolve_forge_offload_policy,
+    resolve_checkpoint_file_size_mb,
+    format_vram_planner_log,
+)
 from services.forge_client import is_sdxl_checkpoint
 from services.model_router import ModelRouter
 
@@ -28,6 +35,7 @@ from .prompting import (
     ELARIA_VISUAL_DNA,
     build_negative_prompt,
     parse_user_negative_trigger,
+    parse_image_prompt_flags,
     extract_negations_from_prompt,
 )
 
@@ -491,6 +499,147 @@ class ArtDirector:
             return model_id, score
         return ("realistic", 1.0)
 
+    @staticmethod
+    def _resolve_adetailer_pipeline(
+        model_pipeline: Dict[str, Any],
+        canon: Any,
+        is_bg: bool,
+        is_xl: bool,
+        wants_hands: bool = False,
+    ) -> Dict[str, Any]:
+        """Единая точка резолвинга параметров ADetailer для расчёта VRAM и финального payload."""
+        if "enable_adetailer" in model_pipeline and model_pipeline["enable_adetailer"] is not None:
+            base_ad = bool(model_pipeline["enable_adetailer"])
+        else:
+            base_ad = bool(getattr(canon, "allow_adetailer", True))
+
+        enable_ad = bool(base_ad or wants_hands) and not is_bg
+        hands_on = (bool(model_pipeline.get("adetailer_hands_enabled", True)) or wants_hands) and enable_ad
+
+        default_inpaint = 768 if is_xl else 512
+        face_inpaint_sz = int(
+            model_pipeline.get("adetailer_face_inpaint_size")
+            or model_pipeline.get("adetailer_inpaint_size")
+            or default_inpaint
+        )
+        hands_inpaint_sz = int(model_pipeline.get("adetailer_hands_inpaint_size", 512))
+
+        return {
+            "enable_adetailer": enable_ad,
+            "face_model": model_pipeline.get("adetailer_face_model", "face_yolov8m.pt"),
+            "face_confidence": float(model_pipeline.get("adetailer_face_confidence", 0.44)),
+            "face_denoise": float(model_pipeline.get("adetailer_face_denoise", 0.35 if is_xl else 0.32)),
+            "face_inpaint_size": face_inpaint_sz,
+            "hands_enabled": hands_on,
+            "hands_model": model_pipeline.get("adetailer_hands_model", "hand_yolov9c.pt"),
+            "hands_confidence": float(model_pipeline.get("adetailer_hands_confidence", 0.38)),
+            "hands_denoise": float(model_pipeline.get("adetailer_hands_denoise", 0.38 if is_xl else 0.40)),
+            "hands_inpaint_size": hands_inpaint_sz,
+            "hands_mask_blur": int(model_pipeline.get("adetailer_hands_mask_blur", 8)),
+            "ad_prompt": None,
+            "ad_negative_prompt": None,
+            "hands_prompt": None,
+            "hands_negative_prompt": None,
+        }
+
+    @staticmethod
+    def _format_adetailer_log_blocks(plan: GenerationPlan) -> Tuple[str, str]:
+        """Форматирует диагностические строки для слотов Face и Hands ADetailer."""
+        if not getattr(plan, "enable_adetailer", False):
+            return "OFF", "OFF"
+
+        pos_val = getattr(plan, "prompt", None) or getattr(plan, "positive_prompt", "") or ""
+        neg_val = getattr(plan, "negative_prompt", "") or ""
+        ad_p = getattr(plan, "ad_prompt", None) or pos_val
+        ad_neg = getattr(plan, "ad_negative_prompt", None) or neg_val
+        face_p = f'"{ad_p}"' if ad_p else '""'
+        face_neg = f'"{ad_neg}"' if ad_neg else '""'
+        face_model = getattr(plan, "adetailer_face_model", "none")
+        face_conf = getattr(plan, "adetailer_face_confidence", 0.0)
+        face_denoise = getattr(plan, "adetailer_face_denoise", 0.0)
+        face_inpaint_sz = getattr(plan, "adetailer_face_inpaint_size", getattr(plan, "adetailer_inpaint_size", 512))
+        ad_face_info = (
+            f"ON | Model={face_model} | Conf={face_conf} | "
+            f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
+            f"   └── Prompt: {face_p}\n"
+            f"   └── Neg   : {face_neg}"
+        )
+
+        ad_hands_info = "OFF"
+        if getattr(plan, "adetailer_hands_enabled", False):
+            h_p_val = getattr(plan, "adetailer_hands_prompt", None) or pos_val
+            h_neg_val = getattr(plan, "adetailer_hands_negative_prompt", None) or neg_val
+            h_p = f'"{h_p_val}"' if h_p_val else '""'
+            h_neg = f'"{h_neg_val}"' if h_neg_val else '""'
+            h_sz = getattr(plan, "adetailer_hands_inpaint_size", 512)
+            h_model = getattr(plan, "adetailer_hands_model", "none")
+            h_conf = getattr(plan, "adetailer_hands_confidence", 0.0)
+            h_denoise = getattr(plan, "adetailer_hands_denoise", 0.0)
+            h_blur = getattr(plan, "adetailer_hands_mask_blur", 8)
+            ad_hands_info = (
+                f"ON | Model={h_model} | Conf={h_conf} | "
+                f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
+                f"   └── Prompt: {h_p}\n"
+                f"   └── Neg   : {h_neg}"
+            )
+        return ad_face_info, ad_hands_info
+
+    def _log_vram_planner_passport(
+        self,
+        plan: GenerationPlan,
+        architecture: str,
+        lora_count: int = 0,
+    ) -> None:
+        """Выводит в лог единую диагностическую строку [VRAM-Planner] по параметрам плана."""
+        try:
+            from config import FORGE_ENABLE_VAE_TILING
+            from utils.config_manager import ConfigManager
+
+            cfg = ConfigManager.load_config()
+            sdxl_fp8_enabled = bool(cfg.get("forge_sdxl_fp8_enabled", True))
+            ckpt = getattr(plan, "target_checkpoint", "") or ""
+            is_xl = "xl" in str(architecture).lower() or is_sdxl_checkpoint(ckpt)
+            is_fp8 = bool(is_xl and sdxl_fp8_enabled)
+            inpaint_sz = max(
+                int(getattr(plan, "adetailer_face_inpaint_size", 512) or 512),
+                int(getattr(plan, "adetailer_hands_inpaint_size", 512) or 512)
+                if getattr(plan, "adetailer_hands_enabled", False)
+                else 512,
+            )
+            pol = resolve_forge_offload_policy(
+                width=int(getattr(plan, "width", 512) or 512),
+                height=int(getattr(plan, "height", 512) or 512),
+                architecture="sdxl" if is_xl else "sd15",
+                is_fp8=is_fp8,
+                enable_adetailer=bool(getattr(plan, "enable_adetailer", False)),
+                active_lora_count=lora_count,
+                system_monitor=getattr(self, "system_monitor", None),
+                enable_hr=bool(getattr(plan, "enable_hr", False)),
+                hr_scale=float(getattr(plan, "hr_scale", 1.0) or 1.0),
+                hr_upscaler=str(getattr(plan, "hr_upscaler", "Latent") or "Latent"),
+                enable_hand_adetailer=bool(getattr(plan, "adetailer_hands_enabled", False)),
+                ad_inpaint_size=inpaint_sz,
+                vae_tiling=bool(FORGE_ENABLE_VAE_TILING),
+                checkpoint_size_mb=resolve_checkpoint_file_size_mb(ckpt),
+            )
+            if pol.get("force_disable_hr") and getattr(plan, "enable_hr", False):
+                plan.enable_hr = False
+                plan.hr_scale = 1.0
+            if pol.get("disable_secondary_adetailer") and getattr(plan, "adetailer_hands_enabled", False):
+                plan.enable_hand_adetailer = False
+                plan.adetailer_hands_enabled = False
+                plan.adetailer_hands = False
+            if pol.get("host_ram_starved") and (
+                pol.get("force_fp8_storage") or pol.get("disable_secondary_adetailer") or pol.get("force_disable_hr")
+            ):
+                logger.warning(
+                    "[Host-RAM-Guard] Дефицит системной RAM + малый VRAM: отключены Hires.fix и второй слот ADetailer, "
+                    "рекомендован даунгрейд UNet в fp8e4."
+                )
+            logger.info(format_vram_planner_log(pol))
+        except Exception as e:
+            logger.debug(f"[VRAM-Planner] Ошибка расчёта паспорта: {e}")
+
     def _is_resolution_safe_for_hires(
         self,
         width: int,
@@ -643,18 +792,21 @@ class ArtDirector:
         intent_loras = lora_pattern.findall(raw_intent_prompt)
         clean_intent_text = lora_pattern.sub('', raw_intent_prompt).strip(' ,')
 
-        extracted_ar_flag = None
-        ar_intent_match = re.search(r'--ar[:=\s]+([a-zA-Z0-9:]+)', clean_intent_text, re.I)
-        if ar_intent_match:
-            extracted_ar_flag = ar_intent_match.group(1).lower().strip()
-            clean_intent_text = re.sub(r'--ar[:=\s]+[a-zA-Z0-9:]+', '', clean_intent_text, flags=re.I).strip(' ,')
+        parsed_intent_flags = parse_image_prompt_flags(clean_intent_text)
+        has_self_flag = parsed_intent_flags.is_self_portrait
+        extracted_ar_flag = parsed_intent_flags.aspect_ratio
+        clean_intent_text = parsed_intent_flags.prompt
+        if parsed_intent_flags.negative and not intent.user_neg:
+            intent_neg_extra = parsed_intent_flags.negative
+        else:
+            intent_neg_extra = ""
 
         clean_intent_text = re.sub(r'[\(\[]\s*lora:[a-zA-Z0-9_\-.]+(?::[0-9.]+)?\s*[\)\]]', '', clean_intent_text, flags=re.IGNORECASE).strip(' ,')
         clean_intent_text = re.sub(r'(?<!-)\b(?:v[0-9]+(?:\.[0-9]+)?|final|pruned|fp16)\b$', '', clean_intent_text, flags=re.IGNORECASE).strip(' ,')
 
         raw_base = _clean_context_subtag(str(clean_intent_text))
         base_prompt, auto_neg_extracted = extract_negations_from_prompt(raw_base)
-        user_neg_from_intent = _clean_context_subtag(str(intent.user_neg or ""))
+        user_neg_from_intent = _clean_context_subtag(str(intent.user_neg or intent_neg_extra or ""))
         if auto_neg_extracted:
             extra_auto = ", ".join(auto_neg_extracted)
             user_neg_from_intent = f"{extra_auto}, {user_neg_from_intent}".strip(" ,") if user_neg_from_intent else extra_auto
@@ -671,7 +823,12 @@ class ArtDirector:
         is_assistant = (eff_mode == "assistant")
         has_female_markers = bool(re.search(r'\b(1girl|woman|girl|female|lady|maid|queen|princess|model|face|portrait)\b', full_positive, re.I))
         has_elaria_name = bool(re.search(r'\b(elaria|элария)\b', full_positive, re.I))
-        is_elaria = is_assistant and (intent.target_subject == TargetSubject.ELARIA or has_elaria_name or (character_name and character_name.lower() in ("элария", "elaria") and has_female_markers))
+        is_elaria = is_assistant and (
+            intent.target_subject == TargetSubject.ELARIA
+            or has_self_flag
+            or has_elaria_name
+            or (character_name and character_name.lower() in ("элария", "elaria") and has_female_markers)
+        )
         archetype = detect_scene_archetype(full_positive)
 
         focus_name = ""
@@ -809,25 +966,24 @@ class ArtDirector:
         cfg_scale = float(model_pipeline.get("cfg_scale", canon.default_cfg))
         clip_skip = int(model_pipeline.get("clip_skip", canon.clip_skip))
 
-        # Разрешение пропорций и архетипа
-        target_subject = getattr(intent, "target_subject", TargetSubject.SCENE_OBJECT)
-        # Базовое определение наличия человека для геометрии кадра (wide vs portrait):
-        human_markers = ("1girl", "1boy", "girl", "boy", "woman", "man", "person", "people", "portrait", "face", "solo")
-        has_human = any(re.search(rf"\b{re.escape(k)}\b", clean_prompt.lower()) for k in human_markers) or bool(focus_name or target_subject != TargetSubject.SCENE_OBJECT)
-
+        # Разрешение пропорций и архетипа: прямое подчинение флагу --ar
         ar_override = intent.aspect_ratio or extracted_ar_flag
         ar_clean = str(ar_override).strip().lower() if ar_override else None
 
-        if ar_clean in ("wide", "landscape", "horizontal", "3:2"):
-            archetype = "scenery" if not has_human else "pair"
-        elif ar_clean in ("portrait", "vertical", "tall", "2:3"):
+        if ar_clean in ("portrait", "vertical", "tall", "2:3"):
             archetype = "solo"
+        elif ar_clean in ("wide", "landscape", "horizontal", "3:2"):
+            archetype = "pair"
         elif ar_clean in ("square", "sq", "1:1", "closeup"):
             archetype = "closeup"
         elif ar_clean in ("fullbody", "9:16"):
             archetype = "fullbody"
         elif ar_clean in ("cinematic", "pano", "16:9"):
             archetype = "cinematic"
+        elif ar_clean in ("ultrawide", "wide21:9", "21:9", "anamorphic"):
+            archetype = "ultrawide"
+        elif ar_clean == "scenery":
+            archetype = "scenery"
         elif ar_clean in ASPECT_RATIO_BUCKETS:
             archetype = ar_clean
         else:
@@ -837,35 +993,47 @@ class ArtDirector:
             if is_pair_candidate and any(m in fp_low for m in pair_layout_markers):
                 archetype = "pair"
             else:
-                archetype = "solo"
+                detected = detect_scene_archetype(final_positive)
+                archetype = archetype if archetype != "solo" else (detected or "solo")
 
         if router_profile and isinstance(router_profile, dict):
             model_target = dict(router_profile)
-            if target_ckpt and not model_target.get("checkpoint"):
-                model_target["checkpoint"] = target_ckpt
+            if target_ckpt:
+                if not model_target.get("checkpoint") or target_ckpt != model_target.get("checkpoint"):
+                    if is_xl_model(target_ckpt):
+                        model_target["architecture"] = "sdxl"
+                        model_target["checkpoint"] = target_ckpt
+                    elif not is_xl_model(target_ckpt) and model_target.get("architecture") == "sdxl":
+                        model_target["architecture"] = "sd15"
+                        model_target["checkpoint"] = target_ckpt
+                    else:
+                        model_target["checkpoint"] = target_ckpt
         else:
             model_target = router_profile or f"{target_ckpt} {selected_profile.id} {selected_profile.title}"
         arch_cfg = get_archetype_config(model_target, archetype)
         width = arch_cfg["width"]
         height = arch_cfg["height"]
 
-        # Настройка Hi-Res Fix и защита SDXL от Hires.fix OOM
+        # Настройка Hi-Res Fix и единый резолвинг ADetailer (SSOT)
         is_bg = bool(intent.is_scene_background)
-        if "enable_adetailer" in model_pipeline and model_pipeline["enable_adetailer"] is not None:
-            enable_ad = bool(model_pipeline["enable_adetailer"]) and not is_bg
-        else:
-            allow_by_model = getattr(canon, "allow_adetailer", True)
-            enable_ad = allow_by_model and not is_bg
-        hands_enabled = enable_ad
+        _is_xl_v = bool(arch_cfg.get("is_xl") or "xl" in str(arch_cfg.get("architecture", "")).lower() or is_sdxl_checkpoint(target_ckpt))
+        ad_cfg = self._resolve_adetailer_pipeline(
+            model_pipeline=model_pipeline,
+            canon=canon,
+            is_bg=is_bg,
+            is_xl=_is_xl_v,
+            wants_hands=False,
+        )
+        enable_ad = ad_cfg["enable_adetailer"]
+        hands_enabled = ad_cfg["hands_enabled"]
 
-        plan_enable_ad = enable_ad
         # Определение доступности Hires.fix через динамическую политику VRAM
         hires_safe = self._is_resolution_safe_for_hires(
             width=width,
             height=height,
             architecture=arch_cfg.get("architecture") or ("sdxl" if arch_cfg.get("is_xl") else "sd15"),
             checkpoint=target_ckpt,
-            enable_adetailer=bool(plan_enable_ad)  # флаг активности ADetailer для кадра
+            enable_adetailer=enable_ad  # флаг активности ADetailer для кадра
         )
 
         if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
@@ -938,12 +1106,9 @@ class ArtDirector:
             final_positive = MinorSafetyDetector.sanitize_positive_prompt(final_positive, context_hint=location_dna)
             final_negative = f"{MinorSafetyDetector.HARD_NEGATIVE_STACK}, {final_negative}".strip(", ")
 
-        hands_enabled = enable_ad
-
         plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
         plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
 
-        _is_xl_v = bool(arch_cfg.get("is_xl") or "xl" in str(arch_cfg.get("architecture", "")).lower() or is_sdxl_checkpoint(target_ckpt))
         plan = GenerationPlan(
             style=plan_model_id,
             target_model_key=plan_model_id,
@@ -965,96 +1130,34 @@ class ArtDirector:
             clip_skip=clip_skip,
             enable_adetailer=enable_ad,
             enable_hand_adetailer=hands_enabled,
-            ad_denoising_strength=0.30,
-            ad_prompt=canon.ad_prompt if canon else None,
-            ad_negative_prompt=canon.ad_negative if canon else None,
+            ad_denoising_strength=ad_cfg["face_denoise"],
+            ad_prompt=final_positive,
+            ad_negative_prompt=final_negative,
             ad_mask_blur=4,
             seed=effective_seed,
             hires_upscaler=hr_upscaler,
             hires_denoise=denoising_strength,
             reasoning=f"Стиль: {plan_model_title} ({plan_model_id})",
             style_badge=f"✨ {plan_model_title}",
-            adetailer_face_model="face_yolov8n.pt",
-            adetailer_face_confidence=0.32,
-            adetailer_face_denoise=0.35 if _is_xl_v else 0.32,
+            adetailer_face_model=ad_cfg["face_model"],
+            adetailer_face_confidence=ad_cfg["face_confidence"],
+            adetailer_face_denoise=ad_cfg["face_denoise"],
+            adetailer_face_inpaint_size=ad_cfg["face_inpaint_size"],
+            adetailer_inpaint_size=ad_cfg["face_inpaint_size"],
             adetailer_hands_enabled=hands_enabled,
-            adetailer_hands_model="hand_yolov8n.pt",
-            adetailer_hands_confidence=0.28,
-            adetailer_hands_denoise=0.38 if _is_xl_v else 0.40,
+            adetailer_hands_model=ad_cfg["hands_model"],
+            adetailer_hands_confidence=ad_cfg["hands_confidence"],
+            adetailer_hands_denoise=ad_cfg["hands_denoise"],
+            adetailer_hands_inpaint_size=ad_cfg["hands_inpaint_size"],
+            adetailer_hands_mask_blur=ad_cfg["hands_mask_blur"],
             adetailer_hands=hands_enabled,
-            adetailer_inpaint_size=768 if _is_xl_v else 512
+            adetailer_hands_prompt=final_positive,
+            adetailer_hands_negative_prompt=final_negative,
+            archetype=archetype,
         )
-        # Унифицированное чтение ADetailer из pipeline профиля
-        is_bg = bool(getattr(intent, "is_scene_background", False))
-        enable_ad = bool(model_pipeline.get("enable_adetailer", True)) and not is_bg
-
-        plan.enable_adetailer = enable_ad
-        plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8m.pt")
-        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.44))
-        plan.adetailer_face_denoise = float(model_pipeline.get("adetailer_face_denoise", 0.35 if _is_xl_v else 0.32))
-        # Безопасное чтение размера инпейнта лица с поддержкой нового и старого ключей
-        default_inpaint = 768 if _is_xl_v else 512
-        face_inpaint_val = int(
-            model_pipeline.get("adetailer_face_inpaint_size")
-            or model_pipeline.get("adetailer_inpaint_size")
-            or default_inpaint
-        )
-        plan.adetailer_face_inpaint_size = face_inpaint_val
-        plan.adetailer_inpaint_size = face_inpaint_val
-
-        hands_on = bool(model_pipeline.get("adetailer_hands_enabled", True)) and enable_ad
-        plan.adetailer_hands_enabled = hands_on
-        plan.adetailer_hands = hands_on
-        plan.adetailer_hands_model = model_pipeline.get("adetailer_hands_model", "hand_yolov9c.pt")
-        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.38))
-        plan.adetailer_hands_denoise = float(model_pipeline.get("adetailer_hands_denoise", 0.38 if _is_xl_v else 0.40))
-        plan.adetailer_hands_inpaint_size = int(model_pipeline.get("adetailer_hands_inpaint_size", 512))
-        plan.adetailer_hands_mask_blur = int(model_pipeline.get("adetailer_hands_mask_blur", 8))
-        plan.enable_hand_adetailer = hands_on
-        plan.ad_denoising_strength = plan.adetailer_face_denoise
-        if model_pipeline.get("ad_prompt"):
-            plan.ad_prompt = model_pipeline.get("ad_prompt")
-        if model_pipeline.get("ad_negative_prompt"):
-            plan.ad_negative_prompt = model_pipeline.get("ad_negative_prompt")
-        plan.adetailer_hands_prompt = model_pipeline.get("adetailer_hands_prompt")
-        plan.adetailer_hands_negative_prompt = model_pipeline.get("adetailer_hands_negative_prompt")
-        plan.archetype = archetype
 
         # Формирование информативного блока ADetailer для лога
-        ad_face_info = "OFF"
-        ad_hands_info = "OFF"
-        if getattr(plan, "enable_adetailer", False):
-            ad_p = getattr(plan, "ad_prompt", None)
-            ad_neg = getattr(plan, "ad_negative_prompt", None)
-            face_p = f'"{ad_p}"' if ad_p else "[AUTO SCENE CONTEXT]"
-            face_neg = f'"{ad_neg}"' if ad_neg else "[BASE NEGATIVE]"
-            face_model = getattr(plan, "adetailer_face_model", "none")
-            face_conf = getattr(plan, "adetailer_face_confidence", 0.0)
-            face_denoise = getattr(plan, "adetailer_face_denoise", 0.0)
-            face_inpaint_sz = getattr(plan, "adetailer_face_inpaint_size", getattr(plan, "adetailer_inpaint_size", 512))
-            ad_face_info = (
-                f"ON | Model={face_model} | Conf={face_conf} | "
-                f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
-                f"   └── Prompt: {face_p}\n"
-                f"   └── Neg   : {face_neg}"
-            )
-            if getattr(plan, "adetailer_hands_enabled", False):
-                h_p_val = getattr(plan, "adetailer_hands_prompt", None) or "detailed hand, realistic fingers, anatomically correct, sharp focus"
-                h_p_str = h_p_val.replace("[SEP]", "").strip()
-                h_p = f'"{h_p_str}"'
-                h_neg_val = getattr(plan, "adetailer_hands_negative_prompt", None)
-                h_neg = f'"{h_neg_val}"' if h_neg_val else "[DEFAULT HANDS NEG]"
-                h_sz = getattr(plan, "adetailer_hands_inpaint_size", 512)
-                h_model = getattr(plan, "adetailer_hands_model", "none")
-                h_conf = getattr(plan, "adetailer_hands_confidence", 0.0)
-                h_denoise = getattr(plan, "adetailer_hands_denoise", 0.0)
-                h_blur = getattr(plan, "adetailer_hands_mask_blur", 8)
-                ad_hands_info = (
-                    f"ON | Model={h_model} | Conf={h_conf} | "
-                    f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
-                    f"   └── Prompt: {h_p}\n"
-                    f"   └── Neg   : {h_neg}"
-                )
+        ad_face_info, ad_hands_info = self._format_adetailer_log_blocks(plan)
 
         p_pos = getattr(plan, "positive_prompt", "")
         p_neg = getattr(plan, "negative_prompt", "")
@@ -1084,6 +1187,11 @@ class ArtDirector:
             f"[ADETAILER FACE]  : {ad_face_info}\n"
             f"[ADETAILER HANDS] : {ad_hands_info}\n"
             f"========================================================================="
+        )
+        self._log_vram_planner_passport(
+            plan=plan,
+            architecture=arch_cfg.get("architecture") or ("sdxl" if _is_xl_v else "sd15"),
+            lora_count=len(all_loras_in_prompt),
         )
         return plan
 
@@ -1139,9 +1247,15 @@ class ArtDirector:
 
         clean_prompt = re.sub(r'--ar[:=\s]+[a-zA-Z0-9:]+', '', clean_prompt, flags=re.IGNORECASE).strip(' ,')
 
-        # Отделение флага детальной прорисовки рук (--hands)
+        # Отделение флага детальной прорисовки рук (--hands) и автопортрета (--self / --subject)
         wants_hands = bool(re.search(r'--hands\b', clean_prompt, re.IGNORECASE))
         clean_prompt = re.sub(r'--hands\b', '', clean_prompt, flags=re.IGNORECASE).strip(' ,')
+        has_self_flag = bool(re.search(r'(?:^|[\s,])--self\b', clean_prompt, re.IGNORECASE))
+        subj_match = re.search(r'--subject[:=\s]+["\']?([a-zA-Z0-9_\-]+)["\']?', clean_prompt, re.IGNORECASE)
+        if subj_match and subj_match.group(1).strip().lower() in ("elaria", "self", "assistant"):
+            has_self_flag = True
+        clean_prompt = re.sub(r'(?:^|[\s,])--self\b', '', clean_prompt, flags=re.IGNORECASE).strip(' ,')
+        clean_prompt = re.sub(r'--subject[:=\s]+["\']?[a-zA-Z0-9_\-]+["\']?', '', clean_prompt, flags=re.IGNORECASE).strip(' ,')
         clean_prompt = re.sub(r'(?:--model|--style)\s+[a-zA-Z0-9_\-]+', '', clean_prompt, flags=re.IGNORECASE).strip(' ,')
 
         # Защита LoRA-тегов от агрессивной санитизации
@@ -1247,7 +1361,7 @@ class ArtDirector:
         is_assistant = (eff_mode == "assistant")
         has_female_markers = bool(re.search(r'\b(1girl|woman|girl|female|lady|maid|queen|princess|model|face|portrait)\b', clean_prompt, re.I))
         has_elaria_name = bool(re.search(r'\b(elaria|элария)\b', clean_prompt, re.I))
-        is_elaria = is_assistant and (has_elaria_name or (character_name and character_name.lower() in ("элария", "elaria") and has_female_markers))
+        is_elaria = is_assistant and (has_self_flag or has_elaria_name or (character_name and character_name.lower() in ("элария", "elaria") and has_female_markers))
         archetype = detect_scene_archetype(clean_prompt)
 
         focus_name = ""
@@ -1360,36 +1474,35 @@ class ArtDirector:
         else:
             final_positive = assembled_body
 
-        # 5. Разрешение геометрии: гибкая геометрия и абсолютный приоритет флага --ar
-        target_subject = TargetSubject.SCENE_OBJECT if is_scene_background else (TargetSubject.ELARIA if is_elaria else (TargetSubject.COMPANION if (character or character_name or focus_name) else TargetSubject.SCENE_OBJECT))
-        # Базовое определение наличия человека для геометрии кадра (wide vs portrait):
-        human_markers = ("1girl", "1boy", "girl", "boy", "woman", "man", "person", "people", "portrait", "face", "solo")
-        has_human = any(re.search(rf"\b{re.escape(k)}\b", clean_prompt.lower()) for k in human_markers) or bool(focus_name or target_subject != TargetSubject.SCENE_OBJECT)
-
+        # 5. Разрешение геометрии: прямое подчинение флагу --ar
         ar_clean = str(ar_override).strip().lower() if ar_override else None
-        if ar_clean in ("wide", "landscape", "horizontal", "3:2"):
-            archetype = "scenery" if not has_human else "pair"
-        elif ar_clean in ("portrait", "vertical", "tall", "2:3"):
+        if ar_clean in ("portrait", "vertical", "tall", "2:3"):
             archetype = "solo"
+        elif ar_clean in ("wide", "landscape", "horizontal", "3:2"):
+            archetype = "pair"
         elif ar_clean in ("square", "sq", "1:1", "closeup"):
             archetype = "closeup"
         elif ar_clean in ("fullbody", "9:16"):
             archetype = "fullbody"
         elif ar_clean in ("cinematic", "pano", "16:9"):
             archetype = "cinematic"
+        elif ar_clean in ("ultrawide", "wide21:9", "21:9", "anamorphic"):
+            archetype = "ultrawide"
+        elif ar_clean == "scenery":
+            archetype = "scenery"
         elif ar_clean in ASPECT_RATIO_BUCKETS:
             archetype = ar_clean
         else:
             # Если явного ar_override нет:
             # При наличии secondary_dna или 2girls и маркеров бокового расположения (side by side, duo, BREAK) -> archetype = "pair".
-            # Иначе дефолт solo.
             fp_low = final_positive.lower()
             is_pair_candidate = bool(has_secondary or "2girls" in fp_low)
             pair_layout_markers = ("side by side", "duo", " break ", "together", "couple")
             if is_pair_candidate and any(m in fp_low for m in pair_layout_markers):
                 archetype = "pair"
             else:
-                archetype = "solo"
+                detected = detect_scene_archetype(final_positive)
+                archetype = archetype if archetype != "solo" else (detected or "solo")
 
         # 6. Конфигурация пайплайна модели
         model_pipeline = router_profile.get("pipeline", {}) if router_profile else {}
@@ -1403,8 +1516,16 @@ class ArtDirector:
 
         if router_profile and isinstance(router_profile, dict):
             model_target = dict(router_profile)
-            if target_ckpt and not model_target.get("checkpoint"):
-                model_target["checkpoint"] = target_ckpt
+            if target_ckpt:
+                if not model_target.get("checkpoint") or target_ckpt != model_target.get("checkpoint"):
+                    if is_xl_model(target_ckpt):
+                        model_target["architecture"] = "sdxl"
+                        model_target["checkpoint"] = target_ckpt
+                    elif not is_xl_model(target_ckpt) and model_target.get("architecture") == "sdxl":
+                        model_target["architecture"] = "sd15"
+                        model_target["checkpoint"] = target_ckpt
+                    else:
+                        model_target["checkpoint"] = target_ckpt
         else:
             model_target = router_profile or f"{target_ckpt} {selected_profile.id} {selected_profile.title}"
         arch_cfg = get_archetype_config(model_target, archetype)
@@ -1441,22 +1562,28 @@ class ArtDirector:
         final_negative = plan_negative
 
         is_bg = bool(is_scene_background)
-        # ADetailer
-        if "enable_adetailer" in model_pipeline and model_pipeline["enable_adetailer"] is not None:
-            enable_ad = bool(model_pipeline["enable_adetailer"]) and not is_bg
-        else:
-            allow_by_model = getattr(canon, "allow_adetailer", True)
-            enable_ad = (allow_by_model or wants_hands) and not is_bg
-        hands_enabled = bool(enable_ad or (wants_hands and not is_bg))
+        plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
+        plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
+        _is_xl_p = ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt))
 
-        plan_enable_ad = enable_ad
+        # Единый резолвинг ADetailer (SSOT до расчёта Hires.fix и сборки плана)
+        ad_cfg = self._resolve_adetailer_pipeline(
+            model_pipeline=model_pipeline,
+            canon=canon,
+            is_bg=is_bg,
+            is_xl=_is_xl_p,
+            wants_hands=bool(wants_hands),
+        )
+        enable_ad = ad_cfg["enable_adetailer"]
+        hands_enabled = ad_cfg["hands_enabled"]
+
         # Определение доступности Hires.fix через динамическую политику VRAM
         hires_safe = self._is_resolution_safe_for_hires(
             width=width,
             height=height,
             architecture=arch_cfg.get("architecture") or ("sdxl" if arch_cfg.get("is_xl") else "sd15"),
             checkpoint=target_ckpt,
-            enable_adetailer=bool(plan_enable_ad)  # флаг активности ADetailer для кадра
+            enable_adetailer=enable_ad  # флаг активности ADetailer для кадра
         )
 
         if "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
@@ -1495,10 +1622,7 @@ class ArtDirector:
             sampler_name = raw_sampler
             scheduler = canon.scheduler if canon else "Karras"
 
-        plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
-        plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
-
-        # 8. Сборка GenerationPlan
+        # 8. Сборка GenerationPlan (единый источник параметров ADetailer из ad_cfg)
         plan = GenerationPlan(
             style=plan_model_id,
             target_model_key=plan_model_id,
@@ -1520,119 +1644,35 @@ class ArtDirector:
             clip_skip=int(model_pipeline.get("clip_skip", canon.clip_skip)),
             enable_adetailer=enable_ad,
             enable_hand_adetailer=hands_enabled,
-            ad_denoising_strength=0.30,
-            ad_prompt=canon.ad_prompt if canon else None,
-            ad_negative_prompt=canon.ad_negative if canon else None,
+            ad_denoising_strength=ad_cfg["face_denoise"],
+            ad_prompt=final_positive,
+            ad_negative_prompt=final_negative,
             ad_mask_blur=4,
             seed=effective_seed,
             hires_upscaler=hr_upscaler,
             hires_denoise=hr_denoise,
             reasoning=f"Стиль: {plan_model_title} ({plan_model_id})",
             style_badge=f"✨ {plan_model_title}",
-            adetailer_face_model="face_yolov8n.pt",
-            adetailer_face_confidence=0.32,
-            adetailer_face_denoise=0.35 if ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt)) else 0.32,
+            adetailer_face_model=ad_cfg["face_model"],
+            adetailer_face_confidence=ad_cfg["face_confidence"],
+            adetailer_face_denoise=ad_cfg["face_denoise"],
+            adetailer_face_inpaint_size=ad_cfg["face_inpaint_size"],
+            adetailer_inpaint_size=ad_cfg["face_inpaint_size"],
             adetailer_hands_enabled=hands_enabled,
-            adetailer_hands_model="hand_yolov8n.pt",
-            adetailer_hands_confidence=0.28,
-            adetailer_hands_denoise=0.38 if ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt)) else 0.40,
+            adetailer_hands_model=ad_cfg["hands_model"],
+            adetailer_hands_confidence=ad_cfg["hands_confidence"],
+            adetailer_hands_denoise=ad_cfg["hands_denoise"],
+            adetailer_hands_inpaint_size=ad_cfg["hands_inpaint_size"],
+            adetailer_hands_mask_blur=ad_cfg["hands_mask_blur"],
             adetailer_hands=hands_enabled,
-            adetailer_inpaint_size=768 if ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt)) else 512
+            adetailer_hands_prompt=final_positive,
+            adetailer_hands_negative_prompt=final_negative,
+            archetype=archetype,
+            raw_prompt=raw_prompt,
         )
-
-        # Применяем индивидуальные параметры рендера или канонические дефолты
-        raw_sampler = model_pipeline.get("sampler", canon.sampler_name if canon else "DPM++ 2M")
-        custom_scheduler = model_pipeline.get("scheduler")
-        if isinstance(raw_sampler, str) and raw_sampler.endswith(" Karras"):
-            gen_sampler_name = raw_sampler[:-7].strip()
-            gen_scheduler = "Karras"
-        elif custom_scheduler:
-            gen_sampler_name = raw_sampler
-            gen_scheduler = custom_scheduler
-        elif any(k in str(raw_sampler) for k in ("Euler a", "Euler", "DDIM")):
-            gen_sampler_name = raw_sampler
-            gen_scheduler = "Automatic"
-        else:
-            gen_sampler_name = raw_sampler
-            gen_scheduler = canon.scheduler if canon else "Karras"
-
-        plan.sampler_name = gen_sampler_name
-        plan.scheduler = gen_scheduler
-
-        # Унифицированное чтение ADetailer из pipeline профиля
-        _is_xl_p = ("xl" in str(plan_model_id).lower() or "xl" in str(target_ckpt).lower() or is_sdxl_checkpoint(target_ckpt))
-        _is_xl_v = _is_xl_p
-        is_bg = bool(is_scene_background)
-        enable_ad = (bool(model_pipeline.get("enable_adetailer", True)) or wants_hands) and not is_bg
-
-        plan.enable_adetailer = enable_ad
-        plan.adetailer_face_model = model_pipeline.get("adetailer_face_model", "face_yolov8m.pt")
-        plan.adetailer_face_confidence = float(model_pipeline.get("adetailer_face_confidence", 0.44))
-        plan.adetailer_face_denoise = float(model_pipeline.get("adetailer_face_denoise", 0.35 if _is_xl_p else 0.32))
-        # Безопасное чтение размера инпейнта лица с поддержкой нового и старого ключей
-        default_inpaint = 768 if _is_xl_v else 512
-        face_inpaint_val = int(
-            model_pipeline.get("adetailer_face_inpaint_size")
-            or model_pipeline.get("adetailer_inpaint_size")
-            or default_inpaint
-        )
-        plan.adetailer_face_inpaint_size = face_inpaint_val
-        plan.adetailer_inpaint_size = face_inpaint_val
-
-        hands_on = (bool(model_pipeline.get("adetailer_hands_enabled", True)) or wants_hands) and enable_ad
-        plan.adetailer_hands_enabled = hands_on
-        plan.adetailer_hands = hands_on
-        plan.adetailer_hands_model = model_pipeline.get("adetailer_hands_model", "hand_yolov9c.pt")
-        plan.adetailer_hands_confidence = float(model_pipeline.get("adetailer_hands_confidence", 0.38))
-        plan.adetailer_hands_denoise = float(model_pipeline.get("adetailer_hands_denoise", 0.38 if _is_xl_p else 0.40))
-        plan.adetailer_hands_inpaint_size = int(model_pipeline.get("adetailer_hands_inpaint_size", 512))
-        plan.adetailer_hands_mask_blur = int(model_pipeline.get("adetailer_hands_mask_blur", 8))
-        plan.enable_hand_adetailer = hands_on
-        plan.ad_denoising_strength = plan.adetailer_face_denoise
-        if model_pipeline.get("ad_prompt"):
-            plan.ad_prompt = model_pipeline.get("ad_prompt")
-        if model_pipeline.get("ad_negative_prompt"):
-            plan.ad_negative_prompt = model_pipeline.get("ad_negative_prompt")
-        plan.adetailer_hands_prompt = model_pipeline.get("adetailer_hands_prompt")
-        plan.adetailer_hands_negative_prompt = model_pipeline.get("adetailer_hands_negative_prompt")
-        plan.archetype = archetype
-        plan.raw_prompt = raw_prompt
 
         # Формирование информативного блока ADetailer для лога
-        ad_face_info = "OFF"
-        ad_hands_info = "OFF"
-        if getattr(plan, "enable_adetailer", False):
-            ad_p = getattr(plan, "ad_prompt", None)
-            ad_neg = getattr(plan, "ad_negative_prompt", None)
-            face_p = f'"{ad_p}"' if ad_p else "[AUTO SCENE CONTEXT]"
-            face_neg = f'"{ad_neg}"' if ad_neg else "[BASE NEGATIVE]"
-            face_model = getattr(plan, "adetailer_face_model", "none")
-            face_conf = getattr(plan, "adetailer_face_confidence", 0.0)
-            face_denoise = getattr(plan, "adetailer_face_denoise", 0.0)
-            face_inpaint_sz = getattr(plan, "adetailer_face_inpaint_size", getattr(plan, "adetailer_inpaint_size", 512))
-            ad_face_info = (
-                f"ON | Model={face_model} | Conf={face_conf} | "
-                f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
-                f"   └── Prompt: {face_p}\n"
-                f"   └── Neg   : {face_neg}"
-            )
-            if getattr(plan, "adetailer_hands_enabled", False):
-                h_p_val = getattr(plan, "adetailer_hands_prompt", None) or "detailed hand, realistic fingers, anatomically correct, sharp focus"
-                h_p_str = h_p_val.replace("[SEP]", "").strip()
-                h_p = f'"{h_p_str}"'
-                h_neg_val = getattr(plan, "adetailer_hands_negative_prompt", None)
-                h_neg = f'"{h_neg_val}"' if h_neg_val else "[DEFAULT HANDS NEG]"
-                h_sz = getattr(plan, "adetailer_hands_inpaint_size", 512)
-                h_model = getattr(plan, "adetailer_hands_model", "none")
-                h_conf = getattr(plan, "adetailer_hands_confidence", 0.0)
-                h_denoise = getattr(plan, "adetailer_hands_denoise", 0.0)
-                h_blur = getattr(plan, "adetailer_hands_mask_blur", 8)
-                ad_hands_info = (
-                    f"ON | Model={h_model} | Conf={h_conf} | "
-                    f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
-                    f"   └── Prompt: {h_p}\n"
-                    f"   └── Neg   : {h_neg}"
-                )
+        ad_face_info, ad_hands_info = self._format_adetailer_log_blocks(plan)
 
         p_raw = getattr(plan, "raw_prompt", raw_prompt)
         p_pos = getattr(plan, "positive_prompt", "")
@@ -1664,6 +1704,11 @@ class ArtDirector:
             f"[ADETAILER FACE]  : {ad_face_info}\n"
             f"[ADETAILER HANDS] : {ad_hands_info}\n"
             f"================================================================================"
+        )
+        self._log_vram_planner_passport(
+            plan=plan,
+            architecture=arch_cfg.get("architecture") or ("sdxl" if _is_xl_p else "sd15"),
+            lora_count=len(all_loras_in_prompt) if "all_loras_in_prompt" in locals() else 0,
         )
 
         return plan
@@ -1802,10 +1847,69 @@ class ArtDirector:
             enable_adetailer=enable_ad,
             enable_hand_adetailer=enable_ad,
             ad_denoising_strength=canon.default_ad_denoise if enable_ad else None,
-            ad_prompt=canon.ad_prompt if enable_ad else None,
-            ad_negative_prompt=canon.ad_negative if enable_ad else None,
+            ad_prompt=final_positive if enable_ad else None,
+            ad_negative_prompt=final_negative if enable_ad else None,
             ad_mask_blur=4,
             seed=effective_seed,
             reasoning="Прямой ручной инференс (!арт)",
             style_badge="⚡ Директ-арт"
         )
+
+    def build_scene_background_plan(
+        self,
+        location_prompt: str,
+        preferred_style: Optional[str] = "realistic",
+        available_models: Optional[List[Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        lm_client: Optional[Any] = None,
+        use_visual_intent: bool = False,
+    ) -> GenerationPlan:
+        """
+        Единый SSOT-строитель плана генерации чистого фона сцены (768x512, без людей и без ADetailer).
+        Используется как десктопным RoleplayControllerMixin, так и мобильным шлюзом.
+        """
+        clean_loc = (location_prompt or "").strip() or "cyberpunk city street at night, neon reflections, rain"
+        human_neg = "human, humans, person, 1girl, 1boy, woman, man, character, people, crowd, face, hands, body, portrait, anime girl"
+
+        if use_visual_intent:
+            bg_pos = (
+                f"masterpiece, best quality, scenic, {clean_loc}, "
+                "empty landscape, architecture, atmospheric lighting, detailed background"
+            )
+            intent = VisualIntent(
+                prompt=bg_pos,
+                raw_user_query=clean_loc,
+                user_neg=human_neg,
+                aspect_ratio="landscape",
+                session_id=session_id,
+                mode="roleplay",
+                is_scene_background=True,
+            )
+            plan = self.plan_from_visual_intent(
+                visual_intent=intent,
+                preferred_style=preferred_style,
+                available_models=available_models,
+                session_id=session_id,
+                mode="roleplay",
+            )
+        else:
+            plan = self.plan_generation(
+                raw_prompt=clean_loc,
+                preferred_style=preferred_style,
+                lm_client=lm_client,
+                character=None,
+                available_models=available_models,
+                session_id=session_id,
+                mode="roleplay",
+                is_scene_background=True,
+            )
+            plan.positive_prompt = f"scenery, empty landscape, atmospheric lighting, no humans, {plan.positive_prompt}".strip(" ,")
+            plan.negative_prompt = f"{human_neg}, {plan.negative_prompt}".strip(" ,") if plan.negative_prompt else human_neg
+
+        plan.width = 768
+        plan.height = 512
+        plan.enable_adetailer = False
+        plan.enable_hand_adetailer = False
+        plan.adetailer_hands_enabled = False
+        plan.adetailer_hands = False
+        return plan
