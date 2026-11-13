@@ -99,3 +99,32 @@ def test_resolve_gallery_art_temperature_pure():
     assert resolve_gallery_art_temperature(
         session={"sampling_params": {"temperature": "bad"}}
     ) == pytest.approx(0.8)
+
+
+def test_build_gallery_art_plan_passes_enable_thinking_false():
+    """
+    Проверка, что build_gallery_art_plan всегда передает enable_thinking=False
+    в lm_client.chat_completion для исключения генерации <think> при выводе тегов.
+    """
+    from services.assistant_flow import build_gallery_art_plan
+
+    mock_lm = MagicMock()
+    mock_lm.chat_completion.return_value = "masterpiece, 1girl, cyberpunk city, neon glow"
+
+    mock_ad = MagicMock()
+    mock_ad.plan_from_visual_intent.return_value = MagicMock()
+
+    plan = build_gallery_art_plan(
+        user_query="нарисуй девушку",
+        lm_client=mock_lm,
+        art_director=mock_ad,
+        session={"id": "test_sess_gallery"},
+        profile={"sampling": {"temperature": 0.8}},
+        available_models=[{"name": "cyberpunk_sdxl", "architecture": "sdxl", "description": "Cyberpunk"}],
+    )
+
+    assert mock_lm.chat_completion.called
+    kwargs = mock_lm.chat_completion.call_args[1]
+    assert kwargs.get("enable_thinking") is False
+    assert kwargs.get("temperature") == pytest.approx(0.8)
+    assert plan is not None

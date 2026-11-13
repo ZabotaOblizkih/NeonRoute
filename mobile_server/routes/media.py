@@ -44,6 +44,17 @@ def _svg_response(request: Request, title: str, color: str) -> Response:
     )
 
 
+def _file_response(request: Request, path: Path) -> Response:
+    try:
+        stat = path.stat()
+        etag = f'"{hashlib.sha256(f"{stat.st_mtime}_{stat.st_size}".encode()).hexdigest()[:16]}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "public, max-age=3600"})
+        return FileResponse(str(path), headers={"ETag": etag, "Cache-Control": "public, max-age=3600"})
+    except OSError:
+        return FileResponse(str(path))
+
+
 @router.get("/avatar/{session_id}")
 async def get_session_avatar(session_id: str, request: Request):
     """
@@ -62,26 +73,26 @@ async def get_session_avatar(session_id: str, request: Request):
             cid = data.get("character_id") or char_data.get("id")
             avatar_path = SessionManager.resolve_character_avatar_path(character_id=cid, char_data=char_data)
             if avatar_path:
-                return FileResponse(avatar_path)
+                return _file_response(request, Path(avatar_path))
             if DEFAULT_ROLEPLAY_AVATAR.exists():
-                return FileResponse(str(DEFAULT_ROLEPLAY_AVATAR))
+                return _file_response(request, DEFAULT_ROLEPLAY_AVATAR)
             return _svg_response(request, char_name, color="#ff007f")
 
         if mode == AppMode.ENGINEER:
             asst_av = data.get("assistant_avatar_path")
             if asst_av and Path(asst_av).exists():
-                return FileResponse(asst_av)
+                return _file_response(request, Path(asst_av))
             for cand in (DEFAULT_ENGINEER_AVATAR, ASSETS_DIR / "elaria_engineer.png", ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
                 if cand and cand.exists():
-                    return FileResponse(str(cand))
+                    return _file_response(request, cand)
             return _svg_response(request, "ENG", color="#ff9100")
 
         asst_av = data.get("assistant_avatar_path")
         if asst_av and Path(asst_av).exists():
-            return FileResponse(asst_av)
+            return _file_response(request, Path(asst_av))
         for cand in (DEFAULT_ASSISTANT_AVATAR, ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
             if cand and cand.exists():
-                return FileResponse(str(cand))
+                return _file_response(request, cand)
         return _svg_response(request, "EL", color="#00e5ff")
 
     return _svg_response(request, char_name, color="#00e5ff")
@@ -95,7 +106,7 @@ async def get_character_avatar(character_id: str, request: Request):
     cid = character_id.strip()
     avatar_path = SessionManager.resolve_character_avatar_path(character_id=cid)
     if avatar_path:
-        return FileResponse(avatar_path)
+        return _file_response(request, Path(avatar_path))
     return _svg_response(request, cid, color="#ff007f")
 
 

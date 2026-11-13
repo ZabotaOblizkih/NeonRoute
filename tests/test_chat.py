@@ -197,7 +197,120 @@ def test_chat_stream_success_flow():
         assert saved_session["messages"][0]["content"] == "Как дела?"
         assert saved_session["messages"][1]["role"] == "assistant"
         assert saved_session["messages"][1]["content"] == "Привет из мобильного API!"
-        assert saved_session["messages"][1]["thought"] == "Думаю над ответом"
+        assert isinstance(saved_session["messages"][1]["thought"], dict)
+        assert saved_session["messages"][1]["thought"]["content"] == "Думаю над ответом"
+    finally:
+        app.dependency_overrides.clear()
+        if session_file.exists():
+            session_file.unlink()
+
+
+def test_mobile_chat_stream_thinking_mode_off_and_on(monkeypatch):
+    """
+    Проверяет, что мобильный эндпоинт /api/chat/stream транслирует thinking_mode:
+    1. 'off' в config.json -> lm_client.stream_chat_completion получает enable_thinking=False
+    2. 'on' в config.json -> lm_client.stream_chat_completion получает enable_thinking=True
+    """
+    from utils.config_manager import ConfigManager
+
+    test_sid = "test_mobile_thinking_sess"
+    session_file = HISTORY_DIR / f"chat_{test_sid}.json"
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(session_file, {
+        "id": test_sid,
+        "mode": "assistant",
+        "title": "Тест Thinking Mode",
+        "messages": [],
+        "chat_history": []
+    })
+
+    mock_lm = MagicMock()
+    mock_lm.stream_chat_completion.return_value = ["Ответ без размышлений"]
+    mock_lm._last_loaded_model_id = "Qwen3.5-35B"
+    app.dependency_overrides[get_lm_studio_client] = lambda: mock_lm
+
+    try:
+        client = TestClient(app)
+
+        # Case 1: 'off'
+        monkeypatch.setattr(ConfigManager, "load_config", lambda: {
+            "thinking_mode": "off",
+            "assistant_model_name": "Qwen3.5-35B",
+        })
+        payload = {"session_id": test_sid, "text": "Привет", "mode": "assistant"}
+        with client.stream("POST", "/api/chat/stream", json=payload) as resp:
+            assert resp.status_code == 200
+            _ = list(resp.iter_raw())
+
+        assert mock_lm.stream_chat_completion.called
+        call_kwargs = mock_lm.stream_chat_completion.call_args[1]
+        assert call_kwargs.get("enable_thinking") is False
+
+        # Case 2: 'on'
+        mock_lm.stream_chat_completion.reset_mock()
+        monkeypatch.setattr(ConfigManager, "load_config", lambda: {
+            "thinking_mode": "on",
+            "assistant_model_name": "Qwen3.5-35B",
+        })
+        with client.stream("POST", "/api/chat/stream", json=payload) as resp:
+            assert resp.status_code == 200
+            _ = list(resp.iter_raw())
+
+        assert mock_lm.stream_chat_completion.called
+        call_kwargs_on = mock_lm.stream_chat_completion.call_args[1]
+        assert call_kwargs_on.get("enable_thinking") is True
+    finally:
+        app.dependency_overrides.clear()
+        if session_file.exists():
+            session_file.unlink()
+
+
+def test_mobile_chat_stream_gallery_override(monkeypatch):
+    """
+    Проверяет, что при триггере скилла gallery в мобильном чате:
+    1. lm_client.stream_chat_completion получает temperature=0.4 и enable_thinking=False
+    2. config.json не мутируется
+    """
+    from utils.config_manager import ConfigManager
+
+    test_sid = "test_mobile_gallery_sess"
+    session_file = HISTORY_DIR / f"chat_{test_sid}.json"
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(session_file, {
+        "id": test_sid,
+        "mode": "assistant",
+        "title": "Тест Gallery Pass",
+        "messages": [],
+        "chat_history": []
+    })
+
+    real_config_before = ConfigManager.load_config()
+    real_temp_before = real_config_before.get("temperature", 0.8)
+
+    mock_lm = MagicMock()
+    mock_lm.stream_chat_completion.return_value = ["Перевожу образ в кадр..."]
+    mock_lm._last_loaded_model_id = "Qwen3.5-35B"
+    app.dependency_overrides[get_lm_studio_client] = lambda: mock_lm
+
+    try:
+        client = TestClient(app)
+        payload = {
+            "session_id": test_sid,
+            "text": "нарисуй красивый киберпанк город",
+            "mode": "assistant",
+        }
+        with client.stream("POST", "/api/chat/stream", json=payload) as resp:
+            assert resp.status_code == 200
+            _ = list(resp.iter_raw())
+
+        assert mock_lm.stream_chat_completion.called
+        call_kwargs = mock_lm.stream_chat_completion.call_args[1]
+        assert call_kwargs.get("enable_thinking") is False
+        assert call_kwargs.get("temperature") == pytest.approx(0.4)
+
+        # Конфиг на диске не изменился
+        real_config_after = ConfigManager.load_config()
+        assert real_config_after.get("temperature", 0.8) == real_temp_before
     finally:
         app.dependency_overrides.clear()
         if session_file.exists():

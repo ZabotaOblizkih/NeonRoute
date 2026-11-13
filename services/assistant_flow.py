@@ -530,6 +530,7 @@ def build_gallery_art_plan(
         stop=["\n\nПользователь:", "\n\nUser:"],
         is_roleplay=False,
         is_engineer=False,
+        enable_thinking=False,
     )
 
     clean_tags = TextRegexFilter.strip_thought_blocks(raw_tags or "", mask_code=True).strip()

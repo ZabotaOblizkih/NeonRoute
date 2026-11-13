@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from config import MODE_PROFILES
+from config import MODE_PROFILES, THINKING_MODEL_KEYWORDS
 from services.assistant_flow import (
     RE_GALLERY_TRIGGER,
     StreamArtTagFilter,
@@ -23,6 +23,7 @@ from services.assistant_flow import (
     build_gallery_art_plan,
     prepare_assistant_art_dispatch,
     prepare_roleplay_inline_art_intent,
+    resolve_effective_thinking,
     run_forge_art_generation,
     sanitize_assistant_art_and_markdown,
     should_trigger_assistant_art,
@@ -85,6 +86,7 @@ def build_chat_context_and_params(
 
     selected_ckpt = get_session_forge_model(session_id, session)
 
+    routed_skill = None
     if target_mode == AppMode.ASSISTANT:
         prompt_builder = AssistantPromptBuilder.get_instance()
         skill_router = getattr(prompt_builder, "router", None) or SkillRouter.get_instance()
@@ -122,18 +124,20 @@ def build_chat_context_and_params(
     if sampling_overrides and isinstance(sampling_overrides, dict):
         sampling_params.update(sampling_overrides)
 
-    # Match desktop AssistantFlow adaptation for thinking models (DeepSeek-R1, Qwen3, QwQ)
+    # Determine active model identifier for reasoning detection and effective thinking resolution
+    model_id = active_model_name
+    if not isinstance(model_id, str) or not model_id.strip():
+        try:
+            cfg = ConfigManager.load_config()
+            model_id = cfg.get("assistant_model_name") or cfg.get("active_model") or ""
+        except Exception:
+            model_id = ""
+
+    # Match desktop AssistantFlow adaptation for thinking models (DeepSeek-R1, Qwen3, QwQ, Gemma4)
     if target_mode == AppMode.ASSISTANT:
         is_custom_sampling = bool(isinstance(session, dict) and session.get("is_custom_sampling"))
-        model_id = active_model_name
-        if not isinstance(model_id, str) or not model_id.strip():
-            try:
-                cfg = ConfigManager.load_config()
-                model_id = cfg.get("assistant_model_name") or cfg.get("active_model") or ""
-            except Exception:
-                model_id = ""
         model_lower = str(model_id or "").lower()
-        is_thinking_model = any(tok in model_lower for tok in ("r1", "qwq", "qwen3", "think", "reasoning"))
+        is_thinking_model = any(tok in model_lower for tok in THINKING_MODEL_KEYWORDS)
         if is_thinking_model and not is_custom_sampling:
             if not (isinstance(sampling_overrides, dict) and "xtc_probability" in sampling_overrides):
                 sampling_params["xtc_probability"] = 0.0
@@ -142,6 +146,22 @@ def build_chat_context_and_params(
                 and int(sampling_params.get("max_tokens", 1024)) == 1024
             ):
                 sampling_params["max_tokens"] = 2048
+
+    enable_thinking = resolve_effective_thinking(
+        mode=target_mode.value,
+        model_name=model_id,
+        active_skill=routed_skill if target_mode == AppMode.ASSISTANT else None,
+        explicit_override=(
+            sampling_overrides.get("enable_thinking")
+            if isinstance(sampling_overrides, dict)
+            else None
+        ),
+    )
+    sampling_params["enable_thinking"] = enable_thinking
+
+    if target_mode == AppMode.ASSISTANT and routed_skill == "gallery":
+        sampling_params["temperature"] = 0.4
+        sampling_params["enable_thinking"] = False
 
     sampling_params["context_length"] = profile.get("context_length", 14336)
     sampling_params["is_roleplay"] = is_roleplay
