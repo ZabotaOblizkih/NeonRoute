@@ -1,14 +1,18 @@
 """
-Media serving routes: avatars and generated images.
+Media serving routes: avatars and generated images with ETag support.
 """
 
-import json
+import hashlib
 from pathlib import Path
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
-from config import CHARACTERS_DIR, HISTORY_DIR, OUTPUTS_DIR, ASSETS_DIR
+from config import (
+    CHARACTERS_DIR, OUTPUTS_DIR, ASSETS_DIR,
+    DEFAULT_ASSISTANT_AVATAR, DEFAULT_ENGINEER_AVATAR, DEFAULT_ROLEPLAY_AVATAR
+)
+from services.mode_coordinator import AppMode
+from services.session_manager import SessionManager
 
 router = APIRouter()
 
@@ -28,116 +32,71 @@ def _generate_fallback_svg(title: str = "NR", color: str = "#00e5ff", bg: str = 
 </svg>"""
 
 
+def _svg_response(request: Request, title: str, color: str) -> Response:
+    svg_data = _generate_fallback_svg(title, color=color)
+    etag = f'"{hashlib.sha256(svg_data.encode("utf-8")).hexdigest()[:16]}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "public, max-age=3600"})
+    return Response(
+        content=svg_data,
+        media_type="image/svg+xml",
+        headers={"ETag": etag, "Cache-Control": "public, max-age=3600"},
+    )
+
+
 @router.get("/avatar/{session_id}")
-async def get_session_avatar(session_id: str):
+async def get_session_avatar(session_id: str, request: Request):
     """
     Returns the avatar image for a given chat session.
     Safe fallbacks to character avatar, Elaria avatar, or mode-styled SVG.
     """
-    mode = "assistant"
     char_name = "Элария"
+    data = SessionManager.load_session(session_id)
 
-    chat_file = HISTORY_DIR / f"chat_{session_id}.json"
-    if chat_file.exists():
-        try:
-            with open(chat_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+    if isinstance(data, dict):
+        mode = AppMode.from_session(data)
 
-            mode = str(data.get("mode") or "assistant").lower()
-            if data.get("type") == "engineering":
-                mode = "engineer"
+        if mode == AppMode.ROLEPLAY:
+            char_data = data.get("character_data") or {}
+            char_name = char_data.get("name") or "Персонаж"
+            cid = data.get("character_id") or char_data.get("id")
+            avatar_path = SessionManager.resolve_character_avatar_path(character_id=cid, char_data=char_data)
+            if avatar_path:
+                return FileResponse(avatar_path)
+            if DEFAULT_ROLEPLAY_AVATAR.exists():
+                return FileResponse(str(DEFAULT_ROLEPLAY_AVATAR))
+            return _svg_response(request, char_name, color="#ff007f")
 
-            # 1. Roleplay mode character avatar
-            if mode == "roleplay":
-                char_data = data.get("character_data") or {}
-                char_name = char_data.get("name") or "Персонаж"
-                av_path_str = char_data.get("avatar_path")
-                if av_path_str and Path(av_path_str).exists():
-                    return FileResponse(av_path_str)
+        if mode == AppMode.ENGINEER:
+            asst_av = data.get("assistant_avatar_path")
+            if asst_av and Path(asst_av).exists():
+                return FileResponse(asst_av)
+            for cand in (DEFAULT_ENGINEER_AVATAR, ASSETS_DIR / "elaria_engineer.png", ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
+                if cand and cand.exists():
+                    return FileResponse(str(cand))
+            return _svg_response(request, "ENG", color="#ff9100")
 
-                # Search characters dir by name/id
-                cid = data.get("character_id") or char_data.get("id")
-                candidates = []
-                if cid:
-                    candidates.extend([
-                        CHARACTERS_DIR / f"{cid}_avatar.png",
-                        CHARACTERS_DIR / f"{cid}.png",
-                    ])
-                if char_name:
-                    safe = "".join(c for c in char_name if c.isalnum() or c in (' ', '_', '-')).strip()
-                    candidates.extend([
-                        CHARACTERS_DIR / f"{char_name}_avatar.png",
-                        CHARACTERS_DIR / f"{char_name}.png",
-                        CHARACTERS_DIR / f"{safe}_avatar.png",
-                        CHARACTERS_DIR / f"{safe}.png",
-                    ])
-                for cand in candidates:
-                    if cand.exists():
-                        return FileResponse(cand)
+        asst_av = data.get("assistant_avatar_path")
+        if asst_av and Path(asst_av).exists():
+            return FileResponse(asst_av)
+        for cand in (DEFAULT_ASSISTANT_AVATAR, ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
+            if cand and cand.exists():
+                return FileResponse(str(cand))
+        return _svg_response(request, "EL", color="#00e5ff")
 
-                # SVG fallback for Roleplay
-                svg_data = _generate_fallback_svg(char_name, color="#ff007f")
-                return Response(content=svg_data, media_type="image/svg+xml")
-
-            # 2. Engineer mode avatar
-            elif mode == "engineer":
-                char_name = "Инженер"
-                asst_av = data.get("assistant_avatar_path")
-                if asst_av and Path(asst_av).exists():
-                    return FileResponse(asst_av)
-                for cand in (ASSETS_DIR / "elaria_engineer.png", ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
-                    if cand.exists():
-                        return FileResponse(cand)
-                svg_data = _generate_fallback_svg("ENG", color="#ff9100")
-                return Response(content=svg_data, media_type="image/svg+xml")
-
-            # 3. Assistant mode avatar
-            else:
-                char_name = "Элария"
-                asst_av = data.get("assistant_avatar_path")
-                if asst_av and Path(asst_av).exists():
-                    return FileResponse(asst_av)
-                for cand in (ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
-                    if cand.exists():
-                        return FileResponse(cand)
-                svg_data = _generate_fallback_svg("EL", color="#00e5ff")
-                return Response(content=svg_data, media_type="image/svg+xml")
-
-        except Exception:
-            pass
-
-    # Generic mode fallback
-    svg_data = _generate_fallback_svg(char_name, color="#00e5ff")
-    return Response(content=svg_data, media_type="image/svg+xml")
+    return _svg_response(request, char_name, color="#00e5ff")
 
 
 @router.get("/character-avatar/{character_id}")
-async def get_character_avatar(character_id: str):
+async def get_character_avatar(character_id: str, request: Request):
     """
     Returns the avatar image for a character by card ID or filename stem.
     """
     cid = character_id.strip()
-    candidates = [
-        CHARACTERS_DIR / f"{cid}_avatar.png",
-        CHARACTERS_DIR / f"{cid}.png",
-    ]
-
-    # Safe scan without glob pattern issues
-    if CHARACTERS_DIR.exists():
-        try:
-            for p in CHARACTERS_DIR.iterdir():
-                if p.is_file() and p.suffix.lower() == ".png":
-                    if cid.lower() in p.stem.lower():
-                        candidates.append(p)
-        except Exception:
-            pass
-
-    for cand in candidates:
-        if cand.exists() and cand.is_file():
-            return FileResponse(cand)
-
-    svg_data = _generate_fallback_svg(cid, color="#ff007f")
-    return Response(content=svg_data, media_type="image/svg+xml")
+    avatar_path = SessionManager.resolve_character_avatar_path(character_id=cid)
+    if avatar_path:
+        return FileResponse(avatar_path)
+    return _svg_response(request, cid, color="#ff007f")
 
 
 @router.get("/image")
@@ -153,7 +112,6 @@ async def get_image_file(path: str = Query(..., description="Absolute path to ge
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="Image file not found")
 
-        # Guardrail against path traversal
         if not (outputs_res in target.parents or chars_res in target.parents):
             raise HTTPException(status_code=403, detail="Access outside media directory is denied")
 

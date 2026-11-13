@@ -20,6 +20,41 @@ logger = logging.getLogger("NeonRoute.AvatarRenderer")
 
 _IMAGE_CACHE_LOCK = threading.Lock()
 _IMAGE_PREVIEW_CACHE: dict[tuple[str, int], QPixmap] = {}
+_DEFAULT_AVATAR_IMAGE_CACHE: dict[tuple[str, int], QImage] = {}
+
+
+def get_default_avatar_path(name: str = "") -> Optional[Path]:
+    """
+    Разрешает дефолтный путь к аватарке для соответствующего режима (Инженер, Ассистент, РП).
+    Возвращает Path, если файл существует, иначе None.
+    """
+    try:
+        from config import DEFAULT_ENGINEER_AVATAR, DEFAULT_ASSISTANT_AVATAR, DEFAULT_ROLEPLAY_AVATAR
+    except Exception:
+        return None
+
+    n_lower = (name or "").lower()
+    if "инженер" in n_lower or "engineer" in n_lower or "код" in n_lower:
+        cand = DEFAULT_ENGINEER_AVATAR
+    elif any(k in n_lower for k in ["элария", "ассистент", "assistant", "elaria"]):
+        cand = DEFAULT_ASSISTANT_AVATAR
+    else:
+        # Ролевой чат / персонаж без собственной аватарки
+        cand = DEFAULT_ROLEPLAY_AVATAR
+
+    if cand and cand.exists():
+        return cand
+    return None
+
+
+def is_default_avatar_path(p: Path) -> bool:
+    """Проверяет, является ли путь одним из дефолтных аватаров режимов."""
+    try:
+        from config import DEFAULT_ENGINEER_AVATAR, DEFAULT_ASSISTANT_AVATAR, DEFAULT_ROLEPLAY_AVATAR
+        res = p.resolve()
+        return res in {DEFAULT_ENGINEER_AVATAR.resolve(), DEFAULT_ASSISTANT_AVATAR.resolve(), DEFAULT_ROLEPLAY_AVATAR.resolve()}
+    except Exception:
+        return False
 
 
 def render_rounded_art_pixmap(source_pix: QPixmap, radius: float = 14.0) -> QPixmap:
@@ -95,7 +130,22 @@ def render_circular_avatar(
     if text is not None:
         name = text
 
+    p_path = Path(avatar_path) if avatar_path else None
+    if (not p_path or not p_path.exists()) and not is_user and not is_error:
+        p_path = get_default_avatar_path(name)
+
     scale_factor = 3
+    is_default = False
+    cache_key = None
+    if p_path and p_path.exists() and is_default_avatar_path(p_path):
+        is_default = True
+        cache_key = (str(p_path.resolve()), size)
+        with _IMAGE_CACHE_LOCK:
+            if cache_key in _DEFAULT_AVATAR_IMAGE_CACHE:
+                target = QPixmap.fromImage(_DEFAULT_AVATAR_IMAGE_CACHE[cache_key])
+                target.setDevicePixelRatio(scale_factor)
+                return target
+
     render_size = size * scale_factor
     center = float(render_size) / 2.0
     radius = float(render_size) / 2.0
@@ -109,20 +159,19 @@ def render_circular_avatar(
     if hasattr(QPainter.RenderHint, "LosslessImageRendering"):
         painter.setRenderHint(QPainter.RenderHint.LosslessImageRendering, True)
 
-    p_path = Path(avatar_path) if avatar_path else None
     loaded = False
 
     if p_path and p_path.exists():
         try:
-            orig_pixmap = QPixmap(str(p_path))
-            if not orig_pixmap.isNull():
-                orig_w = orig_pixmap.width()
-                orig_h = orig_pixmap.height()
+            orig_image = QImage(str(p_path))
+            if not orig_image.isNull():
+                orig_w = orig_image.width()
+                orig_h = orig_image.height()
                 min_edge = min(orig_w, orig_h)
                 if min_edge > 0:
                     crop_rect = QRect((orig_w - min_edge) // 2, (orig_h - min_edge) // 2, min_edge, min_edge)
-                    square_pixmap = orig_pixmap.copy(crop_rect)
-                    scaled_pixmap = square_pixmap.scaled(
+                    square_image = orig_image.copy(crop_rect)
+                    scaled_image = square_image.scaled(
                         render_size,
                         render_size,
                         Qt.AspectRatioMode.KeepAspectRatio,
@@ -132,7 +181,7 @@ def render_circular_avatar(
                     path = QPainterPath()
                     path.addEllipse(0.0, 0.0, float(render_size), float(render_size))
                     painter.setClipPath(path)
-                    painter.drawPixmap(0, 0, scaled_pixmap)
+                    painter.drawImage(0, 0, scaled_image)
                     painter.setClipping(False)
                     loaded = True
         except Exception as e:
@@ -187,4 +236,11 @@ def render_circular_avatar(
 
     target = QPixmap.fromImage(image)
     target.setDevicePixelRatio(scale_factor)
+
+    if is_default and cache_key and loaded:
+        with _IMAGE_CACHE_LOCK:
+            if len(_DEFAULT_AVATAR_IMAGE_CACHE) > 50:
+                _DEFAULT_AVATAR_IMAGE_CACHE.pop(next(iter(_DEFAULT_AVATAR_IMAGE_CACHE)))
+            _DEFAULT_AVATAR_IMAGE_CACHE[cache_key] = image.copy()
+
     return target

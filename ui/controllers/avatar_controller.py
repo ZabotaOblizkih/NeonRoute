@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Dict, Any, Union
 
-from PyQt6.QtCore import Qt, QPoint, QRect, QSize
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize, QTimer
 from PyQt6.QtGui import QPixmap, QIcon, QAction, QCursor
 from PyQt6.QtWidgets import QMenu, QFileDialog, QMessageBox, QApplication, QLabel
 
@@ -69,6 +69,12 @@ class AvatarControllerMixin:
                 p_card = Path(self.active_character.avatar_path)
                 if p_card.exists():
                     return p_card
+            try:
+                from config import DEFAULT_ROLEPLAY_AVATAR
+                if DEFAULT_ROLEPLAY_AVATAR.exists():
+                    return DEFAULT_ROLEPLAY_AVATAR
+            except Exception:
+                pass
             return None
 
         # 2. Режим 'Инженер'
@@ -80,8 +86,13 @@ class AvatarControllerMixin:
                 sess_av = sess.get("assistant_avatar_path")
                 if sess_av and Path(sess_av).exists():
                     return Path(sess_av)
-            for cand in (ASSETS_DIR / "elaria_engineer.png", ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
-                if cand.exists():
+            try:
+                from config import DEFAULT_ENGINEER_AVATAR
+                eng_cands = (DEFAULT_ENGINEER_AVATAR, ASSETS_DIR / "elaria_engineer.png", ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png")
+            except Exception:
+                eng_cands = (ASSETS_DIR / "elaria_engineer.png", ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png")
+            for cand in eng_cands:
+                if cand and cand.exists():
                     return cand
             return None
 
@@ -90,8 +101,13 @@ class AvatarControllerMixin:
             sess_av = sess.get("assistant_avatar_path")
             if sess_av and Path(sess_av).exists():
                 return Path(sess_av)
-        for cand in (ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png"):
-            if cand.exists():
+        try:
+            from config import DEFAULT_ASSISTANT_AVATAR
+            asst_cands = (DEFAULT_ASSISTANT_AVATAR, ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png")
+        except Exception:
+            asst_cands = (ASSETS_DIR / "elaria_avatar.png", CHARACTERS_DIR / "elaria.png")
+        for cand in asst_cands:
+            if cand and cand.exists():
                 return cand
         return None
 
@@ -399,10 +415,10 @@ class AvatarControllerMixin:
             if is_rp:
                 menu.addSeparator()
                 act_anchor = menu.addAction("⚓ Якорь сцены...")
-                act_anchor.triggered.connect(self._open_anchor_dialog)
+                act_anchor.triggered.connect(lambda: QTimer.singleShot(0, self._open_anchor_dialog))
 
                 act_prompts = menu.addAction("📜 Промпты...")
-                act_prompts.triggered.connect(self._open_prompts_dialog)
+                act_prompts.triggered.connect(lambda: QTimer.singleShot(0, self._open_prompts_dialog))
 
             # Каноническая проверка режима Инженера (SSOT)
             is_engineer = False

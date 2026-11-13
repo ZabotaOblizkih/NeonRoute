@@ -15,7 +15,10 @@ from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QApplication
 )
-from ui.components.chat_bubble import SelectableTextBrowser
+
+def _get_selectable_text_browser():
+    from ui.components.chat_bubble import SelectableTextBrowser
+    return SelectableTextBrowser
 
 logger = logging.getLogger("NeonRoute.WorkspaceCards")
 
@@ -196,7 +199,8 @@ class ConsoleOutputSpoilerWidget(QFrame):
         self.toggle_btn.clicked.connect(self._toggle_collapse)
         layout.addWidget(self.toggle_btn)
 
-        self.console_browser = SelectableTextBrowser(self)
+        browser_cls = _get_selectable_text_browser()
+        self.console_browser = browser_cls(self)
         self.console_browser.setReadOnly(True)
         self.console_browser.setOpenExternalLinks(False)
         self.console_browser.setPlainText(self.output)
@@ -366,7 +370,8 @@ class GenerationInfoAccordionWidget(QWidget):
             p_header.addWidget(self.btn_copy_prompt)
             cf_layout.addLayout(p_header)
 
-            self.prompt_browser = SelectableTextBrowser(self.content_frame)
+            browser_cls = _get_selectable_text_browser()
+            self.prompt_browser = browser_cls(self.content_frame)
             self.prompt_browser.setReadOnly(True)
             self.prompt_browser.setPlainText(prompt)
             self.prompt_browser.setStyleSheet("""
@@ -414,7 +419,8 @@ class GenerationInfoAccordionWidget(QWidget):
             np_header.addWidget(self.btn_copy_neg)
             cf_layout.addLayout(np_header)
 
-            self.neg_browser = SelectableTextBrowser(self.content_frame)
+            browser_cls = _get_selectable_text_browser()
+            self.neg_browser = browser_cls(self.content_frame)
             self.neg_browser.setReadOnly(True)
             self.neg_browser.setPlainText(neg_prompt)
             self.neg_browser.setStyleSheet("""
