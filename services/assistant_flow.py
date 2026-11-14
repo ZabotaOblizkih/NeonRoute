@@ -204,6 +204,10 @@ def assemble_assistant_context(
                 logger.info(
                     f"[AssistantFlow.Deferred] Память: извлечено {len(relevant_memory_facts)} факт(ов) для контекста"
                 )
+            else:
+                logger.info(
+                    "[AssistantFlow.Deferred] Память: релевантных фактов не обнаружено"
+                )
         except Exception as e_mem_search:
             logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска фактов памяти: {e_mem_search}")
 

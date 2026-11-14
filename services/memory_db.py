@@ -41,11 +41,19 @@ def _normalize_l2(vector: List[float]) -> List[float]:
 def _get_embedding_engine():
     global _EMBED_MODEL, _LANCE_TABLE, _RP_LANCE_TABLE
     with _EMBED_INIT_LOCK:
+        # 1. Инициализация FastEmbed (если еще не создана и не отключена)
         if _EMBED_MODEL is None:
             try:
                 from fastembed import TextEmbedding
-                import lancedb
                 _EMBED_MODEL = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+            except Exception as e:
+                logger.warning(f"FastEmbed initialization error: {e}")
+                _EMBED_MODEL = False
+
+        # 2. Инициализация LanceDB таблиц (независимо от того, откуда пришел _EMBED_MODEL)
+        if (_LANCE_TABLE is None or _RP_LANCE_TABLE is None) and _LANCE_TABLE is not False and _RP_LANCE_TABLE is not False:
+            try:
+                import lancedb
                 lance_path = DATA_DIR / "vector_memory"
                 lance_path.mkdir(parents=True, exist_ok=True)
                 db = lancedb.connect(str(lance_path))
@@ -56,38 +64,45 @@ def _get_embedding_engine():
                     table_names = set(tables_iter) if isinstance(tables_iter, (list, tuple, set)) else set()
 
                     # 1. Глобальная память ассистента
-                    try:
-                        if "facts" in table_names:
+                    if _LANCE_TABLE is None:
+                        try:
+                            if "facts" in table_names:
+                                _LANCE_TABLE = db.open_table("facts")
+                            else:
+                                if _EMBED_MODEL and hasattr(_EMBED_MODEL, "embed"):
+                                    dummy_vec = _normalize_l2(list(_EMBED_MODEL.embed(["init"]))[0].tolist())
+                                else:
+                                    dummy_vec = [0.0] * 384
+                                _LANCE_TABLE = db.create_table("facts", data=[{"id": "init_id", "text": "init", "vector": dummy_vec}])
+                        except Exception:
                             _LANCE_TABLE = db.open_table("facts")
-                        else:
-                            dummy_vec = _normalize_l2(list(_EMBED_MODEL.embed(["init"]))[0].tolist())
-                            _LANCE_TABLE = db.create_table("facts", data=[{"id": "init_id", "text": "init", "vector": dummy_vec}])
-                    except Exception:
-                        _LANCE_TABLE = db.open_table("facts")
 
                     # 2. Изолированная сессионная память для ролевых чатов
-                    try:
-                        if "rp_memories" in table_names:
+                    if _RP_LANCE_TABLE is None:
+                        try:
+                            if "rp_memories" in table_names:
+                                _RP_LANCE_TABLE = db.open_table("rp_memories")
+                            else:
+                                if _EMBED_MODEL and hasattr(_EMBED_MODEL, "embed"):
+                                    dummy_vec = _normalize_l2(list(_EMBED_MODEL.embed(["init"]))[0].tolist())
+                                else:
+                                    dummy_vec = [0.0] * 384
+                                _RP_LANCE_TABLE = db.create_table(
+                                    "rp_memories",
+                                    data=[{
+                                        "id": "init_id",
+                                        "session_id": "init_sess",
+                                        "text": "init",
+                                        "vector": dummy_vec,
+                                        "timestamp": "0"
+                                    }]
+                                )
+                        except Exception:
                             _RP_LANCE_TABLE = db.open_table("rp_memories")
-                        else:
-                            dummy_vec = _normalize_l2(list(_EMBED_MODEL.embed(["init"]))[0].tolist())
-                            _RP_LANCE_TABLE = db.create_table(
-                                "rp_memories",
-                                data=[{
-                                    "id": "init_id",
-                                    "session_id": "init_sess",
-                                    "text": "init",
-                                    "vector": dummy_vec,
-                                    "timestamp": "0"
-                                }]
-                            )
-                    except Exception:
-                        _RP_LANCE_TABLE = db.open_table("rp_memories")
 
                 logger.info("FastEmbed CPU ONNX and LanceDB (facts + rp_memories) ready.")
             except Exception as e:
-                logger.warning(f"LanceDB/FastEmbed initialization fallback: {e}")
-                _EMBED_MODEL = False
+                logger.warning(f"LanceDB initialization fallback: {e}")
                 _LANCE_TABLE = False
                 _RP_LANCE_TABLE = False
     return _EMBED_MODEL, _LANCE_TABLE, _RP_LANCE_TABLE
@@ -647,6 +662,10 @@ class MemoryDB:
                         f"[MemoryDB] Поиск: найдено 0 факт(ов), best_dist={best_dist:.3f} (порог {max_distance}) по запросу «{query[:40]}...»"
                     )
                 return relevant
+            else:
+                logger.warning(
+                    f"[MemoryDB] Движок памяти недоступен для поиска: embed_model={bool(embed_model)}, table={bool(table)}"
+                )
         except Exception as e:
             logger.warning(f"Search error in LanceDB: {e}")
 
