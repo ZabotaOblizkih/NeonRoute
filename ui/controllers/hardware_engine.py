@@ -721,8 +721,6 @@ class HardwareEngineMixin:
             return
 
         self._cancel_lms_reload()
-        if hasattr(self, "task_queue") and self.task_queue:
-            self.task_queue.abort_tasks_by_type("memory")
 
         v_intent = visual_intent or (getattr(widget, "visual_intent", None) if widget is not None else None)
 

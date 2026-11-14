@@ -81,7 +81,7 @@ class MemoryExtractor:
     def extract_facts_async(
         messages_history: List[Dict[str, Any]], 
         lm_client: Optional[Any] = None,
-        min_messages: int = 4,
+        min_messages: int = 2,
         context: Optional[Any] = None
     ) -> None:
         """
@@ -242,24 +242,33 @@ class MemoryExtractor:
                 raw_resp = client.chat_completion(
                     messages=req_messages,
                     temperature=0.1,
-                    max_tokens=256,
+                    max_tokens=512,
                     stream=False,
                     emit_signal=False,
+                    enable_thinking=False,
                     response_format=schema_payload
                 )
             except Exception as _e_json:
+                logger.debug(f"[MemoryExtractor] Structured outputs fallback: {_e_json}")
                 try:
                     raw_resp = client.chat_completion(
                         messages=req_messages,
                         temperature=0.1,
-                        max_tokens=256,
+                        max_tokens=512,
                         stream=False,
-                        emit_signal=False
+                        emit_signal=False,
+                        enable_thinking=False
                     )
-                except Exception:
-                    pass
+                except Exception as _e_raw:
+                    logger.debug(f"[MemoryExtractor] Raw chat_completion failed: {_e_raw}")
 
             clean_resp = str(raw_resp or "").strip()
+            # Санация тегов рассуждений <think> (парные, одиночные и оборванные хвосты)
+            clean_resp = re.sub(r'<think>[\s\S]*?</think>', '', clean_resp, flags=re.IGNORECASE)
+            clean_resp = re.sub(r'</think>', '', clean_resp, flags=re.IGNORECASE)
+            clean_resp = re.sub(r'<think>[\s\S]*$', '', clean_resp, flags=re.IGNORECASE)
+            clean_resp = clean_resp.strip()
+
             facts: List[Any] = []
 
             # 1. Прямой детерминированный разбор чистого JSON-объекта
@@ -269,7 +278,8 @@ class MemoryExtractor:
                     facts = parsed_data.get("facts", [])
                 elif isinstance(parsed_data, list):
                     facts = parsed_data
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as _jde:
+                logger.debug(f"[MemoryExtractor] Прямой json.loads не удался: {_jde}. Пробуем поиск среза JSON...")
                 # 2. Фоллбэк-парсинг среза на случай сторонних моделей
                 start_obj = clean_resp.find("{")
                 end_obj = clean_resp.rfind("}")
@@ -278,8 +288,8 @@ class MemoryExtractor:
                         p_obj = json.loads(clean_resp[start_obj:end_obj + 1])
                         if isinstance(p_obj, dict):
                             facts = p_obj.get("facts", [])
-                    except Exception:
-                        pass
+                    except Exception as _e_fobj:
+                        logger.debug(f"[MemoryExtractor] Фоллбэк среза объекта не удался: {_e_fobj}")
                 if not facts:
                     start_arr = clean_resp.find("[")
                     end_arr = clean_resp.rfind("]")
@@ -288,8 +298,8 @@ class MemoryExtractor:
                             p_arr = json.loads(clean_resp[start_arr:end_arr + 1])
                             if isinstance(p_arr, list):
                                 facts = p_arr
-                        except Exception:
-                            pass
+                        except Exception as _e_farr:
+                            logger.debug(f"[MemoryExtractor] Фоллбэк среза массива не удался: {_e_farr}")
 
             if isinstance(facts, list) and facts:
                 saved_count = 0

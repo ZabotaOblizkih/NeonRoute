@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import atexit
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import numpy as np
 
 from config import MEMORY_DB_PATH, DATA_DIR
 
@@ -25,6 +26,17 @@ _LANCE_LOCK = threading.RLock()
 _EMBED_MODEL = None
 _LANCE_TABLE = None
 _RP_LANCE_TABLE = None
+
+def _normalize_l2(vector: List[float]) -> List[float]:
+    """Выполняет L2-нормализацию вектора (приведение к единичной евклидовой норме)."""
+    try:
+        arr = np.array(vector, dtype=np.float32)
+        norm = np.linalg.norm(arr)
+        if norm > 0:
+            arr = arr / norm
+        return arr.tolist()
+    except Exception:
+        return vector
 
 def _get_embedding_engine():
     global _EMBED_MODEL, _LANCE_TABLE, _RP_LANCE_TABLE
@@ -48,7 +60,7 @@ def _get_embedding_engine():
                         if "facts" in table_names:
                             _LANCE_TABLE = db.open_table("facts")
                         else:
-                            dummy_vec = list(_EMBED_MODEL.embed(["init"]))[0].tolist()
+                            dummy_vec = _normalize_l2(list(_EMBED_MODEL.embed(["init"]))[0].tolist())
                             _LANCE_TABLE = db.create_table("facts", data=[{"id": "init_id", "text": "init", "vector": dummy_vec}])
                     except Exception:
                         _LANCE_TABLE = db.open_table("facts")
@@ -58,7 +70,7 @@ def _get_embedding_engine():
                         if "rp_memories" in table_names:
                             _RP_LANCE_TABLE = db.open_table("rp_memories")
                         else:
-                            dummy_vec = list(_EMBED_MODEL.embed(["init"]))[0].tolist()
+                            dummy_vec = _normalize_l2(list(_EMBED_MODEL.embed(["init"]))[0].tolist())
                             _RP_LANCE_TABLE = db.create_table(
                                 "rp_memories",
                                 data=[{
@@ -189,6 +201,7 @@ class MemoryDB:
     def __init__(self, db_path: Optional[Path | str] = None):
         self.db_path = Path(db_path) if db_path else MEMORY_DB_PATH
         self._init_db()
+        self._sync_checked = False
 
     def _get_connection(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -240,9 +253,107 @@ class MemoryDB:
 
     @property
     def table(self):
-        """Возвращает дескриптор таблицы 'facts' LanceDB."""
+        """Возвращает дескриптор таблицы 'facts' LanceDB с идемпотентной синхронизацией."""
         _, facts_t, _ = _get_embedding_engine()
+        if facts_t and not getattr(self, "_sync_checked", False):
+            self._sync_checked = True
+            try:
+                self.sync_and_reindex_facts()
+            except Exception as e_sync:
+                logger.warning(f"[MemoryDB] Фоновая синхронизация фактов не удалась: {e_sync}")
         return facts_t if facts_t else None
+
+    def sync_and_reindex_facts(self) -> int:
+        """
+        Идемпотентная синхронизация LanceDB ↔ SQLite:
+        1. Удаляет осиротевшие записи LanceDB, отсутствующие в SQLite `user_memory`.
+        2. Переиндексирует живые записи из SQLite L2-нормализованными векторами,
+           устраняя рассинхрон и смесь сырых/нормализованных векторов.
+        Возвращает количество синхронизированных фактов.
+        """
+        try:
+            embed_model, _, _ = _get_embedding_engine()
+            if not embed_model:
+                return 0
+
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT id, fact FROM user_memory ORDER BY id ASC;")
+                sqlite_facts = cursor.fetchall()
+
+            _, facts_t, _ = _get_embedding_engine()
+            if not facts_t:
+                return 0
+
+            with _LANCE_LOCK:
+                try:
+                    rows = facts_t.to_arrow().to_pylist()
+                except Exception as e_arrow:
+                    logger.debug(f"[MemoryDB.Sync] Не удалось прочитать таблицу LanceDB: {e_arrow}")
+                    rows = []
+
+                sqlite_ids = {str(r["id"]) for r in sqlite_facts}
+                non_init_lance = [r for r in rows if r.get("id") != "init_id"]
+                lance_ids = {str(r.get("id")) for r in non_init_lance}
+
+                # Проверяем, нужна ли миграция:
+                # 1) Есть ли записи в LanceDB, которых нет в SQLite (осиротевшие)
+                # 2) Есть ли записи из SQLite, которых нет в LanceDB
+                # 3) Имеют ли векторы ненормализованную длину (> 1.05)
+                needs_sync = False
+                if lance_ids != sqlite_ids:
+                    needs_sync = True
+                else:
+                    for r in non_init_lance:
+                        v = r.get("vector")
+                        if v:
+                            arr_v = np.array(v, dtype=np.float32)
+                            norm_v = np.linalg.norm(arr_v)
+                            if abs(norm_v - 1.0) > 0.05:
+                                needs_sync = True
+                                break
+
+                if not needs_sync:
+                    return len(sqlite_facts)
+
+                logger.info(
+                    f"[MemoryDB.Sync] Обнаружен рассинхрон или ненормализованные векторы: "
+                    f"LanceDB={len(non_init_lance)}, SQLite={len(sqlite_facts)}. Выполняется синхронизация..."
+                )
+
+                # Очищаем таблицу LanceDB безопасным синтаксисом (одинарные кавычки)
+                try:
+                    facts_t.delete("id != 'init_id'")
+                except Exception as e_del:
+                    logger.warning(f"[MemoryDB.Sync] Предупреждение при очистке LanceDB: {e_del}")
+
+                # Перевставляем все живые факты из SQLite с L2-нормализацией
+                reindexed_items = []
+                for row in sqlite_facts:
+                    f_id = str(row["id"])
+                    f_text = str(row["fact"]).strip()
+                    if not f_text:
+                        continue
+                    raw_v = list(embed_model.embed([f_text]))[0]
+                    norm_v = _normalize_l2(raw_v.tolist() if hasattr(raw_v, "tolist") else raw_v)
+                    reindexed_items.append({"id": f_id, "text": f_text, "vector": norm_v})
+
+                if reindexed_items:
+                    facts_t.add(reindexed_items)
+
+                try:
+                    if hasattr(facts_t, "optimize"):
+                        facts_t.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
+                except Exception as e_opt:
+                    logger.debug(f"[MemoryDB.Sync] Оптимизация LanceDB после синхронизации: {e_opt}")
+
+                logger.info(
+                    f"[MemoryDB.Sync] Синхронизация успешно завершена: {len(reindexed_items)} "
+                    f"фактов переиндексировано с L2-нормализацией."
+                )
+                return len(reindexed_items)
+        except Exception as e:
+            logger.warning(f"[MemoryDB.Sync] Ошибка синхронизации LanceDB ↔ SQLite: {e}")
+            return 0
 
     @property
     def rp_table(self):
@@ -323,10 +434,11 @@ class MemoryDB:
                     _, _, rp_table = _get_embedding_engine()
                     if rp_table:
                         try:
+                            safe_oldest = str(oldest_id).replace("'", "''")
                             with _LANCE_LOCK:
-                                rp_table.delete(f'id = "{oldest_id}"')
-                        except Exception:
-                            pass
+                                rp_table.delete(f"id = '{safe_oldest}'")
+                        except Exception as e_old:
+                            logger.warning(f"[RPMemory] Ошибка удаления устаревшего воспоминания: {e_old}")
         except Exception as e:
             logger.error(f"[RPMemory] Ошибка проверки дубликатов: {e}")
 
@@ -461,18 +573,19 @@ class MemoryDB:
                 logger.info(f"Duplicate fact ignored (exact/substring match): '{clean_fact}' matches #{ef['id']}")
                 return ef["id"]
 
-        # 2. Semantic similarity check via LanceDB (distance < 0.20 means near identical)
+        # 2. Semantic similarity check via LanceDB (cosine distance < 0.15 means near identical)
         try:
             embed_model, table, _ = _get_embedding_engine()
             if embed_model and table:
                 with _LANCE_LOCK:
-                    vec = list(embed_model.embed([clean_fact]))[0].tolist()
-                    sim_res = table.search(vec).limit(1).to_list()
+                    raw_v = list(embed_model.embed([clean_fact]))[0]
+                    vec = _normalize_l2(raw_v.tolist() if hasattr(raw_v, "tolist") else raw_v)
+                    sim_res = table.search(vec).metric("cosine").limit(1).to_list()
                 if sim_res:
                     top_match = sim_res[0]
                     dist = top_match.get("_distance", 1.0)
-                    if top_match.get("id") != "init_id" and dist < 0.22:
-                        logger.info(f"Semantic duplicate ignored (dist={dist:.3f}): '{clean_fact}' ~ '{top_match.get('text')}'")
+                    if top_match.get("id") != "init_id" and dist < 0.15:
+                        logger.info(f"Semantic duplicate ignored (cosine dist={dist:.3f}): '{clean_fact}' ~ '{top_match.get('text')}'")
                         return int(top_match.get("id")) if top_match.get("id", "").isdigit() else -1
         except Exception as e:
             logger.debug(f"Semantic deduplication skipped: {e}")
@@ -495,17 +608,18 @@ class MemoryDB:
             embed_model, table, _ = _get_embedding_engine()
             if embed_model and table:
                 with _LANCE_LOCK:
-                    vec = list(embed_model.embed([clean_fact]))[0].tolist()
+                    raw_v = list(embed_model.embed([clean_fact]))[0]
+                    vec = _normalize_l2(raw_v.tolist() if hasattr(raw_v, "tolist") else raw_v)
                     table.add([{"id": str(row_id), "text": clean_fact, "vector": vec}])
             _maybe_cleanup_lance_tables()
         except Exception as e:
-            logger.debug(f"LanceDB insert error: {e}")
+            logger.warning(f"LanceDB insert error: {e}")
 
         return row_id
 
-    def search_relevant_facts(self, query: str, top_k: int = 5, max_distance: float = 0.48) -> List[str]:
+    def search_relevant_facts(self, query: str, top_k: int = 5, max_distance: float = 0.64) -> List[str]:
         """
-        Возвращает только семантически релевантные факты (порог max_distance).
+        Возвращает только семантически релевантные факты (порог косинусной дистанции max_distance=0.64).
         Если совпадений нет, возвращает пустой список, исключая галлюцинации контекста.
         """
         if not query or not query.strip():
@@ -514,16 +628,27 @@ class MemoryDB:
             embed_model, table, _ = _get_embedding_engine()
             if embed_model and table:
                 with _LANCE_LOCK:
-                    query_vec = list(embed_model.embed([query.strip()]))[0].tolist()
-                    res = table.search(query_vec).limit(top_k).to_list()
-                # Фильтрация по дистанции: отсекаем семантический шум
+                    raw_v = list(embed_model.embed([query.strip()]))[0]
+                    query_vec = _normalize_l2(raw_v.tolist() if hasattr(raw_v, "tolist") else raw_v)
+                    res = table.search(query_vec).metric("cosine").limit(top_k).to_list()
+                # Фильтрация по косинусной дистанции: отсекаем семантический шум
+                valid_res = [r for r in res if r.get("id") != "init_id"]
+                best_dist = min((float(r.get("_distance", 1.0)) for r in valid_res), default=1.0)
                 relevant = [
-                    r["text"] for r in res 
-                    if r.get("id") != "init_id" and r.get("_distance", 1.0) <= max_distance
+                    r["text"] for r in valid_res 
+                    if float(r.get("_distance", 1.0)) <= max_distance
                 ]
+                if relevant:
+                    logger.info(
+                        f"[MemoryDB] Поиск: найдено {len(relevant)} факт(ов), best_dist={best_dist:.3f} по запросу «{query[:40]}...»"
+                    )
+                else:
+                    logger.info(
+                        f"[MemoryDB] Поиск: найдено 0 факт(ов), best_dist={best_dist:.3f} (порог {max_distance}) по запросу «{query[:40]}...»"
+                    )
                 return relevant
         except Exception as e:
-            logger.debug(f"Search error in LanceDB: {e}")
+            logger.warning(f"Search error in LanceDB: {e}")
 
         return []
 
@@ -616,10 +741,11 @@ class MemoryDB:
         try:
             _, table, _ = _get_embedding_engine()
             if table:
+                safe_id = str(fact_id).replace("'", "''")
                 with _LANCE_LOCK:
-                    table.delete(f'id = "{fact_id}"')
-        except Exception:
-            pass
+                    table.delete(f"id = '{safe_id}'")
+        except Exception as e_del:
+            logger.warning(f"Error deleting fact #{fact_id} from LanceDB: {e_del}")
         return deleted
 
     def delete_fact(self, fact_id: int) -> bool:
@@ -643,9 +769,10 @@ class MemoryDB:
                 with _LANCE_LOCK:
                     for mid in m_ids:
                         try:
-                            table.delete(f'id = "{mid}"')
-                        except Exception:
-                            pass
+                            safe_mid = str(mid).replace("'", "''")
+                            table.delete(f"id = '{safe_mid}'")
+                        except Exception as e_kw:
+                            logger.warning(f"Error deleting fact #{mid} by keyword from LanceDB: {e_kw}")
             return count
         except Exception as e:
             logger.error(f"Error deleting by keyword: {e}")
@@ -664,7 +791,7 @@ class MemoryDB:
             _, table, _ = _get_embedding_engine()
             if table:
                 with _LANCE_LOCK:
-                    table.delete('id != "init_id"')
+                    table.delete("id != 'init_id'")
             _maybe_cleanup_lance_tables()
             return True
         except Exception as e:
@@ -808,6 +935,8 @@ def warmup_memory_engine(delay: float = 6.0):
             time.sleep(delay)
         try:
             _get_embedding_engine()
+            if "memory_db" in globals() and globals()["memory_db"] is not None:
+                globals()["memory_db"].sync_and_reindex_facts()
         except Exception as e:
             logger.debug(f"Async warmup exception: {e}")
 

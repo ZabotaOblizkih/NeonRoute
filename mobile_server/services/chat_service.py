@@ -690,6 +690,17 @@ async def stream_chat_sse(
                     })
                     SessionManager.save_session(session)
 
+                    if target_mode == AppMode.ASSISTANT and not extracted_image_prompt:
+                        try:
+                            from services.memory_extractor import MemoryExtractor
+                            from services.assistant_flow import sanitize_messages_for_memory
+                            raw_msgs = session.get("messages", [])
+                            clean_msgs = sanitize_messages_for_memory(raw_msgs)
+                            if clean_msgs and len(clean_msgs) >= 2:
+                                MemoryExtractor.extract_facts_async(clean_msgs, lm_client=lm_client)
+                        except Exception as e_mem:
+                            logger.warning(f"[MobileChatService] Ошибка вызова экстракции памяти: {e_mem}")
+
                 await asyncio.to_thread(_save_assistant)
                 yield {"event": "done", "data": full_normal}
 

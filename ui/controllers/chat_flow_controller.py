@@ -452,9 +452,6 @@ class ChatFlowControllerMixin:
         return self._on_send_clicked()
 
     def _on_send_clicked(self):
-        # Мгновенная вытесняющая отмена фонового анализа сцены перед новым ходом игрока
-        if hasattr(self, "task_queue") and self.task_queue:
-            self.task_queue.abort_tasks_by_type("memory")
         if hasattr(self, "_remove_greeting_cycler_chip"):
             self._remove_greeting_cycler_chip()
         if hasattr(self, "_cancel_lms_reload"):

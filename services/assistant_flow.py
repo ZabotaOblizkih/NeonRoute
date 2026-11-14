@@ -194,12 +194,34 @@ def assemble_assistant_context(
         except Exception as e_km:
             logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска по базе знаний: {e_km}")
 
+    include_memory = kwargs.get("include_memory", True)
+    relevant_memory_facts: List[str] = []
+    if include_memory and actual_prompt:
+        try:
+            from services.memory_db import memory_db
+            relevant_memory_facts = memory_db.search_relevant_facts(actual_prompt, top_k=5)
+            if relevant_memory_facts:
+                logger.info(
+                    f"[AssistantFlow.Deferred] Память: извлечено {len(relevant_memory_facts)} факт(ов) для контекста"
+                )
+        except Exception as e_mem_search:
+            logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска фактов памяти: {e_mem_search}")
+
     if curr_sess is None and controller is not None:
         curr_sess = getattr(controller, "current_session", None)
 
+    pending_sources: List[Dict[str, Any]] = []
+    if relevant_memory_facts:
+        pending_sources.append({
+            "filename": "🧠 Долговременная память",
+            "chunk_id": f"#{len(relevant_memory_facts)}",
+            "snippet": "\n".join(f"• {f}" for f in relevant_memory_facts),
+            "score": 1.0,
+            "is_memory": True
+        })
+
     if matched_knowledge_docs:
-        if controller:
-            controller._pending_knowledge_sources = _build_pending_knowledge_sources(matched_knowledge_docs)
+        pending_sources.extend(_build_pending_knowledge_sources(matched_knowledge_docs))
         if curr_sess and isinstance(curr_sess, dict):
             curr_sess["active_knowledge_docs"] = matched_knowledge_docs
     elif (
@@ -211,15 +233,15 @@ def assemble_assistant_context(
     ):
         matched_knowledge_docs = curr_sess["active_knowledge_docs"]
         knowledge_block = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
-        if controller:
-            controller._pending_knowledge_sources = _build_pending_knowledge_sources(matched_knowledge_docs)
+        pending_sources.extend(_build_pending_knowledge_sources(matched_knowledge_docs))
     else:
-        if controller:
-            controller._pending_knowledge_sources = None
         if curr_sess and isinstance(curr_sess, dict) and curr_sess.get("active_knowledge_docs"):
             from services.hybrid_search import is_conversational_query
             if actual_prompt and not is_conversational_query(actual_prompt):
                 curr_sess["active_knowledge_docs"] = []
+
+    if controller:
+        controller._pending_knowledge_sources = pending_sources if pending_sources else None
 
     enable_reasoning = kwargs.get("enable_reasoning")
     if enable_reasoning is None:
@@ -282,7 +304,8 @@ def assemble_assistant_context(
         vision_content=kwargs.get("vision_content"),
         history_limit=effective_history_limit,
         user_name=effective_user_name,
-        include_memory=kwargs.get("include_memory", True),
+        include_memory=include_memory,
+        relevant_facts=relevant_memory_facts,
         session_id=session_id,
         session_persona_id=sess_persona_id,
         is_engineer=False,

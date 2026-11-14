@@ -622,7 +622,7 @@ class ContextWindowBuilder:
             is_roleplay=is_roleplay,
         )
 
-        relevant_facts = []
+        relevant_facts = kwargs.get("relevant_facts")
         last_query = ""
         for m in reversed(history):
             if m.get("role") == "user":
@@ -648,12 +648,14 @@ class ContextWindowBuilder:
                         last_query = c_text
                         break
 
-        # Для ассистента: запрашиваем top_k=5 (строго блокируем для roleplay и engineer)
-        if not is_roleplay and not is_engineer and include_memory and last_query:
+        # Для ассистента: запрашиваем top_k=5 (если не переданы заранее, строго блокируем для roleplay и engineer)
+        if relevant_facts is None and not is_roleplay and not is_engineer and include_memory and last_query:
             try:
                 relevant_facts = memory_db.search_relevant_facts(last_query, top_k=5)
-            except Exception:
-                pass
+            except Exception as e_mem_cwb:
+                logger.warning(f"[ContextWindowBuilder] Ошибка поиска памяти: {e_mem_cwb}")
+        if relevant_facts is None:
+            relevant_facts = []
 
         deep_history: List[Dict[str, Any]] = []
         recent_history: List[Dict[str, Any]] = []

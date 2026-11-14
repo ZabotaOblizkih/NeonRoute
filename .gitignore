@@ -14,5 +14,7 @@ workspace/*
 PyQt-Fluent-Widgets/
 
 scripts/test_*.py
-
 scripts/
+
+*.bak
+*.bak/

@@ -128,7 +128,7 @@ def test_mode_switching_contract_engineer_vs_assistant(main_window):
 def test_message_sending_event_chain(main_window):
     """
     Проверяет цепочку отправки:
-    очистку инпута, прерывание фоновых задач памяти и постановку задачи в TaskQueue.
+    очистку инпута, сохранение фоновых задач памяти в очереди и постановку задачи в TaskQueue.
     """
     main_window.task_queue.abort_tasks_by_type = MagicMock()
     main_window.task_queue.enqueue = MagicMock()
@@ -142,8 +142,8 @@ def test_message_sending_event_chain(main_window):
     # Поле ввода очищено
     assert main_window.input_box.toPlainText().strip() == ""
 
-    # Вытеснение фонового анализа сцены вызвано с типом 'memory'
-    main_window.task_queue.abort_tasks_by_type.assert_called_once_with("memory")
+    # Отправка нового сообщения не должна сбрасывать фоновые задачи памяти
+    main_window.task_queue.abort_tasks_by_type.assert_not_called()
 
     # В очередь задач поставлена задача инференса LLM
     assert main_window.task_queue.enqueue.called
