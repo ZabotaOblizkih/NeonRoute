@@ -104,6 +104,9 @@ class RPChatMessageWidget(ChatMessageWidget):
             return f"<pre style='background-color:#080B11; border:1px solid #1E273A; border-radius:6px; padding:8px; color:#00F0FF; font-family:Consolas, monospace; white-space:pre-wrap; word-break:break-word;'>{code}</pre>"
         escaped = re.sub(r'```(?:[a-zA-Z0-9_-]+)?\n(.*?)```', code_block_sub, escaped, flags=re.DOTALL)
 
+        from utils.markdown_table_parser import parse_markdown_tables_to_qt_html
+        escaped = parse_markdown_tables_to_qt_html(escaped)
+
         escaped = re.sub(r'`([^`]+)`', r"<code style='background-color:#141C2B; color:#38BDF8; padding:1px 4px; border-radius:4px; font-family:Consolas;'>\1</code>", escaped)
 
         def path_link_sub(match):

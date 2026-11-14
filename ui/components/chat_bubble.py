@@ -659,7 +659,9 @@ class ChatMessageWidget(QWidget):
             char_count = len(text)
             effective_lines = max(line_count, len(thought_text.splitlines()) if thought_text else 0)
             effective_chars = max(char_count, len(thought_text))
-            has_code_or_art = bool(self.image_path or self.file_paths or "```" in text or "<pre" in text)
+            from utils.markdown_table_parser import contains_markdown_table
+            has_table = contains_markdown_table(text) or ("<table" in (getattr(self, "raw_text", "") or ""))
+            has_code_or_art = bool(self.image_path or self.file_paths or "```" in text or "<pre" in text or has_table)
 
             # Ратчет (храповик) контента: бабл запоминает пиковую ширину (в т.ч. при раскрытых мыслях)
             if not hasattr(self, "_peak_char_count"):
@@ -1393,6 +1395,9 @@ class ChatMessageWidget(QWidget):
             code = match.group(1)
             return f"<pre style='background-color:#080B11; border:1px solid #1E273A; border-radius:6px; padding:8px; color:#00F0FF; font-family:Consolas, monospace; white-space:pre-wrap; word-break:break-word;'>{code}</pre>"
         escaped = re.sub(r'```(?:[a-zA-Z0-9_-]+)?\n(.*?)```', code_block_sub, escaped, flags=re.DOTALL)
+
+        from utils.markdown_table_parser import parse_markdown_tables_to_qt_html
+        escaped = parse_markdown_tables_to_qt_html(escaped)
 
         escaped = re.sub(r'`([^`]+)`', r"<code style='background-color:#141C2B; color:#38BDF8; padding:1px 4px; border-radius:4px; font-family:Consolas;'>\1</code>", escaped)
 

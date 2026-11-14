@@ -1135,6 +1135,9 @@ class EngineerTaskCardWidget(QWidget):
             return f"<pre style='background-color:#0B1120; border:1px solid #1E293B; border-radius:6px; padding:6px; color:#00F0FF; font-family:Consolas, monospace; white-space:pre-wrap;'>{code}</pre>"
         escaped = re.sub(r'```(?:[a-zA-Z0-9_-]+)?\n(.*?)```', code_block_sub, escaped, flags=re.DOTALL)
 
+        from utils.markdown_table_parser import parse_markdown_tables_to_qt_html
+        escaped = parse_markdown_tables_to_qt_html(escaped)
+
         escaped = re.sub(r'`([^`]+)`', r"<code style='background-color:#1E293B; color:#38BDF8; padding:1px 4px; border-radius:4px; font-family:Consolas;'>\1</code>", escaped)
 
         escaped = re.sub(r'\*\*(.*?)\*\*', r"<strong>\1</strong>", escaped)
