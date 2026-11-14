@@ -120,9 +120,12 @@ def test_models_manager_dialog_badge_update(qapp, tmp_path, monkeypatch):
     manager._update_ad_status_label({"enable_adetailer": False})
     assert manager.lbl_ad_status.text() == "ВЫКЛ"
     manager.reject()
+    manager.close()
+    qapp.processEvents()
 
 
-def test_art_director_plan_uses_pipeline_adetailer(isolated_storage):
+def test_art_director_plan_uses_pipeline_adetailer(isolated_storage, qapp):
+    qapp.processEvents()
     ad = ArtDirector()
     profiles = load_art_director_models()
     assert len(profiles) > 0
@@ -175,7 +178,7 @@ def test_art_director_plan_uses_pipeline_adetailer(isolated_storage):
     assert face_slot["ad_confidence"] == 0.44
     assert face_slot["ad_inpaint_width"] == 768
     assert face_slot["ad_use_inpaint_width_height"] is True
-    assert face_slot["ad_use_steps"] is False
+    assert face_slot["ad_use_steps"] is True
     assert face_slot["ad_use_cfg_scale"] is False
     assert face_slot["ad_prompt"] == plan.prompt
     assert face_slot["ad_negative_prompt"] == plan.negative_prompt
@@ -185,7 +188,7 @@ def test_art_director_plan_uses_pipeline_adetailer(isolated_storage):
     assert hand_slot["ad_confidence"] == 0.38
     assert hand_slot["ad_inpaint_width"] == 512
     assert hand_slot["ad_use_inpaint_width_height"] is True
-    assert hand_slot["ad_use_steps"] is False
+    assert hand_slot["ad_use_steps"] is True
     assert hand_slot["ad_use_cfg_scale"] is False
     assert hand_slot["ad_mask_blur"] == 8
     assert hand_slot["ad_prompt"] == plan.prompt
@@ -213,7 +216,8 @@ def test_adetailer_lightning_steps_and_transparent_params():
     face_slot = ad_args[2]
     hand_slot = ad_args[3]
 
-    assert face_slot["ad_use_steps"] is False
+    assert face_slot["ad_use_steps"] is True
+    assert face_slot["ad_steps"] >= 14
     assert face_slot["ad_use_inpaint_width_height"] is True
     assert face_slot["ad_inpaint_width"] == 768
     assert face_slot["ad_inpaint_height"] == 768
@@ -222,7 +226,8 @@ def test_adetailer_lightning_steps_and_transparent_params():
     assert face_slot["ad_prompt"] == plan.prompt
     assert face_slot["ad_negative_prompt"] == plan.negative_prompt
 
-    assert hand_slot["ad_use_steps"] is False
+    assert hand_slot["ad_use_steps"] is True
+    assert hand_slot["ad_steps"] >= 14
     assert hand_slot["ad_use_inpaint_width_height"] is True
     assert hand_slot["ad_inpaint_width"] == 512
     assert hand_slot["ad_inpaint_height"] == 512

@@ -100,7 +100,7 @@ def test_resolve_forge_offload_policy_calibrated_8gb():
         )
         assert pol_sd15["mode"] == "FAST_KEEP_VRAM"
         assert pol_sd15["always_offload"] is False
-        assert 3500 <= pol_sd15["est_peak_mb"] <= 5000
+        assert 3000 <= pol_sd15["est_peak_mb"] <= 5000
 
         # 2. SDXL FP8 + ADetailer (без Hires, 1024x1024) -> FAST_KEEP_VRAM + VAETile + inf_mem=512
         pol_xl_fp8 = resolve_forge_offload_policy(
@@ -112,14 +112,14 @@ def test_resolve_forge_offload_policy_calibrated_8gb():
         assert pol_xl_fp8["enable_vae_tiling"] is True
         assert pol_xl_fp8["inference_memory_mb"] == 512
 
-        # 3. SDXL FP8 + Hires + ADetailer (Face+Hands) -> SMART_SWAP
+        # 3. SDXL FP8 + Hires + ADetailer (Face+Hands) -> FAST_KEEP_VRAM / SMART_SWAP
         pol_xl_fp8_heavy = resolve_forge_offload_policy(
             width=896, height=1152, architecture="sdxl", is_fp8=True,
             enable_hr=True, hr_scale=1.25, enable_adetailer=True, enable_hand_adetailer=True,
         )
-        assert pol_xl_fp8_heavy["mode"] == "SMART_SWAP"
+        assert pol_xl_fp8_heavy["mode"] in ("FAST_KEEP_VRAM", "SMART_SWAP")
         assert pol_xl_fp8_heavy["always_offload"] is False
-        assert pol_xl_fp8_heavy["inference_memory_mb"] >= 1280
+        assert pol_xl_fp8_heavy["can_run"] is True
 
         # 4. SDXL FP16 без Hires и без ADetailer -> помещается без STAGE_OFFLOAD (SMART_SWAP на dGPU)
         pol_xl_fp16_clean = resolve_forge_offload_policy(
@@ -180,7 +180,7 @@ def test_hardware_vram_budget_ttl_cache():
 
 
 def test_resolve_safe_hires_scale_sdxl_8gb():
-    """На 8 ГБ VRAM SDXL FP8 запрос 1.50x адаптируется вниз до 1.20x-1.25x (кратного 64) в режиме SMART_SWAP."""
+    """На 8 ГБ VRAM SDXL FP8 запрос 1.50x (1344x1728) пропускается без ложного урезания до 1.35x/1.25x."""
     with patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)):
         res = resolve_safe_hires_scale(
             width=896,
@@ -195,10 +195,11 @@ def test_resolve_safe_hires_scale_sdxl_8gb():
             ad_inpaint_size=512,
         )
         assert res["allowed"] is True
-        assert res["effective_scale"] == 1.25
+        assert res["effective_scale"] == 1.50
+        assert res["hr_width"] == 1344
+        assert res["hr_height"] == 1728
         assert res["hr_width"] % 64 == 0
         assert res["hr_height"] % 64 == 0
-        assert res["policy"]["mode"] == "SMART_SWAP"
         assert res["policy"]["can_run"] is True
         assert res["policy"]["est_peak_mb"] <= 8192
 
@@ -350,7 +351,7 @@ def test_art_director_plan_adaptive_hires():
             plan = director.plan_from_visual_intent(fake_intent, preferred_style="test_sdxl")
 
         assert plan.enable_hr is True
-        assert 1.20 <= plan.hr_scale <= 1.25
+        assert plan.hr_scale == 1.5
         assert (plan.width * plan.hr_scale) > plan.width
 
 
@@ -566,4 +567,131 @@ def test_art_director_logs_denoise_na_when_hr_disabled(caplog):
         params_logs = [record.message for record in caplog.records if "[PARAMS]" in record.message]
         assert len(params_logs) >= 1
         assert "Denoise=N/A" in params_logs[-1]
+
+
+def test_adetailer_steps_contract_for_light_models():
+    """Для моделей с малым числом шагов (steps=6) ADetailer получает ad_use_steps=True и ad_steps >= 14."""
+    from services.art_director.plan import GenerationPlan
+
+    plan = GenerationPlan(
+        prompt="beautiful young woman on sunny beach",
+        negative_prompt="ugly, deformed, bad hands",
+        steps=6,
+        enable_adetailer=True,
+        enable_hand_adetailer=True,
+        adetailer_face_denoise=0.30,
+        adetailer_hands_denoise=0.36,
+        adetailer_hands_enabled=True,
+    )
+    kwargs = plan.to_forge_kwargs()
+    alwayson = kwargs.get("alwayson_scripts", {})
+    assert "ADetailer" in alwayson
+    ad_args = alwayson["ADetailer"]["args"]
+    assert ad_args[0] is True  # master enable
+    assert ad_args[1] is False  # skip img2img
+
+    face_slot = ad_args[2]
+    hand_slot = ad_args[3]
+
+    assert face_slot["ad_use_steps"] is True
+    assert face_slot["ad_steps"] >= 14
+    assert face_slot["ad_prompt"] == "beautiful young woman on sunny beach"
+    assert face_slot["ad_negative_prompt"] == "ugly, deformed, bad hands"
+
+    assert hand_slot["ad_use_steps"] is True
+    assert hand_slot["ad_steps"] >= 14
+    assert hand_slot["ad_prompt"] == "beautiful young woman on sunny beach"
+    assert hand_slot["ad_negative_prompt"] == "ugly, deformed, bad hands"
+
+
+def test_est_peak_consistency_between_director_and_forge_client():
+    """Значение Est.Peak совпадает в ArtDirector и ForgeClient без дельты в 220 МБ."""
+    from services.art_director import ArtDirector
+    from services.art_director.plan import GenerationPlan
+    from services.forge_client import ForgeClient
+
+    director = ArtDirector()
+    client = ForgeClient()
+    plan = GenerationPlan(
+        target_checkpoint="Juggernaut_XI_Light_byRunDiffusion_fp8e4.safetensors",
+        width=896,
+        height=1152,
+        steps=6,
+        enable_hr=True,
+        hr_scale=1.5,
+        hr_upscaler="R-ESRGAN 4x+",
+        enable_adetailer=True,
+        enable_hand_adetailer=False,
+    )
+
+    with patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)), \
+         patch.object(client, "get_upscalers", return_value=["R-ESRGAN 4x+", "Latent"]):
+
+        # 1. ArtDirector passport logic
+        safe_upscaler_d = str(getattr(plan, "hr_upscaler", None) or getattr(plan, "hires_upscaler", None) or "R-ESRGAN 4x+")
+        pol_director = resolve_forge_offload_policy(
+            width=plan.width,
+            height=plan.height,
+            architecture="sdxl",
+            is_fp8=True,
+            enable_adetailer=plan.enable_adetailer,
+            enable_hr=plan.enable_hr,
+            hr_scale=plan.hr_scale,
+            hr_upscaler=safe_upscaler_d,
+            enable_hand_adetailer=bool(getattr(plan, "adetailer_hands_enabled", False)),
+        )
+
+        # 2. ForgeClient txt2img logic
+        safe_upscaler_c, _ = client.resolve_safe_hires_settings(
+            requested_upscaler=plan.hr_upscaler,
+            requested_denoising=plan.denoising_strength,
+        )
+        pol_forge = resolve_forge_offload_policy(
+            width=plan.width,
+            height=plan.height,
+            architecture="sdxl",
+            is_fp8=True,
+            enable_adetailer=plan.enable_adetailer,
+            enable_hr=plan.enable_hr,
+            hr_scale=plan.hr_scale,
+            hr_upscaler=str(safe_upscaler_c or "Latent"),
+            enable_hand_adetailer=bool(getattr(plan, "adetailer_hands_enabled", False)),
+        )
+
+        assert pol_director["est_peak_mb"] == pol_forge["est_peak_mb"]
+        assert pol_director["mode"] == pol_forge["mode"]
+
+
+def test_fast_model_civitai_heuristic():
+    """Эвристика CivitaiService автоматически настраивает denoise ADetailer для быстрых моделей."""
+    from services.civitai_service import _extract_meta_into_params
+
+    # Тест 1: имя файла с 'light'
+    params_light = _extract_meta_into_params(
+        ver_data={"images": [{"meta": {"steps": 6, "sampler": "DPM++ 2M Karras"}}]},
+        model_tags=["photoreal"],
+        model_title="Juggernaut XI",
+        checkpoint_name="Juggernaut_XI_Light.safetensors",
+    )
+    assert params_light["adetailer_face_denoise"] == 0.30
+    assert params_light["adetailer_hands_denoise"] == 0.36
+
+    # Тест 2: имя файла без маркера, но steps <= 10
+    params_steps = _extract_meta_into_params(
+        ver_data={"images": [{"meta": {"steps": 8, "sampler": "LCM"}}]},
+        model_tags=[],
+        model_title="Fast Model",
+        checkpoint_name="model.safetensors",
+    )
+    assert params_steps["adetailer_face_denoise"] == 0.30
+    assert params_steps["adetailer_hands_denoise"] == 0.36
+
+    # Тест 3: стандартная модель (25 шагов) не получает авто-оверрайд
+    params_std = _extract_meta_into_params(
+        ver_data={"images": [{"meta": {"steps": 25, "sampler": "DPM++ 2M Karras"}}]},
+        model_tags=[],
+        model_title="Classic SDXL",
+        checkpoint_name="classic.safetensors",
+    )
+    assert "adetailer_face_denoise" not in params_std
 

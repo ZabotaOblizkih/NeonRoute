@@ -31,7 +31,10 @@ class ADetailerSettingsDialog(QDialog):
 
     def __init__(self, current_pipeline_params: Dict[str, Any], is_xl: bool = False, parent: QWidget = None):
         super().__init__(parent)
-        setTheme(Theme.DARK)
+        try:
+            setTheme(Theme.DARK)
+        except Exception:
+            pass
         self.setWindowTitle("Настройки ADetailer — Лица и Руки")
         self.resize(560, 520)
         self.setModal(True)

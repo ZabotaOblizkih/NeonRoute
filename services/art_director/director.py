@@ -632,7 +632,7 @@ class ArtDirector:
                 system_monitor=monitor,
                 enable_hr=bool(getattr(plan, "enable_hr", False)),
                 hr_scale=float(getattr(plan, "hr_scale", 1.0) or 1.0),
-                hr_upscaler=str(getattr(plan, "hr_upscaler", "Latent") or "Latent"),
+                hr_upscaler=str(getattr(plan, "hr_upscaler", None) or getattr(plan, "hires_upscaler", None) or "R-ESRGAN 4x+"),
                 enable_hand_adetailer=bool(getattr(plan, "adetailer_hands_enabled", False)),
                 ad_inpaint_size=inpaint_sz,
                 vae_tiling=vae_tile,
@@ -666,7 +666,7 @@ class ArtDirector:
         enable_hand_adetailer: bool = False,
         requested_enable_hr: bool = False,
         requested_hr_scale: float = 1.0,
-        hr_upscaler: str = "Latent",
+        hr_upscaler: str = "R-ESRGAN 4x+",
         ad_inpaint_size: int = 512,
         active_lora_count: int = 0,
     ) -> Dict[str, Any]:
@@ -1149,11 +1149,8 @@ class ArtDirector:
                 req_hr_scale = float(model_pipeline.get("hr_scale", 1.5))
                 req_enable_hr = True if not is_bg else False
 
-        if _is_xl_v:
-            default_upscaler = "Latent"
-        else:
-            default_upscaler = canon.hr_upscaler if (canon and canon.hr_upscaler) else "R-ESRGAN 4x+"
-        hr_upscaler = model_pipeline.get("hires_upscaler", default_upscaler)
+        default_upscaler = "R-ESRGAN 4x+"
+        hr_upscaler = model_pipeline.get("hires_upscaler") or model_pipeline.get("hr_upscaler") or default_upscaler
         denoising_strength = float(model_pipeline.get("hires_denoise", 0.35))
         configured_hr_steps = model_pipeline.get("hr_second_pass_steps")
         hr_second_pass_steps = resolve_hires_second_pass_steps(
@@ -1719,11 +1716,8 @@ class ArtDirector:
                 req_hr_scale = float(model_pipeline.get("hr_scale", 1.5))
                 req_enable_hr = True if not is_bg else False
 
-        if _is_xl_v:
-            default_upscaler = "Latent"
-        else:
-            default_upscaler = canon.hr_upscaler if (canon and canon.hr_upscaler) else "R-ESRGAN 4x+"
-        hr_upscaler = model_pipeline.get("hires_upscaler", default_upscaler)
+        default_upscaler = "R-ESRGAN 4x+"
+        hr_upscaler = model_pipeline.get("hires_upscaler") or model_pipeline.get("hr_upscaler") or default_upscaler
         hr_denoise = float(model_pipeline.get("hires_denoise", 0.35))
         configured_hr_steps = model_pipeline.get("hr_second_pass_steps")
         hr_second_pass_steps = resolve_hires_second_pass_steps(
@@ -2051,11 +2045,8 @@ class ArtDirector:
             req_hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5)))
 
         hr_denoise = float(user_params.get("denoising_strength", model_pipeline.get("hires_denoise", 0.35)))
-        if is_xl:
-            default_upscaler = "Latent"
-        else:
-            default_upscaler = canon.hr_upscaler if (canon and canon.hr_upscaler) else "R-ESRGAN 4x+"
-        hr_upscaler = user_params.get("hr_upscaler", model_pipeline.get("hires_upscaler", default_upscaler))
+        default_upscaler = "R-ESRGAN 4x+"
+        hr_upscaler = user_params.get("hr_upscaler") or model_pipeline.get("hires_upscaler") or model_pipeline.get("hr_upscaler") or default_upscaler
         raw_hr_steps = user_params.get("hr_second_pass_steps") if user_params.get("hr_second_pass_steps") is not None else model_pipeline.get("hr_second_pass_steps")
         hr_second_pass_steps = resolve_hires_second_pass_steps(
             base_steps=steps,

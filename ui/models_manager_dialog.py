@@ -100,7 +100,10 @@ class ModelsManagerDialog(
         art_director: Optional[Any] = None
     ):
         super().__init__(parent)
-        setTheme(Theme.DARK)
+        try:
+            setTheme(Theme.DARK)
+        except Exception:
+            pass
 
         self.forge_client = forge_client or ForgeClient()
         self.art_director = art_director or getattr(parent, "art_director", None)

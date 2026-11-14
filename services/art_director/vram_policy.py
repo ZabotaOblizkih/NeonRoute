@@ -203,7 +203,7 @@ def calculate_max_hires_canvas_area(
     else:
         target_budget_mb = usable_vram_mb - DEFAULT_SAFETY_MARGIN_MB
 
-    free_for_hr_mb = target_budget_mb - (total_weights_mb + base_canvas_mb + upscaler_mb + ad_stage_mb)
+    free_for_hr_mb = target_budget_mb - (total_weights_mb + base_canvas_mb + upscaler_mb)
     if free_for_hr_mb <= 0:
         return 0
 
@@ -212,7 +212,7 @@ def calculate_max_hires_canvas_area(
 
     if is_xl:
         if total_vram_gb <= 8.5:
-            area = min(area, 2_100_000)
+            area = min(area, 2_400_000)
     else:
         area = min(area, 2_400_000)
 
@@ -748,12 +748,11 @@ def resolve_forge_offload_policy(
             inpaint_buf_mb = 1550 if inpaint_sz >= 768 else 1250
         else:
             inpaint_buf_mb = 650 if inpaint_sz >= 768 else 450
-        hands_extra_mb = 150 if eff_hand_ad else 0
-        ad_stage_mb = yolo_mb + inpaint_buf_mb + hands_extra_mb
+        ad_stage_mb = yolo_mb + inpaint_buf_mb
     else:
         ad_stage_mb = 0
 
-    stage_overhead_mb = hr_stage_mb + ad_stage_mb
+    stage_overhead_mb = max(hr_stage_mb, ad_stage_mb)
     est_peak_mb = total_weights_mb + stage_overhead_mb
 
     # Защита от заниженного free_vram_mb, если модель Forge уже в VRAM

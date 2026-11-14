@@ -53,6 +53,8 @@ class LayerBudgeter:
             * произошла фатальная ошибка опроса NVML (фоллбэк).
         """
         try:
+            used_mb = cls._query_nvml_used_vram_mb()
+
             import pynvml
             try:
                 pynvml.nvmlInit()
@@ -61,8 +63,6 @@ class LayerBudgeter:
                     raise
 
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            used_mb = mem_info.used / (1024.0 * 1024.0)
 
             display_active = False
             if hasattr(pynvml, "nvmlDeviceGetDisplayActive"):
@@ -174,9 +174,9 @@ class LayerBudgeter:
             }
 
     @classmethod
-    def get_current_used_vram_mb(cls) -> float:
+    def _query_nvml_used_vram_mb(cls) -> float:
         """
-        Безопасное получение текущего объема занятой видеопамяти GPU в МБ через NVML.
+        Внутренний хелпер безопасного опроса занятой VRAM в МБ через NVML.
         При ошибке или отсутствии GPU возвращает 0.0.
         """
         try:
@@ -190,8 +190,16 @@ class LayerBudgeter:
             mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
             return float(mem_info.used / (1024.0 * 1024.0))
         except Exception as e:
-            logger.debug(f"[LayerBudgeter] get_current_used_vram_mb fallback: {e}")
+            logger.debug(f"[LayerBudgeter] _query_nvml_used_vram_mb fallback: {e}")
             return 0.0
+
+    @classmethod
+    def get_current_used_vram_mb(cls) -> float:
+        """
+        Безопасное получение текущего объема занятой видеопамяти GPU в МБ через NVML.
+        При ошибке или отсутствии GPU возвращает 0.0.
+        """
+        return cls._query_nvml_used_vram_mb()
 
     # -------------------------------------------------------------------------
     # 2. Парсер метаданных GGUF с кэшированием
@@ -690,11 +698,7 @@ class LayerBudgeter:
             if current_used_vram_mb is not None:
                 used_vram = float(current_used_vram_mb)
             else:
-                raw_nvml_used = cls.get_current_used_vram_mb()
-                if total_vram_mb is not None:
-                    used_vram = float(os_reserve_mb)
-                else:
-                    used_vram = raw_nvml_used
+                used_vram = cls.get_current_used_vram_mb()
             effective_os_reserve = max(os_reserve_mb, int(math.ceil(used_vram)))
             forge_res = 0
             safety_res = 280  # 150 МБ TDR + 130 МБ буфер против WDDM Shared Memory paging

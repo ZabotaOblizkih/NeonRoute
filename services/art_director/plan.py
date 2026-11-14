@@ -38,6 +38,7 @@ def is_sdxl_checkpoint(model_name: str) -> bool:
 
     return False
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
@@ -160,12 +161,16 @@ class GenerationPlan:
         alwayson = {}
         if getattr(self, "enable_adetailer", True):
             base_steps = max(1, int(getattr(self, "steps", 25) or 25))
-            if base_steps <= 10:
-                ad_face_steps = max(10, base_steps + 4)
-                ad_hand_steps = max(12, base_steps + 6)
-            else:
-                ad_face_steps = min(16, max(10, int(base_steps * 0.55)))
-                ad_hand_steps = min(16, max(12, int(base_steps * 0.55)))
+            face_denoise = float(
+                getattr(self, "adetailer_face_denoise", None)
+                or getattr(self, "ad_denoising_strength", None)
+                or 0.35
+            )
+            hand_denoise = float(getattr(self, "adetailer_hands_denoise", None) or 0.40)
+
+            target_eff_steps = 5 if base_steps <= 10 else 7
+            ad_face_steps = max(12, math.ceil(target_eff_steps / max(0.15, face_denoise)))
+            ad_hand_steps = max(14, math.ceil(target_eff_steps / max(0.15, hand_denoise)))
 
             shared_ad_prompt = self.prompt or self.positive_prompt or ""
             shared_ad_negative = self.negative_prompt or ""
@@ -180,8 +185,8 @@ class GenerationPlan:
                 "ad_prompt": shared_ad_prompt,
                 "ad_negative_prompt": shared_ad_negative,
                 "ad_confidence": getattr(self, "adetailer_face_confidence", 0.44),
-                "ad_denoising_strength": getattr(self, "adetailer_face_denoise", 0.35),
-                "ad_use_steps": False,
+                "ad_denoising_strength": face_denoise,
+                "ad_use_steps": True,
                 "ad_steps": ad_face_steps,
                 "ad_use_cfg_scale": False,
                 "ad_inpaint_only_masked": True,
@@ -201,8 +206,8 @@ class GenerationPlan:
                 "ad_prompt": shared_ad_prompt,
                 "ad_negative_prompt": shared_ad_negative,
                 "ad_confidence": getattr(self, "adetailer_hands_confidence", 0.38),
-                "ad_denoising_strength": getattr(self, "adetailer_hands_denoise", 0.40),
-                "ad_use_steps": False,
+                "ad_denoising_strength": hand_denoise,
+                "ad_use_steps": True,
                 "ad_steps": ad_hand_steps,
                 "ad_use_cfg_scale": False,
                 "ad_mask_blur": getattr(self, "adetailer_hands_mask_blur", 8),

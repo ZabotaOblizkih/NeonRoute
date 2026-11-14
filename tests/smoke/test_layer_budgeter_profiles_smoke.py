@@ -286,6 +286,29 @@ class TestProfile8GB:
             assert audit["final_ngl"] == 43
             assert can_run is True
 
+    def test_regression_nvml_used_vram_detected_without_manual_param(self):
+        """Регрессионный тест: NVML used=488.1 MB корректно подхватывается без ручной передачи current_used_vram_mb."""
+        mock_mem = MagicMock()
+        mock_mem.used = int(488.1 * 1024 * 1024)
+        mock_mem.total = int(8151 * 1024 * 1024)
+
+        with patch("pynvml.nvmlDeviceGetMemoryInfo", return_value=mock_mem), \
+             patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
+
+            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy_gemma4.gguf",
+                target_context=14336,
+                is_arbiter_managed=True,
+            )
+
+            assert audit["used_vram_mb"] == pytest.approx(488.1, abs=0.2)
+            assert audit["effective_os_reserve_mb"] == 489
+            assert ngl in (44, 45)  # строго < 48, не 99
+            assert ngl < 48
+            assert ngl != 99
+            assert can_run is True
+
     def test_hysteresis_does_not_override_vram_deficit(self):
         """При current_running_ngl=99 (или 46) и used_vram=684.1 МБ гистерезис не форсирует 99, оставляя ngl == 43."""
         with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \

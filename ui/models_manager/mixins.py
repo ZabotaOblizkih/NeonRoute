@@ -721,8 +721,27 @@ class ForgeCivitaiSyncMixin:
 
                 if Path(cp).name.lower() not in existing_ckpts:
                     stem = Path(cp).stem
+                    stem_lower = stem.lower()
+                    LIGHT_SPEED_MARKERS = ("light", "lightning", "turbo", "lcm", "dmd", "hyper")
+                    is_fast = any(m in stem_lower for m in LIGHT_SPEED_MARKERS)
                     is_xl = is_xl_model(cp)
                     if is_xl:
+                        xl_pipe = {
+                            "architecture": "sdxl",
+                            "sampler": "LCM",
+                            "scheduler": "Karras",
+                            "steps": 10,
+                            "cfg_scale": 1.3,
+                            "clip_skip": 2,
+                            "hires_upscaler": "4x-UltraSharp",
+                            "hires_denoise": 0.32,
+                            "enable_hr": False,
+                            "enable_adetailer": False,
+                            "negative_prompt": get_default_negative_prompt(cp, stem)
+                        }
+                        if is_fast:
+                            xl_pipe["adetailer_face_denoise"] = 0.30
+                            xl_pipe["adetailer_hands_denoise"] = 0.36
                         new_model_data = {
                             "id": f"auto_{re.sub(r'[^a-zA-Z0-9_]', '_', stem.lower()).strip('_')}",
                             "name": stem,
@@ -732,21 +751,25 @@ class ForgeCivitaiSyncMixin:
                             "llm_guidance": "",
                             "negative_prompt": get_default_negative_prompt(cp, stem),
                             "active": True,
-                            "pipeline": {
-                                "architecture": "sdxl",
-                                "sampler": "LCM",
-                                "scheduler": "Karras",
-                                "steps": 10,
-                                "cfg_scale": 1.3,
-                                "clip_skip": 2,
-                                "hires_upscaler": "4x-UltraSharp",
-                                "hires_denoise": 0.32,
-                                "enable_hr": False,
-                                "enable_adetailer": False,
-                                "negative_prompt": get_default_negative_prompt(cp, stem)
-                            }
+                            "pipeline": xl_pipe
                         }
                     else:
+                        sd15_pipe = {
+                            "architecture": "sd15",
+                            "sampler": "DPM++ 2M Karras",
+                            "scheduler": "Karras",
+                            "steps": 25,
+                            "cfg_scale": 6.0,
+                            "clip_skip": 1,
+                            "hires_upscaler": "4x-UltraSharp",
+                            "hires_denoise": 0.32,
+                            "enable_hr": False,
+                            "enable_adetailer": False,
+                            "negative_prompt": get_default_negative_prompt(cp, stem)
+                        }
+                        if is_fast:
+                            sd15_pipe["adetailer_face_denoise"] = 0.30
+                            sd15_pipe["adetailer_hands_denoise"] = 0.36
                         new_model_data = {
                             "id": f"auto_{re.sub(r'[^a-zA-Z0-9_]', '_', stem.lower()).strip('_')}",
                             "name": stem,
@@ -756,19 +779,7 @@ class ForgeCivitaiSyncMixin:
                             "llm_guidance": "",
                             "negative_prompt": get_default_negative_prompt(cp, stem),
                             "active": True,
-                            "pipeline": {
-                                "architecture": "sd15",
-                                "sampler": "DPM++ 2M Karras",
-                                "scheduler": "Karras",
-                                "steps": 25,
-                                "cfg_scale": 6.0,
-                                "clip_skip": 1,
-                                "hires_upscaler": "4x-UltraSharp",
-                                "hires_denoise": 0.32,
-                                "enable_hr": False,
-                                "enable_adetailer": False,
-                                "negative_prompt": get_default_negative_prompt(cp, stem)
-                            }
+                            "pipeline": sd15_pipe
                         }
                     self._add_model_row(new_model_data)
                     existing_ckpts.add(Path(cp).name.lower())
@@ -888,10 +899,16 @@ class ForgeCivitaiSyncMixin:
                     w.blockSignals(False)
 
                 self._save_form_to_model(target_row)
+                r = self.row_widgets[target_row]
+                pipe = r.setdefault("pipeline", {})
+                if "adetailer_face_denoise" in params:
+                    pipe["adetailer_face_denoise"] = params["adetailer_face_denoise"]
+                if "adetailer_hands_denoise" in params:
+                    pipe["adetailer_hands_denoise"] = params["adetailer_hands_denoise"]
             else:
                 r = self.row_widgets[target_row]
                 pipe = r.setdefault("pipeline", {})
-                for k in ("sampler", "steps", "cfg_scale", "clip_skip", "hires_upscaler", "hires_denoise"):
+                for k in ("sampler", "steps", "cfg_scale", "clip_skip", "hires_upscaler", "hires_denoise", "adetailer_face_denoise", "adetailer_hands_denoise"):
                     if k in params:
                         pipe[k] = params[k]
                 if params.get("negative_prompt"):

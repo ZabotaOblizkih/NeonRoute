@@ -131,6 +131,16 @@ def _extract_meta_into_params(
     ver_name = ver_data.get("name", "v1.0")
     result["status"] = "success"
     result["message"] = f"Успешно подтянуты параметры Civitai: «{model_title}» (версия {ver_name})"
+
+    LIGHT_SPEED_MARKERS = ("light", "lightning", "turbo", "lcm", "dmd", "hyper")
+    steps_val = result.get("steps")
+    is_fast_model = any(w in name_lower for w in LIGHT_SPEED_MARKERS) or (
+        isinstance(steps_val, (int, float)) and steps_val <= 10
+    )
+    if is_fast_model:
+        result["adetailer_face_denoise"] = 0.30
+        result["adetailer_hands_denoise"] = 0.36
+
     return result
 
 

@@ -178,12 +178,13 @@ def test_adetailer_prompt_and_base_negative_passthrough_smoke(isolated_passthrou
     for slot in (face_slot, hand_slot):
         assert "woman, girl, body" not in slot["ad_negative_prompt"]
         assert "detailed hand, realistic fingers" not in slot["ad_prompt"]
-        assert slot["ad_use_steps"] is False
+        assert slot["ad_use_steps"] is True
+        assert slot["ad_steps"] >= 14
         assert slot["ad_use_inpaint_width_height"] is True
         assert slot["ad_use_cfg_scale"] is False
 
 
-def test_adetailer_dialog_has_no_prompt_or_negative_inputs(isolated_passthrough_env):
+def test_adetailer_dialog_has_no_prompt_or_negative_inputs(isolated_passthrough_env, qapp):
     dialog = ADetailerSettingsDialog(
         {
             "enable_adetailer": True,
