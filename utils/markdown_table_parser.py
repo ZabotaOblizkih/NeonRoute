@@ -80,6 +80,48 @@ def _parse_alignments(sep_line: str) -> List[str]:
     return aligns
 
 
+def _calculate_column_percentages(header_cells: List[str], table_rows: List[List[str]], num_cols: int) -> List[int]:
+    """
+    Вычисляет пропорциональную ширину колонок в процентах на основе максимальной длины
+    содержимого ячеек в каждой колонке с гарантированным минимумом во избежание сжатия.
+    Сумма всех долей строго равна 100%.
+    """
+    if num_cols <= 0:
+        return []
+    if num_cols == 1:
+        return [100]
+
+    col_lens = [0] * num_cols
+    clean_re = re.compile(r"<[^>]+>")
+
+    for col_idx in range(num_cols):
+        h_text = clean_re.sub("", header_cells[col_idx]) if col_idx < len(header_cells) else ""
+        max_l = max(len(h_text.strip()), 1)
+        for row in table_rows:
+            if col_idx < len(row):
+                r_text = clean_re.sub("", row[col_idx])
+                max_l = max(max_l, len(r_text.strip()))
+        col_lens[col_idx] = max_l
+
+    # Базовая минимальная доля на колонку (не менее 15% при 2-4 колонках), чтобы избежать схлопывания
+    min_pct = max(12, int(70 / num_cols))
+    total_len = sum(col_lens)
+    if total_len <= 0:
+        base = 100 // num_cols
+        res = [base] * num_cols
+        res[-1] += 100 - sum(res)
+        return res
+
+    raw_pcts = [max(min_pct, int((cl / total_len) * 100)) for cl in col_lens]
+    total_raw = sum(raw_pcts)
+
+    # Нормализуем строго к 100%
+    norm_pcts = [int((p / total_raw) * 100) for p in raw_pcts]
+    diff = 100 - sum(norm_pcts)
+    norm_pcts[-1] += diff
+    return norm_pcts
+
+
 def parse_markdown_tables_to_qt_html(text: str) -> str:
     """
     Преобразует Markdown-таблицы в валидный Qt Rich Text HTML.
@@ -138,19 +180,23 @@ def parse_markdown_tables_to_qt_html(text: str) -> str:
                 table_rows.append(row_cells)
                 i += 1
 
+            # Вычисление пропорциональной ширины колонок в процентах
+            col_pcts = _calculate_column_percentages(header_cells, table_rows, num_cols)
+
             # Генерация компактного HTML строго в одну строку без \n
             parts: List[str] = [
-                '<table border="1" cellspacing="0" cellpadding="6" width="100%" '
+                '<table border="1" cellspacing="0" cellpadding="5" width="100%" '
                 'style="border-collapse:collapse; border:1px solid #1E293B; '
-                'margin-top:6px; margin-bottom:6px; background-color:#0A0E17;">',
+                'margin-top:4px; margin-bottom:4px; background-color:#0A0E17;">',
                 '<thead><tr style="background-color:#0F172A;">'
             ]
             for col_idx, cell in enumerate(header_cells):
                 align = alignments[col_idx]
+                pct = col_pcts[col_idx]
                 parts.append(
-                    f'<th align="{align}" style="border:1px solid #1E293B; '
+                    f'<th width="{pct}%" align="{align}" style="border:1px solid #1E293B; '
                     f'background-color:#0F172A; color:#00F0FF; font-weight:600; '
-                    f'padding:6px 10px;">{cell}</th>'
+                    f'padding:5px 8px;">{cell}</th>'
                 )
             parts.append('</tr></thead><tbody>')
 
@@ -163,7 +209,7 @@ def parse_markdown_tables_to_qt_html(text: str) -> str:
                     parts.append(
                         f'<td align="{align}" style="border:1px solid #1E293B; '
                         f'background-color:{row_bg}; color:#E2E8F0; '
-                        f'padding:5px 10px;">{cell}</td>'
+                        f'padding:4px 8px;">{cell}</td>'
                     )
                 parts.append('</tr>')
 

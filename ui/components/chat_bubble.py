@@ -42,6 +42,7 @@ logger = logging.getLogger("NeonRoute.ChatBubble")
 
 from ui.components.audio_player import AudioPlayerWidget
 from ui.components.file_card import FileCardWidget
+from utils.markdown_table_parser import contains_markdown_table
 
 class SelectableTextBrowser(QTextBrowser):
     """
@@ -71,10 +72,12 @@ class SelectableTextBrowser(QTextBrowser):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if event.oldSize().width() != event.size().width():
-            doc = self.document()
-            w = max(100.0, float(self.viewport().width()))
-            if abs(doc.textWidth() - w) > 6:
-                doc.setTextWidth(w)
+            vp_w = float(self.viewport().width())
+            # Защита: не сжимаем документ, если виджет еще не встроен в макет (vp_w <= 160)
+            if vp_w > 160:
+                doc = self.document()
+                if abs(doc.textWidth() - vp_w) > 6:
+                    doc.setTextWidth(vp_w)
 
 
 # Facade Re-export (Zero-Breaking-Changes)
@@ -728,6 +731,9 @@ class ChatMessageWidget(QWidget):
         finally:
             self._is_resizing_geometry = False
 
+        # Синхронизируем высоту текстового документа с обновленной геометрией контейнера
+        self._adjust_text_height()
+
     def _adjust_text_height(self):
         if getattr(self, "_is_resizing_geometry", False):
             return
@@ -759,6 +765,10 @@ class ChatMessageWidget(QWidget):
                     target_w = int(self.width() * 0.85) - 40
                 else:
                     target_w = 780
+
+            # Защита от сжатия таблиц до единичных символов при ранней инициализации
+            if contains_markdown_table(self.raw_text) and target_w < 400:
+                target_w = max(target_w, 600)
 
             # Квантование ширины документа шагом не менее 16px
             target_w = (target_w // 16) * 16

@@ -46,9 +46,10 @@ def test_column_alignments():
 | L | C | R | D |
 """
     parsed = parse_markdown_tables_to_qt_html(md)
-    assert '<th align="left"' in parsed
-    assert '<th align="center"' in parsed
-    assert '<th align="right"' in parsed
+    assert '<th width="' in parsed
+    assert 'align="left"' in parsed
+    assert 'align="center"' in parsed
+    assert 'align="right"' in parsed
     assert '<td align="left"' in parsed
     assert '<td align="center"' in parsed
     assert '<td align="right"' in parsed
@@ -158,6 +159,29 @@ def test_chat_bubble_geometry_active_tier_and_height(qapp):
     assert table_msg.bubble_container.maximumWidth() == expected_max_w
     assert "<table" in table_msg.text_browser.toHtml()
 
-    # Высота бабла с таблицей существенно больше высоты короткого бабла
+    # Высота бабла с таблицей существенно больше высоты короткого бабла и находится в строгих границах [90, 260] px
     assert table_msg.text_browser.height() > short_h + 40
-    assert table_msg.text_browser.height() >= 100
+    assert 90 <= table_msg.text_browser.height() <= 260
+
+
+def test_cold_chat_bubble_table_height_anomaly_fixed(qapp):
+    """
+    Проверка устранения аномалии раздувания высоты (1162px -> 90..260px)
+    для 3-колоночной и 2-колоночной таблиц при холодной инициализации без родительского макета.
+    """
+    # 3-колоночная таблица
+    w3 = ChatMessageWidget(sender="Элария", text=T34_MARKDOWN, is_user=False)
+    qapp.processEvents()
+    assert 90 <= w3.text_browser.height() <= 260, f"3-col height {w3.text_browser.height()} out of range [90, 260]"
+
+    # 2-колоночная таблица
+    two_col_md = """### Характеристики
+| Параметр | Значение |
+| :--- | ---: |
+| Длина | 6.68 м |
+| Ширина | 3.00 м |
+| Масса | 26.5 т |
+"""
+    w2 = ChatMessageWidget(sender="Элария", text=two_col_md, is_user=False)
+    qapp.processEvents()
+    assert 90 <= w2.text_browser.height() <= 260, f"2-col height {w2.text_browser.height()} out of range [90, 260]"
