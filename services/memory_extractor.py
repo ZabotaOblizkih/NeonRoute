@@ -125,6 +125,11 @@ class MemoryExtractor:
         if any(last_user_text.lower().startswith(p) for p in art_cmd_prefixes):
             return
 
+        # Игнорируем сервисные команды управления памятью (Забудь, Запомни, Очисти память и т.д.)
+        from services.memory_db import handle_memory_command
+        if handle_memory_command(last_user_text)[0]:
+            return
+
         if not MemoryExtractor._has_user_fact_potential(last_user_text):
             return
 
@@ -203,8 +208,11 @@ class MemoryExtractor:
                 txt = re.sub(r"\[Документ:\s*[^\]]+\]", "", txt, flags=re.IGNORECASE)
                 txt = re.sub(r"\[Chunk\s*#?[0-9a-zA-Z_-]+\]", "", txt, flags=re.IGNORECASE)
                 txt = txt.strip()
-                # Пропускаем сервисные теги инструментов и системные логи
-                if txt.startswith(("[IMAGE_PROMPT", "<<TOOL:", "[Системный")):
+                # Пропускаем сервисные теги инструментов, системные логи и команды управления памятью
+                if txt.startswith(("[IMAGE_PROMPT", "<<TOOL:", "[Системный", "Забыла:", "Удалила из памяти", "Записала в долговременную память", "Очистила всю память")):
+                    continue
+                from services.memory_db import handle_memory_command
+                if handle_memory_command(txt)[0]:
                     continue
                 if len(txt) > 800:
                     txt = txt[:800] + "..."

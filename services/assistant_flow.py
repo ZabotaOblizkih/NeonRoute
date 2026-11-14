@@ -119,6 +119,13 @@ def sanitize_messages_for_memory(messages: List[Dict[str, Any]]) -> List[Dict[st
         clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
 
         if clean_text:
+            # Исключаем явные команды управления памятью и системные подтверждения
+            from services.memory_db import handle_memory_command
+            if handle_memory_command(clean_text)[0] or clean_text.startswith((
+                "Забыла:", "Удалила из памяти", "Записала в долговременную память", "Очистила всю память"
+            )):
+                continue
+
             if "content" in m:
                 m_copy["content"] = clean_text
             if "text" in m:

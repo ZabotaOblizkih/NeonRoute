@@ -13,6 +13,7 @@ import time
 import threading
 from datetime import datetime, timedelta
 import atexit
+import contextlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -184,8 +185,49 @@ _VIEW_PATTERN_STR = r"^\s*(?:" + "|".join(re.escape(t) for t in sorted(VIEW_TRIG
 _VIEW_REGEX = re.compile(_VIEW_PATTERN_STR, re.IGNORECASE)
 _CLEAR_PATTERN_STR = r"^\s*(?:" + "|".join(re.escape(t) for t in sorted(CLEAR_TRIGGERS, key=len, reverse=True)) + r")[\s.!]*(.*)$"
 _CLEAR_REGEX = re.compile(_CLEAR_PATTERN_STR, re.IGNORECASE)
-_DELETE_ID_REGEX = re.compile(r"^\s*(?:забудь(?:\s+факт)?|удали(?:\s+факт)?|forget(?:\s+fact)?|delete(?:\s+fact)?)\s*#?(\d+)[\s.]*$", re.IGNORECASE)
-_DELETE_KEYWORD_REGEX = re.compile(r"^\s*(?:забудь(?:\s+факт)?|удали(?:\s+факт)?|forget(?:\s+fact)?|delete(?:\s+fact)?)\s+(.+)$", re.IGNORECASE | re.DOTALL)
+_DELETE_ID_REGEX = re.compile(
+    r"^\s*(?:забудь(?:\s+факт)?|удали(?:\s+из\s+памяти)?|удали(?:\s+факт)?|сотри(?:\s+из\s+памяти)?|стереть(?:\s+из\s+памяти)?|forget(?:\s+fact)?|delete(?:\s+fact)?)\s*#?(\d+)[\s.]*$",
+    re.IGNORECASE
+)
+_DELETE_KEYWORD_REGEX = re.compile(
+    r"^\s*(?:забудь(?:\s+факт)?|удали(?:\s+из\s+памяти)?|удали(?:\s+факт)?|сотри(?:\s+из\s+памяти)?|стереть(?:\s+из\s+памяти)?|forget(?:\s+fact)?|delete(?:\s+fact)?)\s+(.+)$",
+    re.IGNORECASE | re.DOTALL
+)
+
+def clean_forget_query(raw_query: str) -> str:
+    """
+    Очищает запрос на удаление из памяти от речевых связок и нормализует буквы 'ё' -> 'е'.
+    Примеры:
+    - 'о том, что я пью черный кофе' -> 'пью черный кофе'
+    - 'про чёрный кофе' -> 'черный кофе'
+    - 'удали из памяти о том, что я люблю джаз' -> 'люблю джаз'
+    - 'что я живу в Москве' -> 'живу в Москве'
+    """
+    if not raw_query:
+        return ""
+    q = raw_query.replace("ё", "е").replace("Ё", "Е").strip()
+
+    prefixes = [
+        r"^(?:удали|забудь|сотри|стереть)\s+из\s+памяти(?:[,\s]+|$)",
+        r"^(?:удали|забудь|сотри|стереть)(?:[,\s]+|$)",
+        r"^(?:из\s+памяти)(?:[,\s]+|$)",
+        r"^(?:факт(?:\s+о\s+том,?\s*что\s+я|\s+о\s+том,?\s*что|\s+то,?\s*что\s+я|\s+то,?\s*что|\s+что,?\s*я|\s+что|\s+про|\s+о|\s+об)?)(?:[,\s]+|$)",
+        r"^(?:о\s+том,?\s*что\s+я|о\s+том,?\s*что|то,?\s*что\s+я|то,?\s*что|про\s+то,?\s*что\s+я|про\s+то,?\s*что)(?:[,\s]+|$)",
+        r"^(?:что\s+я|что|про|обо?|об|about)(?:[,\s]+|$)",
+        r"^(?:я\s+)",
+    ]
+    changed = True
+    while changed:
+        changed = False
+        q = q.strip(" ,.:;!?-–—\"'«»")
+        for pat in prefixes:
+            m = re.match(pat, q, flags=re.IGNORECASE)
+            if m:
+                q = q[m.end():].strip(" ,.:;!?-–—\"'«»")
+                changed = True
+                break
+
+    return q.strip(" ,.:;!?-–—\"'«»")
 
 def normalize_fact_text(text: str) -> str:
     """Normalizes 1st person pronouns into 3rd person to prevent model identity confusion."""
@@ -218,13 +260,18 @@ class MemoryDB:
         self._init_db()
         self._sync_checked = False
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _get_connection(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA journal_mode = WAL;")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
     def _init_db(self):
         try:
@@ -770,32 +817,59 @@ class MemoryDB:
     def delete_fact(self, fact_id: int) -> bool:
         return self.delete_fact_by_id(fact_id)
 
-    def delete_fact_by_keyword(self, keyword: str) -> int:
-        clean_kw = keyword.strip() if keyword else ""
+    def delete_facts_smart(self, raw_query: str) -> List[str]:
+        """
+        Умный поиск и удаление фактов:
+        1. Очистка речевых связок («о том, что», «что», «про», «что я», «удали из памяти»)
+           и нормализация буквы 'ё' -> 'е'.
+        2. Точный поиск по подстроке в SQLite (с нормализацией 'ё' -> 'е' и регистра).
+        3. Если по подстроке ничего не найдено — семантический фоллбэк через
+           LanceDB search_relevant_facts(clean_kw, max_distance=0.45).
+        4. Удаление найденных совпадений из SQLite и LanceDB.
+        Возвращает список исходных текстов удаленных фактов.
+        """
+        clean_kw = clean_forget_query(raw_query)
         if not clean_kw:
-            return 0
-        clean_kw = re.sub(r"^(?:про|о|об|about)\s+", "", clean_kw, flags=re.IGNORECASE).strip().strip('"\'')
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.execute("SELECT id FROM user_memory WHERE fact LIKE ?;", (f"%{clean_kw}%",))
-                m_ids = [r["id"] for r in cursor.fetchall()]
-                cursor = conn.execute("DELETE FROM user_memory WHERE fact LIKE ?;", (f"%{clean_kw}%",))
-                conn.commit()
-                count = cursor.rowcount
+            return []
 
-            _, table, _ = _get_embedding_engine()
-            if table and m_ids:
-                with _LANCE_LOCK:
-                    for mid in m_ids:
-                        try:
-                            safe_mid = str(mid).replace("'", "''")
-                            table.delete(f"id = '{safe_mid}'")
-                        except Exception as e_kw:
-                            logger.warning(f"Error deleting fact #{mid} by keyword from LanceDB: {e_kw}")
-            return count
-        except Exception as e:
-            logger.error(f"Error deleting by keyword: {e}")
-            return 0
+        all_facts = self.get_all_facts()
+        if not all_facts:
+            return []
+
+        clean_kw_norm = clean_kw.lower().replace("ё", "е")
+
+        # 1. Поиск по точной подстроке (с нормализацией регистра и буквы 'ё')
+        matched_facts: List[Dict[str, Any]] = []
+        for ef in all_facts:
+            f_norm = ef["fact"].lower().replace("ё", "е")
+            if clean_kw_norm in f_norm:
+                matched_facts.append(ef)
+
+        # 2. Семантический фоллбэк, если по подстроке совпадений не обнаружено
+        if not matched_facts:
+            semantic_texts = self.search_relevant_facts(clean_kw, top_k=5, max_distance=0.45)
+            if semantic_texts:
+                semantic_set = set(semantic_texts)
+                for ef in all_facts:
+                    if ef["fact"] in semantic_set:
+                        matched_facts.append(ef)
+
+        # 3. Удаление найденных записей из SQLite и LanceDB
+        deleted_texts: List[str] = []
+        for ef in matched_facts:
+            f_id = ef["id"]
+            txt = ef["fact"]
+            if self.delete_fact_by_id(f_id):
+                deleted_texts.append(txt)
+
+        if deleted_texts:
+            _maybe_cleanup_lance_tables()
+
+        return deleted_texts
+
+    def delete_fact_by_keyword(self, keyword: str) -> int:
+        deleted = self.delete_facts_smart(keyword)
+        return len(deleted)
 
     def clear_all(self) -> bool:
         try:
@@ -920,12 +994,16 @@ def handle_memory_command(text: str, db: Optional[MemoryDB] = None) -> Tuple[boo
     if kw_match:
         raw_kw = kw_match.group(1).strip()
         if not any(raw_kw.lower().startswith(t) for t in SAVE_TRIGGERS):
-            clean_kw = re.sub(r"^(?:про|о|об|about)\s+", "", raw_kw, flags=re.IGNORECASE).strip().strip('"\'')
-            if clean_kw:
-                cnt = active_db.delete_fact_by_keyword(clean_kw)
-                if cnt > 0:
-                    return True, f"Удалила из памяти {cnt} факт(ов), содержащих «{clean_kw}»."
-                return True, f"Не нашла в памяти записей, содержащих «{clean_kw}»."
+            clean_kw = clean_forget_query(raw_kw)
+            if not clean_kw:
+                return True, "Пожалуйста, укажите, какой именно факт нужно забыть."
+            deleted_facts = active_db.delete_facts_smart(raw_kw)
+            if deleted_facts:
+                if len(deleted_facts) == 1:
+                    return True, f"Забыла: «{deleted_facts[0]}»."
+                fact_list = "\n".join(f"• {f}" for f in deleted_facts)
+                return True, f"Удалила из памяти {len(deleted_facts)} факт(ов):\n{fact_list}"
+            return True, f"Не нашла в памяти записей, связанных с «{clean_kw}»."
 
     is_save, fact_text = parse_memory_trigger(cleaned)
     if is_save:
