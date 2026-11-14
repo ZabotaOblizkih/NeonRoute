@@ -3,8 +3,8 @@
 > **Версия системы**: NeonRoute v0.9.1-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 252 файла Python, ~87 800 строк кода (без учета vendored PyQt-Fluent-Widgets)  
-> **Статус верификации**: 615 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -v`)
+> **Метрики кодовой базы**: 252 файла Python, ~88 200 строк кода (без учета vendored PyQt-Fluent-Widgets)  
+> **Статус верификации**: 638 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -v`)
 
 ---
 
@@ -38,6 +38,7 @@
 | **ADR-22** | `HEAD` | `services/session_manager.py`, `ui/controllers/assistant_flow_controller.py`, `mobile_server/services/chat_service.py`, `services/context_window_builder.py` | При попытке пользователя отредактировать сгенерированное изображение («то же самое, но ночью», «сделай в полный рост», «убери очки») ассистент терял контекст предыдущей генерации, так как сырой `[IMAGE_PROMPT: ...]` отсекался из истории диалога или не передавался на следующий ход. | 1) Сохранение полного ответа ассистента с `[IMAGE_PROMPT: ...]` в истории сообщений сессии (`chat_history`, `session.json`) в десктопном и мобильном сервере.<br>2) При сборке контекста следующего хода (`ContextWindowBuilder`) предыдущий арт-промпт передается модели как часть истории, обеспечивая связное редактирование и семантическую непрерывность визуальных инструкций без загрязнения временных инъекций скиллов. |
 | **ADR-23** | `HEAD` | `services/art_director/vram_policy.py`, `services/art_director/director.py`, `services/art_director/__init__.py`, `tests/unit/test_forge_vram_policy.py`, `tests/smoke/test_art_pipeline_smoke.py` | 1) На SD 1.5 принудительный VAE Tiling в `float16` вызывал `RuntimeWarning: invalid value encountered in cast` (NaN) и приводил к сохранению черных PNG (~4.8 КБ).<br>2) Эвристические константы `K_ARCH_SD15` / `K_ARCH_SDXL` создавали бинарный гейт Hires.fix, конфликтовавший с реальным планировщиком памяти `resolve_forge_offload_policy`, необоснованно блокируя Hires.fix для SD 1.5 или широких форматов (16:9, 21:9).<br>3) Шаги второго прохода Hires.fix (`hr_second_pass_steps`) были захардкожены на `14` / `15`, раздувая время генерации на быстрых 6–8 шаговых моделях (Lightning/Turbo/DMD). | 1) Добавлен CLI-флаг `"--no-half-vae"` в базовый список флагов запуска Forge; порог VAE Tiling для SD 1.5 поднят до $> 1.3\text{M}$ px (отключен для типовых портретов $\le 1.3\text{M}$ px, напр. 704x1088).<br>2) Разработана точная обратная формула пикового бюджета VRAM в `calculate_max_hires_canvas_area`: $\text{free\_for\_hr\_mb} = \text{target\_budget\_mb} - (\text{total\_weights} + \text{base\_canvas} + \text{upscaler} + \text{ad\_stage})$, $\text{max\_area} = \mathrm{int}((\text{free\_for\_hr\_mb} / \text{cost\_per\_mpix}) \times 10^6)$, устранив хардкод `K_ARCH` и вынеся константы стоимости пикселей холста/Hires и VAE tiling factor (0.65).<br>3) Функция `resolve_safe_hires_scale` адаптивно подбирает безопасный масштаб Hires.fix: для SD 1.5 запросы 1.5x и 2.0x больше не срезаются, для SDXL FP8 на 8 ГБ масштаб 1.50x безопасно поджимается до 1.25x в режиме `SMART_SWAP`; fallback апскейлера для SDXL — `"Latent"`.<br>4) Внедрена адаптивная функция `resolve_hires_second_pass_steps(base_steps, denoising_strength, configured_steps)`: для моделей $\le 10$ шагов масштаб шагов Hires равен $\max(4, \min(10, \text{base\_steps}))$, для стандартных моделей вычисляется от $0.60 \times \text{base\_steps}$ со страховкой по силе денойза.<br>5) Единый диагностический паспорт `[RESOLUTION]` и `[Forge VRAM Policy Diagnostic Passport]` в логах `ArtDirector`. |
 | **ADR-24** | `HEAD` | `services/layer_budgeter.py`, `services/process_manager.py`, `services/forge_client.py`, `services/vram_arbiter.py`, `ui/controllers/hardware_engine.py`, `services/lm_studio.py`, `ui/controllers/assistant_flow_controller.py`, `mobile_server/services/chat_service.py`, `services/context_window_builder.py`, `services/session_manager.py`, `tests/smoke/test_layer_budgeter_profiles_smoke.py`, `tests/unit/test_thinking_tokens_and_anti_loop.py` | 1) Падение производительности инференса с 28 tok/s до 4.2 tok/s при плотной аллокации VRAM (>95%, Gemma 4 12B Q4_K_M при CTX=14336 на 8 ГБ GPU) из-за сброса CUDA-буферов в Shared System RAM драйвером WDDM при свободном остатке $< 250$ МБ.<br>2) Неучёт динамического фона ОС/других процессов и буферов вычислений Compute/Logits для моделей с гигантским словарем (`vocab_size >= 200 000`).<br>3) Переполнение 64 КБ буфера GGUF-парсера массивом `tokenizer.ggml.tokens` (262K токенов) с обнулением `vocab_size`.<br>4) Залипание гистерезиса (`can_apply_hysteresis`) при дефиците памяти и «зомби-NGL» в `ProcessManager` после падения/выгрузки сервера.<br>5) Удержание Forge residual CUDA-памяти (~443–684 МБ) и наложение старта LLM с падением в Host RAM.<br>6) Искусственный потолок в 2048 токенов для думающих моделей в Desktop и Mobile BFF. | 1) В `LayerBudgeter`: калибровка запаса WDDM `safety_res = 280 МБ` (вместо 150 МБ) при `is_arbiter_managed=True`, учёт динамического фона `effective_os_reserve = max(os_reserve_mb, ceil(used_vram))` через опрос NVML (`get_current_used_vram_mb`) и буферов вычислений `compute_mb = (150/220) + (60 if vocab_size >= 200000 else 0)`.<br>2) Для Gemma 4 12B CTX=14336 на 8 ГБ GPU: автоматический расчёт `NGL = 47` (остаток 388 МБ, защита от WDDM paging), а при CTX=8192 — полный оффлоад `NGL = 99`.<br>3) Физический предохранитель гистерезиса: блокировка сохранения `current_running_ngl`, если блок-бюджет меньше запроса или при нехватке памяти под полный оффлоад.<br>4) Ликвидация «зомби-NGL»: гарантированный сброс `_current_running_ngl = None` и `_current_total_layers = None` при выгрузке/убийстве инстанса, проверка `was_running` при перезапуске.<br>5) VRAM-барьер перехода Forge $\rightarrow$ LLM: `release_diffusion_for_llm(force=True)` с обходом флага `_checkpoint_unloaded` и ожиданием стабилизации памяти `_wait_for_vram_stabilization()` (порог 750 МБ или $\Delta < 15$ МБ).<br>6) Восстановление бинарного парсера GGUF: фиксация длины массива токенов до чтения строковых элементов (`metadata[f"{key}.count"] = int(arr_len)`) и авто-инвалидация `models_cache.json` при отсутствии `vocab_size`.<br>7) Прозрачный лог `LMStudioClient`: отображение фактического `effective_ngl` в формате `GPU layers: 45/48` или `99 (all layers)` в строгом соответствии с паспортом `LayerBudgeter`.<br>8) Снятие лимита 2048 токенов: расширение дефолтного потолка ответа для думающих моделей (`THINKING_MODEL_KEYWORDS`) до `MASTER_MAX_RESPONSE_TOKENS` (4096 токенов) в Desktop и Mobile Gateway, сохранение ручных настроек пользователя, защита Sliding CoT от пустых мыслей и потоковый Anti-Loop детектор повторов.<br>9) Разработан смоук-сьют `test_layer_budgeter_profiles_smoke.py` (18 тестов) на 4 профилях GPU (2/4/8/16 ГБ) — 615/615 passed. |
+| **ADR-25** | `eb8b2e2`, `1b7cc79`, `619c3e4` | `services/memory_db.py`, `services/memory_extractor.py`, `services/assistant_flow.py`, `services/assistant_prompt_builder.py`, `services/context_window_builder.py`, `ui/controllers/task_lifecycle_controller.py`, `ui/components/bubbles/chat_message_widget.py`, `ui/components/bubbles/knowledge_hud_widget.py`, `ui/controllers/chat_flow_controller.py`, `ui/main_window.py`, `config.json`, `tests/unit/` | 1) Поиск в `MemoryDB` молча не возвращал факты в десктопном цикле (`Deferred RAG`), так как прогрев эмбеддера в `KnowledgeManager` кэшировал `_EMBED_MODEL`, минуя инициализацию таблиц LanceDB (`_LANCE_TABLE is None`).<br>2) Несоответствие метрик в LanceDB: дефолтная евклидова $L_2$ дистанция сравнивалась с косинусным порогом ($0.64$), пропуская ненормализованные векторы.<br>3) Удаление фактов `delete_fact` падало на строках с апострофами и кавычками (`Syntax error in predicate`).<br>4) Команда «Забудь...» требовала строгого подстрочного совпадения и спотыкалась о речевые префиксы («о том, что», «про», букву «ё»).<br>5) Фоновый `MemoryExtractor` пытался извлекать факты из реплик управления памятью («Запомни...», «Забудь...») и отменялся при вводе следующего сообщения из-за `abort_tasks_by_type("all")`.<br>6) В UI отсутствовал визуальный индикатор срабатывания памяти в бабле ответа.<br>7) Жесткая директива `<PassiveMemory>` блокировала использование фактов вне прямых вопросов о них. | 1) Раздельная, независимая ленивая инициализация `_init_lance_tables()` и `_get_embedding_engine()` с гарантией создания таблиц в любом порядке обращений.<br>2) Сквозная $L_2$-нормализация векторов (`normalize_l2`) при записи и поиске, переход на нативный `.metric("cosine")` в LanceDB (порог 0.64 для Ассистента, 0.58 для RP, дедупликация при distance < 0.15).<br>3) Безопасная параметризация SQL/LanceDB предикатов через экранирование кавычек и транзакционный контекст-менеджер `_get_connection()`.<br>4) Умное удаление `delete_facts_smart`: очистка префиксов (`clean_forget_query`, `ё -> е`), точный поиск + семантический фоллбэк (`max_distance=0.45`), возвращающий точные формулировки удаленных фактов.<br>5) Подавление `MemoryExtractor` на управляющих репликах (`is_memory_command`) и очистка системных подтверждений («Запомнила...», «Забыла...») из контекста диалога.<br>6) Защита фоновых задач памяти в `TaskQueueWorker`: `abort_tasks_by_type(exclude_types={"memory_extraction", "memory_sync"})` при новом вводе пользователя.<br>7) Фиолетовый HUD-чип источника памяти в бабле чата (`is_memory: True`, `rgba(168, 85, 247, 0.35)`, `#C084FC`) со всплывающим окном полного текста воспоминаний.<br>8) Естественная директива `<PassiveMemory>`: факты используются гармонично и ненавязчиво в релевантном контексте.<br>9) Разработаны 4 unit-сьюта (19 тестов), суммарный объем тестов увеличен до 638 (100% Pass Rate). |
 
 ---
 
@@ -1131,21 +1132,150 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
             KnowledgeHUDWidget (Неоновые микро-чипы источников в чате)
 ```
 
+### 6.5. Архитектура междиалоговой долговременной памяти (Memory Subsystem & ADR-25)
+
+Междиалоговая долговременная память обеспечивает накопление, семантический поиск и актуализацию персональных фактов о пользователе («Элария помнит детали между перезапусками и разными чатами») без расхода видеопамяти (0 МБ VRAM). Подсистема охватывает дуальное хранилище данных, асинхронную экстракцию на базе локальной LLM, прецизионный векторный поиск, транзакционное управление и визуальный фидбек в интерфейсе.
+
+```mermaid
+flowchart TD
+    subgraph Capture["1. Ввод и маршрутизация"]
+        UserMsg["Реплика пользователя"] --> CmdCheck{"is_memory_command?<br>(«Запомни...», «Забудь...»)"}
+        CmdCheck -- "Да" --> TaskLife["TaskLifecycleController<br>(handle_memory_command)"]
+        CmdCheck -- "Нет" --> DeferRAG["Deferred Context Assembly<br>(run_assistant_inference_deferred)"]
+    end
+
+    subgraph MemoryMgmt["2. Управление памятью (Синхронно / Быстро)"]
+        TaskLife --> CleanQ["clean_forget_query<br>(очистка стоп-фраз, ё -> е)"]
+        CleanQ --> SmartDel["delete_facts_smart"]
+        SmartDel --> SubMatch{"Подстрочный поиск<br>в SQLite"}
+        SubMatch -- "Найдено" --> ExecDel["Удаление из SQLite + LanceDB"]
+        SubMatch -- "0 совпадений" --> LanceFallback["Семантический фоллбэк<br>LanceDB cosine <= 0.45"]
+        LanceFallback --> ExecDel
+        ExecDel --> SystemResp["Ответ: «Забыла: ...»<br>(Подавление MemoryExtractor)"]
+    end
+
+    subgraph DeferredPipeline["3. Отложенный контекст (В потоке воркера)"]
+        DeferRAG --> MemSearch["MemoryDB.search_relevant_facts<br>(FastEmbed ONNX 384d, normalize_l2)"]
+        MemSearch --> LanceCosine["LanceDB .metric('cosine')<br>Порог dist <= 0.64 (RP <= 0.58)"]
+        LanceCosine --> PromptInj["Инъекция в messages[0]<br>&lt;PassiveMemory&gt; (Естественный стиль)"]
+        LanceCosine --> ChipMeta["_pending_knowledge_sources<br>(is_memory=True, title, text)"]
+    end
+
+    subgraph AsyncExtractor["4. Фоновая экстракция фактов (Low Priority)"]
+        DeferRAG --> TQ["TaskQueueWorker<br>(enqueue priority=LOW)"]
+        TQ --> Extractor["MemoryExtractor.extract_facts_async<br>(LLM Prompt + Reasoning Guard)"]
+        Extractor --> FactFilter{"Новый факт?<br>cosine dist < 0.15 ?"}
+        FactFilter -- "Дубликат" --> Skip["Пропуск записи"]
+        FactFilter -- "Новый" --> AddFact["MemoryDB.add_fact<br>(normalize_l2 -> SQLite + LanceDB)"]
+    end
+
+    subgraph ChatUI["5. Интерфейс (UI)"]
+        ChipMeta --> PurpleChip["KnowledgeSourceChip<br>(Фиолетовый неоновый бейдж)"]
+        PurpleChip --> FactDialog["MemoryFactPreviewDialog<br>(Просмотр воспоминания)"]
+    end
+```
+
+#### 6.5.1. Топология хранения и транзакционная целостность
+Хранилище памяти организовано по дуальной гибридной схеме в каталоге `data/`:
+1. **Реляционное ядро (`data/memory.db`, SQLite WAL)**:
+   - Таблица `user_memory`: первичный ключ `id`, текстовый факт `fact`, категория `category`, временная метка `created_at`.
+   - Таблица `rp_memories`: эпизодические воспоминания ролевого режима с привязкой к имени персонажа `character_name` и контексту сцены.
+   - Таблица `memory_sync_meta`: состояние синхронизации индексов.
+   - **Управление дескрипторами соединений**: доступ к SQLite строго инкапсулирован через генератор-контекст `@contextlib.contextmanager def _get_connection(self)`. В блоке `finally` гарантирован вызов `conn.close()`, что исключает утечки дескрипторов файлов и ошибки `[WinError 32]` при очистке временных баз данных в тестах и на платформе Windows.
+2. **Векторный индекс (`data/lancedb/`, LanceDB)**:
+   - Таблицы `facts` и `rp_memories` со схемой Apache Arrow (PyArrow): `id` (int64), `vector` (FixedSizeList 384 float32), `fact` (string), `category` (string), `created_at` (float64).
+   - Векторы хранятся в колоночном формате Lance с оптимизацией фрагментов через `table.optimize()`.
+
+#### 6.5.2. Векторизация, метрика расстояний и калиброванные пороги
+1. **Эмбеддер на CPU**: модель `paraphrase-multilingual-MiniLM-L12-v2` (384 измерения) через рантайм `fastembed.TextEmbedding` (ONNX Runtime, строго execution provider CPU). Потребление VRAM равно 0 МБ.
+2. **Сквозная $L_2$-нормализация векторов**:
+   $$\mathbf{v}_{\text{norm}} = \frac{\mathbf{v}}{\|\mathbf{v}\|_2 + \epsilon}, \quad \epsilon = 10^{-12}$$
+   Нормализация применяется единообразно в функции `normalize_l2()`:
+   - При добавлении факта (`add_fact`).
+   - При семантической дедупликации перед записью.
+   - При вычислении поискового вектора запроса пользователя в `search_relevant_facts`.
+3. **Косинусная метрика в LanceDB**:
+   Поиск выполняется строго с вызовом `.metric("cosine")`. Для нормализованных векторов косинусное расстояние $D_{\text{cosine}} = 1 - \cos(\mathbf{u}, \mathbf{v}) \in [0, 2]$.
+4. **Пороговая калибровка**:
+   - **Порог дедупликации при записи**: $D_{\text{cosine}} < 0.15$. Если семантически эквивалентный факт уже есть в базе, запись пропускается, предотвращая засорение векторного индекса тавтологиями.
+   - **Порог релевантности для Ассистента (Элария)**: $D_{\text{cosine}} \le 0.64$ (соответствует косинусному сходству $\ge 0.36$). Гарантирует извлечение фактов даже при непрямой формулировке вопроса (например, «Ты знаешь что-нибудь про Т-34?» находит факт «пользователь интересуется танком Т-34-85»).
+   - **Порог релевантности для ролевого режима (RP)**: $D_{\text{cosine}} \le 0.58$ (более строгая фильтрация для защиты канона сцены).
+
+#### 6.5.3. Независимая ленивая инициализация (Decoupled Deferred Initialization)
+Ранее в системе существовала скрытая зависимость инициализации: при обращении `KnowledgeManager` к общему движку эмбеддингов кэшировался синглтон модели `_EMBED_MODEL`, в результате чего вызов `MemoryDB._get_embedding_engine()` считал подсистему готовой и пропускал создание таблиц LanceDB (`_LANCE_TABLE is None`). Это приводило к молчаливому возврату пустого списка фактов `[]` в десктопном диалоге без каких-либо ошибок в логах.
+
+В рамках ADR-25 инициализация полностью разделена:
+- Метод `_init_lance_tables()` проверяет и подключает таблицы `_LANCE_TABLE` и `_RP_TABLE` независимо от наличия модели векторизации.
+- Метод `_get_embedding_engine()` гарантирует вызов `_init_lance_tables()` при каждом обращении.
+- Внедрено прозрачное диагностическое логирование:
+  ```text
+  [MemoryDB] Поиск: найдено 2 факт(ов), best_dist=0.281
+  [AssistantFlow.Deferred] Память: передано 2 факт(ов) в контекст
+  ```
+
+#### 6.5.4. Умное удаление фактов и семантический фоллбэк (`delete_facts_smart`)
+Удаление фактов через прямое обращение пользователя («Забудь, где я живу», «Удали из памяти про Т-34») детерминировано двухэтапным алгоритмом:
+1. **Нормализация и очистка запроса (`clean_forget_query`)**:
+   - Удаление речевых префиксов и командных конструкций через регулярные выражения: `^(?:удали|забудь|сотри|стереть)\s+из\s+памяти(?:[,\s]+|$)`, `^(?:забудь|удали|сотри|стереть)\s+`, а также связок `^(?:о\s+том[,\s]+что|про|что\s+я|что|о|об)\s+`.
+   - Нормализация букв `ё` $\rightarrow$ `е`.
+   - Очистка обрамляющих кавычек и лишних пробелов.
+2. **Двухэтапный поиск удаляемых записей**:
+   - **Этап 1: Подстрочный поиск в SQLite**: поиск записей по `lower(fact) LIKE %cleaned%`.
+   - **Этап 2: Семантический фоллбэк в LanceDB**: если подстрочный поиск дал 0 результатов, выполняется векторный поиск `search_relevant_facts(cleaned_query, max_distance=0.45)`.
+3. **Атомарная синхронизация и экранирование**:
+   - Удаление записей из SQLite по найденным `id`.
+   - Удаление из таблицы LanceDB через `table.delete(f"id IN ({id_list})")` с экранированием одинарных кавычек `escape_sql_literal()`, что полностью предотвращает синтаксические ошибки LanceDB при наличии апострофов в фактах.
+   - Формирование точного текстового подтверждения: пользователю возвращается перечень реально удаленных формулировок (`«Забыла: ...»`).
+
+#### 6.5.5. Жизненный цикл экстрактора и защита очередей
+1. **Подавление экстракции на управляющих репликах (`is_memory_command`)**:
+   - Реплики, начинающиеся со слов «запомни», «забудь», «удали из памяти», «сотри из памяти», «очисти память», «покажи память», перехватываются контроллером `TaskLifecycleController.handle_memory_command()` и исполняются локально без отправки запроса в LLM.
+   - Для таких реплик фоновая задача `MemoryExtractor` не запускается.
+   - Системные подтверждения Ассистента («Запомнила: ...», «Забыла: ...», «Память полностью очищена») распознаются функцией `is_memory_confirmation()` и фильтруются из истории сообщений, предотвращая засорение базы фактами о самом факте сохранения.
+2. **Защита от вытеснения в очереди задач**:
+   - При отправке пользователем очередного сообщения метод `MainWindow._on_send_clicked()` прерывает незавершенные генерации, но защищает фоновые задачи памяти:
+     ```python
+     self.task_queue.abort_tasks_by_type("all", exclude_types={"memory_extraction", "memory_sync"})
+     ```
+   - Это гарантирует, что асинхронный анализ предыдущего хода успешно завершится и факт будет зафиксирован в долговременной памяти, даже если пользователь быстро набирает следующий вопрос.
+
+#### 6.5.6. Визуализация в интерфейсе (Фиолетовый неоновый HUD-чип)
+При извлечении фактов из памяти в бабле ответа отображается интерактивный микро-чип:
+- **Метаданные чипа**: словарь с ключами `{"title": "Память: N факт(ов)", "text": "...", "is_memory": True}` передается в `_pending_knowledge_sources` и сохраняется в SQLite/JSON истории диалога.
+- **Стилизация**: специализированный стиль в `KnowledgeSourceChip` на базе фиолетового акцента киберпанк-палитры:
+  - Фон: `rgba(168, 85, 247, 0.14)`.
+  - Граница: `1px solid rgba(168, 85, 247, 0.35)`.
+  - Текст и иконка: `#C084FC`.
+- **Интерактивность**: клик по чипу распознает флаг `is_memory` и открывает модальное диалоговое окно `MemoryFactPreviewDialog` со списком извлеченных воспоминаний, не пытаясь открывать несуществующий файл документа на диске.
+
+#### 6.5.7. Промпт-инженерия `<PassiveMemory>`
+Блок воспоминаний инжектируется в `messages[0]` перед системными правилами:
+```text
+<PassiveMemory>
+- Пользователь интересуется историей бронетехники и танком Т-34-85
+- Пользователя зовут Алексей
+</PassiveMemory>
+```
+Директива в `SYSTEM_PERSONA_TEMPLATE` смягчена:
+> «Факты из блока <PassiveMemory> содержат долговременные знания о пользователе. Используй их естественно и ненавязчиво, если контекст диалога делает это уместным, или когда пользователь задаёт прямые вопросы о себе или связанных темах.»
+
+Это исключает искусственное игнорирование фактов моделью при живом общении.
+
 ---
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (553 теста, 100% Pass Rate на полном прогоне `pytest -v`)
+### 7.1. Структура тестового сьюта (638 тестов, 100% Pass Rate на полном прогоне `pytest -v`)
 
-Пирамида тестирования NeonRoute состоит из 553 автоматических тестов в 67 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 638 автоматических тестов в 74 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
-| **`tests/smoke/`** | 16 | 71 | Быстрые сквозные смоук-тесты: арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (15 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge |
-| **`tests/unit/`** | 37 | 321 | Изолированное модульное тестирование: клиенты Forge и LM Studio, геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
+| **`tests/smoke/`** | 17 | 90 | Быстрые сквозные смоук-тесты: арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (15 тестов), Layer Budgeter (18 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge |
+| **`tests/unit/`** | 43 | 374 | Изолированное модульное тестирование: клиенты Forge и LM Studio, геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
 | **`tests/integration/`** | 2 | 9 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
-| **`tests/` (root)** | 12 | 152 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives |
-| **ИТОГО** | **67** | **553** | **100% Pass Rate на полном прогоне `pytest -v`** |
+| **`tests/` (root)** | 12 | 165 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives |
+| **ИТОГО** | **74** | **638** | **100% Pass Rate на полном прогоне `pytest -v`** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 
@@ -1200,6 +1330,27 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
     - Проверка очищенных маркеров `fullbody` (бытовые слова `standing`, `boots`, `dress` не вытягивают холст).
     - Детерминированный маппинг явного флага `--ar` в SDXL и SD 1.5 без эвристики `has_human` (включая нестандартные токены персонажей `samurai`, `cyborg` на `--ar wide`).
     - Сохранение детекции архетипа в VisualIntent при отсутствии явного флага `--ar` (защита от затирания дефолтным `solo`).
+16. **`test_memory_db_normalization_and_syntax.py` (6 тестов, 168 строк)**:
+    - Верификация функции `normalize_l2` и математических свойств нормализованных векторов.
+    - Проверка сквозной нормализации при записи факта (`add_fact`) и семантической дедупликации ($D_{\text{cosine}} < 0.15$).
+    - Валидация калибровки порога поиска ($D_{\text{cosine}} \le 0.64$) с косинусной метрикой LanceDB `.metric("cosine")`.
+    - Безопасность синтаксиса предикатов `delete_fact` на строках с апострофами, кавычками и спецсимволами (`escape_sql_literal`).
+    - Очистка таблиц LanceDB от сиротских векторов при переиндексации `sync_and_reindex_facts`.
+17. **`test_memory_extractor_reasoning.py` (4 теста, 137 строк)**:
+    - Запуск экстрактора только при достаточной глубине истории (`len(history) >= 2`).
+    - Корректная фильтрация и извлечение валидных JSON-массивов фактов из ответов LLM, содержащих цепочки рассуждений `<think>...</think>`.
+    - Игнорирование тривиальных реплик («Привет», «Как дела?») и системных подтверждений.
+    - Асинхронное сохранение новых фактов в базу без блокировки очереди задач.
+18. **`test_memory_hud_chip.py` (3 теста, 126 строк)**:
+    - Верификация формирования метаданных чипа памяти `_pending_knowledge_sources` (`is_memory=True`).
+    - Рендеринг фиолетового визуального стиля чипа в `KnowledgeHUDWidget` (`rgba(168, 85, 247, ...)`, `#C084FC`).
+    - Перехват клика по чипу памяти: открытие модального окна просмотра текста воспоминаний без обращения к файловой системе.
+19. **`test_memory_smart_forget_and_passive_prompt.py` (6 тестов, 178 строк)**:
+    - Проверка функции `clean_forget_query`: удаление стоп-фраз («о том, что», «стереть из памяти»), очистка пунктуации и нормализация буквы «ё».
+    - Двухэтапный алгоритм `delete_facts_smart`: точное совпадение подстроки + семантический фоллбэк с порогом $0.45$.
+    - Проверка возврата точных формулировок удаленных фактов пользователю.
+    - Подавление запуска `MemoryExtractor` для реплик команд памяти (`is_memory_command`).
+    - Естественное правило промпта `<PassiveMemory>` в `AssistantPromptBuilder` и шаблонах персоны.
 
 ### 7.3. Характеризационный базовый сьют MainWindow (`tests/test_main_window_baseline.py`)
 
