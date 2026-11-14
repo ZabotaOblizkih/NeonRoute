@@ -125,6 +125,7 @@ class ProcessManager(QObject):
         self._lm_client: Optional[Any] = None
         self.last_error: Optional[str] = None
         self._current_running_ngl: Optional[int] = None
+        self._current_total_layers: Optional[int] = None
 
     @property
     def lm_client(self) -> Optional[Any]:
@@ -283,6 +284,10 @@ class ProcessManager(QObject):
                         logger.warning(f"Error terminating llama-server PID {pid}: {e}")
                 self._llama_process = None
                 self._current_running_ngl = None
+                self._current_total_layers = None
+                if hasattr(self, "lm_client") and self.lm_client:
+                    self.lm_client._current_running_ngl = None
+                    self.lm_client._current_total_layers = None
 
             if self._llama_log_file and not getattr(self._llama_log_file, "closed", True):
                 try:
@@ -353,6 +358,10 @@ class ProcessManager(QObject):
                 logger.error(f"[ProcessManager] {err_msg}")
                 self._process = None
                 self._current_running_ngl = None
+                self._current_total_layers = None
+                if hasattr(self, "lm_client") and self.lm_client:
+                    self.lm_client._current_running_ngl = None
+                    self.lm_client._current_total_layers = None
                 self._set_server_state(ServerState.ERROR, err_msg)
                 self.last_error = err_msg
                 self.lms_status_changed.emit(False, err_msg)
@@ -404,15 +413,16 @@ class ProcessManager(QObject):
         """
         with self._process_lock:
             # 1. Grab current running server's ngl for hysteresis before killing
+            was_running = (self._llama_process is not None and self._llama_process.poll() is None)
             current_running_ngl = None
-            if self._llama_process is not None and self._llama_process.poll() is None:
+            if was_running:
                 val = getattr(self, "_current_running_ngl", None)
                 if isinstance(val, int):
                     current_running_ngl = val
-            if current_running_ngl is None and hasattr(self, "lm_client") and self.lm_client:
-                val = getattr(self.lm_client, "_current_running_ngl", None)
-                if isinstance(val, int):
-                    current_running_ngl = val
+                elif hasattr(self, "lm_client") and self.lm_client:
+                    val = getattr(self.lm_client, "_current_running_ngl", None)
+                    if isinstance(val, int):
+                        current_running_ngl = val
 
             # Kill existing instance if running
             self._kill_llama_server_instance()
@@ -508,6 +518,7 @@ class ProcessManager(QObject):
                     and gpu_layers != 99
                 )
 
+                total_model_layers = None
                 if is_manual_override:
                     try:
                         effective_ngl = int(gpu_layers)
@@ -522,7 +533,8 @@ class ProcessManager(QObject):
                         model_path=model_path,
                         target_context=effective_ctx,
                         current_running_ngl=current_running_ngl,
-                        cache_type=kv_cache_type
+                        cache_type=kv_cache_type,
+                        is_arbiter_managed=True,
                     )
 
                     if not can_run:
@@ -533,6 +545,7 @@ class ProcessManager(QObject):
                         return False
 
                     effective_ngl = ngl
+                    total_model_layers = audit_data.get("total_layers")
 
                 # 6. Assemble CLI arguments (strict list, no shell=True)
                 cmd = [
@@ -644,12 +657,14 @@ class ProcessManager(QObject):
                     self._set_server_state(ServerState.READY, ready_msg)
                     self._safe_emit("lms_status_changed", True, "Сервер LLM запущен.")
                     self._current_running_ngl = effective_ngl
+                    self._current_total_layers = total_model_layers
                     self.last_error = None
                     if hasattr(self, "lm_client") and self.lm_client:
                         self.lm_client._is_model_unloaded = False
                         self.lm_client._last_loaded_model_id = model_path.stem
                         self.lm_client._current_loaded_ctx = effective_ctx
                         self.lm_client._current_running_ngl = effective_ngl
+                        self.lm_client._current_total_layers = total_model_layers
                     return True
                 else:
                     if self._server_state != ServerState.ERROR:
@@ -1101,8 +1116,15 @@ class ProcessManager(QObject):
         Synchronously stops llama-server to free 100% of GPU VRAM for SD WebUI Forge.
         Sets ServerState to EVICTED_FOR_FORGE while preserving _last_loaded_model_id in lm_client.
         """
-        logger.info("ProcessManager: evicting LLM server for Forge diffusion generation...")
         with self._process_lock:
+            if (
+                self._server_state in (ServerState.EVICTED_FOR_FORGE, ServerState.STOPPED)
+                and self._llama_process is None
+            ):
+                if hasattr(self, "lm_client") and self.lm_client:
+                    self.lm_client._is_model_unloaded = True
+                return True
+            logger.info("ProcessManager: evicting LLM server for Forge diffusion generation...")
             self._kill_llama_server_instance(for_forge_eviction=True)
             if hasattr(self, "lm_client") and self.lm_client:
                 self.lm_client._is_model_unloaded = True
@@ -1169,35 +1191,25 @@ class ProcessManager(QObject):
 
             cmd = ["cmd.exe", "/c", str(launcher_path)]
             try:
-                from services.art_director.vram_policy import resolve_forge_offload_policy, resolve_hardware_vram_budget
-                total_vram_gb, _ = resolve_hardware_vram_budget()
-                pol = resolve_forge_offload_policy(architecture="sd15", is_fp8=True, enable_adetailer=True)
-                needs_offload = bool(
-                    pol.get("always_offload", False)
-                    or (total_vram_gb <= 8.0)
-                    or (self._llama_process is not None and self._llama_process.poll() is None)
+                from config import FORGE_EXTRA_ARGS
+                from services.art_director.vram_policy import resolve_forge_startup_flags
+
+                llm_active = bool(
+                    (self._llama_process is not None and self._llama_process.poll() is None)
                     or self.is_lm_studio_running()
                 )
-                if needs_offload:
-                    cmd.extend([
-                        "--api", "--port", "7860", "--listen", "--cuda-malloc",
-                        "--always-offload-from-vram", "--opt-sdp-attention",
-                        "--ad-no-huggingface", "--no-download-sd-model",
-                        "--skip-torch-cuda-test", "--no-hashing", "--disable-nan-check"
-                    ])
-                    logger.info("[ProcessManager] Инициализация памяти: недостаточно VRAM для полноценного удержания -> запуск Forge в режиме STAGE_OFFLOAD (--always-offload-from-vram).")
+                startup_flags, startup_meta = resolve_forge_startup_flags(
+                    llm_active=llm_active,
+                    extra_args=list(FORGE_EXTRA_ARGS) if FORGE_EXTRA_ARGS else None,
+                )
+                cmd.extend(startup_flags)
+                logger.info(
+                    f"[ProcessManager] Стартовые флаги Forge: VRAM={startup_meta['total_vram_gb']:.1f}GB | "
+                    f"pin_shared_memory={startup_meta['pin_shared_memory']} ({startup_meta['pin_reason']}) | "
+                    f"startup_offload={startup_meta['startup_always_offload']}"
+                )
             except Exception as _e_pm:
                 logger.debug(f"[ProcessManager] Проверка стартового бюджета Forge: {_e_pm}")
-
-            # Гарантия наличия флага оффлоада для систем с <= 8 ГБ VRAM
-            if "--always-offload-from-vram" not in cmd:
-                try:
-                    from services.art_director.vram_policy import resolve_hardware_vram_budget
-                    total_vram_gb, _ = resolve_hardware_vram_budget()
-                    if total_vram_gb <= 8.0:
-                        cmd.append("--always-offload-from-vram")
-                except Exception:
-                    cmd.append("--always-offload-from-vram")
 
             logs_dir = LOGS_DIR
             logs_dir.mkdir(parents=True, exist_ok=True)

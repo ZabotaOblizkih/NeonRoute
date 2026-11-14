@@ -99,3 +99,35 @@ def test_vram_arbiter_cpu_and_service_tasks_neutrality():
     arbiter.prepare_for_task("tts")
     assert arbiter._current_owner == GPUOwner.LLM
     assert not mock_lm.unload_models_cli.called
+
+
+def test_vram_arbiter_idempotent_llm_and_forge_unloads():
+    """Повторные вызовы release_llm_for_diffusion и _release_forge_vram не дублируют выгрузку."""
+    mock_lm = MagicMock()
+    mock_lm._is_model_unloaded = False
+    mock_lm.process_manager = None
+
+    def _do_unload():
+        mock_lm._is_model_unloaded = True
+        return True
+
+    mock_lm.unload_models_cli.side_effect = _do_unload
+
+    mock_forge = MagicMock()
+    mock_forge._checkpoint_unloaded = False
+    mock_forge.is_server_ready.return_value = True
+
+    arbiter = VRAMArbiter(lm_client=mock_lm, forge_client=mock_forge)
+
+    # 1. Двойной вызов release_llm_for_diffusion -> реальная выгрузка LLM только 1 раз
+    assert arbiter.release_llm_for_diffusion() is True
+    assert arbiter.release_llm_for_diffusion() is True
+    assert mock_lm.unload_models_cli.call_count == 1
+    assert mock_forge._wait_for_vram_clear.call_count == 1
+
+    # 2. Если ForgeClient уже выгрузил чекпоинт сам (_checkpoint_unloaded=True), _release_forge_vram не шлёт запросы
+    mock_forge._checkpoint_unloaded = True
+    arbiter.prepare_for_task("llm")
+    assert arbiter._current_owner == GPUOwner.LLM
+    mock_forge.unload_checkpoint.assert_not_called()
+    mock_forge.free_vram.assert_not_called()

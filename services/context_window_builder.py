@@ -407,22 +407,30 @@ class ContextWindowBuilder:
         history: List[Dict[str, Any]],
         vision_content: Optional[List[Dict[str, Any]]] = None,
         enable_reasoning: bool = False,
-        keep_last_cot: bool = True
+        keep_last_cot: bool = True,
+        mode: Optional[str] = None,
+        is_engineer: bool = False,
+        is_roleplay: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Нормализует историю диалога для инференса LLM:
         - Преобразует сообщения в OpenAI-совместимый список [{"role": ..., "content": ...}]
-        - Реализует скользящее сохранение CoT (Sliding CoT Preservation): при enable_reasoning=True и keep_last_cot=True
-          сохраняет ровно одно последнее рассуждение <think> ассистента (с защитой от промежуточных ходов галереи [GALERY])
-        - Все более ранние рассуждения ассистента санитизирует (<think>.*?</think>), экономя контекстное окно 14K
-        - Исключает словарь 'thought' и метаданные размышлений, не подмешивая их в текст модели, кроме целевого CoT
+        - Реализует скользящее сохранение CoT (Sliding CoT Preservation) СТРОГО в режиме engineer:
+          при effective_mode == "engineer", enable_reasoning=True и keep_last_cot=True
+          сохраняет ровно одно последнее рассуждение <think> ассистента.
+        - В режимах assistant и roleplay всегда вырезает <think>...</think>, <thought>...</thought>,
+          <reasoning>...</reasoning>, экономя контекстное окно 14K/24K.
+        - Исключает словарь 'thought' и метаданные размышлений, не подмешивая их в текст модели, кроме целевого CoT инженера.
+        - Jinja Alternation Guard: если реплика ассистента состояла только из мыслей, после вырезания подставляет '*(Анализ завершен)*'.
         """
         if not history:
             return []
 
-        # Поиск целевого индекса сообщения ассистента для сохранения CoT
+        effective_mode = (mode or "").strip().lower() or ("engineer" if is_engineer else ("roleplay" if is_roleplay else "assistant"))
+
+        # Поиск целевого индекса сообщения ассистента для сохранения CoT (строго для engineer)
         target_cot_idx = None
-        if enable_reasoning and keep_last_cot:
+        if effective_mode == "engineer" and enable_reasoning and keep_last_cot:
             for idx in range(len(history) - 1, -1, -1):
                 raw_m = history[idx]
                 role = raw_m.get("role") or ("user" if raw_m.get("is_user") else "assistant")
@@ -442,7 +450,7 @@ class ContextWindowBuilder:
                         raw_text_str = " ".join(str(p.get("text", "")) for p in raw_content if isinstance(p, dict) and p.get("type") == "text")
 
                     has_thought = bool(th_content and str(th_content).strip())
-                    has_think_tag = "<think>" in raw_text_str
+                    has_think_tag = bool(re.search(r'<(think|thought|reasoning|analyze)>', raw_text_str, re.IGNORECASE))
                     if has_thought or has_think_tag:
                         target_cot_idx = idx
                         break
@@ -450,7 +458,7 @@ class ContextWindowBuilder:
         normalized_history: List[Dict[str, Any]] = []
         for idx, raw_m in enumerate(history):
             m = dict(raw_m)
-            role = m.get("role") or ("user" if m.get("is_user") else "assistant")
+            role = m.get("role") or ("user" if raw_m.get("is_user") else "assistant")
             content = m.get("content") if m.get("content") is not None else m.get("text", "")
             text = content
 
@@ -463,9 +471,10 @@ class ContextWindowBuilder:
             else:
                 content_val = str(text or "").strip()
 
+            had_thought = False
             if role == "assistant":
                 if idx == target_cot_idx:
-                    # Целевой последний CoT ассистента
+                    # Целевой последний CoT ассистента строго в режиме engineer
                     th = m.get("thought")
                     th_content = ""
                     if isinstance(th, dict):
@@ -496,9 +505,18 @@ class ContextWindowBuilder:
                         if not has_think_in_list and thought_content:
                             content_val = [{"type": "text", "text": f"<think>\n{thought_content}\n</think>\n\n"}] + list(content_val)
                 else:
-                    # Все остальные сообщения ассистента: безусловно вырезаем <think>.*?</think> ради экономии контекста 14K
+                    # Все остальные сообщения ассистента (и все сообщения в assistant/roleplay):
+                    # Безусловно вырезаем <think>.*?</think>, <thought>.*?</thought>, <reasoning>.*?</reasoning>
+                    th = m.get("thought")
+                    if th and ((isinstance(th, dict) and th.get("content")) or (isinstance(th, str) and th.strip())):
+                        had_thought = True
+
                     if isinstance(content_val, str):
-                        content_val = re.sub(r'<think>.*?</think>', '', content_val, flags=re.DOTALL).strip()
+                        if re.search(r'</?(think|analyze|thought|reasoning)>', content_val, re.IGNORECASE):
+                            had_thought = True
+                        content_val = re.sub(r'<(think|analyze|thought|reasoning)>[\s\S]*?(?:</\1>|$)', '', content_val, flags=re.IGNORECASE)
+                        content_val = re.sub(r'^[\s\S]*?</(think|analyze|thought|reasoning)>', '', content_val, flags=re.IGNORECASE)
+                        content_val = re.sub(r'</?(?:think|analyze|thought|reasoning)>', '', content_val, flags=re.IGNORECASE).strip()
                         if "🔔" in content_val:
                             content_val = re.sub(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', '', content_val).strip()
                     elif isinstance(content_val, list):
@@ -506,7 +524,11 @@ class ContextWindowBuilder:
                         for part in content_val:
                             if isinstance(part, dict) and part.get("type") == "text":
                                 p_txt = str(part.get("text", ""))
-                                p_clean = re.sub(r'<think>.*?</think>', '', p_txt, flags=re.DOTALL).strip()
+                                if re.search(r'</?(think|analyze|thought|reasoning)>', p_txt, re.IGNORECASE):
+                                    had_thought = True
+                                p_clean = re.sub(r'<(think|analyze|thought|reasoning)>[\s\S]*?(?:</\1>|$)', '', p_txt, flags=re.IGNORECASE)
+                                p_clean = re.sub(r'^[\s\S]*?</(think|analyze|thought|reasoning)>', '', p_clean, flags=re.IGNORECASE)
+                                p_clean = re.sub(r'</?(?:think|analyze|thought|reasoning)>', '', p_clean, flags=re.IGNORECASE).strip()
                                 if p_clean:
                                     part_copy = dict(part)
                                     part_copy["text"] = p_clean
@@ -527,6 +549,9 @@ class ContextWindowBuilder:
                 elif not content_val:
                     if m.get("image_path") or m.get("file_paths"):
                         content_val = "[Generated image]"
+                    elif had_thought:
+                        # Jinja Alternation Guard: сохраняем реплику с безопасным плейсхолдером
+                        content_val = "*(Анализ завершен)*"
                     else:
                         continue
 
@@ -538,6 +563,7 @@ class ContextWindowBuilder:
     def build_context_messages(
         history: List[Dict[str, Any]],
         *args,
+        mode: Optional[str] = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
@@ -547,8 +573,8 @@ class ContextWindowBuilder:
         В остальных случаях собирает полное контекстное окно через get_lm_studio_messages.
         """
         if not args and not kwargs:
-            return ContextWindowBuilder.prepare_history_for_llm(history)
-        return ContextWindowBuilder.get_lm_studio_messages(history, *args, **kwargs)
+            return ContextWindowBuilder.prepare_history_for_llm(history, mode=mode)
+        return ContextWindowBuilder.get_lm_studio_messages(history, *args, mode=mode, **kwargs)
 
     @staticmethod
     def get_lm_studio_messages(
@@ -572,13 +598,28 @@ class ContextWindowBuilder:
         is_dm_mode: bool = False,
         max_context_tokens: Optional[int] = None,
         enable_reasoning: bool = False,
+        mode: Optional[str] = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
+        effective_mode = (mode or "").strip().lower() or ("engineer" if is_engineer else ("roleplay" if is_roleplay else "assistant"))
+        if effective_mode == "roleplay":
+            is_roleplay = True
+            is_engineer = False
+        elif effective_mode == "engineer":
+            is_engineer = True
+            is_roleplay = False
+        else:
+            is_roleplay = False
+            is_engineer = False
+
         history = ContextWindowBuilder.prepare_history_for_llm(
             history=history,
             vision_content=vision_content,
             enable_reasoning=enable_reasoning,
-            keep_last_cot=True
+            keep_last_cot=(effective_mode == "engineer"),
+            mode=effective_mode,
+            is_engineer=is_engineer,
+            is_roleplay=is_roleplay,
         )
 
         relevant_facts = []

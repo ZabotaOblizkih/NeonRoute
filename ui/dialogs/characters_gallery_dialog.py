@@ -1716,10 +1716,6 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             card.selected_greeting_idx = None
 
         self.selected_card = card
-        was_executing = self.isVisible()
         self.accept()
-        if was_executing:
-            QTimer.singleShot(0, lambda: self.start_session_requested.emit(card))
-        else:
-            self.start_session_requested.emit(card)
+        self.start_session_requested.emit(card)
         self.character_selected.emit(card)

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QApplication
 
 from services.process_manager import ProcessManager
 from services.art_director.vram_policy import (
+    VAE_FP32_OVERHEAD_MB,
     resolve_forge_offload_policy,
     resolve_forge_startup_flags,
     should_enable_pin_shared_memory,
@@ -58,6 +59,8 @@ def test_forge_launch_cmd_adaptive_on_8gb(tmp_path):
         assert "--always-offload-from-vram" not in cmd
         assert "--pin-shared-memory" in cmd
         assert "--no-half-vae" in cmd
+        assert "--vae-in-fp32" in cmd
+        assert "--upcast-sampling" not in cmd
         assert "--api" in cmd
         assert "--port" in cmd
         assert "7860" in cmd
@@ -478,3 +481,89 @@ def test_art_director_plan_adaptive_hires_second_pass_steps():
             plan2 = director.plan_from_visual_intent(fake_intent, preferred_style="custom_sd15")
             assert plan2.enable_hr is True
             assert plan2.hr_second_pass_steps == 14
+
+
+def test_resolve_forge_startup_flags_vae_fp32_and_no_duplicates():
+    """Флаги запуска включают --vae-in-fp32, --no-half-vae, исключают --upcast-sampling и не дублируются."""
+    flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=18000)
+    assert "--vae-in-fp32" in flags
+    assert "--no-half-vae" in flags
+    assert "--upcast-sampling" not in flags
+    assert len(flags) == len(set(flags))
+
+
+def test_resolve_forge_offload_policy_applies_fp32_overhead_and_early_tiling():
+    """
+    resolve_forge_offload_policy корректно учитывает VAE_FP32_OVERHEAD_MB = 260
+    и ранний VAE-tiling (tiling_factor = 0.65) при Hires.fix на SDXL canvas >= 1024.
+    """
+    assert VAE_FP32_OVERHEAD_MB == 260
+
+    with patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)):
+        # SDXL FP8 + Hires: canvas 896x1152 -> hr 1254x1613 (max >= 1024)
+        pol = resolve_forge_offload_policy(
+            width=896,
+            height=1152,
+            architecture="sdxl",
+            is_fp8=True,
+            enable_hr=True,
+            hr_scale=1.4,
+            enable_adetailer=False,
+            enable_hand_adetailer=False,
+        )
+        assert pol["enable_vae_tiling"] is True
+        # С ранним тайлингом (0.65) и оверхедом 260 МБ пик равен ~6042 МБ (без тайлинга был бы ~6817 МБ)
+        # и надежно укладывается в safe_budget_mb (FAST_KEEP_VRAM)
+        assert pol["mode"] == "FAST_KEEP_VRAM"
+        assert pol["always_offload"] is False
+        assert 5900 <= pol["est_peak_mb"] <= 6200
+
+        # Без Hires оверхед VAE_FP32_OVERHEAD_MB не прибавляется
+        pol_no_hr = resolve_forge_offload_policy(
+            width=896,
+            height=1152,
+            architecture="sdxl",
+            is_fp8=True,
+            enable_hr=False,
+            enable_adetailer=False,
+        )
+        assert pol_no_hr["est_peak_mb"] < pol["est_peak_mb"]
+
+
+def test_art_director_logs_denoise_na_when_hr_disabled(caplog):
+    """ArtDirector выводит Denoise=N/A в лог [PARAMS], если enable_hr=False."""
+    import logging
+    from services.art_director import ArtDirector
+    from services.art_director.contracts import VisualIntent
+
+    director = ArtDirector()
+    fake_intent = VisualIntent(
+        prompt="beautiful cybernetic city at night",
+        raw_user_query="cyberpunk city",
+        aspect_ratio="landscape",
+        mode="chat",
+    )
+
+    profile_no_hr = {
+        "id": "test_no_hr_model",
+        "name": "Test No HR Model",
+        "checkpoint": "test_model.safetensors",
+        "architecture": "sdxl",
+        "pipeline": {
+            "enable_hr": False,
+            "hires_denoise": 0.45,
+            "steps": 25,
+            "cfg_scale": 5.0,
+        },
+    }
+
+    with patch.object(director.router, "get_profile", return_value=profile_no_hr), \
+         patch("services.art_director.director.resolve_hardware_vram_budget", return_value=(8.0, 700)), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)), \
+         caplog.at_level(logging.INFO):
+
+        director.plan_from_visual_intent(fake_intent, preferred_style="test_no_hr_model")
+        params_logs = [record.message for record in caplog.records if "[PARAMS]" in record.message]
+        assert len(params_logs) >= 1
+        assert "Denoise=N/A" in params_logs[-1]
+

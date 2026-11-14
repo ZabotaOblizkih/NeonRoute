@@ -3,8 +3,8 @@
 > **Версия системы**: NeonRoute v0.9.1-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 248 файлов Python, ~86 500 строк кода (без учета vendored PyQt-Fluent-Widgets)  
-> **Статус верификации**: 566 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -v`)
+> **Метрики кодовой базы**: 252 файла Python, ~87 800 строк кода (без учета vendored PyQt-Fluent-Widgets)  
+> **Статус верификации**: 615 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -v`)
 
 ---
 
@@ -37,6 +37,7 @@
 | **ADR-21** | `HEAD` | `services/art_director/geometry.py`, `services/art_director/director.py`, `services/assistant_prompt_builder.py`, `services/roleplay_prompt_builder.py`, `services/skill_router.py`, `tests/test_gallery_directives_pipeline.py` | 1) Отсутствие поддержки ультраширокого формата 21:9 (`ultrawide`) в `ArtDirector` ограничивало кинематографические панорамы.<br>2) Скилл `gallery` был жестко привязан к моделям SD 1.5 / SDXL без универсальной адаптации под выбранный чекпоинт, а директивам не хватало структурирования по камере, ракурсам и направленному свету.<br>3) Тег плана кадрирования `cowboy shot` в промптах реалистичных моделей провоцировал появление нежелательных артефактов в виде ковбойских шляп. | 1) Добавлен бакет `ultrawide` (21:9): `1536x640` для SDXL и `768x320` для SD 1.5 в `geometry.py` и `ArtDirector`.<br>2) Внедрён универсальный скилл `cinematic` с динамической интерполяцией `{target_model_id}` и `{model_hint}`, дефолтным `--ar cinematic` (16:9) и поддержкой `--ar ultrawide` (21:9).<br>3) Структурированы шаблоны директив `GALLERY_SKILL_DIRECTIVE_*` и `CINEMATIC_SKILL_DIRECTIVE_*` с секциями `###`, приоритетом камеры, направленного света и сбалансированными примерами.<br>4) Токен `cowboy shot` повсеместно заменён на нейтральный аналог `thigh-up shot`, исключающий ложные шляпы. |
 | **ADR-22** | `HEAD` | `services/session_manager.py`, `ui/controllers/assistant_flow_controller.py`, `mobile_server/services/chat_service.py`, `services/context_window_builder.py` | При попытке пользователя отредактировать сгенерированное изображение («то же самое, но ночью», «сделай в полный рост», «убери очки») ассистент терял контекст предыдущей генерации, так как сырой `[IMAGE_PROMPT: ...]` отсекался из истории диалога или не передавался на следующий ход. | 1) Сохранение полного ответа ассистента с `[IMAGE_PROMPT: ...]` в истории сообщений сессии (`chat_history`, `session.json`) в десктопном и мобильном сервере.<br>2) При сборке контекста следующего хода (`ContextWindowBuilder`) предыдущий арт-промпт передается модели как часть истории, обеспечивая связное редактирование и семантическую непрерывность визуальных инструкций без загрязнения временных инъекций скиллов. |
 | **ADR-23** | `HEAD` | `services/art_director/vram_policy.py`, `services/art_director/director.py`, `services/art_director/__init__.py`, `tests/unit/test_forge_vram_policy.py`, `tests/smoke/test_art_pipeline_smoke.py` | 1) На SD 1.5 принудительный VAE Tiling в `float16` вызывал `RuntimeWarning: invalid value encountered in cast` (NaN) и приводил к сохранению черных PNG (~4.8 КБ).<br>2) Эвристические константы `K_ARCH_SD15` / `K_ARCH_SDXL` создавали бинарный гейт Hires.fix, конфликтовавший с реальным планировщиком памяти `resolve_forge_offload_policy`, необоснованно блокируя Hires.fix для SD 1.5 или широких форматов (16:9, 21:9).<br>3) Шаги второго прохода Hires.fix (`hr_second_pass_steps`) были захардкожены на `14` / `15`, раздувая время генерации на быстрых 6–8 шаговых моделях (Lightning/Turbo/DMD). | 1) Добавлен CLI-флаг `"--no-half-vae"` в базовый список флагов запуска Forge; порог VAE Tiling для SD 1.5 поднят до $> 1.3\text{M}$ px (отключен для типовых портретов $\le 1.3\text{M}$ px, напр. 704x1088).<br>2) Разработана точная обратная формула пикового бюджета VRAM в `calculate_max_hires_canvas_area`: $\text{free\_for\_hr\_mb} = \text{target\_budget\_mb} - (\text{total\_weights} + \text{base\_canvas} + \text{upscaler} + \text{ad\_stage})$, $\text{max\_area} = \mathrm{int}((\text{free\_for\_hr\_mb} / \text{cost\_per\_mpix}) \times 10^6)$, устранив хардкод `K_ARCH` и вынеся константы стоимости пикселей холста/Hires и VAE tiling factor (0.65).<br>3) Функция `resolve_safe_hires_scale` адаптивно подбирает безопасный масштаб Hires.fix: для SD 1.5 запросы 1.5x и 2.0x больше не срезаются, для SDXL FP8 на 8 ГБ масштаб 1.50x безопасно поджимается до 1.25x в режиме `SMART_SWAP`; fallback апскейлера для SDXL — `"Latent"`.<br>4) Внедрена адаптивная функция `resolve_hires_second_pass_steps(base_steps, denoising_strength, configured_steps)`: для моделей $\le 10$ шагов масштаб шагов Hires равен $\max(4, \min(10, \text{base\_steps}))$, для стандартных моделей вычисляется от $0.60 \times \text{base\_steps}$ со страховкой по силе денойза.<br>5) Единый диагностический паспорт `[RESOLUTION]` и `[Forge VRAM Policy Diagnostic Passport]` в логах `ArtDirector`. |
+| **ADR-24** | `HEAD` | `services/layer_budgeter.py`, `services/process_manager.py`, `services/forge_client.py`, `services/vram_arbiter.py`, `ui/controllers/hardware_engine.py`, `services/lm_studio.py`, `ui/controllers/assistant_flow_controller.py`, `mobile_server/services/chat_service.py`, `services/context_window_builder.py`, `services/session_manager.py`, `tests/smoke/test_layer_budgeter_profiles_smoke.py`, `tests/unit/test_thinking_tokens_and_anti_loop.py` | 1) Падение производительности инференса с 28 tok/s до 4.2 tok/s при плотной аллокации VRAM (>95%, Gemma 4 12B Q4_K_M при CTX=14336 на 8 ГБ GPU) из-за сброса CUDA-буферов в Shared System RAM драйвером WDDM при свободном остатке $< 250$ МБ.<br>2) Неучёт динамического фона ОС/других процессов и буферов вычислений Compute/Logits для моделей с гигантским словарем (`vocab_size >= 200 000`).<br>3) Переполнение 64 КБ буфера GGUF-парсера массивом `tokenizer.ggml.tokens` (262K токенов) с обнулением `vocab_size`.<br>4) Залипание гистерезиса (`can_apply_hysteresis`) при дефиците памяти и «зомби-NGL» в `ProcessManager` после падения/выгрузки сервера.<br>5) Удержание Forge residual CUDA-памяти (~443–684 МБ) и наложение старта LLM с падением в Host RAM.<br>6) Искусственный потолок в 2048 токенов для думающих моделей в Desktop и Mobile BFF. | 1) В `LayerBudgeter`: калибровка запаса WDDM `safety_res = 280 МБ` (вместо 150 МБ) при `is_arbiter_managed=True`, учёт динамического фона `effective_os_reserve = max(os_reserve_mb, ceil(used_vram))` через опрос NVML (`get_current_used_vram_mb`) и буферов вычислений `compute_mb = (150/220) + (60 if vocab_size >= 200000 else 0)`.<br>2) Для Gemma 4 12B CTX=14336 на 8 ГБ GPU: автоматический расчёт `NGL = 47` (остаток 388 МБ, защита от WDDM paging), а при CTX=8192 — полный оффлоад `NGL = 99`.<br>3) Физический предохранитель гистерезиса: блокировка сохранения `current_running_ngl`, если блок-бюджет меньше запроса или при нехватке памяти под полный оффлоад.<br>4) Ликвидация «зомби-NGL»: гарантированный сброс `_current_running_ngl = None` и `_current_total_layers = None` при выгрузке/убийстве инстанса, проверка `was_running` при перезапуске.<br>5) VRAM-барьер перехода Forge $\rightarrow$ LLM: `release_diffusion_for_llm(force=True)` с обходом флага `_checkpoint_unloaded` и ожиданием стабилизации памяти `_wait_for_vram_stabilization()` (порог 750 МБ или $\Delta < 15$ МБ).<br>6) Восстановление бинарного парсера GGUF: фиксация длины массива токенов до чтения строковых элементов (`metadata[f"{key}.count"] = int(arr_len)`) и авто-инвалидация `models_cache.json` при отсутствии `vocab_size`.<br>7) Прозрачный лог `LMStudioClient`: отображение фактического `effective_ngl` в формате `GPU layers: 45/48` или `99 (all layers)` в строгом соответствии с паспортом `LayerBudgeter`.<br>8) Снятие лимита 2048 токенов: расширение дефолтного потолка ответа для думающих моделей (`THINKING_MODEL_KEYWORDS`) до `MASTER_MAX_RESPONSE_TOKENS` (4096 токенов) в Desktop и Mobile Gateway, сохранение ручных настроек пользователя, защита Sliding CoT от пустых мыслей и потоковый Anti-Loop детектор повторов.<br>9) Разработан смоук-сьют `test_layer_budgeter_profiles_smoke.py` (18 тестов) на 4 профилях GPU (2/4/8/16 ГБ) — 615/615 passed. |
 
 ---
 
@@ -71,7 +72,7 @@
 | **Хранение данных** | SQLite 3 (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), LanceDB (`table.optimize()`), Zero-Fsync JSON-зеркала |
 | **Сетевые контракты** | FastAPI / Uvicorn (Mobile BFF Gateway REST + Server-Sent Events), Gradio/Automatic1111 REST API, HTTP Keep-Alive |
 | **Управление ОС и процессами** | Win32 API (`kernel32.dll`: Windows Job Objects `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`, дескрипторы скрытых процессов `CREATE_NO_WINDOW`) |
-| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (545 тестов) |
+| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (615 тестов) |
 
 ---
 
@@ -681,13 +682,29 @@ sequenceDiagram
 
 ### 4.5. Математическая модель `LayerBudgeter` (`services/layer_budgeter.py`)
 
-Перед запуском `llama-server.exe` модуль `LayerBudgeter` вычисляет безопасное число слоев оффлоада:
-1. **Детекция топологии**: проверка `nvmlDeviceGetDisplayActive` и процессов `dwm.exe`. Выбор резерва: 700 МБ (`PRIMARY DISPLAY`) или 150 МБ (`PURE COMPUTE`).
-2. **Формула полезной видеопамяти**:
-   $$\text{Usable\_VRAM} = \text{Total\_VRAM} - \text{OS\_Reserve} - \text{FORGE\_RESERVE}\,(450) - \text{SAFETY\_MARGIN}\,(150) - \text{KV\_Cache}$$
-3. **KV-кэш**: расчет размера с 15% буфером CUDA (~64 КБ/токен для `q8_0`, ~36 КБ/токен для `q4_0`, ~128 КБ/токен для `f16`).
-4. **Гистерезис слоев**: если $\Delta \text{ngl} \le 3$, текущее значение сохраняется во избежание лишних перезапусков.
-5. **Pre-flight RAM Guard**: при частичном оффлоаде на CPU проверяется наличие свободной системной ОЗУ с запасом 1024–1500 МБ для операционной системы.
+Перед запуском `llama-server.exe` модуль `LayerBudgeter` вычисляет безопасное число слоев оффлоада (`-ngl`), исключающее вытеснение тензоров в Shared System RAM драйвером Windows WDDM:
+1. **Детекция топологии и динамический опрос VRAM**:
+   - Топология дисплея: проверка `nvmlDeviceGetDisplayActive` и процессов `dwm.exe` возвращает `(is_pure_compute, os_reserve_mb)` (150 МБ для `PURE COMPUTE`, 700 МБ для `PRIMARY DISPLAY`).
+   - Фактический опрос занятой видеопамяти через NVML (`get_current_used_vram_mb()`): в режиме арбитража (`is_arbiter_managed=True`) эффективный резерв ОС расширяется с учётом фоновых аллокаций:
+     $$\text{Effective\_OS\_Reserve} = \max(\text{OS\_Reserve},\, \lceil\text{Used\_VRAM}\rceil)$$
+2. **Калиброванная формула полезной видеопамяти под WDDM**:
+   $$\text{Usable\_VRAM} = \text{Total\_VRAM} - \text{Effective\_OS\_Reserve} - \text{Forge\_Reserve} - \text{Safety\_Margin} - \text{KV\_Cache} - \text{Compute\_Buffer}$$
+   - **Forge Reserve**: вычитается `450 МБ` в автономном режиме (`is_arbiter_managed=False`) и строго `0 МБ` при активном арбитре (`is_arbiter_managed=True`), гарантирующем взаимное исключение.
+   - **Safety Margin (WDDM Headroom)**: базовые `150 МБ` при `is_arbiter_managed=False` и калиброванные `280 МБ` при `is_arbiter_managed=True`, удерживающие свободный остаток видеопамяти выше критического порога сброса буферов драйвером WDDM (~250 МБ).
+   - **KV-кэш**: точный расчёт размера с 15% CUDA-буфером (~64 КБ/токен для `q8_0`, ~36 КБ/токен для `q4_0`, ~128 КБ/токен для `f16`).
+   - **Compute & Logits Buffer**: буфер тензоров вычислений и выходных логитов, зависящий от режима дисплея и словаря модели:
+     $$\text{Compute\_Buffer} = (150\text{ (Pure Compute) } \mid 220\text{ (Primary Display)}) + (60 \text{ при } \text{vocab\_size} \ge 200\,000)$$
+3. **Бинарный парсинг GGUF-заголовков и извлечение `vocab_size`**:
+   - Чтение метаданных `_parse_gguf_header` с сохранением длины массива (`metadata[f"{key}.count"] = int(arr_len)`) непосредственно при чтении дескриптора типа `9` (`ARRAY`), что обеспечивает корректное определение размера словаря (`262 144` токена у Gemma 4) даже при переполнении 64 КБ буфера заголовка токенами `tokenizer.ggml.tokens`.
+   - Автоматическая инвалидация устаревших записей в `models_cache.json`, если в кэше отсутствует валидное значение `vocab_size`.
+4. **Физический предохранитель гистерезиса**:
+   - Переиспользование предыдущего `current_running_ngl` при $\Delta \text{ngl} \le 3$ допускается только при условии физической проходимости (`can_apply_hysteresis`): гистерезис блокируется, если доступный бюджет слоёв меньше запрошенного числа или если запрашивается полный оффлоад (`NGL >= total_layers`), на который не хватает видеопамяти.
+5. **Барьер синхронизации VRAM (Forge $\rightarrow$ LLM)**:
+   - При переключении с диффузии на язык `VRAMArbiter.release_diffusion_for_llm(force=True)` выполняет принудительный сброс контекста Forge через `ForgeClient.free_vram(force=True)` в обход кэша `_checkpoint_unloaded`.
+   - Ожидание стабилизации видеопамяти `_wait_for_vram_stabilization()` (опрос NVML с шагом 0.1 с до 1.5 с, критерий: $\text{Used\_VRAM} < 750\text{ МБ}$ или $\Delta < 15\text{ МБ}$).
+6. **Pre-flight RAM Guard & Жизненный цикл процессов**:
+   - При частичном оффлоаде на CPU проверяется свободная системная ОЗУ с запасом 1024–1500 МБ для ОС.
+   - Исключение «зомби-NGL»: `ProcessManager` сбрасывает `_current_running_ngl = None` и `_current_total_layers = None` при любой остановке инстанса `llama-server.exe` и сохраняет реальный NGL в `LMStudioClient` для прозрачного логирования (`GPU layers: 45/48` или `GPU layers: 99 (all layers)`).
 
 ---
 
@@ -1204,7 +1221,7 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
 
 ### 7.4. Карта сквозных смоук-тестов (`tests/smoke/`)
 
-16 сквозных смоук-сьютов (71 тест) гарантируют надежность пользовательских сценариев:
+16 сквозных смоук-сьютов (89 тестов) гарантируют надежность пользовательских сценариев:
 1. **`test_smoke_assistant_6phases_pipeline.py`**: сквозная верификация 6 фаз конвейера Ассистента (захват ввода, семантический роутинг, системное окно, стриминг токенов, мысли `<think>`, сессии) и галерейный single-pass.
 2. **`test_rp_pipeline_smoke.py`**: ролевой ход в изоляции (память, каст, сборка сообщений, Depth-1 якорь, вызов инференса, анализ сцены).
 3. **`test_three_modes_deep_smoke.py`**: контрактный тест утилит трех режимов (`PatchApplier`, `AutoImporter`, AST-скелетирование, парсинг инструментов, Markdown-нарезчик, RPG-виджеты, апдейтер каста).
@@ -1219,7 +1236,8 @@ MarkdownChunker (500–1400 симв., overlap 150, сохранение код�
 12. **`test_dialog_sync_smoke.py`**: синхронизация конфигурации при закрытии диалогов через кнопку закрытия `X` или Escape (`reject()`).
 13. **`test_forge_baseline.py` & `test_forge_edge_cases.py`**: интеграция SD WebUI Forge, устойчивость к поврежденным INI-файлам, кириллице и пробелам в путях, защита от лавинных запросов при мертвом бэкенде.
 14. **`test_forge_vram_profiles_smoke.py` (15 тестов)**: сквозной смоук-сьют цепочки `ProcessManager` → `ArtDirector` → `vram_policy` → `VRAMArbiter` → `ForgeClient.text_to_image` на краевых профилях VRAM (2/4/6/8/12 ГБ) для SD 1.5, SDXL FP8 и SDXL FP16 Heavy, включая `Host RAM Starvation Guard` на 4 ГБ RAM, авто-включение VAE Tiling и проверку идемпотентности выгрузок при смене моделей в одной сессии.
-15. **`test_isolated_core_smoke.py`**: изолированная валидация атомарной записи JSON, арбитра VRAM, калькулятора слоев GGUF, AST-валидатора и конечного автомата `ModeCoordinator`.
+15. **`test_layer_budgeter_profiles_smoke.py` (18 тестов)**: комплексный смоук-сьют калиброванного расчёта слоёв `LayerBudgeter` на 4 профилях видеокарт (2 ГБ, 4 ГБ, 8 ГБ, 16 ГБ), подтвердивший предотвращение WDDM paging (NGL=47 для Gemma 4 12B CTX=14336 и NGL=99 для CTX=8192), адаптацию к остаточной памяти Forge (684.1 МБ $\rightarrow$ NGL=43), предохранитель гистерезиса, авто-инвалидацию `models_cache.json` для `vocab_size` и строгую синхронизацию логов `LMStudioClient`.
+16. **`test_isolated_core_smoke.py`**: изолированная валидация атомарной записи JSON, арбитра VRAM, калькулятора слоев GGUF, AST-валидатора и конечного автомата `ModeCoordinator`.
 
 ### 7.5. Характеризационный базовый сьют ModelsManagerDialog (`tests/unit/test_models_manager_dialog.py`)
 

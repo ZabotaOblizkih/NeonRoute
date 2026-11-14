@@ -50,11 +50,6 @@ class HeaderAvatarWidget(QLabel):
 
         self._is_hovered = False
         self._is_pressed = False
-        self._shadow = QGraphicsDropShadowEffect(self)
-        self._shadow.setOffset(0, 2)
-        self._shadow.setBlurRadius(10)
-        self._shadow.setColor(QColor(0, 0, 0, 150))
-        self.setGraphicsEffect(self._shadow)
         self._click_handler = None
 
     def set_click_handler(self, handler):
@@ -62,18 +57,6 @@ class HeaderAvatarWidget(QLabel):
 
     def set_hovered(self, hovered: bool):
         self._is_hovered = hovered
-        if self._is_pressed:
-            return
-        if hovered:
-            # Эффект приподнимания (Hover Lift): тень становится глубже и мягче рассеивается
-            self._shadow.setOffset(0, 4)
-            self._shadow.setBlurRadius(16)
-            self._shadow.setColor(QColor(0, 0, 0, 210))
-        else:
-            # Состояние в покое (Ambient Occlusion): естественная мягкая тень
-            self._shadow.setOffset(0, 2)
-            self._shadow.setBlurRadius(10)
-            self._shadow.setColor(QColor(0, 0, 0, 150))
         self.update()
 
     def reset_hover(self):
@@ -91,9 +74,6 @@ class HeaderAvatarWidget(QLabel):
     def mousePressEvent(self, event):
         # Тактильный эффект нажатия: аватар визуально мягко прижимается к подложке
         self._is_pressed = True
-        self._shadow.setOffset(0, 1)
-        self._shadow.setBlurRadius(6)
-        self._shadow.setColor(QColor(0, 0, 0, 180))
         self.update()
         if self._click_handler:
             self._click_handler(event)

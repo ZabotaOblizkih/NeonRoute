@@ -49,6 +49,7 @@ K_ARCH_SD15 = 170_000
 K_ARCH_SDXL = 95_000
 
 LORA_ADAPTER_WEIGHT_MB = 120
+VAE_FP32_OVERHEAD_MB = 260
 
 
 def _clamp_int(value: float, low: int, high: int) -> int:
@@ -160,7 +161,7 @@ def calculate_max_hires_canvas_area(
             checkpoint_size_mb=checkpoint_size_mb,
         )
     lora_mb = max(0, int(active_lora_count)) * LORA_ADAPTER_WEIGHT_MB
-    total_weights_mb = base_weights_mb + lora_mb
+    total_weights_mb = base_weights_mb + lora_mb + VAE_FP32_OVERHEAD_MB
 
     clean_w = int(width) if (width and width > 0) else (1024 if is_xl else 512)
     clean_h = int(height) if (height and height > 0) else (1024 if is_xl else 768)
@@ -197,8 +198,8 @@ def calculate_max_hires_canvas_area(
 
     if is_xl and is_fp8 and vae_tiling:
         # Для SDXL FP8 с VAE Tiling допускаем контролируемый порог SMART_SWAP:
-        # +300 МБ к базовому safe budget (usable_vram_mb - DEFAULT_SAFETY_MARGIN_MB + 300)
-        target_budget_mb = usable_vram_mb - DEFAULT_SAFETY_MARGIN_MB + 300
+        # +300 МБ к базовому safe budget + компенсация оверхеда VAE для контролируемого свопа слоев в RAM
+        target_budget_mb = usable_vram_mb - DEFAULT_SAFETY_MARGIN_MB + 300 + VAE_FP32_OVERHEAD_MB
     else:
         target_budget_mb = usable_vram_mb - DEFAULT_SAFETY_MARGIN_MB
 
@@ -578,6 +579,7 @@ def resolve_forge_startup_flags(
         "--cuda-malloc",
         "--opt-sdp-attention",
         "--no-half-vae",
+        "--vae-in-fp32",
         "--ad-no-huggingface",
         "--no-download-sd-model",
         "--skip-torch-cuda-test",
@@ -687,6 +689,8 @@ def resolve_forge_offload_policy(
 
     eff_is_fp8 = bool(is_fp8 or force_fp8_storage)
     eff_hand_ad = bool(enable_hand_adetailer and not disable_secondary_adetailer)
+    eff_scale = max(1.0, float(hr_scale or 1.0)) if (enable_hr and not force_disable_hr) else 1.0
+    hr_active = bool(enable_hr and not force_disable_hr and eff_scale > 1.0)
 
     base_weights_mb = estimate_active_model_weights_mb(
         architecture=arch,
@@ -694,7 +698,8 @@ def resolve_forge_offload_policy(
         checkpoint_size_mb=checkpoint_size_mb,
     )
     lora_mb = max(0, int(active_lora_count)) * LORA_ADAPTER_WEIGHT_MB
-    total_weights_mb = base_weights_mb + lora_mb
+    vae_overhead = VAE_FP32_OVERHEAD_MB if hr_active else 0
+    total_weights_mb = base_weights_mb + lora_mb + vae_overhead
 
     # 1. Буфер базового холста (активации UNet + декодирование VAE)
     clean_w = max(64, int(width or (1024 if is_xl else 512)))
@@ -707,18 +712,32 @@ def resolve_forge_offload_policy(
         base_canvas_mb = int(BASE_CANVAS_FIXED_SD15_MB + base_mpix * BASE_CANVAS_PER_MPIX_SD15_MB)
 
     # 2. Этап Hires.fix
-    eff_scale = max(1.0, float(hr_scale or 1.0)) if (enable_hr and not force_disable_hr) else 1.0
-    hr_active = bool(enable_hr and not force_disable_hr and eff_scale > 1.0)
     if hr_active:
         hr_w = int(round(clean_w * eff_scale))
         hr_h = int(round(clean_h * eff_scale))
+    else:
+        hr_w, hr_h = clean_w, clean_h
+
+    # Авто-тайлинг VAE вычисляется ДО расчета hr_stage_mb и est_peak_mb,
+    # чтобы при hr_vae_tile_needed применялся реальный tiling_factor (0.65)
+    hr_vae_tile_needed = (
+        (is_xl and max(hr_w, hr_h) >= 1024)
+        or (not is_xl and (hr_w * hr_h) > 1_300_000)
+    ) if hr_active else False
+
+    enable_vae_tiling = bool(
+        vae_tiling
+        or hr_vae_tile_needed
+        or total_vram_mb <= 6144
+    )
+
+    if hr_active:
         hr_mpix = (hr_w * hr_h) / 1_000_000.0
         upscaler_mb = 0 if "latent" in str(hr_upscaler or "Latent").lower() else 220
-        tiling_factor = VAE_TILING_FACTOR if vae_tiling else 1.0
+        tiling_factor = VAE_TILING_FACTOR if enable_vae_tiling else 1.0
         per_mpix = HIRES_PER_MPIX_SDXL_MB if is_xl else HIRES_PER_MPIX_SD15_MB
         hr_stage_mb = base_canvas_mb + upscaler_mb + int(hr_mpix * per_mpix * tiling_factor)
     else:
-        hr_w, hr_h = clean_w, clean_h
         hr_stage_mb = base_canvas_mb
 
     # 3. Этап ADetailer (YOLO детекторы + буфер инпейнта)
@@ -752,7 +771,6 @@ def resolve_forge_offload_policy(
     is_heavy_xl_fp16 = bool(is_xl and not eff_is_fp8 and (hr_active or enable_adetailer))
     vram_too_tight_for_weights = effective_usable_mb < (total_weights_mb + 512)
 
-    enable_vae_tiling = bool(vae_tiling)
     if vram_too_tight_for_weights:
         mode = "STAGE_OFFLOAD"
         always_offload = True
@@ -782,11 +800,6 @@ def resolve_forge_offload_policy(
         always_offload = False
         inference_memory_mb = 1536 if (is_xl and (hr_active or enable_adetailer)) else 1152
         can_run = True
-
-    hr_vae_tile_needed = (
-        (is_xl and max(hr_w, hr_h) >= 1024)
-        or (not is_xl and (hr_w * hr_h) > 1_300_000)
-    ) if hr_active else False
 
     # Безусловное включение VAE Tiling при STAGE_OFFLOAD, малом VRAM (<= 6 ГБ) или крупном Hires
     if (

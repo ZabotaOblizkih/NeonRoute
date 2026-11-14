@@ -1,19 +1,21 @@
 """
 UserSettingsDialog for NeonRoute.
 Provides user identity configuration for Elaria Assistant mode and RPG Player Personas Manager.
-Refactored strictly according to Section 9 of neonroute_ui_spec.md and Agentrules.md:
-- Glassmorphism dark aesthetic: background rgba(10, 13, 20, 0.95), border-radius 14px, thin border rgba(255, 255, 255, 0.08)
+Refactored strictly according to Windows 11 Fluent Design standard:
+- Base class: FramelessDialog + FluentTitleBar (height 46px, min/max hidden, closeBtn connected to reject).
+- Dynamic Adaptive Palette extracted from workspace wallpaper (Material You / Fluent Tint).
 - Tab navigation using QFluentWidgets SegmentedWidget:
   • Tab 1: «⚡ Ассистент»
   • Tab 2: «🎭 Ролевой чат» (Player Personas Manager)
 - Tab 1: Circular interactive user avatar with preview and file selection, LineEdit for user name,
-  matte TextEdit for bio context (<UserInfo>), ComboBox for LM Studio model, SegmentedWidget for art generation mode.
+  TextEdit for bio context (<UserInfo>), ComboBox for LM Studio model, SegmentedWidget for art generation mode.
 - Tab 2: Two-panel persona manager:
   • Left panel: Persona list with [➕ Создать], [★ Сделать основным], [🗑️ Удалить]
   • Right panel: Detailed persona card (avatar, hero name, grammatical gender switch, traits, backstory,
     starting inventory, Visual DNA, SD outfit)
-- Action bar: [ 💾 Сохранить изменения ] (#00F0FF / Neon Cyan) and [ ✕ Отмена ]
+- Action bar: [ Сохранить изменения ] (PrimaryPushButton with FIF.ACCEPT) and [ Отмена ]
 - Persistence to data/user_profiles.json, data/user_personas.json, and config.json
+- Strict preservation of all signals: settings_applied(dict), profiles_updated()
 """
 
 import uuid
@@ -22,17 +24,19 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF
 from PyQt6.QtGui import (
-    QPixmap, QPainter, QColor, QPen, QPainterPath
+    QPixmap, QPainter, QColor, QPen, QPainterPath, QKeyEvent, QRadialGradient, QBrush
 )
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QWidget,
+    QVBoxLayout, QHBoxLayout, QLabel, QWidget,
     QStackedWidget, QListWidget, QListWidgetItem,
     QScrollArea, QFileDialog, QMessageBox, QFrame, QSizePolicy
 )
 
+from qframelesswindow import FramelessDialog
 from qfluentwidgets import (
+    FluentTitleBar,
     SegmentedWidget,
     PushButton,
     PrimaryPushButton,
@@ -45,6 +49,7 @@ from qfluentwidgets import (
 
 from config import CHARACTERS_DIR, DATA_DIR, DEFAULT_AUTO_GENERATE_ART
 from services.session_manager import SessionManager
+from ui.common.palette_utils import extract_adaptive_palette
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
 from ui.components.chat_bubble import render_circular_avatar
@@ -54,7 +59,8 @@ logger = logging.getLogger("NeonRoute.UserSettingsDialog")
 
 class InteractiveAvatarWidget(QWidget):
     """
-    Интерактивный круглый аватар со сглаживанием, подсветкой при наведении
+    Интерактивный круглый аватар с мягким растворением контура (Seamless Edge Feathering),
+    тактильной оптической глубиной при наведении (Ambient Depth / Hover Lift)
     и поддержкой прямого клика для смены изображения.
     """
     avatar_clicked = pyqtSignal()
@@ -66,7 +72,12 @@ class InteractiveAvatarWidget(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pixmap = QPixmap()
         self._is_hovered = False
+        self._accent_color = QColor(0, 240, 255)
         self.setToolTip("Нажмите, чтобы выбрать новое изображение")
+
+    def set_accent_color(self, color: QColor):
+        self._accent_color = color
+        self.update()
 
     def setPixmap(self, pixmap: QPixmap):
         self._pixmap = pixmap
@@ -95,32 +106,47 @@ class InteractiveAvatarWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        rect_f = self.rect().adjusted(1, 1, -1, -1)
+        w = float(self.width())
+        h = float(self.height())
+        center_x = w / 2.0
+        center_y = h / 2.0
 
+        # 1. Естественная мягкая тень глубины под аватаром (Ambient Drop Shadow)
+        shadow_y_offset = 1.5 if self._is_hovered else 0.8
+        shadow_expand = 1.0 if self._is_hovered else 0.0
+        shadow_alpha = 110 if self._is_hovered else 45
+        shadow_radius = (w / 2.0) - 1.0 + shadow_expand
+
+        shadow_grad = QRadialGradient(center_x, center_y + shadow_y_offset, shadow_radius)
+        shadow_grad.setColorAt(0.0, QColor(0, 0, 0, shadow_alpha))
+        shadow_grad.setColorAt(0.72, QColor(0, 0, 0, int(shadow_alpha * 0.80)))
+        shadow_grad.setColorAt(0.92, QColor(0, 0, 0, int(shadow_alpha * 0.30)))
+        shadow_grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+
+        painter.setBrush(QBrush(shadow_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRectF(
+            center_x - shadow_radius,
+            center_y + shadow_y_offset - shadow_radius,
+            shadow_radius * 2.0,
+            shadow_radius * 2.0
+        ))
+
+        # 2. Отрисовка аватара с легким оптическим подъемом (Hover Lift)
         if not self._pixmap.isNull():
-            scaled = self._pixmap.scaled(
-                self.avatar_size, self.avatar_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            # Center in widget
-            dx = (self.width() - scaled.width()) // 2
-            dy = (self.height() - scaled.height()) // 2
-            painter.drawPixmap(dx, dy, scaled)
-        else:
-            painter.setBrush(QColor(15, 23, 42))
-            painter.setPen(QPen(QColor(0, 240, 255, 60), 1.0))
-            painter.drawEllipse(rect_f)
+            if self._is_hovered:
+                target_rect = QRectF(0.0, 0.0, w, h)
+            else:
+                target_rect = QRectF(1.0, 1.0, w - 2.0, h - 2.0)
 
-        # Soft ring / glow border
-        if self._is_hovered:
-            painter.setBrush(QColor(0, 240, 255, 25))
-            painter.setPen(QPen(QColor(0, 240, 255, 220), 2.0))
-            painter.drawEllipse(rect_f)
+            source_rect = QRectF(0.0, 0.0, float(self._pixmap.width()), float(self._pixmap.height()))
+            painter.drawPixmap(target_rect, self._pixmap, source_rect)
         else:
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor(255, 255, 255, 30), 1.2))
-            painter.drawEllipse(rect_f)
+            # Деликатная подложка по умолчанию, если изображение еще не загружено
+            bg_rect = QRectF(1.0, 1.0, w - 2.0, h - 2.0) if not self._is_hovered else QRectF(0.0, 0.0, w, h)
+            painter.setBrush(QColor(15, 23, 42))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(bg_rect)
 
 
 class _TabCompatProxy:
@@ -164,18 +190,36 @@ class _GenderComboCompat:
         pass
 
 
-class UserSettingsDialog(QDialog):
+class UserSettingsDialog(FramelessDialog):
     profiles_updated = pyqtSignal()
     settings_applied = pyqtSignal(dict)
 
     def __init__(self, initial_tab: int = 0, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Личные настройки профиля — NeonRoute")
-        self.resize(820, 700)
+        super().__init__(parent=parent if isinstance(parent, QWidget) else None)
+        self._parent_ref = parent
+        self.setWindowTitle("Настройки профиля и Эларии — NeonRoute")
+        self.setObjectName("UserSettingsDialog")
+        self.resize(840, 720)
         self.setMinimumSize(780, 640)
         self.setModal(True)
 
-        self._apply_glassmorphism_styles()
+        # 1. Custom Fluent TitleBar с [X] в правом верхнем углу
+        title_bar = FluentTitleBar(self)
+        self.setTitleBar(title_bar)
+        self.titleBar.setFixedHeight(46)
+        if hasattr(self.titleBar, "minBtn") and self.titleBar.minBtn:
+            self.titleBar.minBtn.hide()
+        if hasattr(self.titleBar, "maxBtn") and self.titleBar.maxBtn:
+            self.titleBar.maxBtn.hide()
+        if hasattr(self.titleBar, "closeBtn") and self.titleBar.closeBtn:
+            self.titleBar.closeBtn.setVisible(True)
+            try:
+                self.titleBar.closeBtn.clicked.disconnect()
+            except Exception:
+                pass
+            self.titleBar.closeBtn.clicked.connect(self.reject)
+
+        self._current_palette: Dict[str, str] = {}
 
         loaded_profiles = SessionManager.load_user_profiles()
         self.profiles: Dict[str, Any] = loaded_profiles if isinstance(loaded_profiles, dict) else {}
@@ -196,138 +240,228 @@ class UserSettingsDialog(QDialog):
         self._load_assistant_fields()
         self._load_rp_personas_list()
 
-    def _apply_glassmorphism_styles(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: rgba(10, 13, 20, 0.95);
-                color: #CBD5E1;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+        self.update_adaptive_palette()
+
+    def _resolve_pixmap(self) -> Optional[QPixmap]:
+        """Ищет активные обои в иерархии родительских окон для адаптивной палитры."""
+        parent_win = getattr(self, "_parent_ref", None) or self.parent()
+        p = parent_win
+        while p:
+            if hasattr(p, "background_pixmap") and p.background_pixmap:
+                return p.background_pixmap
+            if hasattr(p, "window") and hasattr(p.window, "background_pixmap") and p.window.background_pixmap:
+                return p.window.background_pixmap
+            if hasattr(p, "_bg_render_cache") and p._bg_render_cache:
+                return p._bg_render_cache
+            p = getattr(p, "_parent_ref", None) or (p.parent() if hasattr(p, "parent") else None)
+        return None
+
+    def update_adaptive_palette(self):
+        """Адаптирует цветовую палитру окна, карточек и кнопок под активные обои."""
+        pixmap = self._resolve_pixmap()
+        palette = extract_adaptive_palette(pixmap)
+        self._current_palette = palette
+
+        if hasattr(self, "asst_avatar_lbl") and hasattr(self.asst_avatar_lbl, "set_accent_color"):
+            self.asst_avatar_lbl.set_accent_color(QColor(palette["accent"]))
+        if hasattr(self, "rp_avatar_lbl") and hasattr(self.rp_avatar_lbl, "set_accent_color"):
+            self.rp_avatar_lbl.set_accent_color(QColor(palette["accent"]))
+
+        self.setStyleSheet(f"""
+            UserSettingsDialog#UserSettingsDialog,
+            UserSettingsDialog {{
+                background-color: {palette['bg']};
+                border: 1px solid {palette['border']};
                 border-radius: 14px;
-            }
-            QLabel {
-                color: #94A3B8;
+            }}
+            FluentTitleBar {{
+                background-color: {palette['bg']};
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }}
+            FluentTitleBar QLabel {{
+                color: #F8FAFC;
+                font-family: 'Segoe UI', -apple-system, sans-serif;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QWidget#UserSettingBodyWidget {{
+                background-color: {palette['bg']};
+                border-bottom-left-radius: 14px;
+                border-bottom-right-radius: 14px;
+            }}
+            #UserSettingBodyWidget QWidget {{
+                background-color: transparent;
+            }}
+            QLabel {{
+                color: {palette['text_secondary']};
                 font-size: 11px;
                 font-weight: 700;
                 letter-spacing: 0.3px;
-            }
-            QLabel.section_title {
-                color: #00F0FF;
+            }}
+            QLabel.section_title {{
+                color: {palette['group_title']};
                 font-size: 13px;
                 font-weight: 800;
                 letter-spacing: 0.5px;
-            }
-            QLabel.field_label {
-                color: #94A3B8;
+            }}
+            QLabel.field_label {{
+                color: {palette['text_secondary']};
                 font-size: 11px;
                 font-weight: 700;
-            }
-            QLabel.field_label_accent {
-                color: #00F0FF;
+            }}
+            QLabel.field_label_accent {{
+                color: {palette['accent']};
                 font-size: 11px;
                 font-weight: 700;
-            }
-            QLabel.hint_sub {
-                color: #64748B;
+            }}
+            QLabel.hint_sub {{
+                color: {palette['text_secondary']};
                 font-size: 11px;
                 font-weight: normal;
-            }
-            QFrame.glass_card {
-                background-color: rgba(14, 19, 31, 0.65);
-                border: 1px solid rgba(255, 255, 255, 0.06);
+            }}
+            QFrame.glass_card {{
+                background-color: {palette['card']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 10px;
-            }
-            LineEdit {
-                background-color: rgba(14, 19, 31, 0.85);
-                color: #F8FAFC;
-                border: 1px solid rgba(255, 255, 255, 0.10);
+            }}
+            QFrame.glass_card:hover {{
+                background-color: {palette['card_hover']};
+            }}
+            LineEdit {{
+                background-color: {palette['bg']};
+                color: {palette['text_primary']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 6px;
                 padding: 6px 10px;
                 font-size: 12px;
-            }
-            LineEdit:focus {
-                border: 1px solid #00F0FF;
-                background-color: rgba(16, 24, 40, 0.95);
-            }
-            TextEdit {
-                background-color: rgba(8, 12, 20, 0.92);
-                color: #F8FAFC;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            LineEdit:focus {{
+                border: 1px solid {palette['accent']};
+                background-color: {palette['card_hover']};
+            }}
+            TextEdit {{
+                background-color: {palette['bg']};
+                color: {palette['text_primary']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 6px;
                 padding: 8px;
                 font-size: 12px;
-            }
-            TextEdit:focus {
-                border: 1px solid #00F0FF;
-                background-color: rgba(10, 15, 26, 0.96);
-            }
-            ComboBox {
-                background-color: rgba(14, 19, 31, 0.85);
-                color: #F8FAFC;
-                border: 1px solid rgba(255, 255, 255, 0.10);
+            }}
+            TextEdit:focus {{
+                border: 1px solid {palette['accent']};
+                background-color: {palette['card_hover']};
+            }}
+            ComboBox {{
+                background-color: {palette['bg']};
+                color: {palette['text_primary']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 6px;
                 padding: 5px 10px;
                 font-size: 12px;
-            }
-            ComboBox:focus {
-                border: 1px solid #00F0FF;
-            }
-            QListWidget {
-                background-color: rgba(8, 12, 20, 0.7);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                min-height: 28px;
+            }}
+            ComboBox:hover {{
+                border-color: {palette['accent']};
+                background-color: {palette['card_hover']};
+            }}
+            ComboBox:focus {{
+                border-color: {palette['accent']};
+            }}
+            QListWidget {{
+                background-color: {palette['bg']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 8px;
                 padding: 4px;
-            }
-            QListWidget::item {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.06);
+            }}
+            QListWidget::item {{
+                background-color: {palette['card']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 6px;
                 padding: 8px 10px;
                 margin-bottom: 4px;
-                color: #CBD5E1;
+                color: {palette['text_primary']};
                 font-weight: 500;
-            }
-            QListWidget::item:hover {
-                background-color: rgba(0, 240, 255, 0.08);
-                border-color: rgba(0, 240, 255, 0.3);
-            }
-            QListWidget::item:selected {
-                background-color: rgba(0, 240, 255, 0.16);
-                border: 1px solid #00F0FF;
-                color: #00F0FF;
+            }}
+            QListWidget::item:hover {{
+                background-color: {palette['card_hover']};
+                border-color: {palette['accent']};
+            }}
+            QListWidget::item:selected {{
+                background-color: {palette['card_hover']};
+                border: 1px solid {palette['accent']};
+                color: {palette['accent']};
                 font-weight: bold;
-            }
-            QScrollArea {
+            }}
+            QScrollArea {{
                 background: transparent;
                 border: none;
-            }
-            PrimaryPushButton {
-                background-color: #00F0FF;
-                color: #0A0D14;
-                font-weight: bold;
-                font-size: 12px;
-                border: 1px solid #00F0FF;
+            }}
+            PushButton, TransparentPushButton {{
+                background-color: {palette['btn']};
+                border: 1px solid {palette['btn_border']};
                 border-radius: 6px;
-                padding: 7px 18px;
-            }
-            PrimaryPushButton:hover {
-                background-color: #38BDF8;
-                border-color: #38BDF8;
+                color: #F8FAFC;
+                font-weight: 500;
+                font-size: 12px;
+                padding: 6px 16px;
+                min-height: 20px;
+            }}
+            PushButton:hover, TransparentPushButton:hover {{
+                background-color: {palette['btn_hover']};
+                border-color: {palette['btn_hover']};
+                color: {palette['btn_hover_text']};
+                font-weight: 600;
+            }}
+            PushButton:pressed, TransparentPushButton:pressed {{
+                background-color: {palette['card_hover']};
+                border-color: {palette['border']};
+                color: #F8FAFC;
+            }}
+            PrimaryPushButton {{
+                background-color: {palette['accent']};
+                border: 1px solid {palette['accent']};
+                border-radius: 6px;
                 color: #0A0D14;
-            }
-            PrimaryPushButton:pressed {
-                background-color: #00B4D8;
-                border-color: #00B4D8;
-                color: #000000;
-            }
+                font-weight: 600;
+                font-size: 12px;
+                padding: 6px 20px;
+                min-height: 20px;
+            }}
+            PrimaryPushButton:hover {{
+                background-color: {palette['group_title']};
+                border-color: {palette['group_title']};
+            }}
         """)
+
+    def _apply_glassmorphism_styles(self):
+        """Алиас для обратной совместимости."""
+        self.update_adaptive_palette()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.update_adaptive_palette()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(0, self.titleBar.height(), 0, 0)
+        root.setSpacing(0)
+
+        self.body_widget = QWidget(self)
+        self.body_widget.setObjectName("UserSettingBodyWidget")
+        body_layout = QVBoxLayout(self.body_widget)
+        body_layout.setContentsMargins(20, 10, 20, 16)
+        body_layout.setSpacing(12)
 
         # 1. Top Navigation: SegmentedWidget
-        self.nav_segmented = SegmentedWidget(self)
+        self.nav_segmented = SegmentedWidget(self.body_widget)
         self.nav_segmented.addItem(
             routeKey="tab_asst",
             text="⚡ Ассистент",
@@ -338,32 +472,33 @@ class UserSettingsDialog(QDialog):
             text="🎭 Ролевой чат",
             onClick=lambda: self.set_current_tab(1)
         )
-        root.addWidget(self.nav_segmented)
+        body_layout.addWidget(self.nav_segmented)
 
         # 2. Content: QStackedWidget
-        self.stacked_widget = QStackedWidget(self)
+        self.stacked_widget = QStackedWidget(self.body_widget)
         self.tab_asst_widget = self._create_assistant_tab()
         self.tab_rp_widget = self._create_rp_tab()
 
         self.stacked_widget.addWidget(self.tab_asst_widget)
         self.stacked_widget.addWidget(self.tab_rp_widget)
-        root.addWidget(self.stacked_widget, 1)
+        body_layout.addWidget(self.stacked_widget, 1)
 
         # 3. Bottom Action Bar
         btn_box = QHBoxLayout()
         btn_box.setSpacing(10)
         btn_box.addStretch()
 
-        self.btn_cancel = TransparentPushButton("✕ Отмена", self)
+        self.btn_cancel = PushButton("Отмена", self.body_widget)
         self.btn_cancel.clicked.connect(self.reject)
         btn_box.addWidget(self.btn_cancel)
 
-        self.btn_save_all = PrimaryPushButton("💾 Сохранить изменения", self)
+        self.btn_save_all = PrimaryPushButton(FIF.ACCEPT, "Сохранить изменения", self.body_widget)
         self.btn_save_all.setObjectName("btn_save_all")
         self.btn_save_all.clicked.connect(self._save_all_and_close)
         btn_box.addWidget(self.btn_save_all)
 
-        root.addLayout(btn_box)
+        body_layout.addLayout(btn_box)
+        root.addWidget(self.body_widget)
 
     def set_current_tab(self, index: int):
         idx = max(0, min(1, index))
@@ -477,7 +612,7 @@ class UserSettingsDialog(QDialog):
         self.combo_asst_model.blockSignals(True)
         self.combo_asst_model.clear()
 
-        parent_window = self.parent()
+        parent_window = self._parent_ref or self.parent()
         parent_combo = getattr(parent_window, "lm_combo", None) if parent_window else None
         active_model = cfg.get("active_model", "")
 
@@ -666,9 +801,6 @@ class UserSettingsDialog(QDialog):
             TextEdit {
                 font-family: 'Consolas', 'Courier New', monospace;
                 font-size: 11px;
-                color: #38BDF8;
-                background-color: rgba(6, 10, 18, 0.95);
-                border: 1px solid rgba(0, 240, 255, 0.25);
             }
         """)
         self.rp_visual_dna_input.setPlaceholderText(
@@ -686,9 +818,6 @@ class UserSettingsDialog(QDialog):
             LineEdit {
                 font-family: 'Consolas', 'Courier New', monospace;
                 font-size: 11px;
-                color: #38BDF8;
-                background-color: rgba(6, 10, 18, 0.95);
-                border: 1px solid rgba(0, 240, 255, 0.25);
             }
         """)
         self.rp_outfit_input.setPlaceholderText("linen explorer shirt, cargo pants, leather belt, combat boots")
@@ -848,55 +977,58 @@ class UserSettingsDialog(QDialog):
             personas[self.active_persona_id]["avatar_path"] = self.rp_avatar_temp
 
     def _set_current_as_primary(self):
-        if not getattr(self, "active_persona_id", None):
+        if not self.active_persona_id:
             return
+        self._sync_current_persona_fields()
         self.active_primary_persona_id = self.active_persona_id
-        personas = self._get_personas_dict()
-        rp_settings = self.profiles.get("rp_settings")
-        if isinstance(rp_settings, dict):
-            rp_settings["active_persona_id"] = self.active_primary_persona_id
-
-        for i in range(self.list_personas.count()):
-            it = self.list_personas.item(i)
-            if it:
-                pid = it.data(Qt.ItemDataRole.UserRole)
-                name = (personas.get(pid) or {}).get("name", "Персонаж")
-                is_pri = (pid == self.active_primary_persona_id)
-                it.setText(f"★ {name} (Основной)" if is_pri else f"👤 {name}")
-                if is_pri:
-                    it.setForeground(QColor("#00F0FF"))
-                else:
-                    it.setForeground(QColor("#CBD5E1"))
+        rp_settings = self.profiles.setdefault("rp_settings", {})
+        rp_settings["active_persona_id"] = self.active_primary_persona_id
+        self._load_rp_personas_list()
 
     def _create_new_persona(self):
         self._sync_current_persona_fields()
-        new_id = f"persona_{uuid.uuid4().hex[:6]}"
+        new_id = f"persona_{uuid.uuid4().hex[:8]}"
         personas = self._get_personas_dict()
         personas[new_id] = {
-            "name": f"Персонаж {len(personas) + 1}",
+            "name": f"Герой {len(personas) + 1}",
             "gender": "male",
-            "avatar_path": None,
-            "bio": "",
             "personality": "",
             "backstory": "",
+            "bio": "",
             "inventory": "",
             "visual_dna": "",
-            "outfit": ""
+            "outfit": "",
+            "avatar_path": None
         }
         self.active_persona_id = new_id
+        self.rp_avatar_temp = None
         self._load_rp_personas_list()
-        self.rp_name_input.setFocus()
-        self.rp_name_input.selectAll()
 
     def _delete_current_persona(self):
-        if not getattr(self, "active_persona_id", None):
-            return
         personas = self._get_personas_dict()
         if len(personas) <= 1:
-            QMessageBox.information(self, "Внимание", "Нельзя удалить единственного персонажа.")
+            QMessageBox.information(
+                self,
+                "Удаление персоны",
+                "Нельзя удалить единственную персону игрока!\nДолжен оставаться хотя бы один профиль."
+            )
             return
 
         del_id = self.active_persona_id
+        if not del_id:
+            return
+
+        p_name = personas.get(del_id, {}).get("name", "Персонаж")
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Вы уверены, что хотите удалить персону «{p_name}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
         self._is_populating = True
 
         if del_id in personas:

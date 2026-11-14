@@ -3,7 +3,6 @@ System routes for status checks, telemetry, and mode management.
 """
 
 import asyncio
-import psutil
 from fastapi import APIRouter, Depends, HTTPException
 
 from mobile_server.schemas import (
@@ -17,11 +16,13 @@ from mobile_server.dependencies import (
     get_health_checker,
     get_system_monitor,
     get_mode_coordinator,
+    get_vram_arbiter,
     HealthChecker,
     SystemMonitor,
     HeadlessModeCoordinator,
 )
 from services.mode_coordinator import AppMode
+from services.vram_arbiter import VRAMArbiter
 
 router = APIRouter()
 
@@ -36,36 +37,17 @@ async def get_system_status(
     Returns the real-time health status of local services (LM Studio, Forge, TTS)
     and hardware telemetry (VRAM, RAM, GPU info).
     """
-    health = await asyncio.to_thread(health_checker._perform_health_checks)
-    stats = await asyncio.to_thread(system_monitor._poll_hardware)
+    health = await asyncio.to_thread(health_checker.get_health_snapshot)
+    stats = await asyncio.to_thread(system_monitor.get_hardware_snapshot)
 
-    # Calculate exact RAM in MB
-    try:
-        v_mem = psutil.virtual_memory()
-        ram_used_mb = round(v_mem.used / (1024 * 1024), 1)
-        ram_total_mb = round(v_mem.total / (1024 * 1024), 1)
-        ram_percent = float(v_mem.percent)
-    except Exception:
-        ram_used_mb = float(stats.get("ram_used_gb", 0.0)) * 1024
-        ram_total_mb = float(stats.get("ram_total_gb", 16.0)) * 1024
-        ram_percent = float(stats.get("ram_percent", 0.0))
+    ram_used_mb = float(stats.get("ram_used_mb") or float(stats.get("ram_used_gb", 0.0)) * 1024)
+    ram_total_mb = float(stats.get("ram_total_mb") or float(stats.get("ram_total_gb", 16.0)) * 1024)
+    ram_percent = float(stats.get("ram_percent", 0.0))
 
     services = [
-        ServiceStatus(
-            port=1234,
-            is_online=bool(health.get("lm_ok")),
-            name="LM Studio (LLM)",
-        ),
-        ServiceStatus(
-            port=7860,
-            is_online=bool(health.get("forge_ok")),
-            name="SD Forge",
-        ),
-        ServiceStatus(
-            port=5010,
-            is_online=bool(health.get("tts_ok")),
-            name="F5-TTS",
-        ),
+        ServiceStatus(port=1234, is_online=bool(health.get("lm_ok")), name="LM Studio (LLM)"),
+        ServiceStatus(port=7860, is_online=bool(health.get("forge_ok")), name="SD Forge"),
+        ServiceStatus(port=5010, is_online=bool(health.get("tts_ok")), name="F5-TTS"),
     ]
 
     telemetry = HardwareTelemetry(
@@ -73,17 +55,15 @@ async def get_system_status(
         vram_used_mb=float(stats.get("vram_used_mb", 0.0)),
         vram_total_mb=float(stats.get("vram_total_mb", 8192.0)),
         vram_percent=float(stats.get("vram_percent", 0.0)),
-        ram_used_mb=ram_used_mb,
-        ram_total_mb=ram_total_mb,
+        ram_used_mb=round(ram_used_mb, 1),
+        ram_total_mb=round(ram_total_mb, 1),
         ram_percent=ram_percent,
     )
-
-    active_mode = coordinator.current_mode.value
 
     return SystemStatusResponse(
         services=services,
         telemetry=telemetry,
-        active_mode=active_mode,
+        active_mode=coordinator.current_mode.value,
     )
 
 
@@ -116,33 +96,15 @@ async def set_active_mode(
 
 
 @router.post("/unload-vram")
-async def unload_vram():
+async def unload_vram(
+    arbiter: VRAMArbiter = Depends(get_vram_arbiter),
+):
     """
-    Purges GPU memory by unloading LM Studio active models and Forge checkpoints.
+    Purges GPU memory by unloading LM Studio active models and Forge checkpoints via VRAMArbiter.
     """
-    details = {}
-
-    def _unload_sync():
-        # 1. Unload LM Studio
-        try:
-            from services.lm_studio import LMStudioClient
-            LMStudioClient().unload_models_cli()
-            details["lm_studio"] = "unloaded"
-        except Exception as e:
-            details["lm_studio"] = f"error: {e}"
-
-        # 2. Unload Forge
-        try:
-            from services.forge_client import ForgeClient
-            ForgeClient().unload_checkpoint()
-            details["forge"] = "unloaded"
-        except Exception as e:
-            details["forge"] = f"error: {e}"
-
-    await asyncio.to_thread(_unload_sync)
+    details = await asyncio.to_thread(arbiter.release_all)
     return {
         "success": True,
         "message": "Память VRAM успешно очищена",
         "details": details,
     }
-

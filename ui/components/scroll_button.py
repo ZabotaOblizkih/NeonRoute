@@ -24,15 +24,8 @@ class FloatingScrollDownButton(QPushButton):
         self.setFixedSize(diameter, diameter)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent; border: none;")
-
-        # Shadow & Glow effect
-        self._shadow = QGraphicsDropShadowEffect(self)
-        self._shadow.setColor(QColor(0, 0, 0, 140))
-        self._shadow.setBlurRadius(10)
-        self._shadow.setOffset(0, 2.5)
-        self.setGraphicsEffect(self._shadow)
 
         # Hover animation progress: 0.0 (normal) to 1.0 (hovered)
         self._hover_progress = 0.0
@@ -43,19 +36,6 @@ class FloatingScrollDownButton(QPushButton):
 
     def _on_anim_value_changed(self, val):
         self._hover_progress = float(val)
-        t = self._hover_progress
-
-        # Blend shadow between deep dark depth and neon cyan glow
-        r = int(0 * (1.0 - t) + 0 * t)
-        g = int(0 * (1.0 - t) + 240 * t)
-        b = int(0 * (1.0 - t) + 255 * t)
-        a = int(140 * (1.0 - t) + 180 * t)
-        blur = int(10 * (1.0 - t) + 18 * t)
-        offset_y = 2.5 * (1.0 - t)
-
-        self._shadow.setColor(QColor(r, g, b, a))
-        self._shadow.setBlurRadius(blur)
-        self._shadow.setOffset(0, offset_y)
         self.update()
 
     def enterEvent(self, event: QEnterEvent):

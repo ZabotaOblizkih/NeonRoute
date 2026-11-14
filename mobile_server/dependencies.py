@@ -2,82 +2,25 @@
 Dependency injection and singletons for NeonRoute Mobile Server.
 """
 
-import queue
-import threading
 import logging
-from typing import Iterator, Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional
 
-# 1. HealthChecker integration and aliasing
-import utils.health_checker
-if not hasattr(utils.health_checker, "HealthChecker"):
-    utils.health_checker.HealthChecker = utils.health_checker.HealthCheckWorker
 from utils.health_checker import HealthChecker
-
-# 2. SystemMonitor
 from utils.system_monitor import SystemMonitor
-
-# 3. SessionManager
 from services.session_manager import SessionManager
-
-# 4. LMStudioClient & stream_chat_completion extension
 from services.lm_studio import LMStudioClient
-
-# 5. ModeCoordinator & HeadlessMainWindow
 from services.mode_coordinator import ModeCoordinator, AppMode
-
-# 6. Forge, VRAM Arbiter, TaskQueue and ArtDirector
 from services.forge_client import ForgeClient
-from services.task_queue import TaskQueueWorker, get_task_queue, PRIORITY_NORMAL, PRIORITY_HIGH, InferenceTask
+from services.task_queue import TaskQueueWorker, get_task_queue
 from services.vram_arbiter import VRAMArbiter
 from services.art_director.director import ArtDirector
 
 logger = logging.getLogger("NeonRoute.MobileServer.Dependencies")
 
 
-def _stream_chat_completion(
-    self: LMStudioClient,
-    messages: List[Dict[str, Any]],
-    **kwargs
-) -> Iterator[str]:
-    """
-    Generator yielding token strings by invoking chat_completion
-    with chunk_callback in a background thread.
-    """
-    q: queue.Queue = queue.Queue()
-    _SENTINEL = object()
-
-    def worker():
-        try:
-            self.chat_completion(
-                messages=messages,
-                chunk_callback=lambda tok: q.put(tok),
-                stream=True,
-                emit_signal=False,
-                **kwargs
-            )
-        except Exception as exc:
-            q.put(exc)
-        finally:
-            q.put(_SENTINEL)
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-
-    while True:
-        item = q.get()
-        if item is _SENTINEL:
-            break
-        if isinstance(item, Exception):
-            raise item
-        yield item
-
-
-if not hasattr(LMStudioClient, "stream_chat_completion"):
-    LMStudioClient.stream_chat_completion = _stream_chat_completion
-
-
 class HeadlessMainWindow:
     """Lightweight headless mock of MainWindow for ModeCoordinator without GUI components."""
+
     def __init__(self):
         self.current_mode = "assistant"
         self._engineering_mode_active = False
@@ -104,6 +47,7 @@ class HeadlessModeCoordinator(ModeCoordinator):
     Headless ModeCoordinator implementation.
     Safely switches active operating mode without GUI rebuild.
     """
+
     def __init__(self):
         self._headless_mw = HeadlessMainWindow()
         super().__init__(self._headless_mw)
@@ -118,16 +62,17 @@ class HeadlessModeCoordinator(ModeCoordinator):
         self.mw.chat_history = list(session_data.get("chat_history", []))
 
 
-# Singleton instances
+# Singleton instances (reuse MainWindow / VRAMArbiter singletons when running in-process)
 _health_checker = HealthChecker()
 _system_monitor = SystemMonitor()
 _session_manager = SessionManager.get_instance()
-_lm_studio_client = LMStudioClient()
 _mode_coordinator = HeadlessModeCoordinator()
 
-_forge_client = ForgeClient()
 _vram_arbiter = VRAMArbiter.get_instance()
-_vram_arbiter.set_clients(_lm_studio_client, _forge_client)
+_lm_studio_client = _vram_arbiter.lm_client if _vram_arbiter.lm_client is not None else LMStudioClient()
+_forge_client = _vram_arbiter.forge_client if _vram_arbiter.forge_client is not None else ForgeClient.get_instance()
+if _vram_arbiter.lm_client is None or _vram_arbiter.forge_client is None:
+    _vram_arbiter.set_clients(_lm_studio_client, _forge_client)
 
 _task_queue = get_task_queue()
 if _task_queue is None:
@@ -177,4 +122,3 @@ def get_task_queue_worker() -> TaskQueueWorker:
 
 def get_art_director() -> ArtDirector:
     return _art_director
-

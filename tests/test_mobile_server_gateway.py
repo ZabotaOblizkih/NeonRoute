@@ -721,7 +721,7 @@ def test_mobile_mode_override_does_not_clobber_assistant_skills_and_thinking_xtc
     assert target_mode == AppMode.ASSISTANT
     assert "[SYSTEM DIRECTIVE:" in msgs[0]["content"]
     assert params["xtc_probability"] == 0.0
-    assert params["max_tokens"] == 2048
+    assert params["max_tokens"] == 4096
     assert params["enable_thinking"] is False
     assert params["temperature"] == pytest.approx(0.4)
 

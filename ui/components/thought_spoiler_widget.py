@@ -251,7 +251,10 @@ class ThoughtSpoilerWidget(QFrame):
             self.chevron_btn.setToolTip("Свернуть ход мыслей")
 
         self.toggled.emit(self._is_collapsed)
-        # Уведомляем родительский виджет об изменении геометрии
+        # Уведомляем ближайшего предка (ChatMessageWidget) об изменении геометрии
         parent = self.parentWidget()
-        if parent and hasattr(parent, "_update_bubble_geometry"):
-            parent._update_bubble_geometry()
+        while parent is not None:
+            if hasattr(parent, "_update_bubble_geometry"):
+                parent._update_bubble_geometry()
+                break
+            parent = parent.parentWidget()

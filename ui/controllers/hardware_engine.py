@@ -621,6 +621,36 @@ class HardwareEngineMixin:
 
         return False
 
+    def _notify_forge_offline(self, log_label: str = "генерации арта", show_chat_error: bool = False):
+        logger.info(f"[HardwareEngine] Пропуск {log_label}: SD WebUI Forge оффлайн.")
+        if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+            try:
+                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
+            except Exception:
+                pass
+        if show_chat_error and hasattr(self, "_append_message"):
+            user_msg = (
+                "⚠️ **SD WebUI Forge не запущен или еще загружается.**\n\n"
+                "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
+            )
+            sender_name = self.active_character.name if (hasattr(self, "active_character") and self.active_character) else "Элария"
+            self._append_message(sender_name, user_msg, is_user=False, is_error=True)
+
+    def _finalize_forge_generation(self):
+        try:
+            from services.vram_arbiter import VRAMArbiter
+            VRAMArbiter.get_instance().release_diffusion_for_llm(force=True)
+        except Exception:
+            try:
+                if hasattr(self, "forge_client") and self.forge_client:
+                    if getattr(self.forge_client, "_checkpoint_unloaded", False) is not True:
+                        self.forge_client.unload_checkpoint()
+                        self.forge_client.free_vram(force=True)
+            except Exception as _e_unl:
+                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
+        if hasattr(self, "_reload_active_lms_model_async"):
+            self._reload_active_lms_model_async(delay=1.2)
+
     def _scene_art_pipeline(
         self,
         v_payload: Optional[Dict[str, Any]] = None,
@@ -628,81 +658,53 @@ class HardwareEngineMixin:
         ckpt: Optional[str] = None
     ) -> Dict[str, Any]:
         if not self._is_forge_available():
-            logger.info("[HardwareEngine] Пропуск генерации арта сцены: SD WebUI Forge оффлайн.")
-            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                try:
-                    self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
-                except Exception:
-                    pass
+            self._notify_forge_offline("генерации арта сцены")
             return {"image_path": None, "plan": None, "checkpoint": None, "skipped": True}
 
         self._cancel_lms_reload()
-        available_models = self.forge_client.get_models() if hasattr(self, "forge_client") and self.forge_client else []
-
         captured_mode = self.get_effective_mode() if hasattr(self, "get_effective_mode") else getattr(self, "current_mode", "assistant")
         captured_char = self.active_character if (captured_mode == "roleplay" and hasattr(self, "active_character")) else None
         active_char_name = getattr(captured_char, "name", None) if captured_char else None
-
         sess_id = self.current_session.get("id") if getattr(self, "current_session", None) else None
-        sess_images_dir = SessionManager.get_session_images_dir(sess_id) if sess_id else None
 
+        from services.assistant_flow import run_forge_art_generation
+
+        raw_prompt = scene_text or ""
+        lm_for_plan = self.lm_client if hasattr(self, "lm_client") else None
         if captured_mode in ("roleplay", "rp") and not v_payload:
-            english_prompt = self._generate_ephemeral_rp_art_prompt(
+            raw_prompt = self._generate_ephemeral_rp_art_prompt(
                 sess_id=sess_id,
                 last_assistant_message=scene_text or "",
-                target_model_id=ckpt or "realistic"
+                target_model_id=ckpt or "realistic",
             )
-            from services.vram_arbiter import VRAMArbiter
-            VRAMArbiter.get_instance().release_llm_for_diffusion()
-            plan = self.art_director.plan_generation(
-                raw_prompt=english_prompt,
-                preferred_style=ckpt,
-                available_models=available_models,
-                session_id=sess_id,
-                mode=captured_mode
-            )
-        elif v_payload:
-            plan = self.art_director.plan_from_visual_intent(
-                visual_intent=v_payload,
-                preferred_style=ckpt,
-                available_models=available_models,
-                character_name=active_char_name,
-                character=None,
-                session_id=sess_id,
-                mode=captured_mode
-            )
-        else:
-            plan = self.art_director.plan_generation(
-                raw_prompt=scene_text or "",
-                preferred_style=ckpt,
-                lm_client=self.lm_client if hasattr(self, "lm_client") else None,
-                character=None,
-                available_models=available_models,
-                character_name=active_char_name,
-                session_id=sess_id,
-                mode=captured_mode
-            )
-            if plan.is_ambiguous:
-                return {"image_path": None, "plan": plan, "checkpoint": None, "is_ambiguous": True}
-            from services.vram_arbiter import VRAMArbiter
-            VRAMArbiter.get_instance().release_llm_for_diffusion()
+            lm_for_plan = None
 
-        logger.info(f"Scene Art selected checkpoint: '{plan.target_checkpoint}'")
-
-        kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
-        img_path = None
         try:
-            img_path = self.forge_client.text_to_image(**kwargs)
+            gen_res = run_forge_art_generation(
+                forge_client=self.forge_client,
+                art_director=self.art_director,
+                session_id=sess_id,
+                mode=captured_mode,
+                visual_intent=v_payload,
+                raw_prompt=raw_prompt,
+                preferred_style=ckpt,
+                lm_client=lm_for_plan,
+                character=None,
+                character_name=None if (captured_mode in ("roleplay", "rp") and not v_payload) else active_char_name,
+                unload_after=False,
+            )
         finally:
-            try:
-                if hasattr(self, "forge_client") and self.forge_client:
-                    self.forge_client.unload_checkpoint()
-                    self.forge_client.free_vram()
-            except Exception as _e_unl:
-                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
-            if hasattr(self, "_reload_active_lms_model_async"):
-                self._reload_active_lms_model_async(delay=1.2)
-        return {"image_path": img_path, "plan": plan, "checkpoint": plan.target_checkpoint}
+            self._finalize_forge_generation()
+
+        if gen_res.get("is_ambiguous"):
+            return gen_res
+
+        logger.info(f"Scene Art selected checkpoint: '{gen_res.get('checkpoint')}'")
+        return {
+            "image_path": gen_res.get("image_path"),
+            "plan": gen_res.get("plan"),
+            "checkpoint": gen_res.get("checkpoint"),
+        }
 
     def _on_scene_art_requested(
         self,
@@ -715,9 +717,7 @@ class HardwareEngineMixin:
         if not self._is_forge_available():
             if widget and hasattr(widget, "set_scene_art_busy"):
                 widget.set_scene_art_busy(False)
-            logger.info("[HardwareEngine] Пропуск генерации арта сцены: SD WebUI Forge оффлайн.")
-            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
+            self._notify_forge_offline("генерации арта сцены")
             return
 
         self._cancel_lms_reload()
@@ -773,16 +773,7 @@ class HardwareEngineMixin:
 
     def _enqueue_image_task(self, prompt: str):
         if not self._is_forge_available():
-            logger.info("[HardwareEngine] Пропуск ручной генерации арта: SD WebUI Forge оффлайн.")
-            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
-            user_msg = (
-                "⚠️ **SD WebUI Forge не запущен или еще загружается.**\n\n"
-                "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
-            )
-            sender_name = self.active_character.name if (hasattr(self, "active_character") and self.active_character) else "Элария"
-            if hasattr(self, "_append_message"):
-                self._append_message(sender_name, user_msg, is_user=False, is_error=True)
+            self._notify_forge_offline("ручной генерации арта", show_chat_error=True)
             return
 
         checkpoint = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
@@ -797,12 +788,7 @@ class HardwareEngineMixin:
 
         def _image_worker(raw_prompt: str, ckpt: Optional[str] = None) -> Dict[str, Any]:
             if not self._is_forge_available():
-                logger.info("[HardwareEngine] Пропуск ручной генерации арта: SD WebUI Forge оффлайн.")
-                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                    try:
-                        self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
-                    except Exception:
-                        pass
+                self._notify_forge_offline("ручной генерации арта")
                 return {"image_path": None, "plan": None, "checkpoint": None, "skipped": True}
             self._cancel_lms_reload()
             available_models = self.forge_client.get_models()
@@ -830,15 +816,7 @@ class HardwareEngineMixin:
             kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
             img_path = self.forge_client.text_to_image(**kwargs)
 
-            # text_to_image() guarantees cleanup in finally. Idempotent guard prevents duplicate requests.
-            try:
-                self.forge_client.unload_checkpoint()
-                self.forge_client.free_vram()
-            except Exception as _e_unl:
-                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
-
-            # Быстрый тихий возврат активной модели режима в VRAM
-            self._reload_active_lms_model_async(delay=1.2)
+            self._finalize_forge_generation()
             return {
                 "image_path": img_path,
                 "plan": plan,
@@ -859,16 +837,7 @@ class HardwareEngineMixin:
 
     def _enqueue_direct_image_task(self, prompt: str):
         if not self._is_forge_available():
-            logger.info("[HardwareEngine] Пропуск директ-генерации арта: SD WebUI Forge оффлайн.")
-            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
-            user_msg = (
-                "⚠️ **SD WebUI Forge не запущен или еще загружается.**\n\n"
-                "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
-            )
-            sender_name = self.active_character.name if (hasattr(self, "active_character") and self.active_character) else "Элария"
-            if hasattr(self, "_append_message"):
-                self._append_message(sender_name, user_msg, is_user=False, is_error=True)
+            self._notify_forge_offline("директ-генерации арта", show_chat_error=True)
             return
 
         checkpoint = normalize_model_choice(getattr(self, "selected_forge_checkpoint", None))
@@ -877,12 +846,7 @@ class HardwareEngineMixin:
 
         def _direct_image_worker(raw_prompt: str, ckpt: Optional[str] = None) -> Dict[str, Any]:
             if not self._is_forge_available():
-                logger.info("[HardwareEngine] Пропуск директ-генерации арта: SD WebUI Forge оффлайн.")
-                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                    try:
-                        self.statusBar().showMessage("Генерация арта пропущена (Forge выключен)", 5000)
-                    except Exception:
-                        pass
+                self._notify_forge_offline("директ-генерации арта")
                 return {"image_path": None, "plan": None, "checkpoint": None, "skipped": True}
             self._cancel_lms_reload()
             available_models = self.forge_client.get_models()
@@ -906,15 +870,7 @@ class HardwareEngineMixin:
             kwargs = plan.to_forge_kwargs(output_dir=sess_images_dir, session_id=sess_id)
             img_path = self.forge_client.text_to_image(**kwargs)
 
-            # text_to_image() guarantees cleanup in finally. Idempotent guard prevents duplicate requests.
-            try:
-                self.forge_client.unload_checkpoint()
-                self.forge_client.free_vram()
-            except Exception as _e_unl:
-                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
-
-            # Быстрый тихий возврат активной модели режима в VRAM
-            self._reload_active_lms_model_async(delay=1.2)
+            self._finalize_forge_generation()
             return {
                 "image_path": img_path,
                 "plan": plan,
@@ -1025,6 +981,140 @@ class HardwareEngineMixin:
             )
             self._active_tasks[task.id] = task
             self.task_queue.enqueue(task)
+
+
+    # -------------------------------------------------------------------------
+    # 5. Мобильный шлюз (FastAPI Mobile Server + QR-код подключения)
+    # -------------------------------------------------------------------------
+    def _sync_mobile_server_button(self, is_running: bool):
+        if hasattr(self, "sidebar") and self.sidebar and hasattr(self.sidebar, "update_mobile_server_state"):
+            self.sidebar.update_mobile_server_state(is_running)
+
+    def _on_mobile_server_clicked(self):
+        """Запускает встроенный мобильный сервер (если остановлен) и показывает QR-код подключения."""
+        from mobile_server.api import is_mobile_server_running, start_mobile_server_thread
+        from qfluentwidgets import InfoBar, InfoBarPosition
+
+        if not is_mobile_server_running():
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage("Запуск мобильного сервера...", 3000)
+            ok, msg = start_mobile_server_thread()
+            self._sync_mobile_server_button(ok)
+            if not ok:
+                InfoBar.error(
+                    title="Мобильный сервер",
+                    content=msg,
+                    duration=5000,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self,
+                )
+                return
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage(msg, 4000)
+        else:
+            self._sync_mobile_server_button(True)
+
+        self._show_mobile_server_qr_dialog()
+
+    def _show_mobile_server_qr_dialog(self):
+        """Отображает по центру окна Fluent-диалог с QR-кодом для подключения телефона."""
+        from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+        from qfluentwidgets import (
+            BodyLabel,
+            ComboBox,
+            FluentIcon as FIF,
+            InfoBar,
+            InfoBarPosition,
+            MessageBoxBase,
+            PushButton,
+            SubtitleLabel,
+        )
+        from mobile_server.api import get_mobile_server_urls, stop_mobile_server_thread
+        from ui.common.icon_utils import render_qr_pixmap
+
+        urls = get_mobile_server_urls()
+        active_url = urls[0]
+
+        parent_win = self if isinstance(self, QWidget) else None
+        dialog = MessageBoxBase(parent_win)
+        dialog.widget.setMinimumWidth(380)
+
+        title_lbl = SubtitleLabel("Мобильный сервер активен", dialog)
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dialog.viewLayout.addWidget(title_lbl)
+
+        hint_lbl = BodyLabel(
+            "Отсканируйте QR-код камерой телефона (в одной сети Wi-Fi или VPN), "
+            "чтобы открыть NeonRoute в браузере:",
+            dialog,
+        )
+        hint_lbl.setWordWrap(True)
+        hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint_lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        dialog.viewLayout.addWidget(hint_lbl)
+
+        qr_frame = QFrame(dialog)
+        qr_frame.setStyleSheet(
+            "QFrame { background-color: #FFFFFF; border-radius: 14px; padding: 10px; }"
+        )
+        qr_layout = QVBoxLayout(qr_frame)
+        qr_layout.setContentsMargins(12, 12, 12, 12)
+        qr_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        qr_label = QLabel(qr_frame)
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_label.setPixmap(render_qr_pixmap(active_url, module_px=7, quiet_modules=3))
+        qr_layout.addWidget(qr_label)
+
+        qr_row = QHBoxLayout()
+        qr_row.addStretch(1)
+        qr_row.addWidget(qr_frame)
+        qr_row.addStretch(1)
+        dialog.viewLayout.addLayout(qr_row)
+
+        url_lbl = BodyLabel(active_url, dialog)
+        url_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        url_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        url_lbl.setStyleSheet("color: #00F0FF; font-weight: 600; font-size: 14px;")
+        dialog.viewLayout.addWidget(url_lbl)
+
+        if len(urls) > 1:
+            addr_combo = ComboBox(dialog)
+            addr_combo.addItems(urls)
+            addr_combo.setCurrentIndex(0)
+
+            def _on_addr_changed(new_url: str):
+                url_lbl.setText(new_url)
+                qr_label.setPixmap(render_qr_pixmap(new_url, module_px=7, quiet_modules=3))
+
+            addr_combo.currentTextChanged.connect(_on_addr_changed)
+            dialog.viewLayout.addWidget(addr_combo)
+
+        btn_copy = PushButton(FIF.COPY, "Копировать ссылку", dialog)
+
+        def _copy_url():
+            cb = QApplication.clipboard()
+            if cb is not None:
+                cb.setText(url_lbl.text())
+            InfoBar.success(
+                title="Скопировано",
+                content=url_lbl.text(),
+                duration=2000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=parent_win,
+            )
+
+        btn_copy.clicked.connect(_copy_url)
+        dialog.viewLayout.addWidget(btn_copy)
+
+        dialog.yesButton.setText("Готово")
+        dialog.cancelButton.setText("Остановить сервер")
+
+        if not dialog.exec():
+            stop_mobile_server_thread()
+            self._sync_mobile_server_button(False)
+            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage("Мобильный сервер остановлен.", 3000)
 
 
 def __getattr__(name: str):

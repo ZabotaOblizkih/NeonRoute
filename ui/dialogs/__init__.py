@@ -16,6 +16,7 @@ _LAZY_EXPORTS = {
     "AboutDialog": (".about_dialog", "AboutDialog"),
     "HelpDialog": (".help_dialog", "HelpDialog"),
     "EngineerSettingsDialog": (".engineer_settings_dialog", "EngineerSettingsDialog"),
+    "ModeModelSettingsDialog": (".engineer_settings_dialog", "ModeModelSettingsDialog"),
     "NewChatDialog": (".new_chat_dialog", "NewChatDialog"),
     "KnowledgeManagerDialog": (".knowledge_manager_dialog", "KnowledgeManagerDialog"),
     "AnchorViewerDialog": (".anchor_viewer_dialog", "AnchorViewerDialog"),
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
     from .shutdown_dialog import ShutdownProgressDialog
     from .about_dialog import AboutDialog
     from .help_dialog import HelpDialog
-    from .engineer_settings_dialog import EngineerSettingsDialog
+    from .engineer_settings_dialog import EngineerSettingsDialog, ModeModelSettingsDialog
     from .new_chat_dialog import NewChatDialog
     from .knowledge_manager_dialog import KnowledgeManagerDialog
     from .anchor_viewer_dialog import AnchorViewerDialog

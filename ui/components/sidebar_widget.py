@@ -23,7 +23,7 @@ from qfluentwidgets import (
     ToolTipFilter,
     ToolTipPosition,
 )
-from config import WORKSPACE_DIR, OUTPUTS_DIR, AUDIO_DIR
+from config import WORKSPACE_DIR, OUTPUTS_DIR
 
 logger = logging.getLogger("NeonRoute.SidebarWidget")
 
@@ -194,13 +194,13 @@ class SidebarWidget(QFrame):
         )
         btn_open_outputs.clicked.connect(lambda: SidebarWidget._safe_open_folder(OUTPUTS_DIR))
 
-        btn_open_audio = TransparentToolButton(FIF.MICROPHONE, self)
-        btn_open_audio.setToolTip("Папка аудиозаписей (audio)")
-        btn_open_audio.setFixedSize(34, 34)
-        btn_open_audio.installEventFilter(
-            ToolTipFilter(btn_open_audio, showDelay=300, position=ToolTipPosition.TOP)
+        self.btn_mobile_server = TransparentToolButton(FIF.WIFI, self)
+        self.btn_mobile_server.setToolTip("Запуск мобильного сервера")
+        self.btn_mobile_server.setFixedSize(34, 34)
+        self.btn_mobile_server.installEventFilter(
+            ToolTipFilter(self.btn_mobile_server, showDelay=300, position=ToolTipPosition.TOP)
         )
-        btn_open_audio.clicked.connect(lambda: SidebarWidget._safe_open_folder(AUDIO_DIR))
+        self.btn_mobile_server.clicked.connect(self._on_mobile_server_clicked)
 
         self.btn_settings = TransparentToolButton(FIF.SETTING, self)
         self.btn_settings.setToolTip("Параметры и настройки")
@@ -212,10 +212,35 @@ class SidebarWidget(QFrame):
 
         storage_row.addWidget(btn_open_workspace)
         storage_row.addWidget(btn_open_outputs)
-        storage_row.addWidget(btn_open_audio)
+        storage_row.addWidget(self.btn_mobile_server)
         storage_row.addWidget(self.btn_settings)
         layout.addLayout(storage_row)
 
+
+    def _on_mobile_server_clicked(self):
+        """Запускает мобильный сервер или открывает QR-окно управления."""
+        if hasattr(self.window, "_on_mobile_server_clicked"):
+            self.window._on_mobile_server_clicked()
+
+    def update_mobile_server_state(self, is_running: bool):
+        """Обновляет подсветку и подсказку кнопки мобильного сервера."""
+        if not hasattr(self, "btn_mobile_server") or self.btn_mobile_server is None:
+            return
+        if is_running:
+            self.btn_mobile_server.setToolTip("Мобильный сервер запущен (показать QR-код / остановить)")
+            self.btn_mobile_server.setStyleSheet("""
+                TransparentToolButton {
+                    background-color: rgba(0, 240, 255, 0.14);
+                    border: 1px solid rgba(0, 240, 255, 0.45);
+                    border-radius: 6px;
+                }
+                TransparentToolButton:hover {
+                    background-color: rgba(0, 240, 255, 0.24);
+                }
+            """)
+        else:
+            self.btn_mobile_server.setToolTip("Запуск мобильного сервера")
+            self.btn_mobile_server.setStyleSheet("")
 
     def _on_settings_clicked(self):
         """Открывает неоновое меню настроек по клику на шестеренку."""

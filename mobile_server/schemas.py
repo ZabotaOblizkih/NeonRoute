@@ -97,7 +97,7 @@ class SendMessageRequest(BaseModel):
 class StreamTokenChunk(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    event: Literal["token", "thought", "thought_end", "done", "error"]
+    event: Literal["token", "thought", "thought_end", "done", "art_started", "error"]
     data: str
 
 
@@ -173,6 +173,33 @@ class GenerationParamsPayload(BaseModel):
     hires_upscaler: Optional[str] = None
     enable_hr: Optional[bool] = None
     enable_adetailer: Optional[bool] = None
+
+    @classmethod
+    def from_plan(
+        cls,
+        plan: Any,
+        forge_kwargs: Dict[str, Any],
+        image_path: Any,
+        fallback_model: str = "Auto",
+        fallback_prompt: str = "",
+        fallback_neg: str = "",
+    ) -> "GenerationParamsPayload":
+        return cls(
+            model_name=getattr(plan, "model_title", None) or getattr(plan, "target_checkpoint", None) or fallback_model,
+            seed=int(forge_kwargs.get("seed", -1)),
+            steps=int(forge_kwargs.get("steps", 28)),
+            sampler=str(forge_kwargs.get("sampler_name", "Euler a")),
+            cfg_scale=float(forge_kwargs.get("cfg_scale", 6.0)),
+            denoising_strength=float(forge_kwargs.get("denoising_strength", 0.35)),
+            prompt=str(forge_kwargs.get("prompt", fallback_prompt)),
+            negative_prompt=str(forge_kwargs.get("negative_prompt", fallback_neg)),
+            image_path=str(image_path),
+            width=forge_kwargs.get("width"),
+            height=forge_kwargs.get("height"),
+            hires_upscaler=forge_kwargs.get("hr_upscaler"),
+            enable_hr=forge_kwargs.get("enable_hr"),
+            enable_adetailer=forge_kwargs.get("enable_adetailer"),
+        )
 
 
 class DirectArtCommandRequest(BaseModel):

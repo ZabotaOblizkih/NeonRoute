@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from config import MODE_PROFILES, THINKING_MODEL_KEYWORDS
+from config import MODE_PROFILES, THINKING_MODEL_KEYWORDS, MASTER_MAX_RESPONSE_TOKENS
 from services.assistant_flow import (
     RE_GALLERY_TRIGGER,
     StreamArtTagFilter,
@@ -117,6 +117,7 @@ def build_chat_context_and_params(
             include_memory=False,
             user_query=user_text,
             task_text=user_text,
+            mode=target_mode.value,
         )
 
     sampling_params = dict(profile.get("sampling", {}))
@@ -146,7 +147,7 @@ def build_chat_context_and_params(
                 not (isinstance(sampling_overrides, dict) and "max_tokens" in sampling_overrides)
                 and int(sampling_params.get("max_tokens", 1024)) == 1024
             ):
-                sampling_params["max_tokens"] = 2048
+                sampling_params["max_tokens"] = MASTER_MAX_RESPONSE_TOKENS
 
     enable_thinking = resolve_effective_thinking(
         mode=target_mode.value,

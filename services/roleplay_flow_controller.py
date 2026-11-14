@@ -98,6 +98,7 @@ def run_roleplay_inference_deferred(
 
     assembled_messages = SessionManager.get_lm_studio_messages(
         history=history,
+        mode="roleplay",
         is_roleplay=True,
         character_card=active_char,
         is_excel=False,
@@ -344,7 +345,7 @@ class RoleplayFlowControllerMixin:
                 logger.warning(f"[RPFlow] Ошибка отображения бабла: {e}")
                 return
 
-        self._sync_turn(role="assistant", content=text, replace_last=True)
+        self._sync_turn(role="assistant", content=text, replace_last=True, mode="roleplay")
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()
 

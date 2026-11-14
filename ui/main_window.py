@@ -138,11 +138,12 @@ class MainWindow(
         self.active_lms_model = self.app_config.get("active_model", "")
 
         # Wallpaper & Dimming settings (MainWindow background rendering)
+        from ui.common.image_utils import load_display_master_pixmap
         self.background_path: Optional[str] = self.app_config.get("background_path", None)
         self.background_dim_opacity: int = self.app_config.get("background_dim_opacity", 140)
         self.background_pixmap: Optional[QPixmap] = None
         if self.background_path and Path(self.background_path).exists():
-            self.background_pixmap = QPixmap(self.background_path)
+            self.background_pixmap = load_display_master_pixmap(self.background_path)
         self._bg_render_cache: Optional[QPixmap] = None
         self._update_background_cache()
 
@@ -266,9 +267,17 @@ class MainWindow(
     def _open_main_settings_menu(self, target_widget=None):
         """Открывает современное окно параметров и настроек в стиле Fluent Design."""
         try:
-            from ui.dialogs.settings_dialog import SettingsDialog
-            dialog = SettingsDialog(self)
-            dialog.exec()
+            if hasattr(self, "_open_settings_dialog"):
+                self._open_settings_dialog("system")
+            else:
+                from ui.dialogs.settings_dialog import SettingsDialog
+                dialog = SettingsDialog(self)
+                self._active_settings_dialog = dialog
+                try:
+                    dialog.exec()
+                finally:
+                    self._active_settings_dialog = None
+                    dialog.deleteLater()
         except Exception as e:
             logger.error(f"Ошибка при открытии окна настроек: {e}", exc_info=True)
             try:
@@ -367,7 +376,6 @@ class MainWindow(
 
         central_widget = QWidget(self)
         central_widget.setObjectName("CentralWidget")
-        central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         central_widget.setAutoFillBackground(False)
         central_widget.setStyleSheet("background: transparent;")
         self.setCentralWidget(central_widget)
@@ -437,7 +445,6 @@ class MainWindow(
     def _create_main_content(self) -> QWidget:
         container = QWidget(self)
         container.setObjectName("MainContentContainer")
-        container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         container.setAutoFillBackground(False)
         container.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(container)
@@ -666,12 +673,16 @@ class MainWindow(
         Динамический расчет геометрии сплиттера под реальную ширину окна.
         Предотвращает сжатие области чата и баги вёрстки.
         """
-        if not hasattr(self, "main_splitter"):
+        if not hasattr(self, "main_splitter") or not self.main_splitter:
+            return
+        if self.isMinimized():
             return
 
         total_w = self.main_splitter.width()
         if total_w < 600:
-            total_w = self.width() or 1200
+            total_w = self.width()
+        if total_w < 600:
+            total_w = 1200
 
         sidebar_w = 270
 
@@ -681,11 +692,14 @@ class MainWindow(
                 self.workspace_inspector.refresh_files()
             inspector_w = 380
             chat_w = max(450, total_w - sidebar_w - inspector_w)
-            self.main_splitter.setSizes([sidebar_w, chat_w, inspector_w])
+            if self.main_splitter.count() >= 3:
+                self.main_splitter.setSizes([sidebar_w, chat_w, inspector_w])
+            else:
+                self.main_splitter.setSizes([sidebar_w, chat_w])
         else:
             if getattr(self, "_workspace_inspector", None) is not None:
                 self._workspace_inspector.setVisible(False)
-            chat_w = max(600, total_w - sidebar_w)
+            chat_w = max(500, total_w - sidebar_w)
             if self.main_splitter.count() >= 3:
                 self.main_splitter.setSizes([sidebar_w, chat_w, 0])
             else:
@@ -1005,6 +1019,7 @@ class MainWindow(
                     self._menu_bar.setVisible(True)
                 if self.centralWidget() and self.centralWidget().layout():
                     self.centralWidget().layout().setContentsMargins(0, self.titleBar.height(), 0, 0)
+                self.titleBar.resize(self.width(), self.titleBar.height())
                 self.titleBar.raise_()
 
     def keyPressEvent(self, event):
@@ -1027,6 +1042,7 @@ class MainWindow(
                     self._menu_bar.setVisible(True)
                 if self.centralWidget() and self.centralWidget().layout():
                     self.centralWidget().layout().setContentsMargins(0, self.titleBar.height(), 0, 0)
+                self.titleBar.resize(self.width(), self.titleBar.height())
                 self.titleBar.raise_()
 
     def nativeEvent(self, eventType, message):

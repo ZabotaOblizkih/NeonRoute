@@ -262,7 +262,7 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in sys_prompt_sd15
     assert "[GALERY]" not in sys_prompt_sd15
     assert "dreamshaper_8" in sys_prompt_sd15
-    assert "1. LANGUAGE: English tags only" in sys_prompt_sd15
+    assert "Language & Format" in sys_prompt_sd15
 
     # Проверка авто-определения модели
     sys_prompt_auto = builder.build(user_name="Тест", user_query=art_query)
@@ -277,8 +277,8 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
         target_model_id="pony_diffusion",
         target_model_desc="Pony Diffusion V6"
     )
-    assert "[SYSTEM DIRECTIVE: Image Tag Translator]" in sys_prompt_sdxl
-    assert "TRANSLATION RULES:" in sys_prompt_sdxl
+    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in sys_prompt_sdxl
+    assert "Style & Syntax Rules" in sys_prompt_sdxl
     assert "pony_diffusion" in sys_prompt_sdxl
 
     # ── 5. Эмуляция чистового вывода модели за один ход ──

@@ -19,15 +19,11 @@ from qfluentwidgets import (
     DoubleSpinBox,
     SpinBox,
     Slider,
-    LineEdit,
     setTheme,
     Theme
 )
 
 from services.asset_validator import MODELS_ADETAILER_DIR
-
-DEFAULT_HANDS_PROMPT = "detailed hand, realistic fingers, anatomically correct, sharp focus"
-DEFAULT_HANDS_NEGATIVE = "face, head, eyes, mouth, portrait, woman, girl, body, extra digits, fewer digits, deformed fingers"
 
 
 class ADetailerSettingsDialog(QDialog):
@@ -37,7 +33,7 @@ class ADetailerSettingsDialog(QDialog):
         super().__init__(parent)
         setTheme(Theme.DARK)
         self.setWindowTitle("Настройки ADetailer — Лица и Руки")
-        self.resize(560, 640)
+        self.resize(560, 520)
         self.setModal(True)
         self.is_xl = is_xl
         self.params = dict(current_pipeline_params or {})
@@ -261,35 +257,6 @@ class ADetailerSettingsDialog(QDialog):
         self.spin_hands_inpaint.setToolTip(tip_hands_inpaint)
         hands_layout.addWidget(self.spin_hands_inpaint, 4, 1)
 
-        # Промпт рук (Prompt)
-        hands_layout.addWidget(QLabel("Промпт рук (Prompt):"), 5, 0)
-        self.edit_hands_prompt = LineEdit(self.card_hands)
-        self.edit_hands_prompt.setPlaceholderText(DEFAULT_HANDS_PROMPT)
-        tip_hands_p = (
-            "<b>Изолированный промпт для кистей рук</b><br>"
-            "Подставляется в маску рук вместо глобального промпта сцены, "
-            "предотвращая генерацию лиц или целых тел на пальцах."
-        )
-        self.edit_hands_prompt.setToolTip(tip_hands_p)
-        hands_layout.addWidget(self.edit_hands_prompt, 5, 1)
-
-        # Негативный промпт рук (Negative)
-        hands_layout.addWidget(QLabel("Негатив рук (Negative):"), 6, 0)
-        self.edit_hands_neg = LineEdit(self.card_hands)
-        self.edit_hands_neg.setPlaceholderText(DEFAULT_HANDS_NEGATIVE)
-        tip_hands_n = (
-            "<b>Негативный промпт для кистей рук</b><br>"
-            "Исключает артефакты, мини-лица и мутации пальцев в области рук."
-        )
-        self.edit_hands_neg.setToolTip(tip_hands_n)
-        hands_layout.addWidget(self.edit_hands_neg, 6, 1)
-
-        # Кнопка сброса промптов рук
-        self.btn_reset_hands = PushButton("Сбросить промпты рук по умолчанию ↺", self.card_hands)
-        self.btn_reset_hands.setToolTip("Восстанавливает стандартные позитивный и негативный промпты для рук")
-        self.btn_reset_hands.clicked.connect(self._reset_hands_prompts)
-        hands_layout.addWidget(self.btn_reset_hands, 7, 0, 1, 2)
-
         layout.addWidget(self.card_hands)
 
         # ── 4. Кнопки сохранения ──
@@ -303,11 +270,6 @@ class ADetailerSettingsDialog(QDialog):
         btns_layout.addWidget(self.btn_cancel)
         btns_layout.addWidget(self.btn_save)
         layout.addLayout(btns_layout)
-
-    def _reset_hands_prompts(self):
-        """Сбрасывает промпты инпейнта рук на значения по умолчанию."""
-        self.edit_hands_prompt.setText(DEFAULT_HANDS_PROMPT)
-        self.edit_hands_neg.setText(DEFAULT_HANDS_NEGATIVE)
 
     def _load_values(self):
         p = self.params
@@ -331,33 +293,23 @@ class ADetailerSettingsDialog(QDialog):
         self.spin_hands_denoise.setValue(float(p.get("adetailer_hands_denoise", 0.38 if self.is_xl else 0.40)))
         self.spin_hands_inpaint.setValue(int(p.get("adetailer_hands_inpaint_size", 512)))
 
-        h_prompt = p.get("adetailer_hands_prompt")
-        self.edit_hands_prompt.setText(str(h_prompt) if h_prompt is not None else DEFAULT_HANDS_PROMPT)
-        h_neg = p.get("adetailer_hands_negative_prompt")
-        self.edit_hands_neg.setText(str(h_neg) if h_neg is not None else DEFAULT_HANDS_NEGATIVE)
-
         self._on_master_toggled(self.switch_master.isChecked())
         self._on_hands_toggled(self.switch_hands.isChecked())
 
     def _on_master_toggled(self, checked: bool):
         self.card_face.setEnabled(checked)
         self.card_hands.setEnabled(checked)
-        self.edit_hands_prompt.setEnabled(checked and self.switch_hands.isChecked())
-        self.edit_hands_neg.setEnabled(checked and self.switch_hands.isChecked())
-        self.btn_reset_hands.setEnabled(checked and self.switch_hands.isChecked())
 
     def _on_hands_toggled(self, checked: bool):
         self.combo_hands_model.setEnabled(checked)
         self.spin_hands_conf.setEnabled(checked)
         self.spin_hands_denoise.setEnabled(checked)
         self.spin_hands_inpaint.setEnabled(checked)
-        self.edit_hands_prompt.setEnabled(checked)
-        self.edit_hands_neg.setEnabled(checked)
-        self.btn_reset_hands.setEnabled(checked)
 
-    def _on_save_clicked(self):
+    def get_settings(self) -> Dict[str, Any]:
+        """Возвращает технические настройки ADetailer без перекрытия основного промпта."""
         face_sz = int(self.spin_face_inpaint.value())
-        self.result_params = {
+        return {
             "enable_adetailer": self.switch_master.isChecked(),
             "adetailer_face_model": self.combo_face_model.currentText(),
             "adetailer_face_confidence": round(self.spin_face_conf.value(), 2),
@@ -369,8 +321,11 @@ class ADetailerSettingsDialog(QDialog):
             "adetailer_hands_confidence": round(self.spin_hands_conf.value(), 2),
             "adetailer_hands_denoise": round(self.spin_hands_denoise.value(), 2),
             "adetailer_hands_inpaint_size": int(self.spin_hands_inpaint.value()),
-            "adetailer_hands_mask_blur": 8,
-            "adetailer_hands_prompt": self.edit_hands_prompt.text().strip(),
-            "adetailer_hands_negative_prompt": self.edit_hands_neg.text().strip(),
+            "adetailer_hands_mask_blur": int(self.params.get("adetailer_hands_mask_blur", 8)),
+            "adetailer_hands_prompt": "",
+            "adetailer_hands_negative_prompt": "",
         }
+
+    def _on_save_clicked(self):
+        self.result_params = self.get_settings()
         self.accept()

@@ -443,9 +443,7 @@ class SettingsDialog(FramelessDialog):
             content="Каталог карточек Tavern/Chub, создание сопартийцев и пошаговый перевод",
             parent=group_knowledge
         )
-        self.card_gallery.clicked.connect(
-            lambda: self.window._open_characters_gallery_dialog() if hasattr(self.window, "_open_characters_gallery_dialog") else None
-        )
+        self.card_gallery.clicked.connect(self._on_open_characters_gallery)
         group_knowledge.addSettingCard(self.card_gallery)
 
         self.card_clean_cache = PushSettingCard(
@@ -765,6 +763,15 @@ class SettingsDialog(FramelessDialog):
 
         page.setWidget(container)
         self.stacked_widget.addWidget(page)
+
+    def _on_open_characters_gallery(self):
+        """Закрывает окно настроек перед открытием галереи, предотвращая наслоение DWM-слоев."""
+        self._requested_open_gallery = True
+        was_visible = self.isVisible()
+        self.accept()
+        # Для unit-тестов без модального event loop передаем синхронный вызов
+        if not was_visible and hasattr(self.window, "_open_characters_gallery_dialog"):
+            self.window._open_characters_gallery_dialog()
 
     def _on_exit_clicked(self):
         """Безопасно закрывает диалог настроек и главное окно."""

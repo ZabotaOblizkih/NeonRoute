@@ -463,10 +463,11 @@ class KnowledgeManager:
                 try:
                     with open(search_idx_path, "r", encoding="utf-8") as f:
                         old_idx = json.load(f)
-                    for ch in old_idx.get("chunks", []):
-                        fn = ch.get("filename")
-                        if fn and fn in current_docs:
-                            existing_chunks_by_file[fn].append(ch)
+                    if old_idx.get("version", 1) >= 3:
+                        for ch in old_idx.get("chunks", []):
+                            fn = ch.get("filename")
+                            if fn and fn in current_docs:
+                                existing_chunks_by_file[fn].append(ch)
                 except Exception as ex:
                     logger.debug(f"[KnowledgeManager] Старый search_index.json не прочитан: {ex}")
 
@@ -612,6 +613,33 @@ class KnowledgeManager:
         "doc", "docs", "file", "index", "init", "setup", "log"
     }
 
+    DOCUMENT_ANAPHORA_MARKERS: Tuple[str, ...] = (
+        "в этом файле", "в этом документе", "в этом мануале", "в этом руководстве",
+        "в этой инструкции", "в этом разделе", "в этой таблице", "в этом скрипте",
+        "в этом модуле", "в этом коде", "по этому файлу", "по этому документу",
+        "про этот файл", "про этот документ", "из этого файла", "из этого документа",
+        "в том файле", "в том документе", "продолжи по нему", "продолжи по файлу",
+        "продолжи по документу", "по нему", "о нем", "о нём", "про него", "про нее",
+        "про неё", "а в нем", "а в нём", "в нем", "в нём", "из него", "из нее",
+        "из неё", "а у него", "а к нему", "покажи его", "покажи ее", "покажи её",
+        "его код", "ее код", "её код", "у этого"
+    )
+
+    _ANAPHORA_REGEX = re.compile(
+        r"\b(?:" + "|".join(re.escape(m) for m in DOCUMENT_ANAPHORA_MARKERS) + r")\b",
+        re.IGNORECASE
+    )
+
+    @classmethod
+    def has_document_anaphora(cls, query: str) -> bool:
+        """
+        Возвращает True, если в запросе есть явная анафорическая отсылка
+        к уже обсуждаемому файлу/документу («в этом файле», «по нему», «в нем» и т.д.).
+        """
+        if not query or not query.strip():
+            return False
+        return bool(cls._ANAPHORA_REGEX.search(query))
+
     @classmethod
     def _fuse_contextual_query(cls, query: str, previous_query: Optional[str]) -> str:
         """Склеивает запрос с контекстом ТОЛЬКО при явных маркерах коррекции или анафоры."""
@@ -627,11 +655,7 @@ class KnowledgeManager:
         is_corrective = any(m in q_lower for m in corrective_markers)
 
         # Маркеры анафоры (прямая ссылка на объект из прошлого сообщения)
-        anaphoric_markers = [
-            "а в нем", "а у него", "а к нему", "покажи его", "покажи ее", 
-            "его код", "ее код", "у этого", "в этом"
-        ]
-        is_anaphoric = any(m in q_lower for m in anaphoric_markers)
+        is_anaphoric = cls.has_document_anaphora(query) or "в этом" in q_lower
 
         # Если это самостоятельный запрос без маркеров связи — не засоряем его старыми темами
         if not (is_corrective or is_anaphoric):
@@ -673,6 +697,157 @@ class KnowledgeManager:
         return found
 
     @classmethod
+    def _stitch_ordered_chunks(cls, chunks_in_order: List[Dict[str, Any]], filename: str) -> str:
+        """Склеивает отсортированные по chunk_index чанки, удаляя overlap и дубли шапок таблиц на стыках."""
+        if not chunks_in_order:
+            return ""
+
+        from services.markdown_chunker import MarkdownChunker
+
+        stitched_text = ""
+        prev_idx: Optional[int] = None
+        current_section: Optional[str] = None
+
+        for ch in chunks_in_order:
+            txt = (ch.get("text") or "").strip()
+            if not txt:
+                continue
+
+            curr_idx = ch.get("chunk_index")
+            section = ch.get("section")
+            section_prefix = ""
+            if section and section != filename and section != current_section:
+                current_section = section
+                if section.lower() not in txt[:120].lower():
+                    section_prefix = f"[Раздел: {section}]\n"
+
+            if not stitched_text:
+                stitched_text = section_prefix + txt
+                prev_idx = curr_idx
+                continue
+
+            is_adjacent = prev_idx is not None and curr_idx is not None and curr_idx == prev_idx + 1
+            if is_adjacent:
+                # 1. Стык разрезанной Markdown-таблицы: убираем повторную шапку (+ разделитель + overlap-строку)
+                prev_last_line = stitched_text.splitlines()[-1].strip() if stitched_text else ""
+                curr_lines = txt.splitlines()
+                if (
+                    MarkdownChunker.is_table_row(prev_last_line)
+                    and len(curr_lines) >= 2
+                    and MarkdownChunker.is_table_row(curr_lines[0])
+                    and MarkdownChunker.is_table_separator(curr_lines[1])
+                ):
+                    data_lines = curr_lines[2:]
+                    if data_lines and data_lines[0].strip() == prev_last_line:
+                        data_lines = data_lines[1:]
+                    if data_lines:
+                        joiner = f"\n\n{section_prefix}" if section_prefix else "\n"
+                        stitched_text += joiner + "\n".join(data_lines)
+                    prev_idx = curr_idx
+                    continue
+
+                # 2. Стык обычных текстовых чанков: ищем перекрытие суффикса и префикса (30..200 симв.)
+                max_overlap = min(200, len(txt), len(stitched_text))
+                overlap_found = 0
+                for size in range(max_overlap, 29, -1):
+                    if stitched_text.endswith(txt[:size]):
+                        overlap_found = size
+                        break
+
+                if overlap_found > 0:
+                    tail = txt[overlap_found:]
+                    if tail.strip():
+                        if section_prefix:
+                            stitched_text += f"\n\n{section_prefix}{tail.lstrip()}"
+                        else:
+                            stitched_text += tail
+                    prev_idx = curr_idx
+                    continue
+
+            stitched_text += f"\n\n---\n\n{section_prefix}{txt}"
+            prev_idx = curr_idx
+
+        return stitched_text
+
+    @classmethod
+    def _assemble_chunks_and_snippet(
+        cls,
+        file_chunks: List[Dict[str, Any]],
+        filename: str,
+        engine: Any,
+        exclude_set: Set[str],
+        max_budget: int = 3600,
+        max_chunks: int = 6
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Отбирает релевантные чанки файла в рамках бюджета символов, добирает смежный (top_idx + 1)
+        и заполняет 1-шаговые разрывы (#i, #i+2 -> #i+1), затем сортирует по порядку чтения и склеивает.
+        """
+        if not file_chunks:
+            return "", []
+
+        best_chunk = file_chunks[0]
+        candidate_chunks = list(file_chunks)
+        eng_chunks = getattr(engine, "chunks", None) if engine else None
+
+        # Индекс чанков файла в движке для быстрого добора смежных фрагментов
+        file_chunk_by_idx: Dict[int, Dict[str, Any]] = {}
+        if eng_chunks:
+            for eng_ch in eng_chunks:
+                if eng_ch.get("filename") == filename:
+                    c_idx = eng_ch.get("chunk_index")
+                    if c_idx is not None:
+                        file_chunk_by_idx[c_idx] = eng_ch
+
+        # 1. Next-Chunk Continuity: подхватываем смежный чанк продолжения для топ-1 попадания
+        top_idx = best_chunk.get("chunk_index")
+        if top_idx is not None and (top_idx + 1) in file_chunk_by_idx:
+            existing_ids = {c.get("chunk_id") for c in candidate_chunks}
+            nxt = file_chunk_by_idx[top_idx + 1]
+            if nxt.get("chunk_id") not in existing_ids and nxt.get("chunk_id") not in exclude_set:
+                cont_ch = dict(nxt)
+                cont_ch["score"] = round(float(best_chunk.get("score", 0.5)) * 0.95, 4)
+                candidate_chunks.insert(1, cont_ch)
+
+        # 2. Отбор по убыванию релевантности в пределах max_budget (гарантируем попадание топ-чанка)
+        selected_chunks: List[Dict[str, Any]] = []
+        accumulated_chars = 0
+        for ch in candidate_chunks[:max_chunks]:
+            txt = (ch.get("text") or "").strip()
+            if not txt:
+                continue
+            if accumulated_chars + len(txt) > max_budget and selected_chunks:
+                break
+            selected_chunks.append(ch)
+            accumulated_chars += len(txt)
+
+        # 3. Заполнение 1-шаговых разрывов (#i и #i+2 -> добираем #i+1), если позволяет бюджет
+        if len(selected_chunks) >= 2 and len(selected_chunks) < max_chunks and file_chunk_by_idx:
+            selected_ids = {c.get("chunk_id") for c in selected_chunks}
+            ordered_indices = sorted(c.get("chunk_index") for c in selected_chunks if c.get("chunk_index") is not None)
+            score_by_idx = {c.get("chunk_index"): float(c.get("score", 0.5)) for c in selected_chunks}
+            for i in range(len(ordered_indices) - 1):
+                if len(selected_chunks) >= max_chunks:
+                    break
+                idx_a, idx_b = ordered_indices[i], ordered_indices[i + 1]
+                if idx_b - idx_a == 2:
+                    mid_idx = idx_a + 1
+                    mid_ch = file_chunk_by_idx.get(mid_idx)
+                    if mid_ch and mid_ch.get("chunk_id") not in selected_ids and mid_ch.get("chunk_id") not in exclude_set:
+                        mid_txt = (mid_ch.get("text") or "").strip()
+                        if mid_txt and accumulated_chars + len(mid_txt) <= max_budget:
+                            bridge = dict(mid_ch)
+                            bridge["score"] = round(min(score_by_idx.get(idx_a, 0.5), score_by_idx.get(idx_b, 0.5)) * 0.9, 4)
+                            selected_chunks.append(bridge)
+                            selected_ids.add(bridge.get("chunk_id"))
+                            accumulated_chars += len(mid_txt)
+
+        # 4. Сортируем отобранные чанки по порядку следования в документе и бесшовно склеиваем
+        selected_chunks.sort(key=lambda c: c.get("chunk_index", 0))
+        stitched = cls._stitch_ordered_chunks(selected_chunks, filename)
+        return stitched or (best_chunk.get("text") or "").strip(), selected_chunks
+
+    @classmethod
     def find_relevant_documents(
         cls,
         query: str,
@@ -684,9 +859,9 @@ class KnowledgeManager:
         previous_query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Ищет релевантные документы с использованием гибридного поиска (BM25 + Dense + RRF)
+        Ищет релевантные документы с использованием гибридного поиска (BM25 + Dense + Weighted RRF)
         и частотно-семантического анализа триггеров на CPU (0 МБ VRAM).
-        - Выполняет трехконтурный поиск по семантическим чанкам.
+        - Выполняет гибридный поиск по семантическим чанкам.
         - Сопоставляет триггеры и заголовки документов из registry.json.
         - Возвращает список подходящих документов с добавленными полями relevance_score,
           chunk_id, content_snippet и matched_triggers.
@@ -694,14 +869,26 @@ class KnowledgeManager:
         if not query or not query.strip():
             return []
 
+        # Ранний выход при пустом реестре без холодной инициализации FastEmbed ONNX
+        registry_data = cls.load_registry(custom_registry, custom_dir)
+        documents: Dict[str, Any] = registry_data.get("documents", {})
+        if not documents:
+            return []
+
+        # Быстрый Pre-retrieval Gatekeeper на холодном старте (пока движок ещё не закэширован)
+        idx_path = cls.get_search_index_path(custom_index_path, custom_dir)
+        cache_key = str(idx_path.resolve())
+        if cache_key not in cls._search_engine_cache and is_conversational_query(query, bm25_index=None):
+            return []
+
         engine = cls.get_search_engine(custom_dir, custom_index_path)
 
-        # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний
+        # Gatekeeper с проверкой словаря базы знаний (BM25 inverted_index)
         bm25_idx = getattr(engine, "bm25", None) if engine else None
         if is_conversational_query(query, bm25_index=bm25_idx):
             return []
 
-        # 1. Гибридный поиск по чанкам (BM25 + Dense + RRF) с поддержкой Query Fusion и exclude_chunk_ids
+        # 1. Гибридный поиск по чанкам (BM25 + Dense + Weighted RRF) с поддержкой Query Fusion и exclude_chunk_ids
         search_query = cls._fuse_contextual_query(query, previous_query)
         exclude_set = set(exclude_chunk_ids) if exclude_chunk_ids else set()
 
@@ -730,12 +917,7 @@ class KnowledgeManager:
                 continue
             query_words.add(w)
 
-        # 3. Загрузка документов из реестра
-        registry_data = cls.load_registry(custom_registry, custom_dir)
-        documents: Dict[str, Any] = registry_data.get("documents", {})
-        if not documents:
-            return []
-
+        # 3. Сопоставление документов из реестра и гибридных чанков
         matched_results: List[Dict[str, Any]] = []
         processed_files: Set[str] = set()
 
@@ -798,41 +980,10 @@ class KnowledgeManager:
                 doc_entry["relevance_score"] = min(1.0, round(combined_score, 3))
                 doc_entry["matched_triggers"] = list(dict.fromkeys(matched_trigs))
                 if best_chunk:
-                    MAX_SNIPPET_BUDGET = 8500
-                    MAX_CHUNKS_PER_FILE = 6
-                    candidate_chunks = list(file_chunks)
-                    # Next-Chunk Continuity: подхватываем смежный чанк продолжения для топ-1 попадания
-                    top_idx = best_chunk.get("chunk_index")
-                    if top_idx is not None and engine and getattr(engine, "chunks", None):
-                        existing_ids = {c.get("chunk_id") for c in candidate_chunks}
-                        for eng_ch in engine.chunks:
-                            if (
-                                eng_ch.get("filename") == filename
-                                and eng_ch.get("chunk_index") == top_idx + 1
-                                and eng_ch.get("chunk_id") not in existing_ids
-                                and eng_ch.get("chunk_id") not in exclude_set
-                            ):
-                                cont_ch = dict(eng_ch)
-                                cont_ch["score"] = round(float(best_chunk.get("score", 0.5)) * 0.95, 4)
-                                candidate_chunks.insert(1, cont_ch)
-                                break
-
-                    selected_chunks = []
-                    accumulated_chars = 0
-                    for ch in candidate_chunks[:MAX_CHUNKS_PER_FILE]:
-                        txt = ch.get("text", "").strip()
-                        if not txt:
-                            continue
-                        if accumulated_chars + len(txt) > MAX_SNIPPET_BUDGET and selected_chunks:
-                            break
-                        selected_chunks.append(ch)
-                        accumulated_chars += len(txt)
-
-                    # Сортируем отобранные чанки по порядку следования в документе для связного чтения
-                    selected_chunks.sort(key=lambda c: c.get("chunk_index", 0))
-
-                    snippets = [c.get("text", "").strip() for c in selected_chunks]
-                    doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_chunk.get("text")
+                    snippet, selected_chunks = cls._assemble_chunks_and_snippet(
+                        file_chunks, filename, engine, exclude_set
+                    )
+                    doc_entry["content_snippet"] = snippet
                     doc_entry["matched_chunks"] = selected_chunks
                     doc_entry["chunk_id"] = best_chunk.get("chunk_id")
                 matched_results.append(doc_entry)
@@ -846,22 +997,10 @@ class KnowledgeManager:
                 doc_entry = dict(doc)
                 doc_entry["relevance_score"] = min(1.0, round(best_ch.get("score", 0.0), 3))
                 doc_entry["matched_triggers"] = []
-                doc_entry["chunk_id"] = best_ch.get("chunk_id")
-                MAX_SNIPPET_BUDGET = 8500
-                MAX_CHUNKS_PER_FILE = 6
-                selected_chunks = []
-                accumulated_chars = 0
-                for ch in f_chunks[:MAX_CHUNKS_PER_FILE]:
-                    txt = ch.get("text", "").strip()
-                    if not txt:
-                        continue
-                    if accumulated_chars + len(txt) > MAX_SNIPPET_BUDGET and selected_chunks:
-                        break
-                    selected_chunks.append(ch)
-                    accumulated_chars += len(txt)
-
-                snippets = [c.get("text", "").strip() for c in selected_chunks]
-                doc_entry["content_snippet"] = "\n\n---\n\n".join(snippets) if snippets else best_ch.get("text")
+                snippet, selected_chunks = cls._assemble_chunks_and_snippet(
+                    f_chunks, fn, engine, exclude_set
+                )
+                doc_entry["content_snippet"] = snippet
                 doc_entry["matched_chunks"] = selected_chunks
                 doc_entry["chunk_id"] = selected_chunks[0].get("chunk_id") if selected_chunks else best_ch.get("chunk_id")
                 matched_results.append(doc_entry)
@@ -999,6 +1138,14 @@ class KnowledgeManager:
         """
         if not query or not query.strip():
             return []
+
+        idx_path = cls.get_search_index_path(custom_index_path, custom_dir)
+        cache_key = str(idx_path.resolve())
+        if cache_key not in cls._search_engine_cache:
+            if not idx_path.exists():
+                return []
+            if is_conversational_query(query, bm25_index=None):
+                return []
 
         engine = cls.get_search_engine(custom_dir, custom_index_path)
         # Gatekeeper: отсекаем светскую беседу (small talk) без затрагивания базы знаний

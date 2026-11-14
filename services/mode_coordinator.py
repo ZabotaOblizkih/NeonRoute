@@ -19,6 +19,25 @@ class AppMode(str, Enum):
             return cls.ENGINEER
         return cls.ASSISTANT
 
+    @classmethod
+    def from_session(
+        cls,
+        session_data: Optional[Dict[str, Any]],
+        mode_override: Optional[str] = None,
+    ) -> 'AppMode':
+        """Единый SSOT-резолвер эффективного режима из словаря сессии и опционального оверрайда."""
+        sess = session_data if isinstance(session_data, dict) else {}
+        if mode_override is not None and str(mode_override).strip():
+            raw_mode = str(mode_override).strip().lower()
+            is_eng = raw_mode in ("engineer", "engineering") or (
+                raw_mode == "assistant" and str(sess.get("type") or "").lower() == "engineering"
+            )
+            return cls.from_string(raw_mode, is_engineer_checked=is_eng)
+
+        raw_mode = str(sess.get("mode") or "assistant").strip().lower()
+        is_eng = str(sess.get("type") or "").lower() == "engineering" or raw_mode in ("engineer", "engineering")
+        return cls.from_string(raw_mode, is_engineer_checked=is_eng)
+
 
 class ModeCoordinator:
     """
@@ -47,18 +66,9 @@ class ModeCoordinator:
 
         if self._current_mode == target_mode and session_data is None:
             curr_sess = getattr(self.mw, "current_session", None)
-            if curr_sess:
-                s_mode = str(curr_sess.get("mode") or "").lower()
-                s_type = str(curr_sess.get("type") or "").lower()
-                is_eng = (s_type == "engineering" or s_mode in ("engineer", "engineering"))
-                matches = (
-                    (target_mode == AppMode.ENGINEER and is_eng)
-                    or (target_mode == AppMode.ROLEPLAY and s_mode == "roleplay")
-                    or (target_mode == AppMode.ASSISTANT and s_mode == "assistant" and not is_eng)
-                )
-                if matches:
-                    logger.debug(f"[ModeCoordinator] Уже в режиме {target_mode.value} с соответствующей сессией.")
-                    return True
+            if curr_sess and AppMode.from_session(curr_sess) == target_mode:
+                logger.debug(f"[ModeCoordinator] Уже в режиме {target_mode.value} с соответствующей сессией.")
+                return True
 
         logger.info(f"[ModeCoordinator] Инициация перехода: {self._current_mode.value} -> {target_mode.value}")
 
@@ -231,15 +241,7 @@ class ModeCoordinator:
                 s_id = s.get("id")
                 if not s_id:
                     continue
-                s_mode = str(s.get("mode") or "assistant").lower()
-                s_type = str(s.get("type") or "").lower()
-                is_eng = (s_type == "engineering" or s_mode in ("engineer", "engineering"))
-
-                if target_mode == AppMode.ENGINEER and is_eng:
-                    return SessionManager.load_session(s_id)
-                elif target_mode == AppMode.ROLEPLAY and s_mode == "roleplay":
-                    return SessionManager.load_session(s_id)
-                elif target_mode == AppMode.ASSISTANT and s_mode == "assistant" and not is_eng:
+                if AppMode.from_session(s) == target_mode:
                     return SessionManager.load_session(s_id)
         except Exception as e:
             logger.error(f"[ModeCoordinator] Ошибка поиска сессии для режима {target_mode.value}: {e}")

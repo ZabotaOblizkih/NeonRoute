@@ -58,6 +58,13 @@ class ShutdownWorker(QThread):
 
         # 3. Выгрузка VRAM и серверов
         try:
+            import sys
+            if "mobile_server.api" in sys.modules:
+                sys.modules["mobile_server.api"].stop_mobile_server_thread(timeout=1.5)
+        except Exception as e:
+            logger.debug(f"Error stopping mobile server on shutdown: {e}")
+
+        try:
             self.main_window.process_manager.shutdown_all()
         except Exception as e:
             logger.error(f"Error in process_manager.shutdown_all: {e}")

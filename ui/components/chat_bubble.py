@@ -250,7 +250,8 @@ class ChatMessageWidget(QWidget):
         bubble_layout = QVBoxLayout(self.bubble_container)
         bubble_layout.setContentsMargins(6, 6, 6, 6)
         bubble_layout.setSpacing(6)
-        bubble_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        # SetDefaultConstraint предотвращает перезапись явного setMinimumWidth() со стороны QLayout при LayoutRequest
+        bubble_layout.setSizeConstraint(QLayout.SizeConstraint.SetDefaultConstraint)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -335,6 +336,7 @@ class ChatMessageWidget(QWidget):
 
         from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
         self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+        self.thought_spoiler.toggled.connect(self._on_thought_spoiler_toggled)
         bubble_layout.addWidget(self.thought_spoiler)
         self.thought_spoiler.setVisible(False)
         self.thought_spoiler.hide()
@@ -605,9 +607,20 @@ class ChatMessageWidget(QWidget):
     def _refresh_layout(self):
         """Безопасный перерасчет геометрии и высоты документа без реэнтерабельного processEvents."""
         self._update_bubble_geometry()
+        if getattr(self, "thought_spoiler", None):
+            self.thought_spoiler.updateGeometry()
         if self.bubble_container and self.bubble_container.layout():
             self.bubble_container.layout().activate()
         self._adjust_text_height()
+        if self.bubble_container:
+            self.bubble_container.updateGeometry()
+            hint = self.bubble_container.sizeHint()
+            target_h = hint.height()
+            target_w = max(hint.width(), self.bubble_container.minimumWidth())
+            if self.bubble_container.maximumWidth() < 16000000:
+                target_w = min(target_w, self.bubble_container.maximumWidth())
+            if target_h > 0 and (self.bubble_container.height() != target_h or self.bubble_container.width() != target_w):
+                self.bubble_container.resize(target_w, target_h)
         self.updateGeometry()
 
     def _update_bubble_geometry(self):
@@ -636,24 +649,31 @@ class ChatMessageWidget(QWidget):
             safe_parent_w = (safe_parent_w // 16) * 16
 
             text = self.translated_text if (self.is_showing_translation and self.translated_text) else (self.raw_text or "")
-            
+
+            thought_text = ""
+            spoiler = getattr(self, "thought_spoiler", None)
+            if spoiler is not None and spoiler.isVisible() and not spoiler.is_collapsed:
+                thought_text = spoiler.get_thought_text() or ""
+
             line_count = len(text.splitlines()) if text else 1
             char_count = len(text)
+            effective_lines = max(line_count, len(thought_text.splitlines()) if thought_text else 0)
+            effective_chars = max(char_count, len(thought_text))
             has_code_or_art = bool(self.image_path or self.file_paths or "```" in text or "<pre" in text)
 
-            # Ратчет (храповик) контента
+            # Ратчет (храповик) контента: бабл запоминает пиковую ширину (в т.ч. при раскрытых мыслях)
             if not hasattr(self, "_peak_char_count"):
-                self._peak_char_count = char_count
-            if char_count > self._peak_char_count:
-                self._peak_char_count = char_count
-                
-            if not hasattr(self, "_peak_line_count"):
-                self._peak_line_count = line_count
-            if line_count > self._peak_line_count:
-                self._peak_line_count = line_count
+                self._peak_char_count = effective_chars
+            if effective_chars > self._peak_char_count:
+                self._peak_char_count = effective_chars
 
-            eval_chars = max(char_count, self._peak_char_count)
-            eval_lines = max(line_count, self._peak_line_count)
+            if not hasattr(self, "_peak_line_count"):
+                self._peak_line_count = effective_lines
+            if effective_lines > self._peak_line_count:
+                self._peak_line_count = effective_lines
+
+            eval_chars = max(effective_chars, self._peak_char_count)
+            eval_lines = max(effective_lines, self._peak_line_count)
 
             if has_code_or_art or eval_lines >= 40 or eval_chars > 1200:
                 active_tier = 4
@@ -725,12 +745,18 @@ class ChatMessageWidget(QWidget):
             doc.setDocumentMargin(6)
 
             target_w = 0
-            if self.bubble_container and self.bubble_container.width() > 100:
-                target_w = self.bubble_container.width() - 40
-            elif self.width() > 100:
-                target_w = int(self.width() * 0.85) - 40
-            else:
-                target_w = 780
+            if self.bubble_container:
+                effective_bw = max(self.bubble_container.width(), self.bubble_container.minimumWidth())
+                max_bw = self.bubble_container.maximumWidth()
+                if 100 < max_bw < 16000000:
+                    effective_bw = min(effective_bw, max_bw)
+                if effective_bw > 100:
+                    target_w = effective_bw - 40
+            if target_w <= 0:
+                if self.width() > 100:
+                    target_w = int(self.width() * 0.85) - 40
+                else:
+                    target_w = 780
 
             # Квантование ширины документа шагом не менее 16px
             target_w = (target_w // 16) * 16
@@ -757,11 +783,17 @@ class ChatMessageWidget(QWidget):
             self.knowledge_hud.set_sources(self.knowledge_sources)
             self._update_bubble_geometry()
 
+    def _on_thought_spoiler_toggled(self, is_collapsed: bool):
+        """Синхронизирует ширину и высоту бабла при ручном открытии/закрытии блока мыслей."""
+        self._refresh_layout()
+        QTimer.singleShot(0, self._refresh_layout)
+
     def get_or_create_thought_spoiler(self):
         """Возвращает существующий или создает ThoughtSpoilerWidget над текстовым блоком."""
         if getattr(self, "thought_spoiler", None) is None:
             from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
             self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+            self.thought_spoiler.toggled.connect(self._on_thought_spoiler_toggled)
             if hasattr(self, "bubble_layout"):
                 if getattr(self, "knowledge_hud", None):
                     idx = self.bubble_layout.indexOf(self.knowledge_hud)
@@ -779,19 +811,19 @@ class ChatMessageWidget(QWidget):
             spoiler.setVisible(True)
             spoiler.show()
         spoiler.append_thought_chunk(chunk)
-        self._update_bubble_geometry()
+        self._refresh_layout()
 
     def finalize_thought(self, duration_sec: float = 0.0, token_count: Union[int, str] = 0):
         """Фиксирует метрики мыслей и сворачивает спойлер."""
         if isinstance(token_count, str) and not token_count.isdigit():
             spoiler = self.get_or_create_thought_spoiler()
             spoiler.set_thought_data(token_count, duration_sec)
-            self._update_bubble_geometry()
+            self._refresh_layout()
             return
 
         if getattr(self, "thought_spoiler", None) is not None:
             self.thought_spoiler.finalize_thought(duration_sec, token_count)
-            self._update_bubble_geometry()
+            self._refresh_layout()
 
     def set_thought_data(self, text: str, duration: float = 0.0, token_count: int = 0):
         """Устанавливает готовый блок мыслей (из истории или после завершения генерации)."""
@@ -800,7 +832,7 @@ class ChatMessageWidget(QWidget):
             if getattr(self, "thought_spoiler", None) is not None:
                 self.thought_spoiler.setVisible(False)
                 self.thought_spoiler.hide()
-                self._update_bubble_geometry()
+                self._refresh_layout()
             return
 
         spoiler = self.get_or_create_thought_spoiler()
@@ -810,15 +842,15 @@ class ChatMessageWidget(QWidget):
             "token_count": int(token_count)
         }
         spoiler.set_thought_data(clean, duration, token_count)
-        self._update_bubble_geometry()
+        self._refresh_layout()
 
     def set_text(self, text: str):
         self.original_text = text
         self.raw_text = text
         self._update_rendered_text()
-        self._refresh_layout()
         if getattr(self, "footer_container", None):
             self.footer_container.setVisible(True)
+        self._refresh_layout()
 
     def update_avatar(self, new_avatar_path: Optional[Path]):
         self.avatar_path = Path(new_avatar_path) if new_avatar_path else None
@@ -1384,6 +1416,19 @@ class ChatMessageWidget(QWidget):
 
     def update_font_size(self, font_size: int):
         self.set_font_size(font_size)
+
+    def cleanup(self):
+        """Очищает медиа-ресурсы, аудиоплеер и дочерние таймеры перед удалением."""
+        if hasattr(self, "_scene_art_timer") and self._scene_art_timer:
+            try:
+                self._scene_art_timer.stop()
+            except Exception:
+                pass
+        if hasattr(self, "audio_widget") and self.audio_widget:
+            try:
+                self.audio_widget.cleanup()
+            except Exception:
+                pass
 
 
 def __getattr__(name: str):

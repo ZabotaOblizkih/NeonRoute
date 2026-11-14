@@ -490,14 +490,15 @@ class KnowledgeManagerDialog(FramelessDialog):
         # Системный промпт
         sys_box = QVBoxLayout()
         sys_box.setSpacing(3)
-        lbl_sys = CaptionLabel("Системный промпт / инструкция скилла:", right_container)
-        lbl_sys.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.lbl_system_prompt = CaptionLabel("Системный промпт / инструкция скилла:", right_container)
+        self.lbl_system_prompt.setStyleSheet("color: #94A3B8; font-size: 11px;")
         self.text_system_prompt = TextEdit(right_container)
         self.text_system_prompt.setPlaceholderText("Инструкция для модели при активации этого скилла...")
-        self.text_system_prompt.setFixedHeight(95)
-        sys_box.addWidget(lbl_sys)
-        sys_box.addWidget(self.text_system_prompt)
-        right_layout.addLayout(sys_box)
+        self.text_system_prompt.setMinimumHeight(210)
+        self.text_system_prompt.setFont(QFont("Consolas", 10))
+        sys_box.addWidget(self.lbl_system_prompt)
+        sys_box.addWidget(self.text_system_prompt, 1)
+        right_layout.addLayout(sys_box, 1)
 
         # Кнопки Сохранить и Удалить
         btn_box = QHBoxLayout()
@@ -697,16 +698,39 @@ class KnowledgeManagerDialog(FramelessDialog):
         self.line_skill_id.setEnabled(False)
 
         self.line_skill_title.setText(skill.get("title", ""))
-        self.line_skill_title.setEnabled(not is_builtin)
+        self.line_skill_title.setEnabled(True)
+        self.line_skill_title.setReadOnly(is_builtin)
 
         self.text_human_desc.setPlainText(skill.get("human_description", ""))
-        self.text_human_desc.setEnabled(not is_builtin)
+        self.text_human_desc.setEnabled(True)
+        self.text_human_desc.setReadOnly(is_builtin)
 
         self.text_triggers.setPlainText(skill.get("triggers", ""))
-        self.text_triggers.setEnabled(not is_builtin)
+        self.text_triggers.setEnabled(True)
+        self.text_triggers.setReadOnly(is_builtin)
 
-        self.text_system_prompt.setPlainText(skill.get("system_prompt", ""))
-        self.text_system_prompt.setEnabled(not is_builtin)
+        display_prompt = skill.get("system_prompt", "")
+        if is_builtin:
+            try:
+                from services.assistant_prompt_builder import AssistantPromptBuilder
+                parent_win = self.parent()
+                u_name = None
+                if parent_win and hasattr(parent_win, "app_config") and isinstance(parent_win.app_config, dict):
+                    u_name = parent_win.app_config.get("user_name")
+                effective = AssistantPromptBuilder.get_effective_skill_prompt(skill_id, user_name=u_name)
+                if effective:
+                    display_prompt = effective
+            except Exception:
+                pass
+            if hasattr(self, "lbl_system_prompt"):
+                self.lbl_system_prompt.setText("Реальный системный промпт (подставляется в LLM, только чтение):")
+        else:
+            if hasattr(self, "lbl_system_prompt"):
+                self.lbl_system_prompt.setText("Системный промпт / инструкция скилла:")
+
+        self.text_system_prompt.setPlainText(display_prompt)
+        self.text_system_prompt.setEnabled(True)
+        self.text_system_prompt.setReadOnly(is_builtin)
 
         self.btn_save_skill.setEnabled(not is_builtin)
         self.btn_delete_skill.setEnabled(not is_builtin)
@@ -727,15 +751,22 @@ class KnowledgeManagerDialog(FramelessDialog):
 
         self.line_skill_title.clear()
         self.line_skill_title.setEnabled(True)
+        self.line_skill_title.setReadOnly(False)
 
         self.text_human_desc.clear()
         self.text_human_desc.setEnabled(True)
+        self.text_human_desc.setReadOnly(False)
 
         self.text_triggers.clear()
         self.text_triggers.setEnabled(True)
+        self.text_triggers.setReadOnly(False)
 
         self.text_system_prompt.clear()
         self.text_system_prompt.setEnabled(True)
+        self.text_system_prompt.setReadOnly(False)
+
+        if hasattr(self, "lbl_system_prompt"):
+            self.lbl_system_prompt.setText("Системный промпт / инструкция скилла:")
 
         self.btn_save_skill.setEnabled(True)
         self.btn_save_skill.setToolTip("Сохранить новый скилл")

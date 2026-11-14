@@ -133,8 +133,11 @@ export async function getArtProgress() {
   return await res.json();
 }
 
-export async function interruptArt() {
-  const res = await fetch('/api/art/interrupt', {
+export async function interruptArt(sessionId = null) {
+  const url = sessionId
+    ? `/api/art/interrupt?session_id=${encodeURIComponent(sessionId)}`
+    : '/api/art/interrupt';
+  const res = await fetch(url, {
     method: 'POST'
   });
   if (!res.ok) throw new Error(`Interrupt failed: ${res.status}`);

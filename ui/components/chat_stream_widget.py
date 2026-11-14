@@ -30,7 +30,7 @@ class ChatStreamWidget(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -67,7 +67,7 @@ class ChatStreamWidget(QWidget):
         """)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.scroll_area.setAutoFillBackground(False)
 
         # 2. Viewport with custom background support
         self.chat_viewport = ChatBackgroundViewport(self.scroll_area)
@@ -83,7 +83,6 @@ class ChatStreamWidget(QWidget):
         # 3. Inner Container & Vertical Bubble Layout
         self.chat_container = QWidget()
         self.chat_container.setObjectName("ChatContainer")
-        self.chat_container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.chat_container.setAutoFillBackground(False)
         self.chat_container.setStyleSheet("background: transparent; background-color: transparent;")
 

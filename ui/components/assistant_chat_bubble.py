@@ -57,12 +57,19 @@ class CyberpunkArtPlaceholderWidget(QWidget):
         self.update()
 
     def stop(self):
-        if self._timer.isActive():
+        if hasattr(self, "_timer") and self._timer.isActive():
             self._timer.stop()
 
     def hideEvent(self, event):
         self.stop()
         super().hideEvent(event)
+
+    def closeEvent(self, event):
+        self.stop()
+        super().closeEvent(event)
+
+    def cleanup(self):
+        self.stop()
 
     def showEvent(self, event):
         if not self._timer.isActive():
@@ -335,6 +342,7 @@ class AssistantChatMessageWidget(ChatMessageWidget):
         if placeholder is not None:
             try:
                 placeholder.stop()
+                placeholder.hide()
                 placeholder.deleteLater()
             except Exception:
                 pass
@@ -454,3 +462,8 @@ class AssistantChatMessageWidget(ChatMessageWidget):
         else:
             self.hide_art_loading_placeholder()
         self._update_bubble_geometry()
+
+    def cleanup(self):
+        """Гарантированно останавливает фоновые анимации и лоадеры перед удалением."""
+        self.hide_art_loading_placeholder()
+        super().cleanup()

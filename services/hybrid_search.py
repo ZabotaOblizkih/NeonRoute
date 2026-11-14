@@ -430,8 +430,8 @@ class HybridSearchEngine:
     """
     Трехконтурный гибридный поисковый движок:
     Контур 1: BM25 Sparse поиск по точным артикулам, номерам деталей и кодам ошибок.
-    Контур 2: Dense семантический векторный поиск (BuiltinDenseVectorizer или FastEmbed).
-    Контур 3: RRF (Reciprocal Rank Fusion) и переранжирование с фильтрацией шума.
+    Контур 2: Dense семантический векторный поиск (FastEmbed ONNX или fallback BuiltinDenseVectorizer).
+    Контур 3: Weighted Normalized RRF (k=60) с фильтрацией шума и Dense-Gate.
     Строго 0 МБ VRAM, CPU latency < 50 мс.
     """
 
@@ -440,7 +440,7 @@ class HybridSearchEngine:
         dense_vectorizer: Optional[Any] = None,
         k1: float = 1.5,
         b: float = 0.75,
-        alpha: float = 0.5,
+        alpha: float = 0.6,
         rrf_k: int = 60
     ):
         self.k1 = k1
@@ -578,42 +578,42 @@ class HybridSearchEngine:
         else:
             dense_scores = np.zeros(num_chunks, dtype=np.float32)
 
-        # Ранжирование Dense
+        # Ранжирование Dense (только содержательные кандидаты, без хвоста шума)
         dense_sorted_indices = np.argsort(-dense_scores)
         dense_ranks: Dict[int, int] = {}
-        for rank, idx in enumerate(dense_sorted_indices, 1):
-            if dense_scores[idx] > 1e-4:
-                dense_ranks[int(idx)] = rank
+        dense_rank_counter = 0
+        for idx in dense_sorted_indices:
+            if dense_scores[idx] > 0.15:
+                dense_rank_counter += 1
+                dense_ranks[int(idx)] = dense_rank_counter
 
-        # --- Контур 3: RRF & Weighted Fusion с Gatekeeper-валидацией ---
+        # --- Контур 3: Weighted Normalized RRF с Gatekeeper-валидацией ---
         candidates: List[Dict[str, Any]] = []
         dense_gate = self._get_dense_gatekeeper_threshold()
+        w_dense = max(0.0, min(1.0, float(use_alpha)))
+        w_bm25 = 1.0 - w_dense
+        weight_sum = max(w_bm25 + w_dense, 1e-6)
+        norm_factor = (self.rrf_k + 1.0) / weight_sum
 
         for idx in range(num_chunks):
             s_bm25 = float(norm_bm25[idx])
             s_dense = float(dense_scores[idx])
 
             # Gatekeeper: при отсутствии точных совпадений ключевых слов / артикулов (BM25 == 0.0),
-            # кандидат допускается ТОЛЬКО при уверенном семантическом сходстве (dense_score >= dense_gate).
+            # кандидат допускается ТОЛЬКО при уверенном сыром семантическом сходстве (dense_score >= dense_gate).
             if s_bm25 <= 1e-5 and s_dense < dense_gate:
                 continue
 
-            # RRF (Reciprocal Rank Fusion)
-            # score_rrf = 1/(k + rank_bm25) + 1/(k + rank_dense)
-            r_bm25 = bm25_ranks.get(idx, 9999)
-            r_dense = dense_ranks.get(idx, 9999)
+            r_bm25 = bm25_ranks.get(idx)
+            r_dense = dense_ranks.get(idx)
+            if r_bm25 is None and r_dense is None:
+                continue
 
-            rrf_score = 0.0
-            if r_bm25 < 9999:
-                rrf_score += 1.0 / (self.rrf_k + r_bm25)
-            if r_dense < 9999:
-                rrf_score += 1.0 / (self.rrf_k + r_dense)
-
-            # Взвешенная линейная комбинация
-            linear_score = (1.0 - use_alpha) * s_bm25 + use_alpha * s_dense
-
-            # Итоговый скор: синтез RRF и линейной комбинации
-            final_score = round(0.5 * linear_score + 15.0 * rrf_score, 4)
+            rrf_score = (
+                (w_bm25 / (self.rrf_k + r_bm25) if r_bm25 is not None else 0.0)
+                + (w_dense / (self.rrf_k + r_dense) if r_dense is not None else 0.0)
+            )
+            final_score = round(rrf_score * norm_factor, 4)
 
             # Отсев шума по порогу threshold
             if (s_bm25 > 0.05 or s_dense > 0.15) and final_score >= threshold:
@@ -631,7 +631,7 @@ class HybridSearchEngine:
     def to_dict(self) -> Dict[str, Any]:
         """Сериализация состояния движка и всех чанков для кэша на диске."""
         payload: Dict[str, Any] = {
-            "version": 2,
+            "version": 3,
             "k1": self.k1,
             "b": self.b,
             "alpha": self.alpha,

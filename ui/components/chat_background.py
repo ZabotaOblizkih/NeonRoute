@@ -9,6 +9,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPixmap, QCursor
 from PyQt6.QtWidgets import QWidget, QMenu
 
+from ui.common.image_utils import create_hidpi_background_buffer
+
 
 class ChatBackgroundViewport(QWidget):
     change_background_requested = pyqtSignal()
@@ -38,6 +40,7 @@ class ChatBackgroundViewport(QWidget):
     def set_dim_alpha(self, alpha: int):
         """Updates dimming alpha level without reloading pixmap."""
         self._dim_alpha = max(20, min(240, alpha))
+        self._update_scaled_pixmap()
         self.update()
 
     def get_dim_alpha(self) -> int:
@@ -55,10 +58,13 @@ class ChatBackgroundViewport(QWidget):
         if self._bg_pixmap and not self._bg_pixmap.isNull():
             sz = self.size()
             if sz.width() > 10 and sz.height() > 10:
-                self._scaled_pixmap = self._bg_pixmap.scaled(
+                dpr = self.devicePixelRatioF() if hasattr(self, 'devicePixelRatioF') else self.devicePixelRatio()
+                self._scaled_pixmap = create_hidpi_background_buffer(
+                    self._bg_pixmap,
                     sz,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation
+                    dpr=dpr,
+                    dim_alpha=self._dim_alpha,
+                    bg_tint=QColor(10, 12, 18)
                 )
             else:
                 self._scaled_pixmap = None
@@ -66,25 +72,12 @@ class ChatBackgroundViewport(QWidget):
             self._scaled_pixmap = None
 
     def paintEvent(self, event):
+        if not self._scaled_pixmap or self._scaled_pixmap.isNull():
+            return
         painter = QPainter(self)
-        if self._scaled_pixmap and not self._scaled_pixmap.isNull():
-            # Очищаем буфер перед выводом нового изображения
-            painter.setCompositionMode(QPainter.CompositionMode.Clear)
-            painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
-            painter.setCompositionMode(QPainter.CompositionMode.SourceOver)
-
-            # Center the scaled wallpaper
-            x = (self.width() - self._scaled_pixmap.width()) // 2
-            y = (self.height() - self._scaled_pixmap.height()) // 2
-            painter.drawPixmap(x, y, self._scaled_pixmap)
-
-            # Apply adaptive darkening layer
-            painter.fillRect(self.rect(), QColor(10, 12, 18, self._dim_alpha))
-        else:
-            # Когда картинки нет — гарантированно стираем пиксели уходящего фона
-            painter.setCompositionMode(QPainter.CompositionMode.Clear)
-            painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
-            painter.setCompositionMode(QPainter.CompositionMode.SourceOver)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.drawPixmap(0, 0, self._scaled_pixmap)
         painter.end()
 
     def _show_context_menu(self, pos):

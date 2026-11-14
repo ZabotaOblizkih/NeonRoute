@@ -1294,6 +1294,7 @@ class ArtDirector:
         p_steps = getattr(plan, "steps", 20)
         p_cfg = getattr(plan, "cfg_scale", 7.0)
         p_denoise = getattr(plan, "denoising_strength", 0.35)
+        p_denoise_str = f"{p_denoise}" if getattr(plan, "enable_hr", False) else "N/A"
         p_sampler = getattr(plan, "sampler_name", "DPM++ 2M")
         p_sched = getattr(plan, "scheduler", "Karras")
         p_clip = getattr(plan, "clip_skip", 1)
@@ -1311,7 +1312,7 @@ class ArtDirector:
             f"[NEGATIVE]        : \"{p_neg}\"\n"
             f"[PROFILE / CKPT]  : {p_title} ({p_style}) -> {p_ckpt}\n"
             f"[RESOLUTION]      : {p_w}x{p_h}{hires_diag} | Archetype={p_arch}\n"
-            f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise} | "
+            f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise_str} | "
             f"Sampler={p_sampler} | Scheduler={p_sched} | ClipSkip={p_clip} | Seed={p_seed}\n"
             f"[ADETAILER FACE]  : {ad_face_info}\n"
             f"[ADETAILER HANDS] : {ad_hands_info}\n"
@@ -1829,6 +1830,7 @@ class ArtDirector:
         p_steps = getattr(plan, "steps", 20)
         p_cfg = getattr(plan, "cfg_scale", 7.0)
         p_denoise = getattr(plan, "denoising_strength", 0.35)
+        p_denoise_str = f"{p_denoise}" if getattr(plan, "enable_hr", False) else "N/A"
         p_sampler = getattr(plan, "sampler_name", "DPM++ 2M")
         p_sched = getattr(plan, "scheduler", "Karras")
         p_clip = getattr(plan, "clip_skip", 1)
@@ -1847,7 +1849,7 @@ class ArtDirector:
             f"[NEGATIVE]        : \"{p_neg}\"\n"
             f"[PROFILE / CKPT]  : {p_title} ({p_style}) -> {p_ckpt}\n"
             f"[RESOLUTION]      : {p_w}x{p_h}{hires_diag} | Archetype={p_arch}\n"
-            f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise} | "
+            f"[PARAMS]          : Steps={p_steps} | CFG={p_cfg} | Denoise={p_denoise_str} | "
             f"Sampler={p_sampler} | Scheduler={p_sched} | ClipSkip={p_clip} | Seed={p_seed}\n"
             f"[ADETAILER FACE]  : {ad_face_info}\n"
             f"[ADETAILER HANDS] : {ad_hands_info}\n"

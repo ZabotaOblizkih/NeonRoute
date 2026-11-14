@@ -39,6 +39,7 @@ class ChatInputPanel(QFrame):
             QFrame#InputAreaContainer {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(16, 22, 36, 0.72), stop:1 rgba(10, 14, 22, 0.82));
                 border: 1px solid rgba(255, 255, 255, 0.10);
+                border-bottom: 2px solid rgba(0, 0, 0, 0.55);
                 border-radius: 14px;
                 margin: 0px 14px 12px 14px;
             }
@@ -61,12 +62,6 @@ class ChatInputPanel(QFrame):
                 border: 1px solid #00F0FF;
             }
         """)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setYOffset(6)
-        shadow.setXOffset(0)
-        shadow.setColor(QColor(0, 0, 0, 200))
-        self.setGraphicsEffect(shadow)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)

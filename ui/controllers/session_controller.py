@@ -450,6 +450,9 @@ class SessionControllerMixin:
 
         self._save_current_session()
         self._unlock_mode_selector()
+        if hasattr(self, "_sync_splitter_layout") and hasattr(self, "is_engineer_mode_active"):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._sync_splitter_layout(self.is_engineer_mode_active()))
 
     def _create_greeting_cycler_chip(self, msg_widget, character_card: CharacterCard, current_idx: int):
         """Создает интерактивный чип переключения альтернативных завязок под первым сообщением."""
@@ -537,14 +540,16 @@ class SessionControllerMixin:
 
     def _remove_greeting_cycler_chip(self):
         """Удаляет чип смены завязок после совершения первого хода или смены чата."""
-        if getattr(self, "_greeting_cycler_widget", None) is not None:
+        chip = getattr(self, "_greeting_cycler_widget", None)
+        if chip is not None:
+            self._greeting_cycler_widget = None
             try:
-                self.chat_layout.removeWidget(self._greeting_cycler_widget)
-                self._greeting_cycler_widget.deleteLater()
+                chip.hide()
+                if hasattr(self, "chat_layout") and self.chat_layout:
+                    self.chat_layout.removeWidget(chip)
+                chip.deleteLater()
             except Exception:
                 pass
-            finally:
-                self._greeting_cycler_widget = None
 
     def _on_chat_list_item_clicked(self, item: QListWidgetItem):
         """Handler when clicking a chat item in sidebar."""
@@ -594,7 +599,14 @@ class SessionControllerMixin:
             self.mode_coordinator.transition_to(target_app_mode, session_data=session_data)
 
             self.current_session = session_data
-            self.chat_history = list(session_data.get("chat_history", []))
+            session_history = session_data.get("chat_history", [])
+            if not session_history and session_data.get("messages"):
+                session_history = SessionManager.reconstruct_chat_history_from_messages(
+                    session_data["messages"],
+                    mode=session_data.get("mode")
+                )
+                session_data["chat_history"] = list(session_history)
+            self.chat_history = list(session_history)
             self._load_chat_history(session_data)
             mode = session_data.get("mode", "assistant")
 

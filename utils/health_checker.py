@@ -80,6 +80,10 @@ class HealthCheckWorker(QThread):
         except Exception:
             return False
 
+    def get_health_snapshot(self) -> Dict[str, Any]:
+        """Публичный синхронный снимок доступности серверов (LM Studio, Forge, TTS)."""
+        return self._perform_health_checks()
+
     def _perform_health_checks(self) -> Dict[str, Any]:
         lm_online = self._is_port_open("127.0.0.1", 1234, timeout=0.1)
         lm_msg = "LM Studio Online" if lm_online else "LM Studio Offline"
@@ -98,3 +102,6 @@ class HealthCheckWorker(QThread):
             "tts_ok": tts_online,
             "tts_msg": tts_msg
         }
+
+
+HealthChecker = HealthCheckWorker

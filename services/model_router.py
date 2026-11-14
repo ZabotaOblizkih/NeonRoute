@@ -4,6 +4,7 @@ Provides CPU-based semantic routing using FastEmbed (sentence-transformers/parap
 Matches generation prompts with registered models based on cosine similarity with model routing descriptions.
 """
 
+import os
 import re
 import json
 import logging
@@ -156,6 +157,14 @@ class ModelRouter(metaclass=ModelRouterMeta):
             cls._instance = cls(data_path=data_path, auto_load=auto_load)
         return cls._instance
 
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Безопасно сбрасывает синглтон ModelRouter с предварительной отменой фонового таймера."""
+        current = cls.__dict__.get("_instance") or getattr(cls, "_instance", None)
+        if current is not None and hasattr(current, "cancel_deferred_warmup"):
+            current.cancel_deferred_warmup()
+        cls._instance = None
+
     def __init__(self, data_path: Optional[Path] = None, auto_load: bool = True):
         if getattr(self, "_initialized", False):
             return
@@ -170,14 +179,18 @@ class ModelRouter(metaclass=ModelRouterMeta):
             self.load_profiles()
             self.update_embeddings_async()
 
-    def cancel_deferred_warmup(self) -> None:
-        """Отменяет висящий таймер фонового прогрева, предотвращая утечки потоков."""
+    def _cancel_deferred_timer(self) -> None:
+        """Отменяет висящий таймер фонового прогрева, не сбрасывая _initialized."""
         if getattr(self, "_deferred_timer", None) is not None:
             try:
                 self._deferred_timer.cancel()
             except Exception:
                 pass
             self._deferred_timer = None
+
+    def cancel_deferred_warmup(self) -> None:
+        """Отменяет висящий таймер фонового прогрева, предотвращая утечки потоков."""
+        self._cancel_deferred_timer()
         self._initialized = False
 
     def update_embeddings_async(self, delay: float = 5.0):
@@ -186,7 +199,11 @@ class ModelRouter(metaclass=ModelRouterMeta):
         to eliminate CPU contention with LLM startup and prevent GUI freeze.
         """
         # Гасим предыдущий незавершенный таймер (защита от гонок и утечек)
-        self.cancel_deferred_warmup()
+        self._cancel_deferred_timer()
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            logger.debug("[ModelRouter] Deferred warmup timer suppressed under pytest.")
+            return None
 
         if delay > 0:
             timer = threading.Timer(delay, self.update_embeddings)

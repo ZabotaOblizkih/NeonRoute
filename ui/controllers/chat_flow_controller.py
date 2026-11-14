@@ -258,7 +258,8 @@ class ChatFlowControllerMixin:
         image_path: Optional[Union[str, Path]] = None,
         file_paths: Optional[List[Union[str, Path]]] = None,
         knowledge_sources: Optional[List[Dict[str, Any]]] = None,
-        thought: Optional[Dict[str, Any]] = None
+        thought: Optional[Dict[str, Any]] = None,
+        mode: Optional[str] = None
     ) -> None:
         """
         Единый адаптер синхронизации состояния диалога (Single Source of Truth).
@@ -273,9 +274,17 @@ class ChatFlowControllerMixin:
         sources = knowledge_sources if knowledge_sources is not None else getattr(self, "_pending_knowledge_sources", None)
         t_data = thought if thought is not None else getattr(self, "_pending_thought_data", None)
 
-        # 1. Синхронизация chat_history (OpenAI формат для модели с сохранением паттерна <think>)
+        if mode:
+            effective_mode = mode.strip().lower()
+        elif hasattr(self, "get_effective_mode"):
+            effective_mode = self.get_effective_mode()
+        else:
+            effective_mode = str(getattr(self, "current_mode", "assistant") or "assistant").strip().lower()
+
+        # 1. Синхронизация chat_history (OpenAI формат для модели)
+        # Добавляем <think>...</think> в chat_history ТОЛЬКО когда mode == "engineer"
         llm_content = clean_content
-        if not is_user and t_data and isinstance(t_data, dict):
+        if effective_mode == "engineer" and not is_user and t_data and isinstance(t_data, dict):
             thought_body = str(t_data.get("content") or "").strip()
             if thought_body and "<think>" not in clean_content:
                 llm_content = f"<think>\n{thought_body}\n</think>\n\n{clean_content}"
@@ -383,7 +392,7 @@ class ChatFlowControllerMixin:
         if not is_user and hasattr(self, "_get_current_avatar_path"):
             avatar = self._get_current_avatar_path()
         return self._append_message(sender_name, content, is_user=is_user, avatar_path=avatar)
-    def _detect_repetition_loop(self, text: str, min_len: int = 35, max_len: int = 400) -> tuple[bool, str]:
+    def _check_text_loop(self, text: str, min_len: int = 35, max_len: int = 400) -> tuple[bool, str]:
         n = len(text)
         if n < min_len * 2:
             return False, text
@@ -411,6 +420,28 @@ class ChatFlowControllerMixin:
                 return True, text[:-length].rstrip()
 
         return False, text
+
+    def _detect_repetition_loop(self, text: str, min_len: int = 35, max_len: int = 400) -> tuple[bool, str]:
+        open_matches = list(re.finditer(r'<(?:think|thought|reasoning|analyze)\b[^>]*>', text, re.IGNORECASE))
+        close_matches = list(re.finditer(r'</(?:think|thought|reasoning|analyze)>', text, re.IGNORECASE))
+
+        # Если открывающий тег есть, а закрывающего еще нет (или последний открывающий после последнего закрывающего)
+        if open_matches:
+            if not close_matches or open_matches[-1].start() > close_matches[-1].end():
+                return False, text
+
+        # Если закрывающий тег есть — отдели префикс до конца последнего </think>,
+        # прогоняй эвристики зацикливания только по чистовому хвосту после </think>
+        if close_matches:
+            last_close_end = close_matches[-1].end()
+            thought_prefix = text[:last_close_end]
+            clean_tail = text[last_close_end:]
+            is_loop, cut_tail = self._check_text_loop(clean_tail, min_len=min_len, max_len=max_len)
+            if is_loop:
+                return True, thought_prefix + cut_tail
+            return False, text
+
+        return self._check_text_loop(text, min_len=min_len, max_len=max_len)
 
     def _handle_user_submit(self, text: Optional[str] = None, attached_files: Optional[List[Path]] = None):
         """
@@ -847,6 +878,7 @@ class ChatFlowControllerMixin:
 
         messages = SessionManager.get_lm_studio_messages(
             history=history_slice,
+            mode="engineer" if is_eng else "assistant",
             is_roleplay=False,
             character_card=None,
             is_excel=is_excel,

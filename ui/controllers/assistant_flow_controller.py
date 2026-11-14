@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, Union
 
+from config import MASTER_MAX_RESPONSE_TOKENS, THINKING_MODEL_KEYWORDS
 from services.session_manager import SessionManager, get_mode_profile
 from services.token_budget_manager import TokenBudgetManager
 from services.regex_filter import TextRegexFilter
@@ -357,11 +358,14 @@ class AssistantFlowControllerMixin:
             source_tag = "Глобальный дефолт config.json (или профиль режима)"
 
         _model_lower = str(model_name or "").lower()
-        _is_thinking_model = any(m in _model_lower for m in ("r1", "qwq", "qwen3", "think", "reasoning"))
-        if _is_thinking_model and not is_custom:
+        _is_thinking_model = any(m in _model_lower for m in THINKING_MODEL_KEYWORDS)
+        _app_cfg = getattr(self, "app_config", {}) if isinstance(getattr(self, "app_config", None), dict) else {}
+        _thinking_mode = str(_app_cfg.get("thinking_mode", "auto")).lower()
+        _is_thinking_active = _is_thinking_model or (_thinking_mode == "on")
+        if _is_thinking_active and not is_custom:
             xtc_prob = 0.0
             if effective_max_tokens == 1024:
-                effective_max_tokens = 2048
+                effective_max_tokens = MASTER_MAX_RESPONSE_TOKENS
 
         # Определение активного скилла для точечного сэмплинга
         sess_meta = curr_sess.get("metadata", {}) if isinstance(curr_sess, dict) else {}
@@ -395,7 +399,7 @@ class AssistantFlowControllerMixin:
         elif not is_custom or "max_tokens" not in sampling:
             target_max_tokens = effective_max_tokens
         else:
-            target_max_tokens = min(int(user_max_tokens), effective_max_tokens)
+            target_max_tokens = min(int(user_max_tokens), MASTER_MAX_RESPONSE_TOKENS)
         target_ctx_len = mode_profile.get("context_length", 14336)
 
         logger.info(

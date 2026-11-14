@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QCursor
 
 from config import (
-    EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, BACKGROUNDS_DIR
+    EXPORTS_DIR, OUTPUTS_DIR, BACKGROUNDS_DIR
 )
 from utils.config_manager import ConfigManager
 from services.session_manager import SessionManager
@@ -21,6 +21,7 @@ from services.workspace_launcher import WorkspaceLauncher
 
 from ui.components.chat_bubble import ChatMessageWidget
 from ui.log_console import LogConsoleDialog
+from ui.common.image_utils import load_display_master_pixmap
 
 logger = logging.getLogger("NeonRoute.DialogController")
 
@@ -125,7 +126,7 @@ class DialogControllerMixin:
                 pass
 
     def _on_action_audio_clicked(self):
-        """Action for Audio button: triggers TTS for last assistant message, or opens audio folder."""
+        """Action for Audio (TTS) button in chat header: triggers TTS for last assistant message."""
         try:
             target_widget = None
             target_text = ""
@@ -138,14 +139,10 @@ class DialogControllerMixin:
                     break
             if target_widget and target_text:
                 self._enqueue_tts_task(target_text, target_widget)
-            else:
-                os.startfile(str(AUDIO_DIR))
+            elif hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                self.statusBar().showMessage("Нет сообщения ассистента для озвучки.", 3000)
         except Exception as e:
             logger.error(f"Error on audio action: {e}")
-            try:
-                os.startfile(str(AUDIO_DIR))
-            except Exception:
-                pass
 
     def _open_clean_cache_dialog(self):
         """Opens cache cleanup dialog."""
@@ -182,7 +179,7 @@ class DialogControllerMixin:
             dest_path = src_path
 
         self.background_path = str(dest_path)
-        self.background_pixmap = QPixmap(str(dest_path))
+        self.background_pixmap = load_display_master_pixmap(str(dest_path))
         self.app_config["background_path"] = self.background_path
         ConfigManager.save_config(self.app_config)
 
@@ -191,6 +188,8 @@ class DialogControllerMixin:
             self._save_current_session()
 
         self._update_background_cache()
+        if hasattr(self, "chat_viewport") and self.chat_viewport and self.chat_viewport.has_background():
+            self.chat_viewport.set_background(self.background_pixmap, alpha=self.background_dim_opacity)
         self.update()
         self.statusBar().showMessage("Фон окна успешно обновлен.", 3000)
 
@@ -204,6 +203,8 @@ class DialogControllerMixin:
             self._save_current_session()
 
         self._update_background_cache()
+        if hasattr(self, "chat_viewport") and self.chat_viewport and self.chat_viewport.has_background():
+            self.chat_viewport.set_dim_alpha(self.background_dim_opacity)
         self.update()
 
     def _on_background_reset(self):
@@ -218,6 +219,8 @@ class DialogControllerMixin:
             self._save_current_session()
 
         self._bg_render_cache = None
+        if hasattr(self, "chat_viewport") and self.chat_viewport:
+            self.chat_viewport.set_background(None)
         self.update()
         self.statusBar().showMessage("Фон окна сброшен к стандартной теме.", 3000)
 
@@ -455,15 +458,26 @@ class DialogControllerMixin:
 
     def _open_settings_dialog(self, initial_route: str = "system"):
         """Открывает главное окно параметров и настроек Fluent Design."""
+        dialog = None
+        open_gallery_after = False
         try:
             from ui.dialogs.settings_dialog import SettingsDialog
             dialog = SettingsDialog(self)
+            self._active_settings_dialog = dialog
             if initial_route:
                 route_map = {"system": 0, "appearance": 1, "dialogs": 2, "help": 3}
                 idx = route_map.get(initial_route, 0)
                 dialog.switch_to_page(idx)
             dialog.exec()
+            open_gallery_after = getattr(dialog, "_requested_open_gallery", False)
         except Exception as e:
             logger.error(f"Не удалось открыть окно настроек: {e}", exc_info=True)
+        finally:
+            self._active_settings_dialog = None
+            if dialog:
+                dialog.deleteLater()
+
+        if open_gallery_after and hasattr(self, "_open_characters_gallery_dialog"):
+            self._open_characters_gallery_dialog()
 
 __all__ = ["DialogControllerMixin"]

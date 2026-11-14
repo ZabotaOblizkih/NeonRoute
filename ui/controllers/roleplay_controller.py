@@ -40,8 +40,9 @@ class RoleplayControllerMixin:
         if bg_path:
             p = Path(bg_path).resolve()
             if p.exists() and p.is_file():
-                pix = QPixmap(str(p))
-                if not pix.isNull():
+                from ui.common.image_utils import load_display_master_pixmap
+                pix = load_display_master_pixmap(str(p))
+                if pix and not pix.isNull():
                     dim_alpha = int(255 * 0.70)
                     if hasattr(self, "chat_viewport") and self.chat_viewport:
                         self.chat_viewport.set_background(pix, alpha=dim_alpha)
@@ -116,19 +117,14 @@ class RoleplayControllerMixin:
         def _bg_pipeline(raw_prompt: str, ckpt: Optional[str] = None) -> Dict[str, Any]:
             self._cancel_lms_reload()
             available_models = self.forge_client.get_models()
-            plan = self.art_director.plan_generation(
-                raw_prompt=raw_prompt,
+            plan = self.art_director.build_scene_background_plan(
+                location_prompt=raw_prompt,
                 preferred_style=ckpt,
+                available_models=available_models,
+                session_id=sess_id,
                 lm_client=self.lm_client,
-                character=None,
-                available_models=available_models
+                use_visual_intent=False,
             )
-            plan.positive_prompt = f"scenery, empty landscape, atmospheric lighting, no humans, {plan.positive_prompt}"
-            human_neg = "human, person, 1girl, 1boy, woman, man, character, people, crowd, face, hands, body, portrait, "
-            plan.negative_prompt = human_neg + (plan.negative_prompt or "")
-            plan.width = 768
-            plan.height = 512
-            plan.enable_adetailer = False
 
             from services.vram_arbiter import VRAMArbiter
             VRAMArbiter.get_instance().release_llm_for_diffusion()
@@ -191,19 +187,41 @@ class RoleplayControllerMixin:
         dialog = CharactersGalleryDialog(parent=self)
         self._active_gallery_dialog = dialog
 
-        # Гарантируем пересчет геометрии сплиттера после закрытия диалога
         def _on_dialog_closed():
             self._active_gallery_dialog = None
-            if hasattr(self, "_sync_splitter_layout"):
-                QTimer.singleShot(0, lambda: self._sync_splitter_layout(self.is_engineer_mode_active()))
 
         dialog.finished.connect(_on_dialog_closed)
         dialog.card_saved.connect(self._on_character_card_updated)
-        res = dialog.exec()
-        if res:
-            card = getattr(dialog, "selected_card", None)
-            if card:
-                self._create_new_session(mode="roleplay", character_card=card)
+        try:
+            res = dialog.exec()
+            if res:
+                card = getattr(dialog, "selected_card", None)
+                if card:
+                    # Если открыто окно настроек, закрываем его перед переходом в диалог
+                    active_settings = getattr(self, "_active_settings_dialog", None)
+                    if active_settings:
+                        try:
+                            if hasattr(active_settings, "close"):
+                                active_settings.close()
+                            elif hasattr(active_settings, "accept"):
+                                active_settings.accept()
+                        except Exception:
+                            pass
+
+                    def _deferred_start_session(companion_card=card):
+                        if hasattr(self, "activateWindow"):
+                            self.activateWindow()
+                        if hasattr(self, "raise_"):
+                            self.raise_()
+                        self._create_new_session(mode="roleplay", character_card=companion_card)
+
+                    # Задержка 150 мс дает Windows 11 DWM и очереди сообщений Win32 полностью завершить
+                    # размонтирование окон диалогов (галереи и настроек), восстановить фокус и точные
+                    # клиентские границы MainWindow без артефактов наложения и искажения сплиттера.
+                    QTimer.singleShot(150, _deferred_start_session)
+        finally:
+            self._active_gallery_dialog = None
+            dialog.deleteLater()
 
     def _on_character_card_updated(self, card: CharacterCard):
         """Синхронизирует данные идентичности персонажа, локализацию и visual_dna в сессии и live-объекте."""

@@ -17,6 +17,8 @@ const state = {
   sessions: [],
   characters: [],
   hardwareStats: null,
+  sessionEventSource: null,
+  activeArtMonitor: null,
 };
 
 // ─── DOM Elements Cache ───
@@ -117,7 +119,10 @@ function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/static/sw.js')
-        .then(reg => console.log('[PWA] Service Worker registered:', reg.scope))
+        .then(reg => {
+          console.log('[PWA] Service Worker registered:', reg.scope);
+          reg.update().catch(() => {});
+        })
         .catch(err => console.log('[PWA] Service Worker registration failed:', err));
     });
   }
@@ -172,8 +177,8 @@ async function refreshSystemStatus() {
       elements.vramText.textContent = `${usedGb} / ${totalGb} GB`;
     }
 
-    // 3. Update Mode
-    if (status.active_mode && status.active_mode !== state.activeMode) {
+    // 3. Update Mode only when no active session is mounted (active session owns its mode)
+    if (!state.activeSessionId && status.active_mode && status.active_mode !== state.activeMode) {
       updateActiveMode(status.active_mode);
     }
   } catch (err) {
@@ -310,13 +315,82 @@ async function loadSessionsList() {
   }
 }
 
+function closeActiveArtMonitor() {
+  if (state.activeArtMonitor) {
+    state.activeArtMonitor.close();
+    state.activeArtMonitor = null;
+  }
+}
+
+function disconnectSessionEvents() {
+  if (state.sessionEventSource) {
+    state.sessionEventSource.close();
+    state.sessionEventSource = null;
+  }
+}
+
+function connectSessionEvents(sessionId) {
+  disconnectSessionEvents();
+  if (!sessionId || typeof EventSource === 'undefined') return;
+
+  const es = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+  state.sessionEventSource = es;
+
+  es.addEventListener('art_completed', async (e) => {
+    let data = {};
+    try { data = JSON.parse(e.data || '{}'); } catch (err) {}
+    closeActiveArtMonitor();
+
+    const targetSid = data.session_id || sessionId;
+    if (state.activeSessionId !== targetSid) return;
+
+    let targetBubble = null;
+    if (data.message_id) {
+      const escapedId = (typeof CSS !== 'undefined' && CSS.escape)
+        ? CSS.escape(String(data.message_id))
+        : String(data.message_id).replace(/"/g, '\\"');
+      targetBubble = elements.chatViewport.querySelector(`.bubble.assistant[data-msg-id="${escapedId}"]`);
+    }
+    if (!targetBubble) {
+      const bubbles = elements.chatViewport.querySelectorAll('.bubble.assistant');
+      if (bubbles.length > 0) targetBubble = bubbles[bubbles.length - 1];
+    }
+
+    if (targetBubble && data.image_url) {
+      ui.appendInlineArt(targetBubble, data.image_url, 'Иллюстрация', data.generation_params || null);
+      ui.scrollToBottom(elements.chatViewport);
+    } else if (data.image_url) {
+      await switchSession(targetSid);
+    }
+
+    ui.showToast('Изображение создано!');
+    loadSessionsList().catch(() => {});
+  });
+
+  es.addEventListener('art_failed', (e) => {
+    let data = {};
+    try { data = JSON.parse(e.data || '{}'); } catch (err) {}
+    closeActiveArtMonitor();
+    ui.showToast(`⚠️ ${data.error || 'Ошибка генерации изображения'}`, true);
+  });
+
+  es.addEventListener('art_interrupted', () => {
+    closeActiveArtMonitor();
+    ui.showToast('Генерация прервана');
+  });
+}
+
 async function switchSession(sessionId) {
   try {
     state.activeSessionId = sessionId;
+    closeActiveArtMonitor();
+    connectSessionEvents(sessionId);
     const detail = await api.getSessionDetail(sessionId);
 
-    // Update active mode
-    updateActiveMode(detail.mode || 'assistant');
+    // Update active mode and synchronize backend ModeCoordinator with session mode
+    const sessionMode = detail.mode || 'assistant';
+    updateActiveMode(sessionMode);
+    api.setSystemMode(sessionMode).catch(() => {});
 
     // Update Active Forge Model if configured in session
     if (detail.active_forge_model) {
@@ -357,6 +431,9 @@ async function switchSession(sessionId) {
           ui.renderUserMessage(elements.chatViewport, msg.content);
         } else if (msg.role === 'assistant') {
           const p = ui.createAssistantMessagePlaceholder(elements.chatViewport, state.activeMode, state.activeSessionId);
+          if (msg.id) {
+            p.bubble.dataset.msgId = msg.id;
+          }
           if (msg.thought) {
             ui.updateThoughtChunk(p, msg.thought, elements.chatViewport);
             ui.finalizeThoughtSpoiler(p, elements.chatViewport);
@@ -392,6 +469,8 @@ async function confirmDeleteSession(sessionId, title) {
       await loadSessionsList();
       if (state.activeSessionId === sessionId) {
         state.activeSessionId = null;
+        closeActiveArtMonitor();
+        disconnectSessionEvents();
         if (state.sessions.length > 0) {
           await switchSession(state.sessions[0].id);
         } else {
@@ -431,7 +510,7 @@ function createActionHandlers(placeholder) {
         try {
           const p = await api.getArtProgress();
           const pct = Math.round((p.progress || 0) * 100);
-          const status = p.textinfo ? `SD Forge: ${p.textinfo}` : 'Генерация иллюстрации сцены...';
+          const status = p.stage_name ? `SD Forge: ${p.stage_name}` : 'Генерация иллюстрации сцены...';
           vf.updateProgress(pct, status);
         } catch (e) {}
       }, 700);
@@ -538,6 +617,55 @@ function setSendButtonState(isStreaming) {
   }
 }
 
+function createStreamCallbacks(placeholder, errorPrefix = 'Ошибка стриминга') {
+  return {
+    onThought: (chunk) => {
+      ui.updateThoughtChunk(placeholder, chunk, elements.chatViewport);
+    },
+    onThoughtEnd: () => {
+      ui.finalizeThoughtSpoiler(placeholder, elements.chatViewport);
+    },
+    onToken: (chunk) => {
+      ui.updateTokenChunk(placeholder, chunk, elements.chatViewport);
+    },
+    onArtStarted: (payload) => {
+      let parsed = null;
+      if (typeof payload === 'string') {
+        try { parsed = JSON.parse(payload); } catch (e) {}
+      }
+      if (parsed && parsed.message_id) {
+        placeholder.bubble.dataset.msgId = parsed.message_id;
+      }
+      ui.showToast('🎨 Арт-директор запускает генерацию в Forge...');
+      handleBackgroundGalleryArt(parsed?.session_id || state.activeSessionId);
+    },
+    onArtError: (payload) => {
+      let msg = payload;
+      try {
+        const parsed = JSON.parse(payload);
+        if (parsed && parsed.error) msg = parsed.error;
+      } catch (e) {}
+      ui.showToast(`⚠️ ${msg || 'SD Forge недоступен'}`, true);
+    },
+    onDone: (fullPayload) => {
+      ui.finalizeThoughtSpoiler(placeholder, elements.chatViewport);
+      if (typeof fullPayload === 'string') {
+        placeholder.rawText = fullPayload;
+        placeholder.textContainer.textContent = fullPayload;
+      }
+      ui.finalizeAssistantMessage(placeholder, elements.chatViewport, createActionHandlers(placeholder));
+      setSendButtonState(false);
+      state.abortController = null;
+      loadSessionsList();
+    },
+    onError: (err) => {
+      ui.showToast(`${errorPrefix}: ${err}`, true);
+      setSendButtonState(false);
+      state.abortController = null;
+    }
+  };
+}
+
 async function handleSendClick() {
   if (state.isGenerating) {
     if (state.abortController) {
@@ -564,6 +692,7 @@ async function handleSendClick() {
     try {
       const res = await api.createSession({ mode: state.activeMode });
       state.activeSessionId = res.session_id;
+      connectSessionEvents(state.activeSessionId);
       await loadSessionsList();
     } catch (err) {
       ui.showToast(`Ошибка создания сессии: ${err.message}`, true);
@@ -587,34 +716,7 @@ async function handleSendClick() {
     text: text,
     mode: state.activeMode,
     signal: state.abortController.signal,
-    onThought: (chunk) => {
-      ui.updateThoughtChunk(placeholder, chunk, elements.chatViewport);
-    },
-    onThoughtEnd: () => {
-      ui.finalizeThoughtSpoiler(placeholder, elements.chatViewport);
-    },
-    onToken: (chunk) => {
-      ui.updateTokenChunk(placeholder, chunk, elements.chatViewport);
-    },
-    onArtStarted: (payload) => {
-      ui.showToast('🎨 [GALERY] Автоматическая генерация иллюстрации...');
-      handleBackgroundGalleryArt();
-    },
-    onDone: (fullPayload) => {
-      ui.finalizeThoughtSpoiler(placeholder, elements.chatViewport);
-      if (!placeholder.rawText && fullPayload) {
-        ui.updateTokenChunk(placeholder, fullPayload, elements.chatViewport);
-      }
-      ui.finalizeAssistantMessage(placeholder, elements.chatViewport, createActionHandlers(placeholder));
-      setSendButtonState(false);
-      state.abortController = null;
-      loadSessionsList();
-    },
-    onError: (err) => {
-      ui.showToast(`Ошибка стриминга: ${err}`, true);
-      setSendButtonState(false);
-      state.abortController = null;
-    }
+    ...createStreamCallbacks(placeholder, 'Ошибка стриминга')
   });
 }
 
@@ -640,7 +742,7 @@ async function handleDirectArtCommand(commandText) {
     try {
       const p = await api.getArtProgress();
       const pct = Math.round((p.progress || 0) * 100);
-      const status = p.textinfo ? `SD Forge: ${p.textinfo}` : 'Прямая генерация в Forge...';
+      const status = p.stage_name ? `SD Forge: ${p.stage_name}` : 'Прямая генерация в Forge...';
       vf.updateProgress(pct, status);
     } catch (e) {}
   }, 700);
@@ -672,31 +774,59 @@ async function handleDirectArtCommand(commandText) {
   }
 }
 
-function handleBackgroundGalleryArt() {
+function handleBackgroundGalleryArt(targetSessionId = state.activeSessionId) {
+  closeActiveArtMonitor();
+
   let isPolling = true;
-  const vf = ui.createCyberpunkViewfinder(elements.chatViewport, async () => {
+  let sawGenerating = false;
+  let idleTicks = 0;
+
+  const closeMonitor = () => {
+    if (!isPolling) return;
     isPolling = false;
-    try { await api.interruptArt(); } catch (e) {}
+    clearInterval(pollTimer);
     vf.remove();
+    if (state.activeArtMonitor && state.activeArtMonitor.close === closeMonitor) {
+      state.activeArtMonitor = null;
+    }
+  };
+
+  const vf = ui.createCyberpunkViewfinder(elements.chatViewport, async () => {
+    closeMonitor();
+    try { await api.interruptArt(targetSessionId); } catch (e) {}
   });
+
+  state.activeArtMonitor = { close: closeMonitor, sessionId: targetSessionId };
 
   const pollTimer = setInterval(async () => {
     if (!isPolling) return;
     try {
       const p = await api.getArtProgress();
       const pct = Math.round((p.progress || 0) * 100);
-      const status = p.textinfo ? `SD Forge: ${p.textinfo}` : 'Галерейный арт сцены...';
+      const status = p.stage_name ? `SD Forge: ${p.stage_name}` : 'Генерация иллюстрации в Forge...';
       vf.updateProgress(pct, status);
-      if (!p.active && pct >= 100) {
-        isPolling = false;
-        clearInterval(pollTimer);
-        vf.remove();
-        if (state.activeSessionId) {
-          await switchSession(state.activeSessionId);
+
+      if (p.is_generating || pct > 0) {
+        sawGenerating = true;
+        idleTicks = 0;
+      } else {
+        idleTicks += 1;
+      }
+
+      // When per-session SSE push channel is connected/connecting, rely on art_completed /
+      // art_failed / art_interrupted signals instead of guessing completion during Hires/ADetailer.
+      const sseActive = Boolean(
+        state.sessionEventSource && state.sessionEventSource.readyState !== EventSource.CLOSED
+      );
+      if (!sseActive && !p.is_generating && (sawGenerating ? idleTicks >= 12 : idleTicks >= 15)) {
+        closeMonitor();
+        if (targetSessionId && state.activeSessionId === targetSessionId) {
+          await switchSession(targetSessionId);
+          ui.showToast('Изображение создано!');
         }
       }
     } catch (e) {}
-  }, 1000);
+  }, 800);
 }
 
 async function handleRegenerateLast() {
@@ -709,30 +839,7 @@ async function handleRegenerateLast() {
     sessionId: state.activeSessionId,
     mode: state.activeMode,
     signal: state.abortController.signal,
-    onThought: (chunk) => {
-      ui.updateThoughtChunk(placeholder, chunk, elements.chatViewport);
-    },
-    onThoughtEnd: () => {
-      ui.finalizeThoughtSpoiler(placeholder, elements.chatViewport);
-    },
-    onToken: (chunk) => {
-      ui.updateTokenChunk(placeholder, chunk, elements.chatViewport);
-    },
-    onDone: (fullPayload) => {
-      ui.finalizeThoughtSpoiler(placeholder, elements.chatViewport);
-      if (!placeholder.rawText && fullPayload) {
-        ui.updateTokenChunk(placeholder, fullPayload, elements.chatViewport);
-      }
-      ui.finalizeAssistantMessage(placeholder, elements.chatViewport, createActionHandlers(placeholder));
-      setSendButtonState(false);
-      state.abortController = null;
-      loadSessionsList();
-    },
-    onError: (err) => {
-      ui.showToast(`Ошибка повторной генерации: ${err}`, true);
-      setSendButtonState(false);
-      state.abortController = null;
-    }
+    ...createStreamCallbacks(placeholder, 'Ошибка повторной генерации')
   });
 }
 

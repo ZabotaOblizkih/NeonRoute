@@ -404,8 +404,8 @@ class TestVRAMManagement:
     def test_launch_forge_process_silently_launches_subprocess(self, tmp_path, monkeypatch):
         launcher = tmp_path / "run_forge.bat"
         launcher.write_text("@echo off")
-        monkeypatch.setattr("services.art_director.vram_policy.resolve_forge_offload_policy",
-                            lambda **kw: {"always_offload": True})
+        monkeypatch.setattr("services.art_director.vram_policy.resolve_hardware_vram_budget", lambda *a, **kw: (8.0, 700))
+        monkeypatch.setattr("services.art_director.vram_policy.should_enable_pin_shared_memory", lambda **kw: (True, "ok"))
         monkeypatch.setattr("config.FORGE_EXTRA_ARGS", ["--opt-sdp-attention", "--xformers"])
         monkeypatch.setattr("services.forge_client.get_clean_forge_env", lambda: {"TEST": "1"})
 
@@ -416,8 +416,118 @@ class TestVRAMManagement:
         mock_popen.assert_called_once()
         cmd = mock_popen.call_args[0][0]
         assert "cmd.exe" in cmd[0]
-        assert "--always-offload-from-vram" in cmd
+        assert "--pin-shared-memory" in cmd
+        assert "--always-offload-from-vram" not in cmd
         assert "--xformers" in cmd
+
+    def test_txt2img_updates_free_vram_on_inf_mem_change_and_stage_downgrade(self, forge_client, monkeypatch):
+        img_b64 = _create_valid_png_b64(64, 64)
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"images": [img_b64], "info": "{}"}
+
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        monkeypatch.setattr(forge_client, "set_model", lambda ckpt: True)
+        monkeypatch.setattr(forge_client, "unload_checkpoint", lambda: True)
+        monkeypatch.setattr("services.art_director.vram_policy.resolve_hardware_vram_budget", lambda *a, **kw: (8.0, 700))
+        monkeypatch.setattr("services.art_director.vram_policy.resolve_checkpoint_file_size_mb", lambda *a, **kw: None)
+
+        free_calls = []
+        monkeypatch.setattr(
+            forge_client,
+            "free_vram",
+            lambda **kw: free_calls.append(kw) or True,
+        )
+
+        # Патчим requests.Session.post напрямую, т.к. у TestVRAMManagement нет _patch_session_post
+        mock_session_cls = MagicMock()
+        mock_session_cls.return_value.post.return_value = mock_resp
+        monkeypatch.setattr("requests.Session", mock_session_cls)
+
+        # 1. SD 1.5 базовый (FAST_KEEP_VRAM, inf_mem=640, always_offload=False)
+        forge_client.text_to_image(prompt="1girl", width=512, height=768, enable_hr=False)
+        assert free_calls[-1] == {"always_offload": False, "inference_memory_mb": 640, "unload_models": False}
+
+        # 2. SD 1.5 с Hires (always_offload остался False, но inf_mem вырос до 768 -> обязан отправить free_vram!)
+        forge_client.text_to_image(prompt="1girl", width=512, height=768, enable_hr=True, hr_scale=1.5)
+        assert free_calls[-1] == {"always_offload": False, "inference_memory_mb": 768, "unload_models": False}
+
+        # 3. Понижение в STAGE_OFFLOAD (SDXL FP16 + ADetailer) -> unload_models=True
+        monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: {"forge_sdxl_fp8_enabled": False})
+        forge_client.text_to_image(
+            prompt="1girl",
+            checkpoint="sdxl_base.safetensors",
+            width=896,
+            height=1152,
+            enable_hr=False,
+            alwayson_scripts={"ADetailer": {"args": [True, False, {"ad_model": "face_yolov8m.pt", "ad_inpaint_width": 768}]}},
+        )
+        assert free_calls[-1]["always_offload"] is True
+        assert free_calls[-1]["unload_models"] is True
+
+    def test_txt2img_sdxl_fp8_1024_injects_never_oom_vae_tiling_and_skips_duplicate_override(self, forge_client, monkeypatch):
+        img_b64 = _create_valid_png_b64(64, 64)
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"images": [img_b64], "info": "{}"}
+
+        monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: {"forge_sdxl_fp8_enabled": True})
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        monkeypatch.setattr(forge_client, "get_models", lambda: [{"title": "dreamshaperXL.safetensors", "model_name": "dreamshaperXL", "filename": "dreamshaperXL.safetensors"}])
+        monkeypatch.setattr(forge_client, "get_current_model", lambda: "sd15.safetensors")
+        monkeypatch.setattr(forge_client, "unload_checkpoint", lambda: True)
+        monkeypatch.setattr("services.art_director.vram_policy.resolve_hardware_vram_budget", lambda *a, **kw: (8.0, 150))
+        monkeypatch.setattr("services.art_director.vram_policy.resolve_checkpoint_file_size_mb", lambda *a, **kw: 6500.0)
+
+        def mock_get(url, *a, **kw):
+            r = MagicMock(status_code=200)
+            if "scripts" in url:
+                r.json.return_value = {"txt2img": ["adetailer", "never oom integrated"], "img2img": []}
+            else:
+                r.json.return_value = {}
+            return r
+
+        options_posts = []
+        free_calls = []
+
+        def mock_post(url, *a, **kw):
+            if "options" in url:
+                options_posts.append(kw.get("json", {}))
+            elif "free-vram" in url:
+                free_calls.append(kw.get("json", {}))
+            return MagicMock(status_code=200)
+
+        monkeypatch.setattr("requests.get", mock_get)
+        monkeypatch.setattr("requests.post", mock_post)
+
+        txt2img_payloads = []
+        mock_session_cls = MagicMock()
+
+        def mock_session_post(url, *a, **kw):
+            txt2img_payloads.append(kw.get("json", {}))
+            return mock_resp
+
+        mock_session_cls.return_value.post.side_effect = mock_session_post
+        monkeypatch.setattr("requests.Session", mock_session_cls)
+
+        forge_client.text_to_image(
+            prompt="1girl",
+            checkpoint="dreamshaperXL.safetensors",
+            width=1024,
+            height=1024,
+            enable_hr=False,
+            alwayson_scripts={"ADetailer": {"args": [True, False, {"ad_model": "face_yolov8m.pt", "ad_inpaint_width": 768}]}},
+        )
+
+        # 1. set_model 1 раз отправил /options; override_settings в txt2img не дублирует чекпоинт/dtype
+        assert len(options_posts) == 1
+        assert options_posts[0]["forge_unet_storage_dtype"] == "fp8e4"
+        override = txt2img_payloads[0].get("override_settings", {})
+        assert "sd_model_checkpoint" not in override
+        assert "forge_unet_storage_dtype" not in override
+
+        # 2. Never OOM Integrated (VAE Always Tiled) и inf_mem=512MB для сохранения UNet/CLIP под ADetailer
+        assert txt2img_payloads[0]["alwayson_scripts"]["Never OOM Integrated"] == {"args": [False, True]}
+        assert free_calls[-1]["always_offload"] is False
+        assert free_calls[-1]["inference_memory_mb"] == 512
 
 
 # =========================================================================
@@ -697,6 +807,78 @@ class TestTextToImageGeneration:
         assert out.exists()
         assert len(post_calls) == 2
         assert post_calls[1]["enable_hr"] is False
+
+    def test_txt2img_logs_warning_and_retries_on_black_frame_success(self, forge_client, tmp_path, monkeypatch, caplog):
+        """Если получен чёрный кадр < 10000 байт с разрешением >= 512x512, пишется warning и выполняется успешный ретрай."""
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), color="black").save(buf, format="PNG")
+        black_bytes = buf.getvalue()
+        assert len(black_bytes) < 10_000
+
+        black_b64 = base64.b64encode(black_bytes).decode("utf-8")
+        mock_resp_black = MagicMock(status_code=200)
+        mock_resp_black.json.return_value = {"images": [black_b64], "info": "{}"}
+
+        # Генерируем валидный PNG > 10000 байт (с шумом)
+        import os
+        valid_buf = io.BytesIO()
+        noise_bytes = os.urandom(512 * 512 * 3)
+        Image.frombytes("RGB", (512, 512), noise_bytes).save(valid_buf, format="PNG")
+        valid_bytes = valid_buf.getvalue()
+        assert len(valid_bytes) >= 10_000
+        valid_b64 = base64.b64encode(valid_bytes).decode("utf-8")
+        mock_resp_valid = MagicMock(status_code=200)
+        mock_resp_valid.json.return_value = {"images": [valid_b64], "info": "{}"}
+
+        resp_cycle = [mock_resp_black, mock_resp_valid]
+        def _mock_post(url, *a, **k):
+            if "/sdapi/v1/txt2img" in url:
+                return resp_cycle.pop(0) if resp_cycle else mock_resp_valid
+            return MagicMock(status_code=200, json=lambda: {})
+
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        monkeypatch.setattr(forge_client, "set_model", lambda ckpt: True)
+        self._patch_session_post(monkeypatch, _mock_post)
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            out_file = forge_client.text_to_image(
+                prompt="test black frame with retry",
+                width=512,
+                height=512,
+                output_dir=tmp_path / "black_out"
+            )
+
+        assert out_file.exists()
+        assert any("Обнаружен пустой/чёрный кадр (возможное NaN-переполнение в VAE)" in record.message for record in caplog.records)
+
+    def test_txt2img_black_frame_retry_fails_raises_runtime_error(self, forge_client, tmp_path, monkeypatch, caplog):
+        """Если и после восстановительного ретрая вернулся чёрный кадр — выбрасывается RuntimeError и файл не сохраняется."""
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), color="black").save(buf, format="PNG")
+        black_bytes = buf.getvalue()
+        assert len(black_bytes) < 10_000
+
+        black_b64 = base64.b64encode(black_bytes).decode("utf-8")
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"images": [black_b64], "info": "{}"}
+
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        monkeypatch.setattr(forge_client, "set_model", lambda ckpt: True)
+        self._patch_session_post(monkeypatch, lambda url, *a, **k: mock_resp)
+
+        out_dir = tmp_path / "black_fail_out"
+        with pytest.raises(RuntimeError) as exc_info:
+            forge_client.text_to_image(
+                prompt="test persistent black frame",
+                width=512,
+                height=512,
+                output_dir=out_dir
+            )
+
+        assert "Forge вернул пустой/чёрный кадр (NaN в VAE) даже после восстановительного ретрая" in str(exc_info.value)
+        if out_dir.exists():
+            assert len(list(out_dir.glob("*.png"))) == 0
 
     def test_txt2img_empty_images_raises_value_error(self, forge_client, monkeypatch):
         empty_resp = MagicMock(status_code=200)

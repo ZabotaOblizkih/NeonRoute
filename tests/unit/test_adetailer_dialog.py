@@ -174,47 +174,101 @@ def test_art_director_plan_uses_pipeline_adetailer(isolated_storage):
     assert face_slot["ad_model"] == "face_yolov8m.pt"
     assert face_slot["ad_confidence"] == 0.44
     assert face_slot["ad_inpaint_width"] == 768
-    assert face_slot["ad_steps"] >= 4
+    assert face_slot["ad_use_inpaint_width_height"] is True
+    assert face_slot["ad_use_steps"] is False
+    assert face_slot["ad_use_cfg_scale"] is False
+    assert face_slot["ad_prompt"] == plan.prompt
+    assert face_slot["ad_negative_prompt"] == plan.negative_prompt
 
     hand_slot = ad_args[3]
     assert hand_slot["ad_model"] == "hand_yolov9c.pt"
     assert hand_slot["ad_confidence"] == 0.38
     assert hand_slot["ad_inpaint_width"] == 512
+    assert hand_slot["ad_use_inpaint_width_height"] is True
+    assert hand_slot["ad_use_steps"] is False
+    assert hand_slot["ad_use_cfg_scale"] is False
     assert hand_slot["ad_mask_blur"] == 8
-    assert hand_slot["ad_steps"] >= 4
+    assert hand_slot["ad_prompt"] == plan.prompt
+    assert hand_slot["ad_negative_prompt"] == plan.negative_prompt
 
 
-def test_adetailer_hands_prompts_dialog_and_pipeline(qapp, isolated_storage):
-    from ui.models_manager.adetailer_dialog import DEFAULT_HANDS_PROMPT, DEFAULT_HANDS_NEGATIVE
+def test_adetailer_lightning_steps_and_transparent_params():
+    plan = GenerationPlan(
+        positive_prompt="beautiful woman, sitting by window, thigh-up portrait, medium shot",
+        negative_prompt="CGI, Unreal, bad anatomy",
+        steps=6,
+        cfg_scale=1.7,
+        enable_adetailer=True,
+        adetailer_face_model="face_yolov8m.pt",
+        adetailer_face_denoise=0.21,
+        adetailer_face_inpaint_size=768,
+        adetailer_hands_enabled=True,
+        adetailer_hands_model="hand_yolov9c.pt",
+        adetailer_hands_denoise=0.26,
+        adetailer_hands_inpaint_size=512,
+        adetailer_hands_mask_blur=8,
+    )
+    kwargs = plan.to_forge_kwargs()
+    ad_args = kwargs["alwayson_scripts"]["ADetailer"]["args"]
+    face_slot = ad_args[2]
+    hand_slot = ad_args[3]
+
+    assert face_slot["ad_use_steps"] is False
+    assert face_slot["ad_use_inpaint_width_height"] is True
+    assert face_slot["ad_inpaint_width"] == 768
+    assert face_slot["ad_inpaint_height"] == 768
+    assert face_slot["ad_use_cfg_scale"] is False
+    assert face_slot["ad_denoising_strength"] == 0.21
+    assert face_slot["ad_prompt"] == plan.prompt
+    assert face_slot["ad_negative_prompt"] == plan.negative_prompt
+
+    assert hand_slot["ad_use_steps"] is False
+    assert hand_slot["ad_use_inpaint_width_height"] is True
+    assert hand_slot["ad_inpaint_width"] == 512
+    assert hand_slot["ad_inpaint_height"] == 512
+    assert hand_slot["ad_use_cfg_scale"] is False
+    assert hand_slot["ad_denoising_strength"] == 0.26
+    assert hand_slot["ad_mask_blur"] == 8
+    assert hand_slot["ad_prompt"] == plan.prompt
+    assert hand_slot["ad_negative_prompt"] == plan.negative_prompt
+
+
+def test_adetailer_dialog_no_prompt_fields_and_passthrough(qapp, isolated_storage):
+    from PyQt6.QtWidgets import QLabel
+    from qfluentwidgets import LineEdit
 
     initial_params = {
         "enable_adetailer": True,
         "adetailer_hands_enabled": True,
-        "adetailer_hands_prompt": "custom realistic hands",
-        "adetailer_hands_negative_prompt": "custom bad hands"
+        "adetailer_hands_prompt": "legacy custom hands",
+        "adetailer_hands_negative_prompt": "legacy bad hands"
     }
 
     dialog = ADetailerSettingsDialog(initial_params)
-    assert dialog.edit_hands_prompt.text() == "custom realistic hands"
-    assert dialog.edit_hands_neg.text() == "custom bad hands"
+    assert not hasattr(dialog, "edit_hands_prompt")
+    assert not hasattr(dialog, "edit_hands_neg")
+    assert not hasattr(dialog, "btn_reset_hands")
+    assert len(dialog.findChildren(LineEdit)) == 0
+    assert all(
+        "промпт" not in lbl.text().lower() and "негатив" not in lbl.text().lower()
+        for lbl in dialog.findChildren(QLabel)
+    )
 
-    # Test reset button
-    dialog.btn_reset_hands.click()
-    assert dialog.edit_hands_prompt.text() == DEFAULT_HANDS_PROMPT
-    assert dialog.edit_hands_neg.text() == DEFAULT_HANDS_NEGATIVE
+    settings = dialog.get_settings()
+    assert settings["adetailer_hands_prompt"] == ""
+    assert settings["adetailer_hands_negative_prompt"] == ""
 
-    # Test setting custom and saving
-    dialog.edit_hands_prompt.setText("masterpiece fingers")
-    dialog.edit_hands_neg.setText("missing fingers, extra digits")
     dialog._on_save_clicked()
-    assert dialog.result_params["adetailer_hands_prompt"] == "masterpiece fingers"
-    assert dialog.result_params["adetailer_hands_negative_prompt"] == "missing fingers, extra digits"
+    assert dialog.result_params["adetailer_hands_prompt"] == ""
+    assert dialog.result_params["adetailer_hands_negative_prompt"] == ""
 
-    # Integration with ArtDirector
+    # Legacy prompt fields in model JSON must NOT override the main prompt/negative in ArtDirector
     ad = ArtDirector()
     profiles = load_art_director_models()
     assert len(profiles) > 0
     profiles[0]["pipeline"].update(dialog.result_params)
+    profiles[0]["pipeline"]["adetailer_hands_prompt"] = "detailed hand, realistic fingers"
+    profiles[0]["pipeline"]["adetailer_hands_negative_prompt"] = "woman, girl, body"
     save_art_director_models(profiles)
     ad.reload_models()
 
@@ -223,23 +277,14 @@ def test_adetailer_hands_prompts_dialog_and_pipeline(qapp, isolated_storage):
         preferred_style=profiles[0]["id"],
         mode="assistant"
     )
-    assert plan.adetailer_hands_prompt == "masterpiece fingers"
-    assert plan.adetailer_hands_negative_prompt == "missing fingers, extra digits"
-
     forge_kwargs = plan.to_forge_kwargs()
+    face_slot = forge_kwargs["alwayson_scripts"]["ADetailer"]["args"][2]
     hand_slot = forge_kwargs["alwayson_scripts"]["ADetailer"]["args"][3]
-    assert hand_slot["ad_prompt"] == "masterpiece fingers"
-    assert hand_slot["ad_negative_prompt"] == "missing fingers, extra digits"
 
-    # Test [SEP] is stripped if present in config
-    plan.adetailer_hands_prompt = "[SEP] clean isolated hands"
-    kwargs_stripped = plan.to_forge_kwargs()
-    slot_stripped = kwargs_stripped["alwayson_scripts"]["ADetailer"]["args"][3]
-    assert slot_stripped["ad_prompt"] == "clean isolated hands"
-
-    # Test default hand prompt is clean without [SEP]
-    plan.adetailer_hands_prompt = None
-    kwargs_default = plan.to_forge_kwargs()
-    slot_default = kwargs_default["alwayson_scripts"]["ADetailer"]["args"][3]
-    assert slot_default["ad_prompt"] == "detailed hand, realistic fingers, anatomically correct, sharp focus"
+    assert face_slot["ad_prompt"] == plan.prompt
+    assert face_slot["ad_negative_prompt"] == plan.negative_prompt
+    assert hand_slot["ad_prompt"] == plan.prompt
+    assert hand_slot["ad_negative_prompt"] == plan.negative_prompt
+    assert "detailed hand, realistic fingers" not in hand_slot["ad_prompt"]
+    assert "woman, girl, body" not in hand_slot["ad_negative_prompt"]
 

@@ -249,7 +249,7 @@ def assemble_assistant_context(
     if history is None:
         history = []
     if not history and curr_sess and isinstance(curr_sess, dict) and curr_sess.get("messages"):
-        history = SessionManager.reconstruct_chat_history_from_messages(curr_sess["messages"])
+        history = SessionManager.reconstruct_chat_history_from_messages(curr_sess["messages"], mode="assistant")
 
     effective_history_limit = kwargs.get("history_limit", 60)
     if actual_prompt and (not history or history[-1].get("content") != actual_prompt):
@@ -274,6 +274,7 @@ def assemble_assistant_context(
 
     assembled_messages = SessionManager.get_lm_studio_messages(
         history=history_slice,
+        mode="assistant",
         is_roleplay=False,
         character_card=None,
         is_excel=kwargs.get("is_excel", False),

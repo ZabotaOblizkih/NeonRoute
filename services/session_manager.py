@@ -634,7 +634,10 @@ class SessionManager:
         return None
 
     @staticmethod
-    def reconstruct_chat_history_from_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def reconstruct_chat_history_from_messages(
+        messages: List[Dict[str, Any]],
+        mode: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Reconstructs minimal chat_history ([{'role': ..., 'content': ...}]) from session messages,
         preserving [IMAGE_PROMPT: ...] tags and art placeholders so LLM context and role alternation
@@ -642,6 +645,7 @@ class SessionManager:
         """
         if not messages or not isinstance(messages, list):
             return []
+        effective_mode = (mode or "").strip().lower()
         reconstructed = []
         for m in messages:
             if not isinstance(m, dict):
@@ -662,6 +666,27 @@ class SessionManager:
                             c_text = prompt_tag
                 elif not c_text and (m.get("image_path") or m.get("file_paths")):
                     c_text = "[Generated image]"
+
+                t_obj = m.get("thought")
+                thought_str = ""
+                if isinstance(t_obj, dict):
+                    thought_str = str(t_obj.get("content") or "").strip()
+                elif isinstance(t_obj, str):
+                    thought_str = t_obj.strip()
+
+                if effective_mode == "engineer":
+                    if thought_str and "<think>" not in c_text:
+                        c_text = f"<think>\n{thought_str}\n</think>\n\n{c_text}".strip()
+                else:
+                    if "<think>" in c_text or "<thought>" in c_text or "<reasoning>" in c_text or "<analyze>" in c_text:
+                        c_text = re.sub(
+                            r'<(?:think|thought|reasoning|analyze)\b[^>]*>[\s\S]*?</(?:think|thought|reasoning|analyze)>',
+                            '',
+                            c_text,
+                            flags=re.IGNORECASE
+                        ).strip()
+                    if not c_text and (thought_str or t_obj) and not saved_prompt and not (m.get("image_path") or m.get("file_paths")):
+                        c_text = "*(Анализ завершен)*"
 
             entry: Dict[str, Any] = {"role": role, "content": c_text}
             if not m.get("is_user") and m.get("thought"):
@@ -700,7 +725,10 @@ class SessionManager:
                             m["id"] = str(uuid.uuid4())
 
                 if not data.get("chat_history") and data.get("messages"):
-                    data["chat_history"] = SessionManager.reconstruct_chat_history_from_messages(data["messages"])
+                    data["chat_history"] = SessionManager.reconstruct_chat_history_from_messages(
+                        data["messages"],
+                        mode=data.get("mode")
+                    )
 
                 if "world_facts" not in data or not isinstance(data.get("world_facts"), list):
                     data["world_facts"] = []

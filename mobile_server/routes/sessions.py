@@ -1,5 +1,5 @@
 """
-Session management routes: CRUD operations over chat sessions.
+Session management routes: CRUD operations over chat sessions via SessionManager.
 """
 
 import json
@@ -8,9 +8,10 @@ import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from sse_starlette.sse import EventSourceResponse
 
-from config import HISTORY_DIR, CHARACTERS_DIR
-from utils.file_utils import atomic_write_json
+from config import HISTORY_DIR
+from services.mode_coordinator import AppMode
 from services.session_manager import SessionManager, get_default_sampling_params
 from services.tavern_parser import CharacterCard, TavernParser
 from mobile_server.schemas import (
@@ -20,14 +21,15 @@ from mobile_server.schemas import (
     SessionMutationResponse,
 )
 from mobile_server.dependencies import get_session_manager
+from mobile_server.services.art_service import build_media_image_url
+from mobile_server.services.chat_service import subscribe_session_events
 
 router = APIRouter()
 
 
 def _get_sessions_sync() -> List[SessionSummary]:
-    """Reads session metadata synchronously from HISTORY_DIR."""
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    raw_sessions = SessionManager.list_sessions()
+    """Reads session metadata via SessionManager (SQLite WAL + mtime cache)."""
+    raw_sessions = SessionManager.list_sessions(include_message_count=True)
     summaries: List[SessionSummary] = []
 
     for s in raw_sessions:
@@ -35,37 +37,16 @@ def _get_sessions_sync() -> List[SessionSummary]:
         if not sid:
             continue
 
-        # Count messages in session file
-        msg_count = 0
-        file_path = HISTORY_DIR / f"chat_{sid}.json"
-        if file_path.exists():
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                msgs = data.get("messages") or data.get("chat_history") or []
-                msg_count = len(msgs)
-            except Exception:
-                msg_count = 0
-
-        raw_mode = str(s.get("mode") or "assistant").lower()
-        if s.get("type") == "engineering" or raw_mode in ("engineer", "engineering"):
-            effective_mode = "engineer"
-        elif raw_mode == "roleplay":
-            effective_mode = "roleplay"
-        else:
-            effective_mode = "assistant"
-
         summaries.append(
             SessionSummary(
                 id=str(sid),
                 title=s.get("title") or "Диалог",
-                mode=effective_mode,
+                mode=AppMode.from_session(s).value,
                 updated_at=s.get("updated_at") or s.get("created_at"),
-                message_count=msg_count,
+                message_count=int(s.get("message_count") or 0),
             )
         )
 
-    # Sort descending by updated_at
     summaries.sort(key=lambda item: item.updated_at or "", reverse=True)
     return summaries
 
@@ -82,7 +63,6 @@ def _normalize_messages(raw_messages: List[Dict[str, Any]]) -> List[Dict[str, An
         raw_content = m.get("content") if m.get("content") is not None else m.get("text", "")
 
         if isinstance(raw_content, list):
-            # Vision or multipart content
             text_parts = [
                 str(p.get("text", ""))
                 for p in raw_content
@@ -92,19 +72,43 @@ def _normalize_messages(raw_messages: List[Dict[str, Any]]) -> List[Dict[str, An
         else:
             content_str = str(raw_content or "")
 
-        # Skip purely empty assistant messages
-        if role == "assistant" and not content_str.strip() and not m.get("thought"):
+        image_path = m.get("image_path")
+        image_url = m.get("image_url")
+        if not image_url and image_path:
+            image_url = build_media_image_url(Path(str(image_path)))
+        gen_params = m.get("generation_params")
+
+        raw_thought = m.get("thought")
+        thought_text = (
+            raw_thought.get("content", "")
+            if isinstance(raw_thought, dict)
+            else (raw_thought if isinstance(raw_thought, str) else "")
+        )
+
+        if (
+            role == "assistant"
+            and not content_str.strip()
+            and not str(thought_text or "").strip()
+            and not image_url
+            and not gen_params
+        ):
             continue
 
-        normalized_msg = {
+        normalized_msg: Dict[str, Any] = {
             "id": m.get("id") or str(uuid.uuid4()),
             "role": role,
             "content": content_str,
         }
-        if m.get("thought"):
-            normalized_msg["thought"] = m["thought"]
+        if thought_text and str(thought_text).strip():
+            normalized_msg["thought"] = str(thought_text)
         if m.get("timestamp"):
             normalized_msg["timestamp"] = m["timestamp"]
+        if image_url:
+            normalized_msg["image_url"] = image_url
+        if image_path:
+            normalized_msg["image_path"] = str(image_path)
+        if gen_params:
+            normalized_msg["generation_params"] = gen_params
 
         normalized.append(normalized_msg)
 
@@ -129,32 +133,13 @@ async def get_session_detail(
     """
     Returns details of a specific session including normalized message history.
     """
-    file_path = HISTORY_DIR / f"chat_{session_id}.json"
-
-    def _load():
-        if not file_path.exists():
-            return None
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
-
-    data = await asyncio.to_thread(_load)
+    data = await asyncio.to_thread(SessionManager.load_session, session_id)
     if not data:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    raw_mode = str(data.get("mode") or "assistant").lower()
-    if data.get("type") == "engineering" or raw_mode in ("engineer", "engineering"):
-        effective_mode = "engineer"
-    elif raw_mode == "roleplay":
-        effective_mode = "roleplay"
-    else:
-        effective_mode = "assistant"
-
+    effective_mode = AppMode.from_session(data).value
     raw_msgs = data.get("messages") or data.get("chat_history") or []
     normalized_msgs = _normalize_messages(raw_msgs)
-
     sampling = data.get("sampling_params") or get_default_sampling_params(effective_mode)
 
     return SessionDetailResponse(
@@ -173,56 +158,35 @@ async def create_session(
     _manager: SessionManager = Depends(get_session_manager),
 ) -> SessionMutationResponse:
     """
-    Creates a new session and persists it atomically.
+    Creates a new session and persists it atomically via SessionManager.
     """
     def _create_and_save():
         card_obj: Optional[CharacterCard] = None
+        if req.character_id:
+            card_path = SessionManager.resolve_character_card_path(identifier=req.character_id)
+            if card_path:
+                try:
+                    card_obj = TavernParser.parse_file(card_path)
+                except Exception:
+                    card_obj = None
 
-        if req.character_id and CHARACTERS_DIR.exists():
-            cid = req.character_id.strip()
-            # Try finding the character file
-            for p in CHARACTERS_DIR.glob("*.json"):
-                if p.stem.lower() == cid.lower() or cid.lower() in p.name.lower():
-                    try:
-                        card_obj = TavernParser.parse_file(p)
-                        break
-                    except Exception:
-                        pass
-
-        mode_val = "assistant" if req.mode == "engineer" else req.mode
+        is_engineer = req.mode.strip().lower() in ("engineer", "engineering")
+        mode_val = "assistant" if is_engineer else req.mode
         chosen_title = req.title or (card_obj.name if card_obj else None)
+
         new_sess = SessionManager.create_session(
             mode=mode_val,
             character_card=card_obj,
             title=chosen_title,
+            append_greeting=True,
         )
-
-        if card_obj:
-            greet = card_obj.first_mes_ru or card_obj.first_mes
-            if greet and greet.strip():
-                from services.macro_engine import MacroEngine
-                from datetime import datetime
-                greet_clean = MacroEngine.process(greet.strip(), user_name="Игрок", char_name=card_obj.name)
-                greet_msg = {
-                    "id": str(uuid.uuid4()),
-                    "role": "assistant",
-                    "content": greet_clean,
-                    "timestamp": datetime.now().isoformat()
-                }
-                new_sess["messages"].append(greet_msg)
-                new_sess["chat_history"].append({"role": "assistant", "content": greet_clean})
-
-        if req.mode == "engineer":
+        if is_engineer:
             new_sess["type"] = "engineering"
             new_sess["mode"] = "assistant"
 
-        target_path = HISTORY_DIR / f"chat_{new_sess['id']}.json"
-        saved = atomic_write_json(target_path, new_sess)
-        if not saved:
-            raise IOError(f"Failed to write session file atomically to {target_path}")
-
-        # Update cache
-        SessionManager.set_active_session(new_sess)
+        saved_path = SessionManager.save_session(new_sess)
+        if not saved_path:
+            raise IOError("Failed to write session via SessionManager")
         return new_sess["id"]
 
     try:
@@ -242,7 +206,7 @@ async def delete_session(
     _manager: SessionManager = Depends(get_session_manager),
 ) -> SessionMutationResponse:
     """
-    Safely deletes a session file and associated caches.
+    Safely deletes a session file, SQLite records, and associated caches.
     """
     file_path = HISTORY_DIR / f"chat_{session_id}.json"
 
@@ -255,7 +219,6 @@ async def delete_session(
 
     def _delete_sync():
         SessionManager.delete_session(session_id)
-        SessionManager._sessions_cache.pop(session_id, None)
         if (
             SessionManager._current_session
             and str(SessionManager._current_session.get("id")) == session_id
@@ -324,31 +287,33 @@ async def delete_last_message(session_id: str):
     """
     Removes the last message from the session (useful for retries/undo).
     """
-    chat_file = HISTORY_DIR / f"chat_{session_id}.json"
-
     def _remove():
-        if not chat_file.exists():
+        data = SessionManager.load_session(session_id)
+        if not data:
             raise HTTPException(status_code=404, detail="Session not found")
-        with open(chat_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
 
         msgs = data.get("messages", [])
         hist = data.get("chat_history", [])
-
-        if msgs:
-            removed = msgs.pop()
-        else:
-            removed = None
-
+        removed = msgs.pop() if msgs else None
         if hist:
             hist.pop()
 
         data["messages"] = msgs
         data["chat_history"] = hist
-        atomic_write_json(chat_file, data)
-        SessionManager.set_active_session(data)
+        SessionManager.save_session(data)
         return removed
 
     removed = await asyncio.to_thread(_remove)
     return {"success": True, "removed": removed}
 
+
+@router.get("/{session_id}/events")
+async def session_events_stream(session_id: str):
+    """Real-time SSE push stream for background task notifications (art_completed, art_failed, art_interrupted)."""
+    return EventSourceResponse(
+        subscribe_session_events(session_id),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

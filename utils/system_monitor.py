@@ -135,6 +135,10 @@ class SystemMonitor(QThread):
             self._last_emitted_stats = stats
             self.stats_updated.emit(stats)
 
+    def get_hardware_snapshot(self) -> Dict[str, Any]:
+        """Публичный синхронный снимок телеметрии GPU/VRAM/RAM."""
+        return self._poll_hardware()
+
     def _poll_hardware(self) -> Dict[str, Any]:
         stats: Dict[str, Any] = {
             "vram_used_mb": 0,
@@ -143,6 +147,8 @@ class SystemMonitor(QThread):
             "gpu_name": self.gpu_name,
             "ram_used_gb": 0.0,
             "ram_total_gb": 16.0,
+            "ram_used_mb": 0.0,
+            "ram_total_mb": 16384.0,
             "ram_percent": 0.0,
             "gpu_temp_c": None
         }
@@ -172,6 +178,8 @@ class SystemMonitor(QThread):
         try:
             import psutil
             mem = psutil.virtual_memory()
+            stats["ram_used_mb"] = round(mem.used / (1024 * 1024), 1)
+            stats["ram_total_mb"] = round(mem.total / (1024 * 1024), 1)
             stats["ram_used_gb"] = round(mem.used / (1024 ** 3), 2)
             stats["ram_total_gb"] = round(mem.total / (1024 ** 3), 2)
             stats["ram_percent"] = mem.percent

@@ -382,7 +382,38 @@ class LMStudioClient(QObject):
                 self._last_loaded_model_id = model_name
                 self._current_loaded_ctx = target_ctx
                 self._current_loaded_gpu = target_gpu
-                logger.info(f"[LMStudio] Headless модель '{model_name}' готова к работе ({target_ctx // 1024}K, GPU layers: {ngl}).")
+
+                actual_ngl = getattr(self, "_current_running_ngl", None)
+                if actual_ngl is None and self.process_manager:
+                    actual_ngl = getattr(self.process_manager, "_current_running_ngl", None)
+                if actual_ngl is None:
+                    actual_ngl = ngl
+
+                total_layers = getattr(self, "_current_total_layers", None)
+                if total_layers is None and self.process_manager:
+                    total_layers = getattr(self.process_manager, "_current_total_layers", None)
+                if total_layers is None:
+                    try:
+                        from services.server_config import ServerConfigResolver
+                        from services.layer_budgeter import LayerBudgeter
+                        m_path = ServerConfigResolver.resolve_model_path(model_name)
+                        if m_path:
+                            meta = LayerBudgeter.parse_gguf_metadata(m_path)
+                            total_layers = meta.get("total_layers")
+                    except Exception:
+                        total_layers = None
+
+                self._current_running_ngl = actual_ngl
+                self._current_total_layers = total_layers
+
+                if actual_ngl == 99:
+                    layers_str = f"99 (all {total_layers} layers)" if total_layers else "99 (all layers)"
+                elif total_layers and isinstance(actual_ngl, int):
+                    layers_str = f"{actual_ngl}/{total_layers}"
+                else:
+                    layers_str = str(actual_ngl)
+
+                logger.info(f"[LMStudio] Headless модель '{model_name}' готова к работе ({target_ctx // 1024}K, GPU layers: {layers_str}).")
                 return True
 
             # Legacy путь через subprocess lms load

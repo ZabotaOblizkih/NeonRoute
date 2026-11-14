@@ -211,11 +211,14 @@ class ChatBubbleBuilderMixin:
             widget.set_knowledge_sources(msg.get("knowledge_sources"))
         if msg.get("thought") and hasattr(widget, "set_thought_data"):
             t = msg["thought"]
-            widget.set_thought_data(
-                text=t.get("content", ""),
-                duration=float(t.get("duration", 0.0)),
-                token_count=int(t.get("token_count", 0))
-            )
+            if isinstance(t, dict):
+                widget.set_thought_data(
+                    text=t.get("content", ""),
+                    duration=float(t.get("duration", 0.0)),
+                    token_count=int(t.get("token_count", 0))
+                )
+            elif isinstance(t, str) and t.strip():
+                widget.set_thought_data(text=t, duration=0.0, token_count=0)
         widget.tts_requested.connect(lambda txt, w=widget: self._enqueue_tts_task(txt, w))
         widget.translate_requested.connect(self._on_message_translate_requested)
         widget.regenerate_requested.connect(self._on_message_regenerate_requested)
@@ -236,7 +239,8 @@ class ChatBubbleBuilderMixin:
     def _clear_chat_widgets(self):
         """
         Мгновенно размонтирует и уничтожает все виджеты сообщений из контейнера чата.
-        Исключает наложение старых сообщений на новые за счет явного hide() и setParent(None).
+        Предотвращает появление плавающих окон-призраков (HWND leak в Windows DWM) за счет
+        сохранения иерархии родителей до момента уничтожения в deleteLater().
         """
         if hasattr(self, "_remove_greeting_cycler_chip"):
             self._remove_greeting_cycler_chip()
@@ -247,29 +251,52 @@ class ChatBubbleBuilderMixin:
         self._all_session_messages = []
         self._btn_load_more_widget = None
 
-        if hasattr(self, "chat_layout") and self.chat_layout is not None:
-            # Зачищаем абсолютно все элементы без исключения до 0
-            while self.chat_layout.count() > 0:
-                item = self.chat_layout.takeAt(0)
-                if not item:
-                    continue
-                w = item.widget()
-                if w is not None:
-                    # 1. Мгновенно убираем виджет с экрана
-                    w.hide()
-                    # 2. Физически разрываем связь с chat_container
-                    w.setParent(None)
-                    # 3. Очищаем медиа-ресурсы, если есть
-                    if hasattr(w, "audio_widget") and w.audio_widget:
-                        try:
-                            w.audio_widget.cleanup()
-                        except Exception:
-                            pass
-                    # 4. Освобождаем память C++
-                    w.deleteLater()
+        container = getattr(self, "chat_container", None)
+        if container is not None:
+            container.setUpdatesEnabled(False)
 
-            # Восстанавливаем чистый концевой распорочный элемент
-            self.chat_layout.addStretch()
+        try:
+            if hasattr(self, "chat_layout") and self.chat_layout is not None:
+                # Зачищаем абсолютно все элементы без исключения до 0
+                while self.chat_layout.count() > 0:
+                    item = self.chat_layout.takeAt(0)
+                    if not item:
+                        continue
+                    w = item.widget()
+                    if w is not None:
+                        # 1. Мгновенно убираем виджет с экрана
+                        w.hide()
+                        # 2. Очищаем дочерние ресурсы, анимации и таймеры
+                        if hasattr(w, "cleanup"):
+                            try:
+                                w.cleanup()
+                            except Exception:
+                                pass
+                        if hasattr(w, "audio_widget") and w.audio_widget:
+                            try:
+                                w.audio_widget.cleanup()
+                            except Exception:
+                                pass
+                        # 3. НЕ вызываем w.setParent(None)! В Qt w.setParent(None) превращает
+                        # виджет в top-level Win32 HWND окно на рабочем столе, перекрывающее интерфейс.
+                        # 4. Безопасно освобождаем память C++
+                        w.deleteLater()
+
+                # Восстанавливаем чистый концевой распорочный элемент
+                self.chat_layout.addStretch()
+        finally:
+            if container is not None:
+                container.setUpdatesEnabled(True)
+                container.updateGeometry()
+
+        # Сбрасываем позицию скролла в 0, чтобы предотвратить залипание геометрии сплиттера
+        v_bar = None
+        if hasattr(self, "scroll_area") and self.scroll_area:
+            v_bar = self.scroll_area.verticalScrollBar()
+        elif hasattr(self, "chat_stream") and hasattr(self.chat_stream, "scroll_area") and self.chat_stream.scroll_area:
+            v_bar = self.chat_stream.scroll_area.verticalScrollBar()
+        if v_bar is not None:
+            v_bar.setValue(0)
 
     def _update_message_attachment(self, widget: ChatMessageWidget, file_path: Path, generation_params: Optional[dict] = None):
         """Appends generated document or image to the message in session storage."""
@@ -434,10 +461,39 @@ class ChatBubbleBuilderMixin:
                     if m.get("is_error"):
                         continue
                     m_role = "user" if m.get("is_user") else "assistant"
-                    m_text = (m.get("text") or "").strip()
+                    raw_text = m.get("text") if m.get("text") is not None else m.get("content", "")
+                    if isinstance(raw_text, list):
+                        txt_parts = [
+                            str(p.get("text", ""))
+                            for p in raw_text
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        ]
+                        m_text = " ".join(tp for tp in txt_parts if tp).strip()
+                    else:
+                        m_text = str(raw_text or "").strip()
+                    if not m_text and m_role == "assistant":
+                        saved_p = m.get("image_prompt")
+                        if not saved_p and isinstance(m.get("generation_params"), dict):
+                            saved_p = m["generation_params"].get("positive_prompt") or m["generation_params"].get("prompt")
+                        if saved_p:
+                            m_text = f"[IMAGE_PROMPT: {saved_p}]"
+                        elif m.get("image_path") or m.get("file_paths"):
+                            m_text = "[Generated image]"
                     if m_text and m_text != "🎨 Иллюстрация сцены готова:":
-                        rebuilt_history.append({"role": m_role, "content": m_text})
-                self.chat_history = rebuilt_history
+                        entry: Dict[str, Any] = {"role": m_role, "content": m_text}
+                        if not m.get("is_user") and m.get("thought"):
+                            entry["thought"] = dict(m["thought"]) if isinstance(m["thought"], dict) else m["thought"]
+                        rebuilt_history.append(entry)
+
+                from services.context_window_builder import ContextWindowBuilder
+                eff_mode = str(
+                    getattr(self, "current_mode", None)
+                    or self.current_session.get("mode", "assistant")
+                ).lower()
+                self.chat_history = ContextWindowBuilder.normalize_role_alternation(
+                    rebuilt_history,
+                    strip_leading_assistant=(eff_mode != "roleplay"),
+                )
                 self.current_session["chat_history"] = list(self.chat_history)
                 self._save_current_session()
 

@@ -122,6 +122,14 @@ class ForgeClient(QObject):
         self._current_session: Optional[requests.Session] = None
         self._is_aborted = False
         self._checkpoint_unloaded = False
+        self._has_loaded_model_in_vram = False
+        self._last_vram_policy_key: Optional[Tuple[bool, int]] = None
+        self._last_vram_mode: Optional[str] = None
+        self._last_always_offload: Optional[bool] = None
+        self._last_requested_checkpoint: Optional[str] = None
+        self._last_requested_dtype: Optional[str] = None
+        self._never_oom_vae_active: bool = False
+        self._cached_scripts: Optional[Dict[str, List[str]]] = None
         self._checkpoint_cache_size: int = 0
         self._cached_upscalers: Optional[List[str]] = None
         self._cached_embeddings: Optional[List[str]] = None
@@ -180,6 +188,27 @@ class ForgeClient(QObject):
         except Exception as e:
             logger.debug(f"Could not fetch upscalers from Forge: {e}")
         return []
+
+    def has_script(self, script_title: str, tab: str = "txt2img") -> bool:
+        """Проверяет наличие alwayson-скрипта в Forge (/sdapi/v1/scripts) с кэшированием."""
+        if not script_title:
+            return False
+        try:
+            if self._cached_scripts is None:
+                resp = requests.get(f"{self.base_url}/sdapi/v1/scripts", timeout=1.5)
+                if getattr(resp, "status_code", None) == 200:
+                    data = resp.json()
+                    if isinstance(data, dict):
+                        self._cached_scripts = {
+                            str(k): [str(s).strip().lower() for s in v]
+                            for k, v in data.items()
+                            if isinstance(v, list)
+                        }
+            if isinstance(self._cached_scripts, dict):
+                return script_title.strip().lower() in self._cached_scripts.get(tab, [])
+        except Exception:
+            pass
+        return False
 
     def resolve_safe_hires_settings(
         self,
@@ -248,6 +277,77 @@ class ForgeClient(QObject):
             return False, "SD Forge Offline"
         except Exception as e:
             return False, f"Offline ({str(e)})"
+
+    @staticmethod
+    def parse_progress_payload(
+        data: Dict[str, Any],
+        is_hr_enabled: bool = False,
+        steps_hr: int = 0,
+        last_step: int = 0,
+        base_pass_finished: bool = False,
+    ) -> Tuple[Dict[str, Any], bool]:
+        """Нормализует JSON-ответ /sdapi/v1/progress и определяет стадию генерации."""
+        state = data.get("state") or {}
+        raw_textinfo = str(state.get("textinfo") or "")
+        textinfo = raw_textinfo.lower()
+        step = int(state.get("sampling_step") or 0)
+        total_steps = int(state.get("sampling_steps") or 0)
+        progress_float = float(data.get("progress") or 0.0)
+        eta_relative = float(data.get("eta_relative") or 0.0)
+
+        stage_name = None
+        for keyword, title in STAGE_DETECTORS:
+            if keyword in textinfo:
+                stage_name = title
+                break
+
+        if not stage_name:
+            if step < last_step and last_step > 0:
+                base_pass_finished = True
+            if "hires" in textinfo or base_pass_finished or (is_hr_enabled and step > 0 and total_steps == steps_hr):
+                stage_name = "🔍 Повышение четкости"
+            elif total_steps > 0 or step > 0 or progress_float > 0.0:
+                stage_name = "🎨 Создание общего плана"
+
+        if total_steps > 0:
+            pct = int((step / total_steps) * 100)
+        else:
+            pct = int(progress_float * 100)
+        pct = max(0, min(100, pct))
+
+        parsed = {
+            "progress": progress_float,
+            "step": step,
+            "total_steps": total_steps,
+            "eta_relative": eta_relative,
+            "textinfo": raw_textinfo,
+            "stage_name": stage_name,
+            "percent": pct,
+        }
+        return parsed, base_pass_finished
+
+    def get_progress(self, timeout: float = 1.0) -> Dict[str, Any]:
+        """Возвращает нормализованный снимок прогресса генерации из /sdapi/v1/progress."""
+        try:
+            resp = requests.get(
+                f"{self.base_url}/sdapi/v1/progress",
+                params={"skip_current_image": "true"},
+                timeout=timeout,
+            )
+            if resp.status_code == 200:
+                parsed, _ = self.parse_progress_payload(resp.json())
+                return parsed
+        except Exception:
+            pass
+        return {
+            "progress": 0.0,
+            "step": 0,
+            "total_steps": 0,
+            "eta_relative": 0.0,
+            "textinfo": "",
+            "stage_name": None,
+            "percent": 0,
+        }
 
     def get_models(self) -> List[Dict[str, str]]:
         """
@@ -338,25 +438,18 @@ class ForgeClient(QObject):
 
         cmd = ["cmd.exe", "/c", str(target)]
         try:
-            from services.art_director.vram_policy import resolve_forge_offload_policy
-            pol = resolve_forge_offload_policy(architecture="sd15", is_fp8=True, enable_adetailer=True)
-            if pol.get("always_offload", False):
-                cmd.extend([
-                    "--api", "--port", "7860", "--listen", "--cuda-malloc",
-                    "--always-offload-from-vram", "--opt-sdp-attention",
-                    "--ad-no-huggingface", "--no-download-sd-model",
-                    "--skip-torch-cuda-test", "--no-hashing", "--disable-nan-check"
-                ])
             from config import FORGE_EXTRA_ARGS
-            if FORGE_EXTRA_ARGS:
-                # Дедупликация аргументов: предотвращаем дублирование параметров, если bat-файл уже содержит флаги
-                seen_args = set()
-                clean_extra = []
-                for a in FORGE_EXTRA_ARGS:
-                    if a not in seen_args:
-                        seen_args.add(a)
-                        clean_extra.append(a)
-                cmd.extend(clean_extra)
+            from services.art_director.vram_policy import resolve_forge_startup_flags
+
+            startup_flags, startup_meta = resolve_forge_startup_flags(
+                llm_active=False,
+                extra_args=list(FORGE_EXTRA_ARGS) if FORGE_EXTRA_ARGS else None,
+            )
+            cmd.extend(startup_flags)
+            logger.info(
+                f"[ForgeClient] Стартовые флаги Forge: VRAM={startup_meta['total_vram_gb']:.1f}GB | "
+                f"pin_shared_memory={startup_meta['pin_shared_memory']} ({startup_meta['pin_reason']})"
+            )
         except Exception:
             pass
 
@@ -391,17 +484,37 @@ class ForgeClient(QObject):
             monitor = getattr(self.parent(), "system_monitor", None)
 
         if monitor and hasattr(monitor, "get_free_vram_mb"):
+            total_vram_mb = 8192
+            try:
+                if hasattr(monitor, "get_total_vram_mb"):
+                    cand = monitor.get_total_vram_mb()
+                    if isinstance(cand, (int, float)) and cand > 0:
+                        total_vram_mb = int(cand)
+                elif isinstance(getattr(monitor, "_last_emitted_stats", None), dict):
+                    cand = monitor._last_emitted_stats.get("vram_total_mb")
+                    if isinstance(cand, (int, float)) and cand > 0:
+                        total_vram_mb = int(cand)
+                else:
+                    import pynvml
+                    pynvml.nvmlInit()
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    total_vram_mb = int(info.total / (1024 * 1024))
+            except Exception:
+                pass
+            target_free_mb = min(3800, max(512, int(total_vram_mb * 0.65)))
+
             start_t = time.time()
-            # Динамическое ожидание (до 4.0 секунд с шагом 150 мс), пока system_monitor.get_free_vram_mb() >= 3800
+            # Динамическое ожидание (до 4.0 секунд с шагом 150 мс), пока free_mb >= target_free_mb
             free_mb = 0
             while time.time() - start_t < 4.0:
                 free_mb = monitor.get_free_vram_mb()
-                if free_mb >= 3800:
-                    logger.info(f"ForgeClient: VRAM свободна ({free_mb} MB >= 3800 MB), продолжение.")
+                if free_mb >= target_free_mb:
+                    logger.info(f"ForgeClient: VRAM свободна ({free_mb} MB >= {target_free_mb} MB), продолжение.")
                     self._last_vram_wait_ts = time.time()
                     return
                 time.sleep(0.15)
-            logger.info(f"ForgeClient: завершено динамическое ожидание VRAM (достигнут лимит 4.0 сек, доступно {free_mb} MB).")
+            logger.info(f"ForgeClient: завершено динамическое ожидание VRAM (достигнут лимит 4.0 сек, доступно {free_mb} MB, порог {target_free_mb} MB).")
         else:
             time.sleep(1.2)
 
@@ -434,6 +547,7 @@ class ForgeClient(QObject):
             current = self.get_current_model()
             if current and (current == target_title or target_title in current):
                 self._last_resolved_title = current
+                self._last_requested_checkpoint = current
                 logger.info(f"Forge checkpoint '{target_title}' is already active.")
                 return True
 
@@ -462,6 +576,8 @@ class ForgeClient(QObject):
                 return False
 
             self._last_resolved_title = target_title
+            self._last_requested_checkpoint = target_title
+            self._last_requested_dtype = target_dtype
             logger.info(f"Forge checkpoint successfully queued: {target_title}")
             self._checkpoint_unloaded = False
             return True
@@ -486,11 +602,12 @@ class ForgeClient(QObject):
 
         self.free_vram()
         self._checkpoint_unloaded = True
+        self._has_loaded_model_in_vram = False
         return True
 
-    def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True) -> bool:
+    def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True, force: bool = False) -> bool:
         """Принудительно очищает PyTorch CUDA кэш и синхронизирует режим выгрузки с vram_policy."""
-        if unload_models and getattr(self, "_checkpoint_unloaded", False) and always_offload is None and inference_memory_mb is None:
+        if not force and unload_models and getattr(self, "_checkpoint_unloaded", False) and always_offload is None and inference_memory_mb is None:
             return True
         try:
             payload = {"unload_models": unload_models}
@@ -499,7 +616,10 @@ class ForgeClient(QObject):
             if inference_memory_mb is not None:
                 payload["inference_memory_mb"] = int(inference_memory_mb)
             resp = requests.post(f"{self.base_url}/sdapi/v1/free-vram", json=payload, timeout=5.0)
-            return resp.status_code == 200
+            ok = resp.status_code == 200
+            if ok and unload_models:
+                self._has_loaded_model_in_vram = False
+            return ok
         except Exception as e:
             logger.debug(f"Failed to call free-vram: {e}")
             return False
@@ -513,6 +633,7 @@ class ForgeClient(QObject):
             resp = requests.post(f"{self.base_url}/sdapi/v1/reload-checkpoint", timeout=30.0)
             if resp.status_code == 200:
                 self._checkpoint_unloaded = False
+                self._has_loaded_model_in_vram = True
                 logger.info("Successfully reloaded Forge checkpoint.")
                 if checkpoint_name:
                     return self.set_model(checkpoint_name)
@@ -623,8 +744,9 @@ class ForgeClient(QObject):
             raise ForgeOfflineError(err_msg)
 
         # Switch checkpoint if specified or reload previously unloaded checkpoint
+        model_synced_via_set = False
         if checkpoint:
-            self.set_model(checkpoint)
+            model_synced_via_set = bool(self.set_model(checkpoint))
         elif getattr(self, "_checkpoint_unloaded", False):
             self.reload_checkpoint()
         else:
@@ -633,10 +755,14 @@ class ForgeClient(QObject):
 
         # Detect if model is MoP DMD SDXL
         target_model_name = (checkpoint or "").lower()
-        if not target_model_name and self.is_server_ready(timeout=0.5):
-            curr = self.get_current_model()
-            if curr:
-                target_model_name = curr.lower()
+        if not target_model_name:
+            cached_curr = getattr(self, "_last_resolved_title", None)
+            if cached_curr:
+                target_model_name = cached_curr.lower()
+            elif self.is_server_ready(timeout=0.5):
+                curr = self.get_current_model()
+                if curr:
+                    target_model_name = curr.lower()
 
         is_mop = any(k in target_model_name for k in ["mop", "pervert", "dmd"])
 
@@ -708,7 +834,8 @@ class ForgeClient(QObject):
             payload["forge_vae_tiling"] = True
             payload["sd_vae_tile"] = True
 
-        # ЖЕЛЕЗНЫЙ ХАРДЛОК ЧЕКПОИНТА: передаем модель прямо в override_settings запроса
+        # ЖЕЛЕЗНЫЙ ХАРДЛОК ЧЕКПОИНТА: передаем модель прямо в override_settings только если set_model её ещё не синхронизировал
+        target_model_title = target_model_name
         if checkpoint:
             # Используем уже разрешенный в set_model title без повторного сетевого опроса get_models()
             cached_title = getattr(self, "_last_resolved_title", None)
@@ -731,15 +858,26 @@ class ForgeClient(QObject):
                     search_str in m_fn):
                     target_model_title = m_title
                     break
-            override_dict["sd_model_checkpoint"] = target_model_title
 
         from utils.config_manager import ConfigManager
         config = ConfigManager.load_config()
         sdxl_fp8_enabled = config.get("forge_sdxl_fp8_enabled", True)
         active_target = target_model_title if checkpoint else target_model_name
         target_dtype = "fp8e4" if (is_sdxl_checkpoint(active_target) and sdxl_fp8_enabled) else "Auto"
-        override_dict["forge_unet_storage_dtype"] = target_dtype
-        logger.info(f"[ForgeClient] Чекпоинт '{active_target}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
+
+        already_synced_via_set = bool(
+            checkpoint
+            and model_synced_via_set
+            and getattr(self, "_last_requested_checkpoint", None) == target_model_title
+            and getattr(self, "_last_requested_dtype", None) == target_dtype
+        )
+        if not already_synced_via_set:
+            if checkpoint:
+                override_dict["sd_model_checkpoint"] = target_model_title
+            override_dict["forge_unet_storage_dtype"] = target_dtype
+            logger.info(f"[ForgeClient] Чекпоинт '{active_target}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
+            self._last_requested_checkpoint = target_model_title if checkpoint else getattr(self, "_last_requested_checkpoint", None)
+            self._last_requested_dtype = target_dtype
 
         if override_dict:
             payload["override_settings"] = override_dict
@@ -758,33 +896,130 @@ class ForgeClient(QObject):
 
         has_ad = bool("alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"])
 
+        ad_args = (
+            payload["alwayson_scripts"]["ADetailer"].get("args", [])
+            if has_ad and "alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"]
+            else []
+        )
+        slot_dicts = [s for s in ad_args[2:] if isinstance(s, dict)]
+        has_hands_ad = bool(kwargs.get("enable_hand_adetailer", False)) or len(slot_dicts) >= 2
+        ad_inpaint_sz = max(
+            [int(s.get("ad_inpaint_width", 512) or 512) for s in slot_dicts],
+            default=512,
+        )
+        lora_count = len(re.findall(r"<lora:[^>]+>", clean_prompt, flags=re.IGNORECASE))
+
         try:
-            from services.art_director.vram_policy import resolve_forge_offload_policy
+            from services.art_director.vram_policy import (
+                resolve_forge_offload_policy,
+                resolve_checkpoint_file_size_mb,
+                format_vram_planner_log,
+            )
             monitor = getattr(self, "system_monitor", None)
             if not monitor and hasattr(self, "parent") and self.parent():
                 monitor = getattr(self.parent(), "system_monitor", None)
+
+            forge_holds_vram = False
+            try:
+                from services.vram_arbiter import VRAMArbiter, GPUOwner
+                arb = VRAMArbiter.get_instance()
+                forge_holds_vram = bool(
+                    arb._current_owner == GPUOwner.DIFFUSION
+                    and not getattr(self, "_checkpoint_unloaded", False)
+                    and getattr(self, "_has_loaded_model_in_vram", False)
+                )
+            except Exception:
+                forge_holds_vram = bool(
+                    not getattr(self, "_checkpoint_unloaded", False)
+                    and getattr(self, "_has_loaded_model_in_vram", False)
+                )
+
+            ckpt_size_mb = resolve_checkpoint_file_size_mb(active_target)
             offload_pol = resolve_forge_offload_policy(
                 width=clean_width,
                 height=clean_height,
                 architecture="sdxl" if is_sdxl_checkpoint(active_target) else "sd15",
                 is_fp8=(target_dtype == "fp8e4"),
                 enable_adetailer=has_ad,
+                active_lora_count=lora_count,
                 system_monitor=monitor,
+                enable_hr=bool(is_hr_enabled),
+                hr_scale=float(scale_hr or 1.0),
+                hr_upscaler=str(safe_upscaler or "Latent"),
+                enable_hand_adetailer=has_hands_ad,
+                ad_inpaint_size=ad_inpaint_sz,
+                vae_tiling=bool(FORGE_ENABLE_VAE_TILING),
+                checkpoint_size_mb=ckpt_size_mb,
+                forge_holds_vram=forge_holds_vram,
             )
+            logger.info(format_vram_planner_log(offload_pol))
+
             want_offload = bool(offload_pol["always_offload"])
-            if getattr(self, "_last_always_offload", None) != want_offload:
+            target_inf_mb = int(offload_pol["inference_memory_mb"])
+            target_mode = str(offload_pol.get("mode", "DEFAULT"))
+            host_ram_starved = bool(offload_pol.get("host_ram_starved", False))
+            policy_key = (want_offload, target_inf_mb)
+            prev_key = getattr(self, "_last_vram_policy_key", None)
+            prev_mode = getattr(self, "_last_vram_mode", None)
+
+            # При первом входе в STAGE_OFFLOAD (включая prev_mode is None), при понижении режима
+            # либо при дефиците системной RAM принудительно очищаем старые хвосты в VRAM (unload_models=True)
+            entering_stage_offload = (
+                target_mode == "STAGE_OFFLOAD"
+                and (prev_mode != "STAGE_OFFLOAD" or host_ram_starved)
+            )
+
+            if prev_key != policy_key or entering_stage_offload:
+                self._last_vram_policy_key = policy_key
+                self._last_vram_mode = target_mode
                 self._last_always_offload = want_offload
                 self.free_vram(
                     always_offload=want_offload,
-                    inference_memory_mb=offload_pol["inference_memory_mb"],
-                    unload_models=False,
+                    inference_memory_mb=target_inf_mb,
+                    unload_models=entering_stage_offload,
                 )
+
+            # Host RAM Starvation Guard: принудительный даунгрейд в fp8e4, отключение Hires и вторых слотов ADetailer
+            if offload_pol.get("force_fp8_storage") and is_sdxl_checkpoint(active_target):
+                logger.warning(
+                    f"[Host-RAM-Guard] Критический дефицит системной RAM + малый VRAM для '{active_target}': "
+                    "принудительный даунгрейд forge_unet_storage_dtype='fp8e4'."
+                )
+                target_dtype = "fp8e4"
+                if checkpoint:
+                    override_dict["sd_model_checkpoint"] = target_model_title
+                override_dict["forge_unet_storage_dtype"] = "fp8e4"
+                payload["override_settings"] = override_dict
+                payload["override_settings_restore_afterwards"] = False
+                self._last_requested_dtype = "fp8e4"
+
+            if offload_pol.get("force_disable_hr") and payload.get("enable_hr"):
+                payload["enable_hr"] = False
+                is_hr_enabled = False
+                enable_hr = False
+
+            if offload_pol.get("disable_secondary_adetailer") and has_ad and len(ad_args) > 3:
+                payload["alwayson_scripts"]["ADetailer"]["args"] = list(ad_args[:3])
+                ad_args = payload["alwayson_scripts"]["ADetailer"]["args"]
+
+            want_vae_tiling = bool(FORGE_ENABLE_VAE_TILING or offload_pol.get("enable_vae_tiling", False))
+            if want_vae_tiling:
+                override_dict["forge_vae_tiling"] = True
+                override_dict["sd_vae_tile"] = True
+                payload["forge_vae_tiling"] = True
+                payload["sd_vae_tile"] = True
+                payload["override_settings"] = override_dict
+            if want_vae_tiling or getattr(self, "_never_oom_vae_active", False):
+                if self.has_script("Never OOM Integrated", tab="txt2img"):
+                    scripts_map = payload.setdefault("alwayson_scripts", {})
+                    if "Never OOM Integrated" not in scripts_map:
+                        scripts_map["Never OOM Integrated"] = {"args": [False, want_vae_tiling]}
+                        self._never_oom_vae_active = want_vae_tiling
         except Exception as _pol_err:
             offload_pol = {"mode": "DEFAULT", "always_offload": False}
             logger.debug(f"[ForgeClient] Ошибка применения vram_policy: {_pol_err}")
 
-        if has_ad and "alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"]:
-            ad_args = payload["alwayson_scripts"]["ADetailer"].get("args", [])
+        if has_ad and ad_args:
             # ad_args: [ad_enable, ad_skip_img2img, face_slot, hand_slot, ...]
             slots_summary = []
             for idx, slot in enumerate(ad_args[2:], start=1):
@@ -832,11 +1067,17 @@ class ForgeClient(QObject):
                         continue
 
                     data = resp.json()
-                    state = data.get("state", {})
-                    textinfo = str(state.get("textinfo") or "").lower()
-                    step = state.get("sampling_step", 0)
-                    total_steps = state.get("sampling_steps", 0)
-                    progress_float = data.get("progress", 0.0)
+                    parsed, base_pass_finished = self.parse_progress_payload(
+                        data,
+                        is_hr_enabled=is_hr_enabled,
+                        steps_hr=steps_hr,
+                        last_step=last_step,
+                        base_pass_finished=base_pass_finished,
+                    )
+                    textinfo = parsed["textinfo"].lower()
+                    step = parsed["step"]
+                    total_steps = parsed["total_steps"]
+                    progress_float = parsed["progress"]
 
                     # Сбрасываем таймер застоя при смене шага, прогрессе или смене внутреннего состояния
                     if step != last_step or progress_float > 0 or textinfo:
@@ -849,32 +1090,9 @@ class ForgeClient(QObject):
                         self.interrupt()
                         break
 
-                    stage_name = None
-
-                    # 1. Проверка специализированных улучшаторов ADetailer
-                    for keyword, title in STAGE_DETECTORS:
-                        if keyword in textinfo:
-                            stage_name = title
-                            break
-
-                    # 2. Если улучшаторы не активны — базовые проходы генерации
-                    if not stage_name:
-                        if step < last_step and last_step > 0:
-                            base_pass_finished = True
-
-                        if base_pass_finished or (is_hr_enabled and step > 0 and total_steps == steps_hr):
-                            stage_name = "🔍 Повышение четкости"
-                        else:
-                            stage_name = "🎨 Создание общего плана"
-
+                    stage_name = parsed["stage_name"] or "🎨 Создание общего плана"
                     last_step = step
-
-                    if total_steps > 0:
-                        pct = int((step / total_steps) * 100)
-                    else:
-                        pct = int(progress_float * 100)
-
-                    pct = max(0, min(100, pct))
+                    pct = parsed["percent"]
 
                     if stage_name != last_stage or abs(pct - last_pct) >= 2:
                         last_stage = stage_name
@@ -906,6 +1124,7 @@ class ForgeClient(QObject):
                 )
                 elapsed = time.time() - t0
                 if resp.status_code == 200:
+                    self._has_loaded_model_in_vram = True
                     logger.info(f"[SD Forge] Генерация успешно завершена за {elapsed:.2f} с (HTTP 200)")
                 else:
                     logger.warning(f"[SD Forge] Ответ API HTTP {resp.status_code} за {elapsed:.2f} с: {resp.text[:120]}")
@@ -930,14 +1149,18 @@ class ForgeClient(QObject):
                 raise InterruptedError("Генерация изображения была отменена пользователем.")
 
             # Fallback 1: If failed and ADetailer is present, retry without ADetailer while keeping Hires.fix enabled
-            has_ad = "alwayson_scripts" in current_payload and bool(current_payload.get("alwayson_scripts"))
-            if (resp is None or resp.status_code != 200) and has_ad:
+            has_ad_in_payload = "ADetailer" in (current_payload.get("alwayson_scripts") or {})
+            if (resp is None or resp.status_code != 200) and has_ad_in_payload:
                 status_info = f"HTTP {resp.status_code}" if resp is not None else str(last_err)
                 logger.warning(
                     f"Forge txt2img with ADetailer failed ({status_info}). "
                     "Retrying generation without ADetailer while keeping Hires.fix enabled..."
                 )
-                current_payload.pop("alwayson_scripts", None)
+                scripts_dict = current_payload.get("alwayson_scripts")
+                if isinstance(scripts_dict, dict):
+                    scripts_dict.pop("ADetailer", None)
+                    if not scripts_dict:
+                        current_payload.pop("alwayson_scripts", None)
                 try:
                     resp = _send_request(current_payload)
                     last_err = None
@@ -1028,13 +1251,79 @@ class ForgeClient(QObject):
             logger.info(f"[SD Forge] Фактический Seed инференса: {actual_seed}")
 
             # Direct extraction of original uncompressed PNG from images[0]
-            raw_b64 = images[0]
-            if "," in raw_b64:
-                raw_b64 = raw_b64.split(",", 1)[1]
+            def _decode_png(raw_b64_str: str) -> bytes:
+                if "," in raw_b64_str:
+                    raw_b64_str = raw_b64_str.split(",", 1)[1]
+                b = base64.b64decode(raw_b64_str)
+                if len(b) < 100:
+                    raise ValueError("Получены поврежденные или неполные байты изображения от Forge.")
+                return b
 
-            image_bytes = base64.b64decode(raw_b64)
-            if len(image_bytes) < 100:
-                raise ValueError("Получены поврежденные или неполные байты изображения от Forge.")
+            def _measure_dims(b: bytes, fallback_w: int, fallback_h: int) -> Tuple[int, int]:
+                if len(b) >= 24 and b.startswith(b"\x89PNG\r\n\x1a\n"):
+                    try:
+                        import struct
+                        return struct.unpack(">II", b[16:24])
+                    except Exception:
+                        pass
+                try:
+                    import io
+                    from PIL import Image
+                    with Image.open(io.BytesIO(b)) as img:
+                        return img.size
+                except Exception:
+                    if is_hr_enabled and scale_hr:
+                        return (int(clean_width * scale_hr), int(clean_height * scale_hr))
+                    return (fallback_w, fallback_h)
+
+            image_bytes = _decode_png(images[0])
+            actual_w, actual_h = _measure_dims(image_bytes, clean_width, clean_height)
+
+            # Детектор пустого/чёрного кадра (возможное NaN-переполнение в VAE) ДО сохранения на диск
+            if len(image_bytes) < 10_000 and actual_w >= 512 and actual_h >= 512:
+                logger.warning(
+                    f"[ForgeClient] Обнаружен пустой/чёрный кадр (возможное NaN-переполнение в VAE): "
+                    f"размер файла всего {len(image_bytes)} байт при разрешении {actual_w}x{actual_h}. "
+                    "Выполняется автоматический восстановительный ретрай (seed=-1, enable_hr=False)..."
+                )
+                try:
+                    self.free_vram(always_offload=False, inference_memory_mb=768)
+                except Exception:
+                    pass
+
+                retry_payload = copy.deepcopy(current_payload)
+                retry_payload["seed"] = -1
+                if retry_payload.get("enable_hr"):
+                    retry_payload["enable_hr"] = False
+                elif "denoising_strength" in retry_payload:
+                    retry_payload["denoising_strength"] = 0.32
+
+                resp_retry = _send_request(retry_payload)
+                if resp_retry is not None and resp_retry.status_code == 200:
+                    retry_data = resp_retry.json()
+                    retry_images = retry_data.get("images", [])
+                    if retry_images:
+                        retry_bytes = _decode_png(retry_images[0])
+                        retry_w, retry_h = _measure_dims(retry_bytes, clean_width, clean_height)
+                        if len(retry_bytes) < 10_000 and retry_w >= 512 and retry_h >= 512:
+                            raise RuntimeError(
+                                f"Forge вернул пустой/чёрный кадр (NaN в VAE) даже после восстановительного ретрая "
+                                f"({len(retry_bytes)} байт, {retry_w}x{retry_h})."
+                            )
+                        # Восстановительный ретрай успешен
+                        image_bytes = retry_bytes
+                        actual_w, actual_h = retry_w, retry_h
+                        data = retry_data
+                        info_raw = data.get("info", "")
+                        logger.info(
+                            f"[ForgeClient] Восстановительный ретрай успешно восстановил кадр "
+                            f"({len(image_bytes)} байт, {actual_w}x{actual_h})."
+                        )
+                    else:
+                        raise RuntimeError("Восстановительный ретрай Forge вернул пустой список изображений.")
+                else:
+                    status_c = resp_retry.status_code if resp_retry is not None else "нет ответа"
+                    raise RuntimeError(f"Сбой восстановительного ретрая Forge: {status_c}")
 
             # Save 100% original full-size image to session or global outputs directory
             if output_dir:
@@ -1049,17 +1338,6 @@ class ForgeClient(QObject):
             file_path = save_dir / filename
             with open(file_path, "wb") as f:
                 f.write(image_bytes)
-
-            actual_w, actual_h = clean_width, clean_height
-            try:
-                import io
-                from PIL import Image
-                with Image.open(io.BytesIO(image_bytes)) as img:
-                    actual_w, actual_h = img.size
-            except Exception:
-                if is_hr_enabled and scale_hr:
-                    actual_w = int(clean_width * scale_hr)
-                    actual_h = int(clean_height * scale_hr)
 
             logger.info(f"Successfully saved original full-resolution PNG to {file_path} ({len(image_bytes)} bytes, {actual_w}x{actual_h})")
             return file_path

@@ -336,22 +336,58 @@ class DocumentParser:
         content, _ = cls._extract_pdf(path)
         return content
 
+    @staticmethod
+    def format_markdown_table(rows: List[List[Any]]) -> str:
+        """Форматирует двумерный массив ячеек в валидный Markdown-блок с шапкой и разделителем."""
+        if not rows:
+            return ""
+
+        max_cols = max((len(r) for r in rows), default=0)
+        if max_cols == 0:
+            return ""
+
+        clean_rows: List[List[str]] = []
+        for r in rows:
+            row_cells = [
+                re.sub(r"[\r\n]+", " ", "" if cell is None else str(cell)).replace("|", "\\|").strip()
+                for cell in r
+            ]
+            while len(row_cells) < max_cols:
+                row_cells.append("")
+            if any(row_cells):
+                clean_rows.append(row_cells)
+
+        if not clean_rows:
+            return ""
+
+        lines = [
+            f"| {' | '.join(clean_rows[0])} |",
+            f"| {' | '.join(['---'] * max_cols)} |",
+        ]
+        for r in clean_rows[1:]:
+            lines.append(f"| {' | '.join(r)} |")
+        return "\n".join(lines)
+
     @classmethod
     def _parse_docx(cls, path: Path) -> str:
         """Извлечение текста и таблиц из .docx файлов."""
         try:
             import docx
             doc = docx.Document(path)
-            lines = []
+            parts: List[str] = []
             for p in doc.paragraphs:
                 if p.text.strip():
-                    lines.append(p.text.strip())
+                    parts.append(p.text.strip())
             for t in doc.tables:
+                table_rows: List[List[str]] = []
                 for row in t.rows:
-                    row_txt = [c.text.strip().replace("\n", " ") for c in row.cells if c.text.strip()]
-                    if row_txt:
-                        lines.append(" | ".join(row_txt))
-            return "\n".join(lines)
+                    row_cells = [re.sub(r"[\r\n]+", " ", c.text).strip() for c in row.cells]
+                    if any(row_cells):
+                        table_rows.append(row_cells)
+                md_table = cls.format_markdown_table(table_rows)
+                if md_table:
+                    parts.append(md_table)
+            return "\n\n".join(parts)
         except ImportError:
             return "[Для чтения DOCX требуется python-docx. Установите: pip install python-docx]"
         except Exception as e:
@@ -387,16 +423,23 @@ class DocumentParser:
             tables = []
             for sheet_name in wb.sheetnames[:3]:  # Первые 3 листа
                 sheet = wb[sheet_name]
-                rows_data = []
+                rows_data: List[List[str]] = []
+                truncated = False
                 for row in sheet.iter_rows(values_only=True):
-                    row_vals = [str(c).strip() if c is not None else "" for c in row]
+                    row_vals = [str(c).strip() if c is not None else "" for c in row[:12]]
+                    while row_vals and not row_vals[-1]:
+                        row_vals.pop()
                     if any(row_vals):
-                        rows_data.append(" | ".join(row_vals[:12]))
+                        rows_data.append(row_vals)
                     if len(rows_data) >= 80:  # Ограничение до 80 строк на лист
-                        rows_data.append("... [строки листа усечены]")
+                        truncated = True
                         break
-                if rows_data:
-                    tables.append(f"### Лист: {sheet_name}\n" + "\n".join(rows_data))
+                md_table = cls.format_markdown_table(rows_data)
+                if md_table:
+                    section = f"### Лист: {sheet_name}\n{md_table}"
+                    if truncated:
+                        section += "\n\n... [строки листа усечены]"
+                    tables.append(section)
             return "\n\n".join(tables)
         except ImportError:
             return "[Для чтения Excel (.xlsx/.xls) требуется openpyxl. Установите: pip install openpyxl]"
@@ -449,22 +492,11 @@ class DocumentParser:
             if not rows:
                 return raw_text[:3000]
 
-            header = rows[0]
-            col_count = len(header)
-            md_lines = [" | ".join(header), " | ".join(["---"] * col_count)]
-
-            for r in rows[1:]:
-                if len(r) < col_count:
-                    r = r + [""] * (col_count - len(r))
-                elif len(r) > col_count:
-                    r = r[:col_count]
-                md_lines.append(" | ".join(r))
-
+            md_table = cls.format_markdown_table(rows)
             total_lines = len(raw_text.splitlines())
             if total_lines > len(rows):
-                md_lines.append(f"\n... [показано {len(rows)} строк из {total_lines}]")
-
-            return "\n".join(md_lines)
+                return f"{md_table}\n\n... [показано {len(rows)} строк из {total_lines}]"
+            return md_table
         except Exception as e:
             logger.debug(f"CSV parsing error: {e}")
             return "\n".join(sample_lines[:80])

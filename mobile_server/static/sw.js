@@ -1,10 +1,10 @@
 /**
  * NeonRoute Mobile Service Worker
- * Stale-While-Revalidate for app shell and static assets.
- * Network-first for /api/* calls (especially SSE streams).
+ * Network-First for app shell and static JS/CSS (prevents stale UI logic on phones),
+ * Network-only for /api/* and /media/* streams/images.
  */
 
-const CACHE_NAME = 'neonroute-shell-v1';
+const CACHE_NAME = 'neonroute-shell-v5';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -46,36 +46,23 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // 1. API requests and non-GET requests are strictly Network-only
-  if (url.pathname.startsWith('/api/') || event.request.method !== 'GET') {
+  // 1. API, media endpoints, and non-GET requests are strictly Network-only
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/media/') || event.request.method !== 'GET') {
     return;
   }
 
-  // 2. Navigation request to root
-  if (event.request.mode === 'navigate' || url.pathname === '/') {
-    event.respondWith(
-      fetch(event.request)
-        .catch(() => caches.match('/static/index.html') || caches.match('/'))
-    );
-    return;
-  }
-
-  // 3. Static assets: Stale-While-Revalidate
+  // 2. Network-First for root navigation and static assets (offline cache fallback only)
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const responseToCache = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
-          }
-          return networkResponse;
-        })
-        .catch(() => cachedResponse);
-
-      return cachedResponse || fetchPromise;
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

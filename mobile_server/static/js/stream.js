@@ -3,7 +3,7 @@
  * Streams tokens via fetch & ReadableStream with custom SSE event dispatch.
  */
 
-function _processSseMessage(messageText, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted }) {
+function _processSseMessage(messageText, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError }) {
   if (!messageText || !messageText.trim()) return;
 
   let eventType = 'message';
@@ -38,6 +38,9 @@ function _processSseMessage(messageText, { onThought, onThoughtEnd, onToken, onD
     case 'art_started':
       if (onArtStarted) onArtStarted(dataContent);
       break;
+    case 'art_error':
+      if (onArtError) onArtError(dataContent);
+      break;
     case 'error':
       if (onError) onError(dataContent);
       break;
@@ -47,7 +50,7 @@ function _processSseMessage(messageText, { onThought, onThoughtEnd, onToken, onD
   }
 }
 
-async function _consumeStreamReader(response, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted }) {
+async function _consumeStreamReader(response, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError }) {
   if (!response.body) {
     throw new Error('ReadableStream is not supported or response body is empty');
   }
@@ -67,7 +70,7 @@ async function _consumeStreamReader(response, { onThought, onThoughtEnd, onToken
     buffer = parts.pop(); // keep last incomplete chunk
 
     for (const part of parts) {
-      _processSseMessage(part, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted });
+      _processSseMessage(part, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError });
     }
   }
 
@@ -75,8 +78,37 @@ async function _consumeStreamReader(response, { onThought, onThoughtEnd, onToken
   if (buffer && buffer.trim()) {
     const parts = buffer.split(/\r?\n\r?\n/);
     for (const part of parts) {
-      _processSseMessage(part, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted });
+      _processSseMessage(part, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError });
     }
+  }
+}
+
+async function _postSseStream(
+  url,
+  body,
+  errorLabel,
+  { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError, signal }
+) {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errText || errorLabel}`);
+    }
+
+    await _consumeStreamReader(response, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      console.log(`${errorLabel} aborted by user`);
+      return;
+    }
+    if (onError) onError(err.message || String(err));
   }
 }
 
@@ -90,29 +122,15 @@ export async function sendChatMessageStream({
   onDone,
   onError,
   onArtStarted,
+  onArtError,
   signal
 }) {
-  try {
-    const response = await fetch('/api/chat/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, text, mode }),
-      signal
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`HTTP ${response.status}: ${errText || 'Chat stream failed'}`);
-    }
-
-    await _consumeStreamReader(response, { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted });
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      console.log('Chat stream aborted by user');
-      return;
-    }
-    if (onError) onError(err.message || String(err));
-  }
+  return _postSseStream(
+    '/api/chat/stream',
+    { session_id: sessionId, text, mode },
+    'Chat stream failed',
+    { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError, signal }
+  );
 }
 
 export async function sendChatRegenerateStream({
@@ -123,27 +141,14 @@ export async function sendChatRegenerateStream({
   onToken,
   onDone,
   onError,
+  onArtStarted,
+  onArtError,
   signal
 }) {
-  try {
-    const response = await fetch('/api/chat/regenerate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, mode }),
-      signal
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`HTTP ${response.status}: ${errText || 'Chat regenerate failed'}`);
-    }
-
-    await _consumeStreamReader(response, { onThought, onThoughtEnd, onToken, onDone, onError });
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      console.log('Chat regenerate aborted by user');
-      return;
-    }
-    if (onError) onError(err.message || String(err));
-  }
+  return _postSseStream(
+    '/api/chat/regenerate',
+    { session_id: sessionId, mode },
+    'Chat regenerate failed',
+    { onThought, onThoughtEnd, onToken, onDone, onError, onArtStarted, onArtError, signal }
+  );
 }

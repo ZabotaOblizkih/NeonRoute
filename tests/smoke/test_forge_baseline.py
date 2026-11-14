@@ -79,9 +79,9 @@ def test_process_manager_forge_launch_cmd_baseline(qapp, tmp_path):
     mock_proc.poll.return_value = None
     mock_proc.stdout.readline.return_value = ""
 
-    # Принудительно включаем политику оффлоада, чтобы проверить сборку всех ожидаемых флагов
+        # Принудительно включаем политику оффлоада, чтобы проверить сборку ожидаемых флагов запуска
     with patch("services.process_manager.FORGE_LAUNCHER_PATH", fake_launcher), \
-         patch("services.art_director.vram_policy.resolve_forge_offload_policy", return_value={"always_offload": True}), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)), \
          patch("services.asset_validator.AssetValidator.log_validation_summary"), \
          patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
          patch("builtins.open", MagicMock()):
@@ -109,10 +109,11 @@ def test_process_manager_forge_launch_cmd_baseline(qapp, tmp_path):
             f"cwd ({cwd}) должен строго совпадать с каталогом лаунчера ({fake_launcher.parent})"
         )
 
-        # 3. Проверка наличия ожидаемых флагов Forge
-        expected_flags = ["--api", "--port", "7860", "--cuda-malloc", "--always-offload-from-vram"]
+        # 3. Проверка наличия ожидаемых адаптивных флагов Forge (без жёсткого --always-offload-from-vram на 8 ГБ)
+        expected_flags = ["--api", "--port", "7860", "--cuda-malloc", "--opt-sdp-attention"]
         for flag in expected_flags:
             assert flag in cmd, f"Флаг '{flag}' должен присутствовать в команде запуска: {cmd}"
+        assert "--always-offload-from-vram" not in cmd
 
 
 def test_process_manager_cleanup_filter_baseline(qapp):
