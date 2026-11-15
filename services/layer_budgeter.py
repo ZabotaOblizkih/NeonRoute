@@ -703,7 +703,7 @@ class LayerBudgeter:
             effective_os_reserve = max(os_reserve_mb, int(math.ceil(used_vram)))
             forge_res = 0
             frag_margin = int(max(0, fragmentation_margin_mb))
-            safety_res = 280 + frag_margin  # 150 МБ TDR + 130 МБ буфер против WDDM Shared Memory paging + фрагментационный запас
+            safety_res = 170 + frag_margin  # Базовый буфер против WDDM paging (170 МБ) + фрагментационный запас
             compute_mb = (150 if model_size_mb < 5000 else 220) + (60 if vocab_size >= 200000 else 0)
             usable_vram_mb = total_vram - effective_os_reserve - forge_res - safety_res - kv_cache_mb - compute_mb
         else:
@@ -731,21 +731,23 @@ class LayerBudgeter:
 
         # 6. Зона нечувствительности (гистерезис)
         if current_running_ngl is not None and isinstance(current_running_ngl, int) and current_running_ngl >= 0:
-            delta = abs(calculated_ngl - current_running_ngl)
+            effective_prev_ngl = min(current_running_ngl, total_layers)
+            effective_calc_ngl = min(calculated_ngl, total_layers)
+            delta = abs(effective_calc_ngl - effective_prev_ngl)
             if delta <= int(HYSTERESIS_LAYER_DELTA) and usable_vram_mb >= 0:
                 # Защита гистерезиса от превышения физического лимита VRAM:
                 # Разрешено только если:
                 # 1) current_running_ngl <= calculated_ngl (уменьшение или равенство), ЛИБО
                 # 2) если для current_running_ngl строго хватает свободного бюджета блоков
                 can_apply_hysteresis = False
-                if current_running_ngl <= calculated_ngl:
+                if effective_prev_ngl <= effective_calc_ngl:
                     can_apply_hysteresis = True
                 else:
-                    if current_running_ngl >= total_layers:
+                    if effective_prev_ngl >= total_layers:
                         if available_for_blocks_mb >= blocks_weight_mb:
                             can_apply_hysteresis = True
                     else:
-                        needed_blocks_mb = float(current_running_ngl) * layer_weight_mb
+                        needed_blocks_mb = float(effective_prev_ngl) * layer_weight_mb
                         if available_for_blocks_mb >= needed_blocks_mb:
                             can_apply_hysteresis = True
 

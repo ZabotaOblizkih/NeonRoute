@@ -128,6 +128,8 @@ class ProcessManager(QObject):
         self._last_attempted_ngl: Optional[int] = None
         self._current_running_ngl: Optional[int] = None
         self._current_total_layers: Optional[int] = None
+        self._evicted_for_forge_ngl: Optional[int] = None
+        self._evicted_for_forge_model: Optional[str] = None
 
     @property
     def lm_client(self) -> Optional[Any]:
@@ -284,6 +286,32 @@ class ProcessManager(QObject):
                         logger.info(f"llama-server process (PID {pid}) terminated via taskkill.")
                     except Exception as e:
                         logger.warning(f"Error terminating llama-server PID {pid}: {e}")
+                if for_forge_eviction:
+                    # Сохраняем модель и нормализованный NGL перед выгрузкой в пользу Forge
+                    prev_model = None
+                    if hasattr(self, "lm_client") and self.lm_client:
+                        prev_model = getattr(self.lm_client, "_last_loaded_model_id", None)
+                    prev_ngl = self._current_running_ngl
+                    prev_layers = self._current_total_layers
+                    if prev_ngl is None and hasattr(self, "lm_client") and self.lm_client:
+                        prev_ngl = getattr(self.lm_client, "_current_running_ngl", None)
+                    if prev_layers is None and hasattr(self, "lm_client") and self.lm_client:
+                        prev_layers = getattr(self.lm_client, "_current_total_layers", None)
+
+                    if prev_ngl is not None and prev_model:
+                        if prev_layers is not None and prev_layers > 0:
+                            norm_ngl = min(int(prev_ngl), int(prev_layers))
+                        else:
+                            norm_ngl = int(prev_ngl)
+                        self._evicted_for_forge_ngl = norm_ngl
+                        self._evicted_for_forge_model = str(prev_model)
+                        logger.info(
+                            f"[ProcessManager] Сохранен NGL={norm_ngl} для модели '{prev_model}' перед выгрузкой в пользу Forge."
+                        )
+                else:
+                    self._evicted_for_forge_ngl = None
+                    self._evicted_for_forge_model = None
+
                 self._llama_process = None
                 self._current_running_ngl = None
                 self._current_total_layers = None
@@ -487,6 +515,9 @@ class ProcessManager(QObject):
                     val = getattr(self.lm_client, "_current_running_ngl", None)
                     if isinstance(val, int):
                         current_running_ngl = val
+                tot_layers = getattr(self, "_current_total_layers", None)
+                if current_running_ngl is not None and tot_layers is not None and tot_layers > 0:
+                    current_running_ngl = min(int(current_running_ngl), int(tot_layers))
 
             # Kill existing instance if running
             self._kill_llama_server_instance()
@@ -576,6 +607,34 @@ class ProcessManager(QObject):
 
                 # Динамический расчет слоев через LayerBudgeter
                 audit_data: Dict[str, Any] = {}
+                if current_running_ngl is None and getattr(self, "_evicted_for_forge_ngl", None) is not None:
+                    evicted_model = getattr(self, "_evicted_for_forge_model", None)
+                    curr_model_req = str(model_path)
+                    curr_model_id = getattr(self.lm_client, "_last_loaded_model_id", None) if hasattr(self, "lm_client") and self.lm_client else None
+                    model_matches = False
+                    if evicted_model:
+                        evicted_p = Path(evicted_model).name.lower()
+                        curr_p = Path(curr_model_req).name.lower()
+                        if (
+                            evicted_model == curr_model_req
+                            or evicted_p == curr_p
+                            or (curr_model_id and evicted_model == str(curr_model_id))
+                            or evicted_model in curr_model_req
+                            or curr_model_req in evicted_model
+                        ):
+                            model_matches = True
+                    if model_matches:
+                        current_running_ngl = getattr(self, "_evicted_for_forge_ngl", None)
+                        logger.info(
+                            f"[ProcessManager] Восстановлен NGL={current_running_ngl} для модели '{evicted_model}' после Forge для гистерезиса."
+                        )
+                    else:
+                        logger.info(
+                            f"[ProcessManager] Модель сменилась после Forge ({evicted_model} -> {curr_model_req}). Сброс сохраненного NGL."
+                        )
+                    self._evicted_for_forge_ngl = None
+                    self._evicted_for_forge_model = None
+
                 is_manual_override = (
                     gpu_layers is not None
                     and str(gpu_layers).strip().lower() != "auto"
@@ -598,11 +657,22 @@ class ProcessManager(QObject):
                         arb = VRAMArbiter.get_instance()
                         last_rel = getattr(arb, "_last_diffusion_release_ts", 0.0)
                         if last_rel > 0.0 and (time.monotonic() - last_rel) < 8.0:
-                            frag_margin = 180
-                            logger.info(
-                                f"[ProcessManager] Обнаружено недавнее освобождение Forge "
-                                f"({time.monotonic() - last_rel:.1f}с < 8.0с). Применен fragmentation_margin={frag_margin} MB."
-                            )
+                            from services.layer_budgeter import LayerBudgeter
+                            curr_vram = LayerBudgeter.get_current_used_vram_mb()
+                            if curr_vram <= 400.0:
+                                frag_margin = 180
+                                logger.info(
+                                    f"[ProcessManager] Обнаружено недавнее освобождение Forge "
+                                    f"({time.monotonic() - last_rel:.1f}с < 8.0с, VRAM used={curr_vram:.1f} MB <= 400 MB). "
+                                    f"Применен fragmentation_margin={frag_margin} MB."
+                                )
+                            else:
+                                frag_margin = 0
+                                logger.info(
+                                    f"[ProcessManager] Обнаружено недавнее освобождение Forge "
+                                    f"({time.monotonic() - last_rel:.1f}с < 8.0с), но VRAM used={curr_vram:.1f} MB > 400 MB "
+                                    f"(CUDA-контекст уже учтен в effective_os_reserve). fragmentation_margin=0 MB."
+                                )
                     except Exception:
                         frag_margin = 0
 
