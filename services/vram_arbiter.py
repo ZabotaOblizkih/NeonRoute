@@ -1,4 +1,5 @@
 import logging
+import time
 from enum import Enum
 from typing import Optional, Any, Dict
 
@@ -23,6 +24,7 @@ class VRAMArbiter:
         self.lm_client = lm_client
         self.forge_client = forge_client
         self._current_owner: GPUOwner = GPUOwner.NONE
+        self._last_diffusion_release_ts: float = 0.0
 
     @classmethod
     def get_instance(cls) -> "VRAMArbiter":
@@ -111,31 +113,48 @@ class VRAMArbiter:
         # Цикл стабилизации VRAM перед передачей GPU под LLM (до 1.5 с с шагом 0.1 с)
         self._wait_for_vram_stabilization()
 
-    def _wait_for_vram_stabilization(self, timeout_s: float = 1.5, step_s: float = 0.1):
+    def _wait_for_vram_stabilization(self, timeout_s: float = 2.5, step_s: float = 0.1, dwell_s: float = 0.6):
         """
-        Ожидает, пока фактическая занятость VRAM опустится ниже 750 МБ или стабилизируется
-        (разница < 15 МБ между двумя соседними замерами), прежде чем отдавать владение GPUOwner.LLM.
+        Ожидает, пока фактическая занятость VRAM опустится ниже 750 МБ и стабилизируется
+        (разница < 15 МБ между двумя соседними замерами) в течение окна выдержки dwell_s (0.6 с),
+        прежде чем отдавать владение GPUOwner.LLM, чтобы WDDM успел завершить рекультивацию после cudaMallocAsync.
         """
-        import time
         from services.layer_budgeter import LayerBudgeter
 
-        start_t = time.time()
-        prev_used = None
-        while time.time() - start_t < timeout_s:
+        start_t = time.monotonic()
+        prev_used: Optional[float] = None
+        stable_start: Optional[float] = None
+
+        while time.monotonic() - start_t < timeout_s:
             curr_used = LayerBudgeter.get_current_used_vram_mb()
-            if curr_used <= 0.0 or curr_used < 750.0:
-                logger.debug(f"[VRAMArbiter] VRAM стабилизирована: {curr_used:.1f} MB (< 750 MB).")
+            if curr_used <= 0.0:
+                logger.debug("[VRAMArbiter] VRAM телеметрия недоступна (0.0 MB). Пропуск ожидания.")
                 break
-            if prev_used is not None and abs(curr_used - prev_used) < 15.0:
-                logger.debug(f"[VRAMArbiter] VRAM стабилизирована по дельте: {curr_used:.1f} MB (дельта < 15 MB).")
-                break
+
+            delta = abs(curr_used - prev_used) if prev_used is not None else 0.0
+            is_low = (curr_used < 750.0)
+            is_stable = (prev_used is not None and delta < 15.0)
+
+            if is_low and is_stable:
+                if stable_start is None:
+                    stable_start = time.monotonic()
+                elif (time.monotonic() - stable_start) >= dwell_s:
+                    logger.debug(
+                        f"[VRAMArbiter] VRAM стабилизирована в окне {dwell_s}с: "
+                        f"{curr_used:.1f} MB (< 750 MB, delta={delta:.1f} MB)."
+                    )
+                    break
+            else:
+                stable_start = None
+
             prev_used = curr_used
             time.sleep(step_s)
 
     def release_diffusion_for_llm(self, force: bool = True) -> bool:
-        """Освобождает VRAM от диффузии и стабилизирует память перед запуском LLM."""
+        """Освобождает VRAM от диффузии и сбрасывает владельца GPU перед последующим запуском LLM."""
         self._release_forge_vram(force=force)
-        self._current_owner = GPUOwner.LLM
+        self._last_diffusion_release_ts = time.monotonic()
+        self._current_owner = GPUOwner.NONE
         return True
 
     def release_all(self) -> Dict[str, str]:

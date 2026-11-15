@@ -40,6 +40,11 @@ class ModelNotFoundError(RuntimeError):
         super().__init__(f"Модель '{model_name}' не найдена в хранилище LM Studio.")
 
 
+class LlamaServerStartupError(RuntimeError):
+    """Выбрасывается при аппаратном сбое, OOM или ошибке инициализации процесса llama-server."""
+    pass
+
+
 
 def _get_vram_telemetry_str() -> str:
     """Возвращает строку с текущим состоянием VRAM через NVML или пустую строку при ошибке."""
@@ -361,10 +366,17 @@ class LMStudioClient(QObject):
             # Headless server путь через ProcessManager
             if self.process_manager and hasattr(self.process_manager, "has_headless_server") and self.process_manager.has_headless_server():
                 logger.info(f"[LMStudio] Шлюз: запуск/перезапуск headless сервера для '{model_name}' (CTX={target_ctx}, GPU={target_gpu})...")
+
+                # Проверяем реальное наличие файла модели на диске
+                from services.server_config import ServerConfigResolver
+                m_path = ServerConfigResolver.resolve_model_path(model_name)
+                if not m_path or not m_path.is_file():
+                    logger.warning(f"[LMStudio] GGUF файл для модели '{model_name}' не найден на диске.")
+                    raise ModelNotFoundError(str(model_name))
+
                 ngl = 0 if target_gpu in ("0", "0.0", "cpu", "CPU Only") else None
                 if ngl is None:
                     try:
-                        from services.server_config import ServerConfigResolver
                         ngl = ServerConfigResolver.load_ini().get("gpu_layers", 99)
                     except Exception:
                         ngl = 99
@@ -374,9 +386,37 @@ class LMStudioClient(QObject):
                     context_length=target_ctx,
                     gpu_layers=ngl
                 )
+
+                # Безопасный OOM step-down снаружи _process_lock
+                if not ok and getattr(self.process_manager, "is_oom_failure", False):
+                    attempted_ngl = getattr(self.process_manager, "_last_attempted_ngl", None)
+                    if attempted_ngl is None:
+                        attempted_ngl = ngl
+                    base_layers = attempted_ngl
+                    if base_layers is None or (isinstance(base_layers, int) and base_layers >= 99):
+                        try:
+                            from services.layer_budgeter import LayerBudgeter
+                            meta = LayerBudgeter.parse_gguf_metadata(m_path)
+                            base_layers = meta.get("total_layers", 48)
+                        except Exception:
+                            base_layers = 48
+
+                    retry_ngl = max(0, int(base_layers) - 4)
+                    if retry_ngl < base_layers:
+                        logger.warning(
+                            f"[LMStudio] Обнаружен дефицит/фрагментация VRAM при инициализации compute-графа -> "
+                            f"повторный запуск с NGL={retry_ngl} (было {base_layers})"
+                        )
+                        ok = self.process_manager.start_llama_server_sync(
+                            model_identifier=model_name,
+                            context_length=target_ctx,
+                            gpu_layers=retry_ngl
+                        )
+
                 if not ok:
-                    logger.warning(f"[LMStudio] Headless сервер не смог запустить модель '{model_name}'.")
-                    raise ModelNotFoundError(str(model_name))
+                    err_msg = getattr(self.process_manager, "last_error", "") or f"Headless сервер не смог запустить модель '{model_name}'"
+                    logger.warning(f"[LMStudio] {err_msg}")
+                    raise LlamaServerStartupError(err_msg)
 
                 self._is_model_unloaded = False
                 self._last_loaded_model_id = model_name

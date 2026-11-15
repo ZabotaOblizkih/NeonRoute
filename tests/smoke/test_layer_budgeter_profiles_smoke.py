@@ -529,3 +529,134 @@ class TestVocabSizeAndLMStudioReadiness:
 
         assert "GPU layers: 45/48" in caplog.text
         assert "GPU layers: 99" not in caplog.text
+
+
+class TestLlamaServerIncidentAuditFixes:
+    """6. Тесты на архитектурные исправления инцидента OOM llama-server после Forge."""
+
+    def test_process_manager_extracts_startup_error_and_oom_flag(self, tmp_path, monkeypatch):
+        """Парсинг LMSTUDIO_STARTUP_ERROR и выставление is_oom_failure=True в ProcessManager."""
+        fake_logs_dir = tmp_path / "logs"
+        fake_logs_dir.mkdir(parents=True, exist_ok=True)
+        fake_log = fake_logs_dir / "llama_server.log"
+        fake_log.write_text(
+            "0.15.124.101 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 136.01 MiB on device 0: cudaMalloc failed: out of memory\n"
+            'LMSTUDIO_STARTUP_ERROR:{"schemaVersion":1,"code":"model_load_failed","message":"Failed to initialize the context: failed to allocate compute pp buffers"}\n',
+            encoding="utf-8"
+        )
+        monkeypatch.setattr("services.process_manager.LOGS_DIR", fake_logs_dir)
+
+        pm = ProcessManager()
+        msg, is_oom = pm._extract_llama_startup_error()
+        assert is_oom is True
+        assert pm.is_oom_failure is True
+        assert "Failed to initialize the context" in msg
+        assert "CUDA Out of Memory" in msg
+        assert pm.last_error == msg
+
+    def test_ensure_model_loaded_oom_step_down(self, monkeypatch, tmp_path):
+        """Однократный безопасный OOM step-down (NGL -> NGL - 4) в ensure_model_loaded без удержания _process_lock."""
+        from services.lm_studio import LMStudioClient
+        from services.server_config import ServerConfigResolver
+
+        dummy_model = tmp_path / "test_model.gguf"
+        dummy_model.write_text("gguf")
+        monkeypatch.setattr(ServerConfigResolver, "resolve_model_path", lambda m: dummy_model)
+        monkeypatch.setattr(LayerBudgeter, "parse_gguf_metadata", lambda p: {"total_layers": 48})
+
+        client = LMStudioClient()
+        mock_pm = MagicMock()
+        mock_pm.has_headless_server.return_value = True
+
+        call_records = []
+        def mock_start(model_identifier, context_length, gpu_layers):
+            call_records.append(gpu_layers)
+            if len(call_records) == 1:
+                mock_pm.is_oom_failure = True
+                mock_pm._last_attempted_ngl = 43
+                mock_pm.last_error = "CUDA Out of Memory"
+                return False
+            else:
+                mock_pm.is_oom_failure = False
+                return True
+
+        mock_pm.start_llama_server_sync.side_effect = mock_start
+        client.set_process_manager(mock_pm)
+        client._is_model_unloaded = True
+
+        ok = client.ensure_model_loaded(preferred_model="test_model", context_length=14336)
+        assert ok is True
+        assert len(call_records) == 2
+        # Первый вызов с дефолтным/рассчитанным ngl, второй со step-down: 43 - 4 = 39
+        assert call_records[1] == 39
+
+    def test_vram_arbiter_owner_transition_and_fragmentation_margin(self):
+        """Переход DIFFUSION -> NONE -> LLM в VRAMArbiter и временный fragmentation_margin_mb = 180 в первые 8с после Forge."""
+        import time
+        from services.vram_arbiter import VRAMArbiter, GPUOwner
+
+        arb = VRAMArbiter.get_instance()
+        arb._current_owner = GPUOwner.DIFFUSION
+
+        # Вызов release_diffusion_for_llm сбрасывает владельца в NONE (а не LLM) и ставит timestamp
+        arb.release_diffusion_for_llm(force=True)
+        assert arb._current_owner == GPUOwner.NONE
+        assert time.monotonic() - arb._last_diffusion_release_ts < 2.0
+
+        # В первые 8 секунд после Forge:
+        # Проверяем, что calculate_layer_offload с fragmentation_margin_mb=180 корректно вычитает маржу
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META), \
+             patch.object(LayerBudgeter, "get_current_used_vram_mb", return_value=684.0):
+            ngl_normal, _, _, audit_normal = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy.gguf",
+                target_context=14336,
+                total_vram_mb=8192,
+                available_ram_mb=16384,
+                is_arbiter_managed=True,
+                fragmentation_margin_mb=0
+            )
+            ngl_frag, _, _, audit_frag = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy.gguf",
+                target_context=14336,
+                total_vram_mb=8192,
+                available_ram_mb=16384,
+                is_arbiter_managed=True,
+                fragmentation_margin_mb=180
+            )
+            # При fragmentation_margin_mb=180 доступная память Usable VRAM меньше ровно на 180 МБ
+            assert audit_normal["usable_vram_mb"] - audit_frag["usable_vram_mb"] == 180
+            assert audit_frag["fragmentation_margin_mb"] == 180
+            assert ngl_frag <= ngl_normal
+
+        # При вызове prepare_for_task("llm") происходит переход NONE -> LLM
+        arb.prepare_for_task("llm")
+        assert arb._current_owner == GPUOwner.LLM
+
+    def test_vram_arbiter_dwell_window_stabilization(self, monkeypatch):
+        """Проверка, что _wait_for_vram_stabilization не выходит на шаге 0, а выдерживает dwell_s."""
+        import time
+        from services.vram_arbiter import VRAMArbiter
+
+        arb = VRAMArbiter.get_instance()
+        readings = [684.0, 684.0, 684.0, 684.0, 684.0]
+        idx = 0
+        def mock_used():
+            nonlocal idx
+            val = readings[min(idx, len(readings) - 1)]
+            idx += 1
+            return val
+
+        monkeypatch.setattr(LayerBudgeter, "get_current_used_vram_mb", mock_used)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+
+        fake_time = 100.0
+        def mock_monotonic():
+            nonlocal fake_time
+            t = fake_time
+            fake_time += 0.2
+            return t
+
+        monkeypatch.setattr(time, "monotonic", mock_monotonic)
+        arb._wait_for_vram_stabilization(timeout_s=2.5, step_s=0.1, dwell_s=0.6)
+        assert idx >= 3

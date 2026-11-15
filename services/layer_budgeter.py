@@ -628,6 +628,7 @@ class LayerBudgeter:
         cache_type: Optional[str] = None,
         is_arbiter_managed: bool = False,
         current_used_vram_mb: Optional[float] = None,
+        fragmentation_margin_mb: int = 0,
     ) -> Tuple[int, bool, str, Dict[str, Any]]:
         """
         1) Опрашивает detect_gpu_topology() и берет Total_VRAM из system_monitor (или NVML).
@@ -701,10 +702,12 @@ class LayerBudgeter:
                 used_vram = cls.get_current_used_vram_mb()
             effective_os_reserve = max(os_reserve_mb, int(math.ceil(used_vram)))
             forge_res = 0
-            safety_res = 280  # 150 МБ TDR + 130 МБ буфер против WDDM Shared Memory paging
+            frag_margin = int(max(0, fragmentation_margin_mb))
+            safety_res = 280 + frag_margin  # 150 МБ TDR + 130 МБ буфер против WDDM Shared Memory paging + фрагментационный запас
             compute_mb = (150 if model_size_mb < 5000 else 220) + (60 if vocab_size >= 200000 else 0)
             usable_vram_mb = total_vram - effective_os_reserve - forge_res - safety_res - kv_cache_mb - compute_mb
         else:
+            frag_margin = 0
             used_vram = float(current_used_vram_mb) if current_used_vram_mb is not None else 0.0
             effective_os_reserve = os_reserve_mb
             forge_res = int(FORGE_VRAM_RESERVE_MB)
@@ -824,6 +827,7 @@ class LayerBudgeter:
             "is_arbiter_managed": is_arbiter_managed,
             "forge_reserve_mb": forge_res,
             "safety_margin_mb": safety_res,
+            "fragmentation_margin_mb": frag_margin,
             "kv_cache_mb": kv_cache_mb,
             "usable_vram_mb": usable_vram_mb,
             "model_size_mb": model_size_mb,

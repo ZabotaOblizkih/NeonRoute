@@ -6,7 +6,7 @@
   "engineer_model": "qwen2.5-coder-7b-instruct",
   "engineer_model_name": "qwen2.5-coder-7b-instruct",
   "rp_model_name": "MN-Violet-Lotus-12B-GGUF/MN-Violet-Lotus-12B.Q3_K_M.gguf",
-  "assistant_model_name": "gemma-4-12b-it-uncensored/gemma-4-12b-it-uncensored-Q4_K_M.gguf",
+  "assistant_model_name": "gemma-4-12b-it-uncensored/gemma-4-12b-it-uncensored-Q4_K_S.gguf",
   "compute_device_mode": "Auto",
   "background_path": "C:\\NeonRoute\\backgrounds\\bg_Generated Image November 10, 2026 - 5_33AM.jpg",
   "background_dim_opacity": 115,

@@ -648,6 +648,14 @@ class HardwareEngineMixin:
                         self.forge_client.free_vram(force=True)
             except Exception as _e_unl:
                 logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {_e_unl}")
+            try:
+                import time
+                from services.vram_arbiter import VRAMArbiter, GPUOwner
+                arb = VRAMArbiter.get_instance()
+                arb._last_diffusion_release_ts = time.monotonic()
+                arb._current_owner = GPUOwner.NONE
+            except Exception:
+                pass
         if hasattr(self, "_reload_active_lms_model_async"):
             self._reload_active_lms_model_async(delay=1.2)
 

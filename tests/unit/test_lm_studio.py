@@ -27,6 +27,7 @@ import requests
 from services.lm_studio import (
     LMStudioClient,
     ModelNotFoundError,
+    LlamaServerStartupError,
     _get_vram_telemetry_str,
     _is_rtx_gpu_available,
 )
@@ -332,12 +333,27 @@ class TestEnsureModelLoaded:
         assert lms_client._current_loaded_ctx == 8192
         mock_pm.start_llama_server_sync.assert_called_once()
 
-    def test_ensure_model_loaded_headless_path_failure_raises(self, lms_client):
+    def test_ensure_model_loaded_headless_path_failure_raises(self, lms_client, monkeypatch, tmp_path):
         mock_pm = MagicMock()
         mock_pm.has_headless_server.return_value = True
         mock_pm.start_llama_server_sync.return_value = False
+        mock_pm.is_oom_failure = False
+        mock_pm.last_error = "Server startup failed"
         lms_client.set_process_manager(mock_pm)
 
+        # 1. Если файл существует, но сервер не смог запуститься -> LlamaServerStartupError (RuntimeError)
+        dummy_file = tmp_path / "model.gguf"
+        dummy_file.write_text("dummy")
+        from services.server_config import ServerConfigResolver
+        monkeypatch.setattr(ServerConfigResolver, "resolve_model_path", lambda m: dummy_file)
+
+        with pytest.raises(LlamaServerStartupError) as exc_info:
+            lms_client.ensure_model_loaded(preferred_model="existing-model")
+        assert "Server startup failed" in str(exc_info.value)
+        assert isinstance(exc_info.value, RuntimeError)
+
+        # 2. Если файл отсутствует на диске (resolve_model_path -> None) -> ModelNotFoundError
+        monkeypatch.setattr(ServerConfigResolver, "resolve_model_path", lambda m: None)
         with pytest.raises(ModelNotFoundError):
             lms_client.ensure_model_loaded(preferred_model="missing-model")
 

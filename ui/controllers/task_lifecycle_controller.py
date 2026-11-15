@@ -353,8 +353,15 @@ class TaskLifecycleMixin:
 
         error_msg = str(error)
 
-        # Проверка на удаленную/отсутствующую модель
-        is_model_missing = (
+        is_startup_or_oom = (
+            "LlamaServerStartupError" in error_msg
+            or "out of memory" in error_msg.lower()
+            or "cudamalloc" in error_msg.lower()
+            or "compute pp buffers" in error_msg.lower()
+        )
+
+        # Проверка на удаленную/отсутствующую модель (исключая аппаратный сбой / OOM)
+        is_model_missing = (not is_startup_or_oom) and (
             "не найдена в хранилище" in error_msg
             or "No models loaded" in error_msg
             or "Model not found" in error_msg
@@ -403,6 +410,30 @@ class TaskLifecycleMixin:
                 self._append_message(sender_name, friendly_text, is_user=False)
 
             self.statusBar().showMessage(f"Модель «{missing_name}» не найдена.", 5000)
+            return
+
+        # Проверка на аппаратный сбой или VRAM OOM при запуске llama-server
+        if is_startup_or_oom:
+            logger.error(f"[NeonRoute.TaskLifecycle] Сбой запуска / OOM LLM сервера: {error_msg}")
+            friendly_oom_text = (
+                "⚠️ **Не удалось запустить LLM сервер (дефицит VRAM или ошибка CUDA).**\n\n"
+                "Освободите видеопамять или уменьшите количество слоев GPU в настройках LLM."
+            )
+            sender_name = (
+                getattr(self.active_character, "name", "Элария")
+                if hasattr(self, "active_character") and self.active_character
+                else "Элария"
+            )
+            if getattr(self, "_turn_bubble", None) is not None:
+                try:
+                    self._turn_bubble.set_text(friendly_oom_text)
+                except Exception:
+                    self._append_message(sender_name, friendly_oom_text, is_user=False, is_error=True)
+                self._turn_bubble = None
+            else:
+                self._append_message(sender_name, friendly_oom_text, is_user=False, is_error=True)
+
+            self.statusBar().showMessage("Ошибка VRAM/CUDA при запуске LLM сервера.", 6000)
             return
 
         # Проверка на ошибку шаблона при смене модели в активном диалоге

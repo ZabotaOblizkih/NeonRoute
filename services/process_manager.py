@@ -123,7 +123,9 @@ class ProcessManager(QObject):
         self._lms_safe_profile_applied: bool = False
         self._is_loading_lms: bool = False
         self._lm_client: Optional[Any] = None
-        self.last_error: Optional[str] = None
+        self.last_error: str = ""
+        self.is_oom_failure: bool = False
+        self._last_attempted_ngl: Optional[int] = None
         self._current_running_ngl: Optional[int] = None
         self._current_total_layers: Optional[int] = None
 
@@ -336,6 +338,62 @@ class ProcessManager(QObject):
             if not for_forge_eviction:
                 self._safe_emit("lms_status_changed", False, msg)
 
+    def _extract_llama_startup_error(self) -> Tuple[str, bool]:
+        """
+        При падении процесса llama-server читает последние 30 строк logs/llama_server.log:
+        - парсит JSON из LMSTUDIO_STARTUP_ERROR:{...} при наличии;
+        - детектирует индикаторы OOM (cudaMalloc failed, out of memory, failed to allocate);
+        - возвращает (читаемое описание ошибки, флаг_oom).
+        """
+        log_path = LOGS_DIR / "llama_server.log"
+        lines: List[str] = []
+        if log_path.exists():
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()[-30:]
+            except Exception as e:
+                logger.debug(f"[ProcessManager] Не удалось прочитать logs/llama_server.log: {e}")
+
+        parsed_message = ""
+        is_oom = False
+        oom_markers = ("cudamalloc failed", "out of memory", "failed to allocate")
+
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            if any(marker in line_lower for marker in oom_markers):
+                is_oom = True
+
+            if "LMSTUDIO_STARTUP_ERROR:" in line_stripped:
+                try:
+                    raw_json = line_stripped.split("LMSTUDIO_STARTUP_ERROR:", 1)[1].strip()
+                    payload = json.loads(raw_json)
+                    if isinstance(payload, dict):
+                        msg = payload.get("message") or payload.get("code") or ""
+                        if msg:
+                            parsed_message = str(msg)
+                except Exception:
+                    pass
+
+        if not parsed_message:
+            for line in reversed(lines):
+                l_s = line.strip()
+                l_lower = l_s.lower()
+                if any(marker in l_lower for marker in oom_markers) or "error" in l_lower:
+                    parsed_message = l_s
+                    break
+
+        if is_oom:
+            final_msg = f"CUDA Out of Memory: {parsed_message}" if parsed_message else "CUDA Out of Memory при инициализации модели"
+        elif parsed_message:
+            final_msg = f"Ошибка запуска модели: {parsed_message}"
+        else:
+            final_msg = "Процесс llama-server завершился с ошибкой"
+
+        self.last_error = final_msg
+        self.is_oom_failure = is_oom
+        return final_msg, is_oom
+
     def _wait_for_server_ready(
         self,
         host: str = "127.0.0.1",
@@ -354,7 +412,9 @@ class ProcessManager(QObject):
             proc = self._process
             if proc is not None and proc.poll() is not None:
                 exit_code = proc.poll()
-                err_msg = f"Процесс llama-server завершился с кодом {exit_code}. См. logs/llama_server.log"
+                detail_msg, is_oom = self._extract_llama_startup_error()
+                self.is_oom_failure = is_oom
+                err_msg = f"Процесс llama-server завершился с кодом {exit_code}: {detail_msg}. См. logs/llama_server.log"
                 logger.error(f"[ProcessManager] {err_msg}")
                 self._process = None
                 self._current_running_ngl = None
@@ -412,6 +472,10 @@ class ProcessManager(QObject):
         - Sets state to READY and synchronizes lm_client
         """
         with self._process_lock:
+            self.last_error = ""
+            self.is_oom_failure = False
+            self._last_attempted_ngl = None
+
             # 1. Grab current running server's ngl for hysteresis before killing
             was_running = (self._llama_process is not None and self._llama_process.poll() is None)
             current_running_ngl = None
@@ -528,6 +592,20 @@ class ProcessManager(QObject):
                         f"[ProcessManager] Ручной оверрайд gpu_layers={effective_ngl}. Авторасчет LayerBudgeter пропущен."
                     )
                 else:
+                    frag_margin = 0
+                    try:
+                        from services.vram_arbiter import VRAMArbiter
+                        arb = VRAMArbiter.get_instance()
+                        last_rel = getattr(arb, "_last_diffusion_release_ts", 0.0)
+                        if last_rel > 0.0 and (time.monotonic() - last_rel) < 8.0:
+                            frag_margin = 180
+                            logger.info(
+                                f"[ProcessManager] Обнаружено недавнее освобождение Forge "
+                                f"({time.monotonic() - last_rel:.1f}с < 8.0с). Применен fragmentation_margin={frag_margin} MB."
+                            )
+                    except Exception:
+                        frag_margin = 0
+
                     from services.layer_budgeter import LayerBudgeter
                     ngl, can_run, reason, audit_data = LayerBudgeter.calculate_layer_offload(
                         model_path=model_path,
@@ -535,6 +613,7 @@ class ProcessManager(QObject):
                         current_running_ngl=current_running_ngl,
                         cache_type=kv_cache_type,
                         is_arbiter_managed=True,
+                        fragmentation_margin_mb=frag_margin,
                     )
 
                     if not can_run:
@@ -546,6 +625,8 @@ class ProcessManager(QObject):
 
                     effective_ngl = ngl
                     total_model_layers = audit_data.get("total_layers")
+
+                self._last_attempted_ngl = effective_ngl
 
                 # 6. Assemble CLI arguments (strict list, no shell=True)
                 cmd = [
