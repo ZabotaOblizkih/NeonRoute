@@ -26,6 +26,7 @@ _LAZY_EXPORTS = {
     "DependencyDialog": (".dependency_dialog", "DependencyDialog"),
     "LLMEngineSettingsDialog": (".llm_engine_settings_dialog", "LLMEngineSettingsDialog"),
     "ForgeSettingsDialog": (".forge_settings_dialog", "ForgeSettingsDialog"),
+    "ForgeOnboardingDialog": (".forge_onboarding_dialog", "ForgeOnboardingDialog"),
     "LocalLoraDialog": (".local_lora_dialog", "LocalLoraDialog"),
     "CivitaiLoraDialog": (".civitai_lora_dialog", "CivitaiLoraDialog"),
     "ChubCatalogDialog": (".chub_catalog_dialog", "ChubCatalogDialog"),

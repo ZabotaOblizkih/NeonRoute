@@ -67,6 +67,17 @@ def test_install_bat_embedded_python_priority():
     assert 'goto :python_ready' in install_bat
 
 
+def test_install_bat_llama_server_downloader_integration():
+    """
+    Проверяет интеграцию install.bat со скриптом download_llama_server.py
+    и поддержку флага --skip-llama и переменной NEONROUTE_SKIP_LLAMA=1.
+    """
+    install_bat = (BASE_DIR / "install.bat").read_text(encoding="utf-8")
+    assert 'scripts\\download_llama_server.py --if-missing' in install_bat
+    assert 'NEONROUTE_SKIP_LLAMA' in install_bat
+    assert '--skip-llama' in install_bat
+
+
 def test_run_bat_embedded_python_priority():
     """
     Проверяет, что run.bat и run_debug.bat в первую очередь запускают

@@ -9,8 +9,9 @@ ui/dialogs/llm_engine_settings_dialog.py
 
 import logging
 from typing import Optional, Dict, Any
+from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QVBoxLayout,
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QWidget,
     QFrame,
+    QFileDialog,
 )
 from qframelesswindow import FramelessDialog
 from qfluentwidgets import (
@@ -33,11 +35,27 @@ from qfluentwidgets import (
     FluentTitleBar,
 )
 
+import config
 from services.layer_budgeter import LayerBudgeter
+from services.server_config import ServerConfigResolver
+from services.llama_downloader import is_llama_server_installed, download_and_extract_llama_server
 from ui.common.palette_utils import extract_adaptive_palette
+from ui.common.toast_helper import toast_success, toast_error, toast_info
 from utils.config_manager import ConfigManager
 
 logger = logging.getLogger("NeonRoute.LLMEngineSettingsDialog")
+
+
+class _LlamaDownloadThread(QThread):
+    progress_signal = pyqtSignal(str, int, int)
+    finished_signal = pyqtSignal(bool, str)
+
+    def run(self):
+        def _prog(msg, cur, tot):
+            self.progress_signal.emit(msg, cur, tot)
+
+        ok, res_str = download_and_extract_llama_server(progress_callback=_prog)
+        self.finished_signal.emit(ok, res_str)
 
 
 class LLMEngineSettingsDialog(FramelessDialog):
@@ -100,8 +118,8 @@ class LLMEngineSettingsDialog(FramelessDialog):
         self._parent_ref = parent
         self.setWindowTitle("Настройки движка LLM (llama-server) — NeonRoute")
         self.setObjectName("LLMEngineSettingsDialog")
-        self.resize(580, 660)
-        self.setMinimumSize(520, 580)
+        self.resize(600, 720)
+        self.setMinimumSize(540, 640)
         self.setModal(True)
 
         # 1. Custom Fluent TitleBar с [X] в правом верхнем углу
@@ -121,11 +139,13 @@ class LLMEngineSettingsDialog(FramelessDialog):
             self.titleBar.closeBtn.clicked.connect(self.reject)
 
         self._current_palette: Dict[str, str] = {}
+        self._dl_thread: Optional[_LlamaDownloadThread] = None
 
         self._load_current_settings()
         self._init_ui()
         self.update_adaptive_palette()
         self._sync_with_current_config()
+        self._refresh_engine_status()
 
     def _resolve_pixmap(self) -> Optional[QPixmap]:
         """Ищет активные обои в иерархии родительских окон для адаптивной палитры."""
@@ -190,6 +210,15 @@ class LLMEngineSettingsDialog(FramelessDialog):
                 border-radius: 10px;
             }}
             QFrame#hwCard:hover {{
+                background-color: {palette['card_hover']};
+                border-color: {palette['accent']};
+            }}
+            QFrame#engineCard {{
+                background-color: {palette['card']};
+                border: 1px solid {palette['card_border']};
+                border-radius: 10px;
+            }}
+            QFrame#engineCard:hover {{
                 background-color: {palette['card_hover']};
                 border-color: {palette['accent']};
             }}
@@ -363,26 +392,101 @@ class LLMEngineSettingsDialog(FramelessDialog):
         hw_text_layout = QVBoxLayout()
         hw_text_layout.setSpacing(2)
 
-        gpu_name = self.hw_profile.get("gpu_name", "NVIDIA GPU")
+        gpu_name = self.hw_profile.get("gpu_name", "Unknown GPU")
+        vendor = str(self.hw_profile.get("vendor", "unknown")).lower()
+        vram_mb = self.hw_profile.get("vram_total_mb", 0)
         cc_str = self.hw_profile.get("compute_cap", "N/A")
         fa_supported = self.hw_profile.get("supported", False)
 
-        hw_title = BodyLabel(f"Видеокарта: {gpu_name}", self.hw_card)
+        vram_display = f" ({vram_mb} МБ)" if vram_mb > 0 else ""
+        if vendor == "nvidia":
+            hw_title = BodyLabel(f"Видеокарта: {gpu_name}{vram_display}", self.hw_card)
+            status_text = (
+                f"NVIDIA Compute Capability {cc_str} • Аппаратный Flash Attention поддерживается (Turing+)"
+                if fa_supported
+                else f"NVIDIA Compute Capability {cc_str} • Flash Attention не поддерживается архитектурой"
+            )
+            status_color = "#10B981" if fa_supported else "#94A3B8"
+        elif vendor == "amd":
+            hw_title = BodyLabel(f"Видеокарта: {gpu_name}{vram_display}", self.hw_card)
+            status_text = "Архитектура AMD Radeon • Ускорение через Vulkan / DirectML (Flash Attention недоступен)"
+            status_color = "#38BDF8"
+        elif vendor == "intel":
+            hw_title = BodyLabel(f"Видеокарта: {gpu_name}{vram_display}", self.hw_card)
+            status_text = "Архитектура Intel • Ускорение через Vulkan / OpenVINO (Flash Attention недоступен)"
+            status_color = "#38BDF8"
+        else:
+            hw_title = BodyLabel("Видеокарта: Дискретный GPU не обнаружен (CPU-режим)", self.hw_card)
+            status_text = "Вычисления выполняются на центральном процессоре (AVX2 / CPU)"
+            status_color = "#94A3B8"
+
         hw_title.setStyleSheet("font-weight: bold; color: #E2E8F0;")
         hw_text_layout.addWidget(hw_title)
 
-        status_text = (
-            f"Compute Capability {cc_str} • Аппаратный Flash Attention поддерживается (Turing+)"
-            if fa_supported
-            else f"Compute Capability {cc_str} • Flash Attention не поддерживается архитектурой чипа"
-        )
         hw_desc = CaptionLabel(status_text, self.hw_card)
-        hw_desc.setStyleSheet(f"color: {'#10B981' if fa_supported else '#94A3B8'};")
+        hw_desc.setStyleSheet(f"color: {status_color};")
         hw_text_layout.addWidget(hw_desc)
 
         hw_layout.addLayout(hw_text_layout)
         hw_layout.addStretch()
         main_layout.addWidget(self.hw_card)
+
+        # 3. Карточка «Движок llama-server и папка моделей»
+        self.engine_card = QFrame(self.body_widget)
+        self.engine_card.setObjectName("engineCard")
+        engine_layout = QVBoxLayout(self.engine_card)
+        engine_layout.setContentsMargins(16, 12, 16, 12)
+        engine_layout.setSpacing(10)
+
+        # Ряд 1: статус llama-server и кнопка загрузки
+        row_server = QHBoxLayout()
+        row_server.setSpacing(10)
+        server_icon = IconWidget(FIF.DEVELOPER_TOOLS, self.engine_card)
+        server_icon.setFixedSize(22, 22)
+        row_server.addWidget(server_icon)
+
+        self.lbl_server_status = BodyLabel("", self.engine_card)
+        self.lbl_server_status.setStyleSheet("font-weight: 600;")
+        row_server.addWidget(self.lbl_server_status)
+        row_server.addStretch()
+
+        self.btn_download_server = PushButton(FIF.DOWNLOAD, "Скачать / обновить llama-server", self.engine_card)
+        self.btn_download_server.clicked.connect(self._on_download_server_clicked)
+        row_server.addWidget(self.btn_download_server)
+        engine_layout.addLayout(row_server)
+
+        # Разделитель внутри карточки
+        sub_sep = QFrame(self.engine_card)
+        sub_sep.setFrameShape(QFrame.Shape.HLine)
+        sub_sep.setStyleSheet("background-color: rgba(255, 255, 255, 0.05);")
+        sub_sep.setFixedHeight(1)
+        engine_layout.addWidget(sub_sep)
+
+        # Ряд 2: папка моделей и кнопка Обзор
+        row_models = QHBoxLayout()
+        row_models.setSpacing(10)
+        models_icon = IconWidget(FIF.FOLDER, self.engine_card)
+        models_icon.setFixedSize(22, 22)
+        row_models.addWidget(models_icon)
+
+        models_vbox = QVBoxLayout()
+        models_vbox.setSpacing(2)
+        models_title = CaptionLabel("Папка .gguf моделей:", self.engine_card)
+        models_title.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        models_vbox.addWidget(models_title)
+
+        self.lbl_models_path = CaptionLabel("", self.engine_card)
+        self.lbl_models_path.setStyleSheet("color: #CBD5E1; font-weight: 500; font-size: 11px;")
+        models_vbox.addWidget(self.lbl_models_path)
+        row_models.addLayout(models_vbox)
+        row_models.addStretch()
+
+        self.btn_browse_models = PushButton(FIF.FOLDER, "Обзор...", self.engine_card)
+        self.btn_browse_models.clicked.connect(self._on_browse_models_clicked)
+        row_models.addWidget(self.btn_browse_models)
+        engine_layout.addLayout(row_models)
+
+        main_layout.addWidget(self.engine_card)
 
         # 3. Блок выбора квантования KV-кэша
         kv_section_label = BodyLabel("Тип буфера KV-кэша (контекста):", self.body_widget)
@@ -590,3 +694,65 @@ class LLMEngineSettingsDialog(FramelessDialog):
         except Exception as e:
             logger.error(f"[LLMEngineSettingsDialog] Ошибка сохранения параметров: {e}")
             self.reject()
+
+    def _refresh_engine_status(self):
+        """Обновляет индикатор статуса llama-server.exe и путь к папке моделей."""
+        installed = is_llama_server_installed()
+        if installed:
+            self.lbl_server_status.setText("🟢 Движок llama-server установлен в bin/")
+            self.lbl_server_status.setStyleSheet("color: #10B981; font-weight: 600;")
+        else:
+            self.lbl_server_status.setText("🟡 Движок llama-server отсутствует в bin/")
+            self.lbl_server_status.setStyleSheet("color: #F59E0B; font-weight: 600;")
+
+        ini_cfg = ServerConfigResolver.load_ini()
+        custom_dir = ini_cfg.get("models_dir", "").strip()
+        if custom_dir:
+            self.lbl_models_path.setText(f"{custom_dir} (пользовательская)")
+        else:
+            self.lbl_models_path.setText(f"{config.LOCAL_MODELS_DIR} (стандартная)")
+
+    def _on_browse_models_clicked(self):
+        """Открывает диалог выбора внешней папки для .gguf моделей."""
+        ini_cfg = ServerConfigResolver.load_ini()
+        cur_dir = ini_cfg.get("models_dir", "").strip() or str(config.LOCAL_MODELS_DIR)
+        selected_dir = QFileDialog.getExistingDirectory(self, "Выберите папку с .gguf моделями", cur_dir)
+        if selected_dir:
+            ok = ServerConfigResolver.update_server_config_models_dir(selected_dir)
+            if ok:
+                self._refresh_engine_status()
+                toast_success(self, "Папка моделей", f"Внешняя папка моделей обновлена:\n{selected_dir}")
+                parent_win = self._parent_ref or self.parent()
+                if parent_win and hasattr(parent_win, "_refresh_models"):
+                    parent_win._refresh_models()
+
+    def _on_download_server_clicked(self):
+        """Запускает фоновое скачивание и распаковку подходящего llama-server."""
+        if self._dl_thread and self._dl_thread.isRunning():
+            return
+
+        self.btn_download_server.setEnabled(False)
+        self.btn_download_server.setText("Скачивание...")
+        self.lbl_server_status.setText("⏳ Загрузка llama-server с GitHub...")
+        self.lbl_server_status.setStyleSheet("color: #38BDF8; font-weight: 600;")
+
+        self._dl_thread = _LlamaDownloadThread(self)
+        self._dl_thread.progress_signal.connect(self._on_download_progress)
+        self._dl_thread.finished_signal.connect(self._on_download_finished)
+        self._dl_thread.start()
+
+    def _on_download_progress(self, msg: str, cur: int, tot: int):
+        if tot > 0:
+            pct = (cur / tot) * 100
+            self.lbl_server_status.setText(f"⏳ {msg} ({pct:.0f}%)")
+        else:
+            self.lbl_server_status.setText(f"⏳ {msg}")
+
+    def _on_download_finished(self, success: bool, msg: str):
+        self.btn_download_server.setEnabled(True)
+        self.btn_download_server.setText("Скачать / обновить llama-server")
+        self._refresh_engine_status()
+        if success:
+            toast_success(self, "llama-server", msg)
+        else:
+            toast_error(self, "Ошибка загрузки", msg)

@@ -49,8 +49,10 @@ workspace/*
 # Personal Assets & Sandboxes
 Persona/
 backgrounds/bg_*.jpg
+backgrounds/*.jpg
+backgrounds/*.png
 avatars/Generated Image*.jpg
-characters/user_*_gen_*.png
+characters/user_*
 contacts.db
 dummy.json
 collect_codeMINI.py

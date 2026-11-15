@@ -413,6 +413,12 @@ class MainWindow(
                     active_cfg_model = self.app_config.get("active_model", "")
                     if active_cfg_model and self.lm_combo.findText(active_cfg_model) >= 0:
                         self.lm_combo.setCurrentIndex(self.lm_combo.findText(active_cfg_model))
+                    else:
+                        first_model = list(discovered_models.keys())[0]
+                        self.lm_combo.setCurrentIndex(0)
+                        self.app_config["active_model"] = first_model
+                        from utils.config_manager import ConfigManager
+                        ConfigManager.update_setting("active_model", first_model)
                     self.lm_combo.blockSignals(False)
             except Exception as e:
                 logger.debug(f"Initial GGUF discovery error: {e}")
@@ -630,6 +636,10 @@ class MainWindow(
             self.knowledge_watcher.start()
         except Exception as e:
             logger.warning(f"[NeonRoute] Не удалось запустить KnowledgeWatcher: {e}")
+
+        # Умный одноразовый онбординг SD WebUI Forge (только для мощных GPU NVIDIA)
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(1500, self._check_forge_onboarding)
 
     def _on_knowledge_sync_finished(self, registry_data: dict):
         total = registry_data.get("total_documents", len(registry_data.get("documents", {})))

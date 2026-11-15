@@ -277,14 +277,15 @@ class ServerConfigResolver:
         return None
 
     @staticmethod
-    def discover_gguf_models() -> Dict[str, Path]:
+    def discover_gguf_models(include_lmstudio: bool = True, include_lm_studio: bool = True) -> Dict[str, Path]:
         """
         Discovers all available .gguf models (excluding mmproj files) in:
         1. LOCAL_MODELS_DIR (BASE_DIR / 'models')
         2. models_dir from server_config.ini
-        3. ~/.lmstudio/models and ~/.cache/lm-studio/models
+        3. ~/.lmstudio/models and ~/.cache/lm-studio/models (if include_lmstudio is True)
         Returns an ordered dictionary mapping {model_key: full_path}.
         """
+        include_lms = include_lmstudio and include_lm_studio
         discovered: Dict[str, Path] = {}
 
         scan_roots: List[Path] = [config.LOCAL_MODELS_DIR]
@@ -300,13 +301,14 @@ class ServerConfigResolver:
                 scan_roots.append(p)
 
         # LM Studio roots
-        lm_roots = [
-            Path.home() / ".lmstudio" / "models",
-            Path.home() / ".cache" / "lm-studio" / "models"
-        ]
-        for r in lm_roots:
-            if r.is_dir() and r not in scan_roots:
-                scan_roots.append(r)
+        if include_lms:
+            lm_roots = [
+                Path.home() / ".lmstudio" / "models",
+                Path.home() / ".cache" / "lm-studio" / "models"
+            ]
+            for r in lm_roots:
+                if r.is_dir() and r not in scan_roots:
+                    scan_roots.append(r)
 
         for root in scan_roots:
             if not root.exists() or not root.is_dir():
@@ -417,6 +419,28 @@ class ServerConfigResolver:
             return next(iter(discovered.values()))
 
         return None
+
+    @staticmethod
+    def update_server_config_models_dir(new_path: Path | str, config_file: Optional[Path | str] = None) -> bool:
+        """
+        Записывает models_dir в секцию [llama_server] файла server_config.ini.
+        """
+        try:
+            import configparser
+            ini_path = Path(config_file) if config_file else config.SERVER_CONFIG_INI_PATH
+            ini_path.parent.mkdir(parents=True, exist_ok=True)
+            parser = configparser.ConfigParser()
+            if ini_path.is_file():
+                parser.read(str(ini_path), encoding="utf-8")
+            if not parser.has_section("llama_server"):
+                parser.add_section("llama_server")
+            parser.set("llama_server", "models_dir", str(Path(new_path).resolve()))
+            with open(str(ini_path), "w", encoding="utf-8") as f:
+                parser.write(f)
+            return True
+        except Exception as e:
+            logger.error(f"[ServerConfigResolver] Ошибка сохранения models_dir: {e}")
+            return False
 
     @staticmethod
     def resolve_mmproj_for_model(model_path: Path) -> Optional[Path]:

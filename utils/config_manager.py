@@ -71,6 +71,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 4. SD WebUI Forge / Art Director Defaults
     "auto_generate_art": False,
     "forge_sdxl_fp8_enabled": True,
+    "forge_onboarding_shown": False,
     "visualizer_settings": {
         "auto_generate_art": False,
         "steps": 28,
@@ -128,3 +129,11 @@ class ConfigManager:
         """Saves configuration dict to config.json safely."""
         from utils.file_utils import atomic_write_json
         atomic_write_json(CONFIG_PATH, config_data)
+
+    @staticmethod
+    def update_setting(key: str, value: Any) -> Dict[str, Any]:
+        """Обновляет единичный параметр в config.json и сохраняет файл."""
+        cfg = ConfigManager.load_config()
+        cfg[key] = value
+        ConfigManager.save_config(cfg)
+        return cfg

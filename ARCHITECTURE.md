@@ -3,8 +3,8 @@
 > **Версия системы**: NeonRoute v0.9.8-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 315 файлов Python, ~108 400 строк кода  
-> **Статус верификации**: 674 теста собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
+> **Метрики кодовой базы**: 324 файла Python, ~110 900 строк кода  
+> **Статус верификации**: 692 теста собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
 
 ---
 
@@ -43,6 +43,7 @@
 | **ADR-27** | `HEAD` | `build_release.bat`, `install.bat`, `README.md`, `requirements.txt`, `config.py`, `core/forge_locator.py`, `scripts/build_release.py`, `tests/smoke/test_clean_pc_startup_smoke.py` | 1) Vendored-папка `PyQt-Fluent-Widgets/` в корне (200.47 МБ, 396 файлов) не использовалась кодом (импорты шли из pip-пакета `qfluentwidgets`), раздувая репозиторий.<br>2) Неполнота `requirements.txt`: отсутствовали 9 транзитивных/ранее не зафиксированных библиотек (`python-multipart`, `scipy`, `docx2txt`, `openpyxl`, `python-pptx`, `jinja2`, `huggingface-hub`, `fastapi`, `starlette`), что приводило к сбоям на чистой системе.<br>3) Хардкод путей `C:\neyroGPD` в `core/forge_locator.py` и навязчивый модальный диалог `prompt_locate_forge()` при старте блокировал пользователя на ПК без установленного Forge.<br>4) Отсутствие единого релизного конвейера, автоматического аудита зависимостей и скрипта безопасного развертывания. | 1) Полное удаление vendored-каталога `PyQt-Fluent-Widgets/` (-200.47 МБ, 0 сломанных импортов) и очистка артефактов/кэшей (`contacts.db`, `dummy.json`, `htmlcov/`, `.coverage`).<br>2) Актуализация `requirements.txt` (+9 пакетов) и разработка надежного `install.bat` с плоским каскадным поиском Python 3.10+ (`py -3.12`..`py -3.10`, `python`) и поддержкой оффлайн-установки из каталога `wheels\`.<br>3) Устранение хардкода Forge: очистка `C:\neyroGPD` из дефолтных путей `core/forge_locator.py`, отключение авто-попапа `prompt_locate_forge()` при старте с мягким фоллбэком на чисто текстовый режим (LLM-only).<br>4) Централизация версии `APP_VERSION = "0.9.8-beta"`, создание `build_release.bat` и конвейера `scripts/build_release.py`: Stage A (AST-аудит импортов на соответствие `requirements.txt`), Stage B (Quality Gate `pytest -q`), Stage C (сборка стерильного дистрибутива в `dist/NeonRoute_v0.9.8-beta.zip`).<br>5) Написание пользовательской документации `README.md` и создание смоук-теста `tests/smoke/test_clean_pc_startup_smoke.py`. |
 | **ADR-28** | `HEAD` | `ui/common/toast_helper.py`, `ui/dialogs/forge_settings_dialog.py`, `ui/builders/menu_builder.py`, `ui/dialogs/settings_dialog.py`, `ui/dialogs/__init__.py`, `services/forge_patcher.py`, `scripts/patch_forge.py`, `scripts/forge_neonroute.patch`, `services/forge_client.py`, `services/process_manager.py`, `ui/controllers/hardware_engine.py`, `tests/unit/test_toast_helper.py`, `tests/unit/test_forge_patcher.py`, `tests/smoke/test_forge_settings_dialog_smoke.py`, `tests/unit/test_forge_client.py` | 1) Фрагментация всплывающих уведомлений `InfoBar`: несогласованное позиционирование (BOTTOM, TOP, TOP_RIGHT), произвольные таймауты и риск падения при `parent=None`.<br>2) Отсутствие в GUI специализированного окна настройки параметров Forge (расположение, лаунчер, FP8, режим генерации артов) по эталону `LLMEngineSettingsDialog`.<br>3) Несовместимость стокового SD WebUI Forge 2.0 на чужих ПК: отсутствие роута `/sdapi/v1/free-vram`, блокировки весов в VRAM при смене моделей на лету, падение Pydantic-схемы `SDModelItem.config` и затирание CLI-аргументов `ProcessManager` в стоковом `webui-user.bat`.<br>4) Модальный спам при старте с предложением патчинга и отсутствие механизма безопасного бэкапа оригиналов с откатом. | 1) Разработка централизованного хелпера `ui/common/toast_helper.py` (`show_toast`, `toast_info`, `toast_success`, `toast_warning`, `toast_error`): дефолтная позиция `TOP_RIGHT`, стандартная матрица таймаутов (2500–5500 мс), фоллбэк на `activeWindow()`, перевод контроллеров и диалогов.<br>2) Создание `ForgeSettingsDialog` (`ui/dialogs/forge_settings_dialog.py`) с ленивой загрузкой в `ui/dialogs/__init__.py`, интеграция пункта «SD Forge...» в меню «Параметры и настройки → Система» и вкладку «Движки».<br>3) Разработка эталонного сервиса патчинга `services/forge_patcher.py` + CLI `scripts/patch_forge.py` + `scripts/forge_neonroute.patch`: автоматический бэкап оригиналов в `.neonroute_backup/original/` без перезаписи, применение 4 правок совместимости Forge 2.0, адаптация `webui-user.bat` под CLI-флаги `%*` и `--api` с сохранением пользовательских настроек, безопасный откат `restore_backup`.<br>4) Интеграция в `HardwareEngineMixin`: умный диалог предложения патча строго при явном запуске Forge (с чекбоксом «Больше не предлагать» и плашкой `toast_info` при отказе); двойная передача `COMMANDLINE_ARGS` и CLI-флагов в `ProcessManager`; мягкая деградация `HTTP 404` в `ForgeClient.free_vram()` с отключением повторного спама.<br>5) Созданы тестовые сьюты `test_toast_helper.py`, `test_forge_patcher.py`, `test_forge_settings_dialog_smoke.py` и тест 404-фоллбэка. База расширена до 668 тестов (100% Pass Rate). |
 | **ADR-29** | `HEAD` | `scripts/build_release.py`, `install.bat`, `run.bat`, `run_debug.bat`, `run_llama_server.bat`, `core/forge_locator.py`, `utils/file_utils.py`, `config.py`, `services/sandbox_manager.py`, `services/environment_doctor.py`, `services/workspace_launcher.py`, `ui/models_manager/workers.py`, `README.md`, `tests/unit/test_forge_locator.py`, `tests/smoke/test_release_pipeline_smoke.py` | 1) Зависимость релизной сборки от предустановленного пользователем системного Python в PATH создавала высокий порог входа и приводила к сбоям при конфликтах версий (3.12+, x86 вместо x64).<br>2) При запуске через встроенный Python каталог `runtime\python\` мог протекать в PATH дочернего процесса Forge, вызывая смешение DLL и пакетов со встроенным `system\python\` Forge.<br>3) Запуск через `pythonw.exe` приводил к молчаливому падению консольных CLI-подпроцессов (`pip`, `pytest`, интерактивный запуск скриптов Инженера в `cmd.exe /k`).<br>4) Несогласованность batch-файлов: UTF-8 BOM в `run_llama_server.bat`, зависание `pause` при автоматическом тестировании и отсутствие приоритета автономного рантайма. | 1) Интеграция автономного портативного CPython 3.10.16 x64 (Astral `python-build-standalone`) в релизный конвейер `scripts/build_release.py` с кэшированием в `.cache/portable_python/` (исключён из git и zip) и CLI-флагом `--no-embedded-python`; размер архива релиза со встроенным рантаймом составляет всего 44.80 МБ.<br>2) Изоляция окружения Forge: расширение `get_clean_forge_env` в `core/forge_locator.py` с гарантированным вырезанием из `PATH` каталогов `sys.executable`, `sys.prefix` и любых вхождений `runtime\python\`, предотвращая коллизии с Forge.<br>3) Разработка хелпера `get_python_cli_executable()` в `utils/file_utils.py` (экспортирован в `config.py`): автоматическое разрешение `pythonw.exe -> python.exe` для дочерних процессов `SandboxManager`, `EnvironmentDoctor`, `WorkspaceLauncher` и `workers.py`.<br>4) Полировка батников: строго Windows CRLF, UTF-8 без BOM, очистка unquoted спецсимволов echo, внедрение поддержки `--unattended`/`CI`; двухуровневый каскад `install.bat` (Приоритет 1: автономный `runtime\python\python.exe` без создания `venv\`; Приоритет 2: системный Python 3.10+ с `venv\`); автоматический запуск `run.bat` / `run_debug.bat` через встроенный рантайм.<br>5) Добавлены тесты `tests/smoke/test_release_pipeline_smoke.py` и `tests/unit/test_forge_locator.py`. Пройдена 100% живая верификация в изолированной чистой Temp-среде с air-gap PATH. База расширена до 674 тестов (100% Pass Rate). |
+| **ADR-30** | `HEAD` | `utils/system_monitor.py`, `services/layer_budgeter.py`, `scripts/build_release.py`, `services/llama_downloader.py`, `scripts/download_llama_server.py`, `install.bat`, `services/server_config.py`, `ui/main_window.py`, `ui/controllers/hardware_engine.py`, `ui/dialogs/forge_onboarding_dialog.py`, `ui/dialogs/llm_engine_settings_dialog.py`, `utils/config_manager.py`, `README.md`, `tests/` | 1) На видеокартах AMD Radeon / Intel Arc / iGPU модуль `SystemMonitor` при отсутствии NVML возвращал заглушку 8192 МБ, провоцируя завышенный NGL в `LayerBudgeter` и сброс тензоров в Host RAM / CUDA OOM.<br>2) Скрипт сборки релиза копировал каталоги `bin/` и `models/` вместе с локальными бинарниками llama-server и тяжелыми GGUF-моделями (нарушение гигиены дистрибутива).<br>3) Пользователю требовалось вручную искать бинарники llama-server на GitHub (путаница тэгов v1.0.0 и сборок CUDA/Vulkan) и настраивать папку `bin/`.<br>4) При первом запуске или отсутствии `active_model` система не подхватывала первую попавшуюся `.gguf` модель из `models/`, а в диалоге настроек LLM отсутствовала возможность загрузки движка и изменения пути к моделям.<br>5) Диалог онбординга Forge вызывал недоумение у пользователей на картах AMD/Intel или в чисто текстовом режиме. | 1) Честный детектор GPU через Windows Registry (`_detect_windows_gpu_via_registry`): опрос ветки `Class\{4d36e968-e325-11ce-bfc1-08002be10318}`, считывание `DriverDesc` и 64-битного `HardwareInformation.qwMemorySize` с отсевом Basic Display Adapter; корректный VRAM для AMD/Intel; безопасный режим `NGL=0` при `total_vram <= 512` или без GPU; экспорт `vendor` в `detect_hardware_kv_profile`.<br>2) Стерилизация релиза: исключение `bin` и `models` из копируемых `source_dirs` и их динамическое создание в виде чистых директорий с `.gitkeep`.<br>3) Авто-загрузчик llama-server (`services/llama_downloader.py` + `scripts/download_llama_server.py`): распознавание вендора GPU, выбор архитектуры (CUDA 12.4 / Vulkan / CPU), обход ночных тэгов GitHub API, распаковка в `bin/`, верификация `--version` через `CREATE_NO_WINDOW`, флаг `--if-missing` и интеграция в `install.bat` с поддержкой `--skip-llama`.<br>4) Авто-выбор модели: автоматическая фиксация первого `.gguf` файла при старте; в `LLMEngineSettingsDialog` добавлена карточка «Движок llama-server и папка моделей» с фоновой загрузкой через `QThread` и кнопкой обзора `models_dir`.<br>5) Умный однократный онбординг Forge (`ForgeOnboardingDialog`): строгий показ один раз (`forge_onboarding_shown=False`) только на дискретных NVIDIA GPU с VRAM $\ge 3800$ МБ (с предупреждениями для 4 ГБ и архитектур Blackwell CC $\ge 10.0$); полное сокрытие на AMD/Intel и при `PYTEST_CURRENT_TEST`.<br>6) Созданы 3 юнит-сьюта (`test_gpu_detection_fallback.py`, `test_llama_downloader.py`, `test_seamless_onboarding_and_models.py`) и смоук-тест `install.bat`. База расширена до 692 тестов (100% Pass Rate). |
 
 ---
 
@@ -77,7 +78,7 @@
 | **Хранение данных** | SQLite 3 (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), LanceDB (`table.optimize()`), Zero-Fsync JSON-зеркала |
 | **Сетевые контракты** | FastAPI / Uvicorn (Mobile BFF Gateway REST + Server-Sent Events), Gradio/Automatic1111 REST API, HTTP Keep-Alive |
 | **Управление ОС и процессами** | Win32 API (`kernel32.dll`: Windows Job Objects `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`, дескрипторы скрытых процессов `CREATE_NO_WINDOW`) |
-| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (615 тестов) |
+| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (692 теста) |
 
 ---
 
@@ -428,10 +429,11 @@ NeonRoute/
 ├── scripts/                             # Диагностические и сервисные CLI-инструменты
 │   ├── assistant_prompt_stand.py        # [210 строк] Интерактивный CLI-стенд инспекции системного промпта, скиллов и арт-пайплайна Ассистента
 │   ├── build_release.py                 # [320 строк] Автоматический конвейер релизной сборки (AST-аудит, Quality Gate, упаковка ZIP)
+│   ├── download_llama_server.py         # [100 строк] CLI-утилита загрузки и распаковки бинарников llama-server с верификацией версии
 │   ├── forge_neonroute.patch            # [78 строк] Эталонный git diff патча ядра Forge 2.0 (free-vram, VRAM offload, config=None)
 │   └── patch_forge.py                   # [130 строк] CLI-утилита инспекции, авто-бэкапа, применения и отката патчей Forge
 │
-└── tests/                               # Пирамида тестирования (668 тестов, 100% Pass Rate)
+└── tests/                               # Пирамида тестирования (692 теста, 100% Pass Rate)
     ├── conftest.py                      # [149 строк] Airgap-фикстуры (_apply_airgap_paths, check_sandbox_state_leak)
     ├── test_chat.py                     # [88 строк] Тестирование чат-эндпоинтов мобильного шлюза
     ├── test_engineer_task_card.py       # [43 строки] Карточка задач инженера и отображение логов
@@ -450,7 +452,7 @@ NeonRoute/
     │   ├── test_sandbox_security.py     # [140 строк] Безопасность песочницы: запрет импортов, path traversal, тайм-ауты
     │   └── test_vram_arbitrage_flow.py  # [133 строки] Сквозное переключение VRAMArbiter между LLM и Diffusion, идемпотентность выгрузок
     │
-    ├── smoke/                           # 19 сьютов сквозного смоук-тестирования компонентов (101 тест)
+    ├── smoke/                           # 20 сьютов сквозного смоук-тестирования компонентов (106 тестов)
     │   ├── __init__.py                  # Инициализация пакета smoke
     │   ├── test_adetailer_prompt_passthrough_smoke.py # [177 строк] Проброс основного позитива/негатива в слоты ADetailer и UI без полей промптов
     │   ├── test_art_pipeline_smoke.py   # [457 строк] Сквозной смоук-тест конвейера Арт-директора и Forge
@@ -462,6 +464,7 @@ NeonRoute/
     │   ├── test_forge_vram_profiles_smoke.py # [539 строк] Матрица профилей памяти (2–12 ГБ VRAM x 3 класса моделей), 4 ГБ RAM Guard
     │   ├── test_isolated_core_smoke.py  # [148 строк] Изолированное тестирование SessionManager и ContextBuilder
     │   ├── test_layer_budgeter_profiles_smoke.py # [325 строк] Смоук-тестирование NGL профилей Layer Budgeter (2–16 ГБ VRAM)
+    │   ├── test_release_pipeline_smoke.py # [90 строк] Проверка контрактов batch-файлов, изоляции runtime и интеграции загрузчика llama-server
     │   ├── test_rp_art_pipeline_smoke.py# [130 строк] Смоук-тест конвейера арта в ролевом режиме (SD 1.5 / SDXL)
     │   ├── test_rp_card_and_ui_smoke.py # [220 строк] Смоук-тест карточек персонажей, каста и UI-баблов
     │   ├── test_rp_pipeline_smoke.py    # [168 строк] Сквозной пайплайн ролевого хода с контролем гигиены промпта
@@ -472,9 +475,12 @@ NeonRoute/
     │   ├── test_sqlite_sessions_and_leak_guard_smoke.py # [255 строк] SQLite WAL сессии и защита от утечек данных
     │   └── test_three_modes_deep_smoke.py # [192 строки] Глубокие контрактные смоук-тесты трех режимов (AST, RAG, RPG)
     │
-    └── unit/                            # 46 сьютов изолированных модульных тестов (393 теста)
+    └── unit/                            # 49 сьютов изолированных модульных тестов (412 тестов)
         ├── test_adetailer_dialog.py     # [246 строк] Настройки ADetailer без полей промптов, флаги шагов/окна и сквозной проброс промпта
+        ├── test_gpu_detection_fallback.py # [120 строк] Реестровый детектор GPU Windows для AMD/Intel/iGPU и безопасный оффлоад NGL=0
+        ├── test_llama_downloader.py     # [140 строк] Авто-загрузчик llama-server, выбор сборок (CUDA/Vulkan/CPU), распаковка и верификация
         ├── test_models_manager_dialog.py# [370 строк] 10 сквозных тестов ModelsManagerDialog: CRUD, пресеты, спинбоксы, воркеры
+        ├── test_seamless_onboarding_and_models.py # [115 строк] Бесшовный авто-подбор .gguf моделей и умный однократный онбординг Forge
         ├── test_assistant_flow.py       # [85 строк] Резолвинг температур и диспетчеризация арт-прохода
         ├── test_core_services.py        # [165 строк] Модульные тесты базовых утилит (AST, парсеры, песочница)
         ├── test_deferred_rag_execution.py # [96 строк] Отложенная сборка контекста (Deferred RAG), 0 мс UI-блока
@@ -1289,17 +1295,17 @@ flowchart TD
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (674 теста, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (692 теста, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 674 автоматических тестов в 80 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 692 автоматических тестов в 83 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
-| **`tests/smoke/`** | 20 | 105 | Быстрые сквозные смоук-тесты: гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (15 тестов), Layer Budgeter (18 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
-| **`tests/unit/`** | 46 | 395 | Изолированное модульное тестирование: клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python и sys.executable в `get_clean_forge_env`, разрешение `get_python_cli_executable()` при запуске под pythonw, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), централизованный хелпер плашек (`test_toast_helper.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
+| **`tests/smoke/`** | 20 | 106 | Быстрые сквозные смоук-тесты: гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`, включая интеграцию автозагрузчика llama-server в `install.bat`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (15 тестов), Layer Budgeter (18 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
+| **`tests/unit/`** | 49 | 412 | Изолированное модульное тестирование: реестровый детектор GPU Windows для AMD/Intel/iGPU и безопасный оффлоад NGL=0 (`test_gpu_detection_fallback.py`), авто-загрузчик llama-server под CUDA/Vulkan/CPU и обход тэгов GitHub API (`test_llama_downloader.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python и sys.executable в `get_clean_forge_env`, разрешение `get_python_cli_executable()` при запуске под pythonw, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), централизованный хелпер плашек (`test_toast_helper.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
 | **`tests/integration/`** | 2 | 9 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
 | **`tests/` (root)** | 12 | 165 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer |
-| **ИТОГО** | **80** | **674** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **ИТОГО** | **83** | **692** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 
@@ -1385,6 +1391,21 @@ flowchart TD
     - Проверка диспетчеризации централизованного хелпера `show_toast` и шорткатов (`toast_info`, `toast_success`, `toast_warning`, `toast_error`).
     - Настройка стандартных длительностей показа (2500–5500 мс) и дефолтной позиции `TOP_RIGHT`.
     - Корректная обработка и фоллбэк при передаче `parent=None` на активное окно `QApplication.activeWindow()`.
+22. **`test_gpu_detection_fallback.py` (6 тестов, 120 строк)**:
+    - Реестровый опрос GPU в `_detect_windows_gpu_via_registry`: чтение 64-битного `HardwareInformation.qwMemorySize` и `DriverDesc`.
+    - Игнорирование виртуальных адаптеров ("Microsoft Basic Display Adapter", "RDP Adapter").
+    - Корректная детекция дискретных видеокарт AMD Radeon (2048 МБ, 10240 МБ) и Intel Arc при сбое NVML.
+    - Безопасное выставление `NGL = 0` в `LayerBudgeter.calculate_layer_offload()` при VRAM $\le 512$ МБ (CPU-only safe mode).
+23. **`test_llama_downloader.py` (7 тестов, 140 строк)**:
+    - Разрешение целевой сборки: NVIDIA -> CUDA 12.4, AMD/Intel -> Vulkan x64, fallback -> AVX2/CPU.
+    - Корректный разбор ассетов GitHub API с обходом ночных плейсхолдер-тегов `v1.0.0` без win-x64 архивов.
+    - Распаковка архива в `bin/` с сохранением исполняемых бинарников и cudart/vulkan runtime DLL.
+    - Верификация запуска `llama-server.exe --version` через `CREATE_NO_WINDOW`.
+24. **`test_seamless_onboarding_and_models.py` (4 теста, 115 строк)**:
+    - Защита от всплывающих модальных окон в тестах (`PYTEST_CURRENT_TEST`).
+    - Однократный показ онбординга Forge строго на NVIDIA GPU с VRAM $\ge 3800$ МБ с записью `forge_onboarding_shown = True`.
+    - Блокировка онбординга Forge на AMD/Intel и на GPU с VRAM $< 3800$ МБ.
+    - Автоматический выбор и сохранение первого обнаруженного `.gguf` файла из `models/` при старте.
 
 ### 7.3. Характеризационный базовый сьют MainWindow (`tests/test_main_window_baseline.py`)
 

@@ -235,6 +235,70 @@ class HardwareEngineMixin:
         finally:
             self._is_locating_forge = False
 
+    def _check_forge_onboarding(self):
+        """
+        Умный одноразовый онбординг SD WebUI Forge.
+        Срабатывает только на машинах с GPU NVIDIA (VRAM >= 3800 МБ) при отсутствии настроенного Forge.
+        """
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return
+
+        cfg = ConfigManager.load_config()
+        if cfg.get("forge_onboarding_shown", False):
+            return
+
+        from core.forge_locator import is_valid_forge_dir
+        import config
+        if is_valid_forge_dir(config.FORGE_ROOT_DIR):
+            return
+
+        # Проверка видеокарты: строго NVIDIA и VRAM >= 3800 МБ
+        sys_mon = getattr(self, "system_monitor", None)
+        if not sys_mon or not getattr(sys_mon, "nvml_initialized", False):
+            return
+
+        from services.layer_budgeter import LayerBudgeter
+        profile = LayerBudgeter.detect_hardware_kv_profile()
+        vendor = str(profile.get("vendor", "")).lower()
+        cc_str = str(profile.get("compute_cap", "N/A"))
+        if vendor != "nvidia" or cc_str == "N/A":
+            return
+
+        vram_mb = sys_mon.get_total_vram_mb()
+        if vram_mb < 3800:
+            return
+
+        # Помечаем онбординг как показанный сразу перед отображением
+        ConfigManager.update_setting("forge_onboarding_shown", True)
+        if hasattr(self, "app_config") and isinstance(self.app_config, dict):
+            self.app_config["forge_onboarding_shown"] = True
+
+        from ui.dialogs.forge_onboarding_dialog import ForgeOnboardingDialog
+        from ui.common.toast_helper import toast_info
+
+        dlg = ForgeOnboardingDialog(
+            gpu_name=profile.get("gpu_name", "NVIDIA GeForce"),
+            vram_mb=vram_mb,
+            compute_cap=cc_str,
+            parent=self
+        )
+        dlg.exec()
+
+        if dlg.choice == "download":
+            toast_info(
+                self,
+                "SD Forge",
+                "После скачивания и распаковки Forge укажите папку: Параметры и настройки → Система → SD Forge..."
+            )
+        elif dlg.choice == "locate":
+            self.prompt_locate_forge()
+        else:
+            toast_info(
+                self,
+                "SD Forge",
+                "Подключить Forge можно позже: Параметры и настройки → Система → SD Forge..."
+            )
+
     def _toggle_forge_server(self):
         if self.process_manager.is_forge_running() or self.pill_forge.is_online:
             self._forge_launching = False
@@ -398,12 +462,17 @@ class HardwareEngineMixin:
                 self.lm_combo.clear()
                 if all_models:
                     self.lm_combo.addItems(all_models)
-                    target = current_choice or getattr(self, "active_lms_model", "") or all_models[0]
+                    target = current_choice or getattr(self, "active_lms_model", "") or self.app_config.get("active_model", "") or all_models[0]
                     idx = self.lm_combo.findText(target)
                     if idx >= 0:
                         self.lm_combo.setCurrentIndex(idx)
                     else:
                         self.lm_combo.setCurrentIndex(0)
+                    chosen_model = self.lm_combo.currentText().strip()
+                    if chosen_model and not chosen_model.startswith("default"):
+                        self.active_lms_model = chosen_model
+                        self.app_config["active_model"] = chosen_model
+                        ConfigManager.update_setting("active_model", chosen_model)
                 else:
                     self.lm_combo.addItem("default (авто)")
                 self.lm_combo.blockSignals(False)

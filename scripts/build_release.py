@@ -336,7 +336,7 @@ def assemble_release(
             shutil.copy2(src, release_dir / rf)
 
     # 2. Source directories
-    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "docs", "bin", "audio", "lorebooks", "exports", "models"]
+    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "docs", "scripts", "audio", "lorebooks", "exports"]
     for sd in source_dirs:
         src = repo_root / sd
         dst = release_dir / sd
@@ -347,9 +347,16 @@ def assemble_release(
             (dst / ".gitkeep").touch()
 
     # 3. Clean runtime folders (empty with .gitkeep)
-    for rd in ["history", "outputs", "logs", "workspace", "backgrounds", "knowledge_base"]:
+    for rd in ["history", "outputs", "logs", "workspace", "backgrounds", "knowledge_base", "bin", "models"]:
         target_dir = release_dir / rd
         target_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure sterile empty directory with only .gitkeep (no *.exe, *.dll, *.gguf, *.bin, *.safetensors)
+        for existing in target_dir.iterdir():
+            if existing.name != ".gitkeep":
+                if existing.is_dir():
+                    shutil.rmtree(existing, onerror=on_rm_error)
+                else:
+                    existing.unlink(missing_ok=True)
         (target_dir / ".gitkeep").touch()
 
     # 4. Data directory (only base models & icons, zero personal data)

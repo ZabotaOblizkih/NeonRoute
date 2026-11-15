@@ -18,6 +18,115 @@ except ImportError:
     HAS_PYNVML = False
 
 
+def _detect_windows_gpu_via_registry() -> Dict[str, Any]:
+    """
+    Определяет дискретную/основную видеокарту и объем VRAM через системный реестр Windows.
+    Ветка: HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}
+    Возвращает словарь:
+    {
+        "gpu_name": str,
+        "vram_total_mb": int,
+        "vendor": "nvidia" | "amd" | "intel" | "unknown"
+    }
+    """
+    result: Dict[str, Any] = {
+        "gpu_name": "Unknown GPU",
+        "vram_total_mb": 0,
+        "vendor": "unknown"
+    }
+    if os.name != "nt":
+        return result
+
+    try:
+        import winreg
+        key_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        candidates = []
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(k, i)
+                    i += 1
+                    if not subkey_name.isdigit():
+                        continue
+                    with winreg.OpenKey(k, subkey_name) as sk:
+                        try:
+                            desc, _ = winreg.QueryValueEx(sk, "DriverDesc")
+                            desc = str(desc).strip()
+                        except Exception:
+                            continue
+
+                        # Игнорируем базовые/виртуальные видеоадаптеры
+                        desc_lower = desc.lower()
+                        ignored = [
+                            "microsoft basic", "basic render", "remote desktop",
+                            "citrix", "virtual", "vbox", "vmware", "parsec", "rdp"
+                        ]
+                        if any(ign in desc_lower for ign in ignored):
+                            continue
+
+                        # Считываем размер памяти (64-битный qwMemorySize или MemorySize)
+                        mem_bytes = 0
+                        for mem_key in ("HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"):
+                            try:
+                                val, _ = winreg.QueryValueEx(sk, mem_key)
+                                if isinstance(val, int) and val > 0:
+                                    mem_bytes = val
+                                    break
+                                elif isinstance(val, bytes) and len(val) >= 4:
+                                    import struct
+                                    if len(val) >= 8:
+                                        mem_bytes = struct.unpack("<Q", val[:8])[0]
+                                    else:
+                                        mem_bytes = struct.unpack("<I", val[:4])[0]
+                                    if mem_bytes > 0:
+                                        break
+                            except Exception:
+                                pass
+
+                        vram_mb = int(mem_bytes // (1024 * 1024))
+                        vendor = "unknown"
+                        if any(x in desc_lower for x in ("nvidia", "geforce", "quadro", "tesla", "rtx", "gtx")):
+                            vendor = "nvidia"
+                        elif any(x in desc_lower for x in ("amd", "radeon")):
+                            vendor = "amd"
+                        elif any(x in desc_lower for x in ("intel", "arc")):
+                            vendor = "intel"
+
+                        candidates.append({
+                            "gpu_name": desc,
+                            "vram_total_mb": vram_mb,
+                            "vendor": vendor,
+                            "bytes": mem_bytes
+                        })
+                except OSError:
+                    break
+
+        if not candidates:
+            return result
+
+        # Сортировка: в приоритете распознанный дискретный вендор с максимальным VRAM
+        candidates.sort(key=lambda c: (c["vendor"] != "unknown", c["vram_total_mb"]), reverse=True)
+        best = candidates[0]
+
+        # Если VRAM <= 512 МБ — считаем, что подходящего дискретного GPU нет
+        if best["vram_total_mb"] <= 512:
+            return {
+                "gpu_name": best["gpu_name"],
+                "vram_total_mb": 0,
+                "vendor": best["vendor"]
+            }
+
+        return {
+            "gpu_name": best["gpu_name"],
+            "vram_total_mb": best["vram_total_mb"],
+            "vendor": best["vendor"]
+        }
+    except Exception as e:
+        logger.debug(f"Registry GPU detection error: {e}")
+        return result
+
+
 class SystemMonitor(QThread):
     stats_updated = pyqtSignal(dict)
 
@@ -70,9 +179,19 @@ class SystemMonitor(QThread):
                     self.gpu_name = name
                     self.nvml_initialized = True
                     logger.info(f"NVML Initialized. Detected: {self.gpu_name}")
+                    return
             except Exception as e:
                 logger.warning(f"Could not initialize NVML: {e}")
                 self.nvml_initialized = False
+
+        # Fallback to Windows Registry (AMD / Intel / Discrete)
+        reg_info = _detect_windows_gpu_via_registry()
+        if reg_info.get("gpu_name") and reg_info.get("gpu_name") != "Unknown GPU":
+            self.gpu_name = reg_info["gpu_name"]
+            logger.info(
+                f"Windows Registry GPU Detected: {self.gpu_name} "
+                f"(VRAM: {reg_info.get('vram_total_mb')} MB, Vendor: {reg_info.get('vendor')})"
+            )
 
     def _cleanup_nvml(self):
         if self.nvml_initialized:
@@ -95,7 +214,9 @@ class SystemMonitor(QThread):
             except Exception:
                 pass
         if self._last_emitted_stats:
-            return int(self._last_emitted_stats.get("vram_total_mb", 8192))
+            val = int(self._last_emitted_stats.get("vram_total_mb", 0))
+            if val > 0:
+                return val
         try:
             if HAS_PYNVML:
                 pynvml.nvmlInit()
@@ -104,7 +225,11 @@ class SystemMonitor(QThread):
                 return int(mem_info.total / (1024 * 1024))
         except Exception:
             pass
-        return 8192
+        # Fallback к реестру Windows (AMD / Intel)
+        reg_info = _detect_windows_gpu_via_registry()
+        if reg_info.get("vram_total_mb", 0) > 0:
+            return int(reg_info["vram_total_mb"])
+        return 0
 
     def get_free_vram_mb(self) -> int:
         """Возвращает текущий объем свободной видеопамяти в МБ."""
@@ -115,10 +240,11 @@ class SystemMonitor(QThread):
             except Exception:
                 pass
         if self._last_emitted_stats:
-            total = self._last_emitted_stats.get("vram_total_mb", 8192)
+            total = self._last_emitted_stats.get("vram_total_mb", 0)
             used = self._last_emitted_stats.get("vram_used_mb", 0)
             return max(0, total - used)
-        return 4000  # Безопасное значение по умолчанию
+        total_reg = self.get_total_vram_mb()
+        return max(0, total_reg - 500) if total_reg > 500 else 0
 
     def _emit_if_changed(self, stats: Dict[str, Any]):
         # Предотвращает дергание интерфейса стилями, если цифры не изменились
@@ -142,7 +268,7 @@ class SystemMonitor(QThread):
     def _poll_hardware(self) -> Dict[str, Any]:
         stats: Dict[str, Any] = {
             "vram_used_mb": 0,
-            "vram_total_mb": 8192,
+            "vram_total_mb": 0,
             "vram_percent": 0.0,
             "gpu_name": self.gpu_name,
             "ram_used_gb": 0.0,
@@ -189,7 +315,7 @@ class SystemMonitor(QThread):
         return stats
 
     def _poll_vram_fallback(self, stats: Dict[str, Any]):
-        # Быстрый прямой вызов без shell=True и без cmd.exe
+        # Быстрый прямой вызов без shell=True и без cmd.exe для систем с nvidia-smi
         try:
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             res = subprocess.check_output(
@@ -208,5 +334,16 @@ class SystemMonitor(QThread):
                     stats["vram_percent"] = round((stats["vram_used_mb"] / stats["vram_total_mb"]) * 100, 1)
             if len(parts) >= 3:
                 stats["gpu_temp_c"] = int(float(parts[2]))
+            return
         except Exception:
             pass
+
+        # Если nvidia-smi недоступен (AMD, Intel, iGPU, CPU), опрашиваем реестр
+        reg_info = _detect_windows_gpu_via_registry()
+        reg_gpu = reg_info.get("gpu_name")
+        if reg_gpu and reg_gpu != "Unknown GPU":
+            stats["gpu_name"] = reg_gpu
+            self.gpu_name = reg_gpu
+        stats["vram_total_mb"] = reg_info.get("vram_total_mb", 0)
+        stats["vram_used_mb"] = 0
+        stats["vram_percent"] = 0.0

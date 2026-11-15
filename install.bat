@@ -95,6 +95,24 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
+:: 6. Check and download llama-server binary
+echo.
+echo [4/4] Checking llama-server engine...
+set "SKIP_LLAMA="
+if "%1"=="--skip-llama" set "SKIP_LLAMA=1"
+if "%2"=="--skip-llama" set "SKIP_LLAMA=1"
+if defined NEONROUTE_SKIP_LLAMA set "SKIP_LLAMA=1"
+if exist "wheels\" set "SKIP_LLAMA=1"
+
+if defined SKIP_LLAMA (
+    echo [INFO] llama-server download skipped.
+) else (
+    "%PYTHON_BIN%" scripts\download_llama_server.py --if-missing
+    if !ERRORLEVEL! NEQ 0 (
+        echo [WARNING] llama-server auto-download skipped or failed, continuing...
+    )
+)
+
 echo.
 echo =======================================================
 echo [SUCCESS] NeonRoute installation completed successfully!
