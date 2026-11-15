@@ -241,7 +241,8 @@ class ChatHeaderWidget(QFrame):
         header_layout.addWidget(self.btn_audio)
 
         # 7. Fullscreen Button
-        self.btn_fullscreen = TransparentToolButton(FIF.FULL_SCREEN, self)
+        self.btn_fullscreen = TransparentToolButton(self)
+        self.btn_fullscreen.setText("⛶")
         self.btn_fullscreen.setToolTip("Полноэкранный режим (F11 / Esc)")
         self.btn_fullscreen.setFixedSize(34, 34)
         self.btn_fullscreen.installEventFilter(

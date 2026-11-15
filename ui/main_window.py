@@ -467,32 +467,6 @@ class MainWindow(
         self.btn_toggle_inspector = self.chat_header_bar.btn_toggle_inspector
         self.btn_toggle_inspector.setVisible(False)
 
-        # Floating close button for fullscreen mode
-        self.floating_close_btn = QPushButton("✕", self)
-        self.floating_close_btn.setFixedSize(36, 36)
-        self.floating_close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.floating_close_btn.setToolTip("Выйти из полного экрана (Esc / F11)")
-        self.floating_close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(15, 23, 42, 0.8);
-                color: #00F0FF;
-                border: 1px solid #00F0FF;
-                border-radius: 18px;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: rgba(0, 240, 255, 0.25);
-                color: #FFFFFF;
-                border: 1px solid #38BDF8;
-            }
-            QPushButton:pressed {
-                background-color: rgba(15, 23, 42, 0.95);
-            }
-        """)
-        self.floating_close_btn.clicked.connect(self._toggle_fullscreen)
-        self.floating_close_btn.setVisible(False)
-
         # Search Bar Widget (Docked right below header)
         self.search_bar_widget = SearchBarWidget(container)
         self.search_bar_widget.setVisible(False)

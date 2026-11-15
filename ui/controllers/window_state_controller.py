@@ -58,8 +58,6 @@ class WindowStateMixin:
                 self.statusBar().setVisible(True)
             if getattr(self, '_menu_bar', None):
                 self._menu_bar.setVisible(True)
-            if hasattr(self, "floating_close_btn"):
-                self.floating_close_btn.setVisible(False)
             if hasattr(self, "btn_fullscreen"):
                 self.btn_fullscreen.setText("⛶")
             if hasattr(self, "_sync_splitter_layout") and hasattr(self, "is_engineer_mode_active"):
@@ -76,11 +74,8 @@ class WindowStateMixin:
             if getattr(self, '_menu_bar', None):
                 self._menu_bar.setVisible(False)
             self.showFullScreen()
-            if hasattr(self, "floating_close_btn"):
-                self.floating_close_btn.setVisible(True)
-                self._position_floating_close_btn()
             if hasattr(self, "btn_fullscreen"):
-                self.btn_fullscreen.setText("🗗")
+                self.btn_fullscreen.setText("⛶")
 
     def _position_floating_close_btn(self):
         if hasattr(self, "floating_close_btn"):
@@ -107,8 +102,6 @@ class WindowStateMixin:
             except Exception:
                 pass
         self._update_background_cache()
-        if self.isFullScreen() and hasattr(self, "floating_close_btn") and self.floating_close_btn.isVisible():
-            self._position_floating_close_btn()
 
     def changeEvent(self, event):
         if hasattr(super(), "changeEvent"):
@@ -124,11 +117,8 @@ class WindowStateMixin:
                     self.statusBar().setVisible(False)
                 if getattr(self, '_menu_bar', None):
                     self._menu_bar.setVisible(False)
-                if hasattr(self, "floating_close_btn"):
-                    self.floating_close_btn.setVisible(True)
-                    self._position_floating_close_btn()
                 if hasattr(self, "btn_fullscreen"):
-                    self.btn_fullscreen.setText("🗗")
+                    self.btn_fullscreen.setText("⛶")
                     self.btn_fullscreen.setToolTip("Выйти из полноэкранного режима (Esc / F11)")
             else:
                 if hasattr(self, "sidebar"):
@@ -137,8 +127,6 @@ class WindowStateMixin:
                     self.statusBar().setVisible(True)
                 if getattr(self, '_menu_bar', None):
                     self._menu_bar.setVisible(True)
-                if hasattr(self, "floating_close_btn"):
-                    self.floating_close_btn.setVisible(False)
                 if hasattr(self, "btn_fullscreen"):
                     self.btn_fullscreen.setText("⛶")
                     self.btn_fullscreen.setToolTip("Полноэкранный режим чата (F11)")
