@@ -117,7 +117,7 @@ def test_bm25_tf_stopwords_and_next_chunk_continuity(tmp_path: Path):
     """
     intro_part = (
         "# Техническая спецификация архитектуры NeonRoute\n\n"
-        "Версия системы: NeonRoute v0.9.1-beta. Система **NeonRoute** — это мультимодальный десктопный ИИ-клиент. "
+        "Версия системы: NeonRoute v0.9.8-beta. Система **NeonRoute** — это мультимодальный десктопный ИИ-клиент. "
         + ("Архитектура ориентирована на локальный инференс. " * 12)
     )
     continuation_part = (

@@ -379,6 +379,23 @@ class TestVRAMManagement:
             "inference_memory_mb": 2048
         }
 
+    def test_free_vram_404_fallback(self, forge_client, monkeypatch):
+        mock_resp = MagicMock(status_code=404)
+        post_mock = MagicMock(return_value=mock_resp)
+        monkeypatch.setattr("requests.post", post_mock)
+        assert forge_client._free_vram_supported is True
+
+        # First call: receives 404, should flag unsupported and return False
+        res1 = forge_client.free_vram(always_offload=True)
+        assert res1 is False
+        assert forge_client._free_vram_supported is False
+        assert post_mock.call_count == 1
+
+        # Subsequent call: short-circuits without network call
+        res2 = forge_client.free_vram(always_offload=True)
+        assert res2 is False
+        assert post_mock.call_count == 1
+
     def test_reload_checkpoint_success(self, forge_client, monkeypatch):
         monkeypatch.setattr("requests.post", lambda *a, **k: MagicMock(status_code=200))
         mock_set = MagicMock(return_value=True)

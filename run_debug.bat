@@ -2,10 +2,16 @@
 title NeonRoute Debug Console
 cd /d "%~dp0"
 
-:: Проверяем локальный venv
+echo =======================================================
+echo          NeonRoute - Debug Console
+echo =======================================================
+echo.
+
 if exist "venv\Scripts\python.exe" (
+    echo [INFO] Running in local venv...
     "venv\Scripts\python.exe" main.py
 ) else (
+    echo [INFO] Running with system Python...
     python.exe main.py
 )
 

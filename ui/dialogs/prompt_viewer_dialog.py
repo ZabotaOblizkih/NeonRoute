@@ -28,6 +28,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition
 )
+from ui.common.toast_helper import toast_info, toast_success
 from services.roleplay_prompt_builder import RoleplayPromptBuilder
 from services.tavern_parser import TavernParser
 from services.session_manager import SessionManager
@@ -245,24 +246,20 @@ class PromptViewerDialog(FramelessDialog):
 
     def _on_reset_to_default(self):
         self.prompt_edit.setPlainText(self.default_prompt)
-        InfoBar.info(
+        toast_info(
+            self,
             title="Сброс",
             content="Восстановлен исходный системный промпт карточки",
-            parent=self,
-            position=InfoBarPosition.TOP,
-            duration=2000
         )
 
     def _on_copy_clicked(self):
         text = self.prompt_edit.toPlainText().strip()
         if text:
             QGuiApplication.clipboard().setText(text)
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Скопировано",
                 content="Системный промпт помещен в буфер обмена",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=2000
             )
 
     def get_configured_prompt(self) -> Optional[str]:

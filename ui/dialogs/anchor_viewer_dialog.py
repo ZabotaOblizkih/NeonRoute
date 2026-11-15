@@ -28,6 +28,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition
 )
+from ui.common.toast_helper import toast_info, toast_success
 from services.roleplay_prompt_builder import RoleplayPromptBuilder
 from services.tavern_parser import TavernParser
 from ui.common.palette_utils import extract_adaptive_palette
@@ -209,24 +210,20 @@ class AnchorViewerDialog(FramelessDialog):
 
     def _on_reset_to_default(self):
         self.anchor_edit.setPlainText(self.default_anchor)
-        InfoBar.info(
+        toast_info(
+            self,
             title="Сброс",
             content="Восстановлен эталонный абстрактный якорь по умолчанию",
-            parent=self,
-            position=InfoBarPosition.TOP,
-            duration=2000
         )
 
     def _on_copy_clicked(self):
         text = self.anchor_edit.toPlainText().strip()
         if text:
             QGuiApplication.clipboard().setText(text)
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Скопировано",
                 content="Текст якоря помещен в буфер обмена",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=2000
             )
 
     def get_configured_anchor(self) -> Optional[str]:

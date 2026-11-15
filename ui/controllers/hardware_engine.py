@@ -215,6 +215,7 @@ class HardwareEngineMixin:
                         self.btn_forge_toggle.setToolTip(f"Запустить SD WebUI Forge ({config.FORGE_LAUNCHER_PATH})")
                     if hasattr(self, "statusBar") and self.statusBar():
                         self.statusBar().showMessage(f"SD WebUI Forge настроен: {config.FORGE_ROOT_DIR}", 4000)
+                    self._check_and_prompt_forge_patch(selected_dir)
                     return True
                 else:
                     retry_box = QMessageBox(target_parent)
@@ -247,6 +248,7 @@ class HardwareEngineMixin:
                     self._forge_launching = False
                     self.btn_forge_toggle.setText("▶ Запустить Forge")
                     return
+            self._check_and_prompt_forge_patch()
             self._forge_launching = True
             self.statusBar().showMessage(f"Запуск SD WebUI Forge ({config.FORGE_LAUNCHER_PATH})...")
             self.btn_forge_toggle.setText("⏳ Запуск Forge... (ожидание 7860)")
@@ -522,6 +524,95 @@ class HardwareEngineMixin:
         dlg = LLMEngineSettingsDialog(self)
         dlg.exec()
 
+    def _open_forge_settings_dialog(self):
+        """Открывает диалог настройки SD WebUI Forge (пути, FP8, VRAM)."""
+        from ui.dialogs.forge_settings_dialog import ForgeSettingsDialog
+        dlg = ForgeSettingsDialog(self)
+        dlg.exec()
+
+    def _check_and_prompt_forge_patch(self, forge_root: Optional[Path | str] = None) -> bool:
+        """
+        Проверяет статус патчей Forge и, если требуется (NEEDS_PATCH),
+        предлагает применить их в стилизованном Fluent-диалоге с возможностью
+        запомнить отказ ('Больше не предлагать для этой папки').
+        Вызывается ТОЛЬКО при явном запуске или настройке Forge.
+        """
+        try:
+            import config
+            from pathlib import Path
+            from PyQt6.QtWidgets import QWidget
+            from services.forge_patcher import ForgePatcher, ForgePatchStatus
+            from utils.config_manager import ConfigManager
+            from ui.common.toast_helper import toast_success, toast_info
+
+            target_root = forge_root or config.FORGE_ROOT_DIR
+            if not target_root:
+                return False
+
+            status, _ = ForgePatcher.check_status(target_root)
+            if status != ForgePatchStatus.NEEDS_PATCH:
+                return False
+
+            # Проверяем, не добавлен ли путь в список игнорируемых
+            cfg = ConfigManager.load_config()
+            ignored_paths = [str(Path(p).resolve()) for p in cfg.get("forge_patch_ignored_paths", [])]
+            norm_target = str(Path(target_root).resolve())
+            if norm_target in ignored_paths:
+                return False
+
+            # Показываем стилизованный Fluent-диалог
+            from qfluentwidgets import MessageBoxBase, SubtitleLabel, BodyLabel, CheckBox
+            parent_widget = self if isinstance(self, QWidget) else None
+
+            class _ForgePatchPromptDialog(MessageBoxBase):
+                def __init__(self, parent=None):
+                    super().__init__(parent)
+                    self.titleLabel = SubtitleLabel("Рекомендуется патч совместимости Forge", self)
+                    self.viewLayout.addWidget(self.titleLabel)
+
+                    self.contentLabel = BodyLabel(
+                        "Обнаружен стандартный SD WebUI Forge. Чтобы модели переключались на лету "
+                        "и освобождалась видеопамять для LLM (важно для 8 ГБ VRAM), рекомендуется "
+                        "применить патч совместимости.\n\n"
+                        "Оригинальные файлы будут сохранены в .neonroute_backup/original/.",
+                        self
+                    )
+                    self.contentLabel.setWordWrap(True)
+                    self.contentLabel.setStyleSheet("color: #94A3B8; font-size: 12px; line-height: 1.4;")
+                    self.viewLayout.addWidget(self.contentLabel)
+
+                    self.cb_never = CheckBox("Больше не предлагать для этой папки", self)
+                    self.viewLayout.addWidget(self.cb_never)
+
+                    self.yesButton.setText("Применить патч")
+                    self.cancelButton.setText("Позже")
+                    self.widget.setMinimumWidth(440)
+
+            dlg = _ForgePatchPromptDialog(parent_widget)
+            if dlg.exec():
+                ok, res_msg = ForgePatcher.apply_patch(target_root)
+                if ok:
+                    toast_success(
+                        self,
+                        title="Патч Forge применён",
+                        content="Патчи совместимости успешно установлены. Резервная копия сохранена в .neonroute_backup/original/."
+                    )
+                    return True
+            else:
+                if dlg.cb_never.isChecked():
+                    if norm_target not in ignored_paths:
+                        ignored_paths.append(norm_target)
+                        cfg["forge_patch_ignored_paths"] = ignored_paths
+                        ConfigManager.save_config(cfg)
+                    toast_info(
+                        self,
+                        title="Патч Forge отложен",
+                        content="Вы всегда сможете применить его позже: Параметры и настройки → Система → SD Forge..."
+                    )
+        except Exception as e:
+            logger.debug(f"[HardwareEngine] Ошибка при проверке/предложении патча Forge: {e}")
+        return False
+
     def _perform_hardware_kv_autotune(self):
         """
         Однократный аппаратный автотюн KV-кэша и Flash Attention при первом старте.
@@ -529,7 +620,7 @@ class HardwareEngineMixin:
         try:
             from services.layer_budgeter import LayerBudgeter
             from utils.config_manager import ConfigManager
-            from qfluentwidgets import InfoBar
+            from ui.common.toast_helper import toast_success, toast_info
 
             cfg = ConfigManager.load_config()
             if cfg.get("hardware_autotune_done", False):
@@ -543,18 +634,16 @@ class HardwareEngineMixin:
             self.app_config = cfg
 
             if profile.get("supported", False):
-                InfoBar.success(
+                toast_success(
+                    self,
                     title="Аппаратный автотюн GPU",
                     content=f"Обнаружена {profile['gpu_name']} (CC {profile['compute_cap']}). Активирован скоростной буфер Q8_0 и Flash Attention (экономия 50% VRAM).",
-                    duration=6000,
-                    parent=self
                 )
             else:
-                InfoBar.info(
+                toast_info(
+                    self,
                     title="Аппаратный автотюн GPU",
                     content=f"Видеокарта {profile['gpu_name']} не поддерживает Flash Attention. Выставлен стандартный режим FP16.",
-                    duration=6000,
-                    parent=self
                 )
             logger.info(f"[HardwareEngine] Аппаратный автотюн выполнен: {profile}")
         except Exception as e:
@@ -1007,12 +1096,11 @@ class HardwareEngineMixin:
             ok, msg = start_mobile_server_thread()
             self._sync_mobile_server_button(ok)
             if not ok:
-                InfoBar.error(
+                from ui.common.toast_helper import toast_error
+                toast_error(
+                    self,
                     title="Мобильный сервер",
                     content=msg,
-                    duration=5000,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    parent=self,
                 )
                 return
             if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
@@ -1102,12 +1190,11 @@ class HardwareEngineMixin:
             cb = QApplication.clipboard()
             if cb is not None:
                 cb.setText(url_lbl.text())
-            InfoBar.success(
+            from ui.common.toast_helper import toast_success
+            toast_success(
+                parent_win,
                 title="Скопировано",
                 content=url_lbl.text(),
-                duration=2000,
-                position=InfoBarPosition.TOP_RIGHT,
-                parent=parent_win,
             )
 
         btn_copy.clicked.connect(_copy_url)

@@ -30,6 +30,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition
 )
+from ui.common.toast_helper import toast_success, toast_warning, toast_error
 
 from services.engineer_skill_router import (
     EngineerSkillRouter,
@@ -699,21 +700,17 @@ class EngineerSkillsDialog(QDialog):
             shutil.copy2(file_path, dest_file)
             self._current_icon_path = f"data/skill_icons/{sid}.png"
             self._update_icon_preview(str(dest_file))
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Иконка загружена",
                 content=f"Файл сохранен: {dest_file.name}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=2500
             )
         except Exception as e:
             logger.error(f"[EngineerSkillsDialog] Ошибка копирования иконки: {e}", exc_info=True)
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка",
                 content=f"Не удалось сохранить иконку: {e}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3500
             )
 
     def _on_add_skill_clicked(self):
@@ -760,22 +757,18 @@ class EngineerSkillsDialog(QDialog):
                 sid = re.sub(r"[^a-zA-Z0-9_]", "_", title.lower())
                 self.line_skill_id.setText(sid)
             else:
-                InfoBar.warning(
+                toast_warning(
+                    self,
                     title="Ошибка валидации",
                     content="Укажите ID скилла или название.",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=3000
                 )
                 return
 
         if not title:
-            InfoBar.warning(
+            toast_warning(
+                self,
                 title="Ошибка валидации",
                 content="Укажите название скилла.",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3000
             )
             return
 
@@ -797,22 +790,18 @@ class EngineerSkillsDialog(QDialog):
 
         try:
             self.router.save_custom_skill(skill_dict)
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Скилл сохранен",
                 content=f"Навык «{title}» успешно сохранен и доступен в роутере.",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3000
             )
             self._populate_skills_list(select_id=sid)
         except Exception as e:
             logger.error(f"[EngineerSkillsDialog] Ошибка сохранения скилла: {e}", exc_info=True)
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка сохранения",
                 content=str(e),
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=4000
             )
 
     def _on_delete_skill_clicked(self):
@@ -833,42 +822,34 @@ class EngineerSkillsDialog(QDialog):
         try:
             ok = self.router.delete_custom_skill(self._current_selected_id)
             if ok:
-                InfoBar.success(
+                toast_success(
+                    self,
                     title="Скилл удален",
                     content=f"Скилл '{self._current_selected_id}' успешно удален.",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=2500
                 )
                 self._populate_skills_list()
             else:
-                InfoBar.warning(
+                toast_warning(
+                    self,
                     title="Удаление невозможно",
                     content="Не удалось удалить скилл (возможно, он базовый).",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=3000
                 )
         except Exception as e:
             logger.error(f"[EngineerSkillsDialog] Ошибка удаления скилла: {e}", exc_info=True)
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка",
                 content=str(e),
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3500
             )
 
     def _on_run_test_clicked(self):
         """Запуск проверки сопоставления задачи через FastEmbed."""
         query = self.line_test_query.text().strip()
         if not query:
-            InfoBar.warning(
+            toast_warning(
+                self,
                 title="Пустой запрос",
                 content="Введите описание задачи для проверки реакции роутера.",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=2500
             )
             return
 

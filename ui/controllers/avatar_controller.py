@@ -21,6 +21,7 @@ from services.session_manager import SessionManager
 from services.engineer_skill_router import EngineerSkillRouter
 from services.roleplay_prompt_builder import RoleplayPromptBuilder
 from qfluentwidgets import RoundMenu, Action, InfoBar, InfoBarPosition
+from ui.common.toast_helper import toast_success, toast_warning, toast_error, toast_info
 
 if not hasattr(Action, "__contains__"):
     Action.__contains__ = lambda self, item: item in self.text()
@@ -611,12 +612,10 @@ class AvatarControllerMixin:
                 .replace("✓ ", "")
                 .strip()
             )
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Скилл инженера обновлен",
                 content=f"Установлен режим: {clean_label}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3000
             )
             logger.info(f"[AvatarController] Установлен скилл инженера: {skill_id} ({skill_label})")
         except Exception as e:
@@ -653,12 +652,10 @@ class AvatarControllerMixin:
                 .replace("✓ ", "")
                 .strip()
             )
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Скилл ассистента обновлен",
                 content=f"Установлен режим: {clean_label}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3000
             )
             logger.info(f"[AvatarController] Выбран скилл ассистента: {skill_id} ({skill_label})")
         except Exception as e:
@@ -673,12 +670,10 @@ class AvatarControllerMixin:
                 card = getattr(self.roleplay_flow_controller, "active_character", None)
 
             if not card:
-                InfoBar.warning(
+                toast_warning(
+                    self,
                     title="Якорь недоступен",
                     content="В текущей сессии не загружена карточка персонажа.",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=3000
                 )
                 return
 
@@ -709,21 +704,17 @@ class AvatarControllerMixin:
 
                     SessionManager.save_session(self.current_session)
 
-                InfoBar.success(
+                toast_success(
+                    self,
                     title="Якорь обновлен",
                     content="Параметры директивы сцены сохранены для текущей сессии.",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=2500
                 )
         except Exception as e:
             logger.error(f"[AvatarController] Ошибка при открытии AnchorViewerDialog: {e}", exc_info=True)
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка",
                 content=f"Не удалось открыть параметры якоря: {e}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3500
             )
 
     def _open_prompts_dialog(self):
@@ -735,12 +726,10 @@ class AvatarControllerMixin:
                 card = getattr(self.roleplay_flow_controller, "active_character", None)
 
             if not card:
-                InfoBar.warning(
+                toast_warning(
+                    self,
                     title="Промпты недоступны",
                     content="В текущей сессии не загружена карточка персонажа.",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=3000
                 )
                 return
 
@@ -780,21 +769,17 @@ class AvatarControllerMixin:
 
                     SessionManager.save_session(self.current_session)
 
-                InfoBar.success(
+                toast_success(
+                    self,
                     title="Промпт обновлен",
                     content="Системный промпт сохранен для текущей сессии.",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=2500
                 )
         except Exception as e:
             logger.error(f"[AvatarController] Ошибка при открытии PromptViewerDialog: {e}", exc_info=True)
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка",
                 content=f"Не удалось открыть системный промпт: {e}",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=3500
             )
 
     _show_header_context_menu = _show_avatar_menu

@@ -114,7 +114,7 @@ def resolve_forge_models_directory(forge_root: Optional[Path], launcher_path: Op
     if forge_root:
         return (Path(forge_root).resolve() / "models" / "Stable-diffusion")
 
-    return Path(r"C:\neyroGPD\models\Stable-diffusion")
+    return (REPO_ROOT.parent / "neyroGPD" / "models" / "Stable-diffusion").resolve()
 
 
 

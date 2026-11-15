@@ -133,6 +133,8 @@ class ForgeClient(QObject):
         self._checkpoint_cache_size: int = 0
         self._cached_upscalers: Optional[List[str]] = None
         self._cached_embeddings: Optional[List[str]] = None
+        self._free_vram_supported: bool = True
+        self._free_vram_warned: bool = False
         self.last_generation_info: Dict[str, Any] = {}
 
     def get_installed_embeddings(self) -> List[str]:
@@ -607,6 +609,9 @@ class ForgeClient(QObject):
 
     def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True, force: bool = False) -> bool:
         """Принудительно очищает PyTorch CUDA кэш и синхронизирует режим выгрузки с vram_policy."""
+        if getattr(self, "_free_vram_supported", True) is False:
+            return False
+
         if not force and unload_models and getattr(self, "_checkpoint_unloaded", False) and always_offload is None and inference_memory_mb is None:
             return True
         try:
@@ -616,6 +621,16 @@ class ForgeClient(QObject):
             if inference_memory_mb is not None:
                 payload["inference_memory_mb"] = int(inference_memory_mb)
             resp = requests.post(f"{self.base_url}/sdapi/v1/free-vram", json=payload, timeout=5.0)
+            if resp.status_code == 404:
+                self._free_vram_supported = False
+                if not getattr(self, "_free_vram_warned", False):
+                    self._free_vram_warned = True
+                    logger.warning(
+                        "[ForgeClient] Эндпоинт /sdapi/v1/free-vram недоступен (HTTP 404). "
+                        "Обнаружен оригинальный Forge без патча NeonRoute. Выгрузка VRAM деградирует до базового режима."
+                    )
+                return False
+
             ok = resp.status_code == 200
             if ok and unload_models:
                 self._has_loaded_model_in_vram = False

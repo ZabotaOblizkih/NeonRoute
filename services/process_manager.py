@@ -1375,6 +1375,8 @@ class ProcessManager(QObject):
             self._forge_log_file = open(forge_log_path, "w", encoding="utf-8", errors="replace", buffering=1)
 
             clean_env = get_clean_forge_env()
+            if "startup_flags" in locals() and startup_flags:
+                clean_env["COMMANDLINE_ARGS"] = " ".join(startup_flags)
             try:
                 self._forge_process = subprocess.Popen(
                     cmd,

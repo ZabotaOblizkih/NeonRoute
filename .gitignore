@@ -1,20 +1,56 @@
+# Python Caches & Bytecode
 __pycache__/
-logs/
-outputs/
-*.pyc
+*.py[cod]
+*$py.class
+*.bak
+*.tmp
 *.log
+
+# Environments
+venv/
 .venv/
-data/cache/
-data/vector_memory/
-history/
+env/
+wheels/
 
-workspace/
-workspace/*
-
+# Build & Release Artifacts
+dist/
+build/
+*.egg-info/
 PyQt-Fluent-Widgets/
 
-scripts/test_*.py
-scripts/
+# Testing & Quality Assurance
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+pytest_airgap_sandbox/
+test_tmp/
 
-*.bak
-*.bak/
+# Runtime User Configuration & Profiles
+config.json
+data/memory.db*
+data/models_cache.json
+data/user_profiles.json
+data/cache/
+data/vector_memory/
+data/vector_memory.bak/
+
+# User Sessions & Generated Content
+history/*
+!history/.gitkeep
+outputs/*
+!outputs/.gitkeep
+logs/*
+!logs/.gitkeep
+workspace/*
+!workspace/.gitkeep
+
+# Personal Assets & Sandboxes
+Persona/
+backgrounds/bg_*.jpg
+avatars/Generated Image*.jpg
+characters/user_*_gen_*.png
+contacts.db
+dummy.json
+collect_codeMINI.py
+sync_gdrive.ps1

@@ -48,7 +48,7 @@ from qfluentwidgets import (
 
 from ui.common.icon_utils import SafeFIF
 from ui.common.palette_utils import extract_adaptive_palette
-from config import HISTORY_DIR
+from config import HISTORY_DIR, APP_VERSION
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -382,6 +382,18 @@ class SettingsDialog(FramelessDialog):
             lambda: self.window._open_llm_engine_settings_dialog() if hasattr(self.window, "_open_llm_engine_settings_dialog") else None
         )
         group_models.addSettingCard(self.card_llm_engine)
+
+        self.card_forge_settings = PushSettingCard(
+            text="Настроить",
+            icon=FIF.PHOTO,
+            title="SD Forge...",
+            content="Путь установки Forge, лаунчер, FP8-квантование SDXL и совместимость",
+            parent=group_models
+        )
+        self.card_forge_settings.clicked.connect(
+            lambda: self.window._open_forge_settings_dialog() if hasattr(self.window, "_open_forge_settings_dialog") else None
+        )
+        group_models.addSettingCard(self.card_forge_settings)
 
         self.card_models_manager = PushSettingCard(
             text="Управление",
@@ -740,7 +752,7 @@ class SettingsDialog(FramelessDialog):
             text="О программе",
             icon=FIF.INFO,
             title="О программе NeonRoute",
-            content="Сведения о версии v0.9.1-beta, лицензии и аппаратном профиле 8 ГБ VRAM",
+            content=f"Сведения о версии v{APP_VERSION}, лицензии и аппаратном профиле 8 ГБ VRAM",
             parent=group
         )
         self.card_about.clicked.connect(

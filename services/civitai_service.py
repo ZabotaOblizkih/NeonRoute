@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional
 
 import requests
 
-from config import FORGE_ROOT_DIR
+from config import FORGE_ROOT_DIR, APP_VERSION
 
 logger = logging.getLogger("NeonRoute.CivitaiService")
 
@@ -21,7 +21,7 @@ CIVITAI_API_URL = "https://civitai.com/api/v1/model-versions/by-hash/{hash}"
 FORGE_SD_MODELS_DIR = FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
 
 CIVITAI_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NeonRoute/0.9.0",
+    "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) NeonRoute/{APP_VERSION}",
     "Accept": "application/json"
 }
 

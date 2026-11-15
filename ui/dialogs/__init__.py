@@ -25,6 +25,7 @@ _LAZY_EXPORTS = {
     "AvatarCropDialog": (".avatar_crop_dialog", "AvatarCropDialog"),
     "DependencyDialog": (".dependency_dialog", "DependencyDialog"),
     "LLMEngineSettingsDialog": (".llm_engine_settings_dialog", "LLMEngineSettingsDialog"),
+    "ForgeSettingsDialog": (".forge_settings_dialog", "ForgeSettingsDialog"),
     "LocalLoraDialog": (".local_lora_dialog", "LocalLoraDialog"),
     "CivitaiLoraDialog": (".civitai_lora_dialog", "CivitaiLoraDialog"),
     "ChubCatalogDialog": (".chub_catalog_dialog", "ChubCatalogDialog"),
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from .avatar_crop_dialog import AvatarCropDialog
     from .dependency_dialog import DependencyDialog
     from .llm_engine_settings_dialog import LLMEngineSettingsDialog
+    from .forge_settings_dialog import ForgeSettingsDialog
     from .local_lora_dialog import LocalLoraDialog
     from .civitai_lora_dialog import CivitaiLoraDialog
     from .chub_catalog_dialog import ChubCatalogDialog

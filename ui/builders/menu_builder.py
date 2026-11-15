@@ -108,6 +108,11 @@ class MenuBuilder:
         act_llm_engine_settings.triggered.connect(lambda *_: window._open_llm_engine_settings_dialog())
         system_menu.addAction(act_llm_engine_settings)
 
+        act_forge_settings = Action(FIF.PHOTO, "SD Forge...", root_menu)
+        act_forge_settings.setToolTip("Путь к SD WebUI Forge, FP8-оптимизация и совместимость")
+        act_forge_settings.triggered.connect(lambda *_: window._open_forge_settings_dialog())
+        system_menu.addAction(act_forge_settings)
+
         system_menu.addSeparator()
 
         act_models_manager = Action(FIF.PALETTE, "Модели генерации...", root_menu)

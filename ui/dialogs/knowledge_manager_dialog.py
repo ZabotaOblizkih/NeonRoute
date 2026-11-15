@@ -43,6 +43,7 @@ from qfluentwidgets import (
 
 from services.knowledge_manager import KnowledgeManager
 from ui.common.icon_utils import SafeFIF
+from ui.common.toast_helper import toast_success, toast_info, toast_warning, toast_error
 
 logger = logging.getLogger("NeonRoute.KnowledgeManagerDialog")
 
@@ -608,28 +609,20 @@ class KnowledgeManagerDialog(FramelessDialog):
         if parent_win and hasattr(parent_win, "app_config") and isinstance(parent_win.app_config, dict):
             parent_win.app_config["assistant_custom_prompt_template"] = new_text
 
-        InfoBar.success(
+        toast_success(
+            self,
             title="Сохранено",
             content="Системный промпт обновлен. Он будет применяться ко всем вновь создаваемым диалогам.",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP,
-            duration=3000,
-            parent=self
         )
 
     def _on_reset_prompt_clicked(self):
         """Сброс системного промпта в редакторе к заводскому шаблону."""
         from services.assistant_prompt_builder import AssistantPromptBuilder
         self.prompt_editor.setPlainText(AssistantPromptBuilder.SYSTEM_PERSONA_TEMPLATE.strip())
-        InfoBar.info(
+        toast_info(
+            self,
             title="Восстановлен шаблон",
             content="Отображен заводской промпт. Нажмите «Сохранить для новых сессий», чтобы применить.",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP,
-            duration=2500,
-            parent=self
         )
 
     def _get_router(self):
@@ -784,34 +777,28 @@ class KnowledgeManagerDialog(FramelessDialog):
         sys_prompt = self.text_system_prompt.toPlainText().strip()
 
         if not s_id:
-            InfoBar.warning(
+            toast_warning(
+                self,
                 title="Заполните ID",
                 content="Идентификатор скилла (ID) не может быть пустым.",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
             self.line_skill_id.setFocus()
             return
 
         from services.skill_router import ASSISTANT_SKILLS
         if s_id in ASSISTANT_SKILLS:
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Запрещено",
                 content=f"Нельзя перезаписать базовый скилл «{s_id}».",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
             return
 
         if not title:
-            InfoBar.warning(
+            toast_warning(
+                self,
                 title="Заполните название",
                 content="Название скилла не может быть пустым.",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
             self.line_skill_title.setFocus()
             return
@@ -828,21 +815,17 @@ class KnowledgeManagerDialog(FramelessDialog):
         router = self._get_router()
         ok = router.save_custom_skill(skill_dict)
         if ok:
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Скилл сохранен",
                 content=f"Скилл «{title}» успешно сохранен в базе.",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
             self._load_skills_list(select_skill_id=s_id)
         else:
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка сохранения",
                 content="Не удалось сохранить скилл. Проверьте правильность данных.",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3500
             )
 
     def _on_delete_skill_clicked(self):
@@ -854,12 +837,10 @@ class KnowledgeManagerDialog(FramelessDialog):
 
         from services.skill_router import ASSISTANT_SKILLS
         if s_id in ASSISTANT_SKILLS:
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Запрещено",
                 content="Нельзя удалять базовые скиллы.",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
             return
 
@@ -875,22 +856,18 @@ class KnowledgeManagerDialog(FramelessDialog):
             router = self._get_router()
             ok = router.delete_custom_skill(s_id)
             if ok:
-                InfoBar.success(
+                toast_success(
+                    self,
                     title="Скилл удален",
                     content=f"Скилл «{title}» успешно удален.",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=2500
                 )
                 self._load_skills_list()
                 self._on_add_skill_clicked()
             else:
-                InfoBar.error(
+                toast_error(
+                    self,
                     title="Ошибка удаления",
                     content=f"Не удалось удалить скилл «{s_id}».",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=3000
                 )
 
     def reload_documents(self):
@@ -953,20 +930,16 @@ class KnowledgeManagerDialog(FramelessDialog):
         self.reload_documents()
 
         if added_count > 0:
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Документы добавлены",
                 content=f"Успешно импортировано и проиндексировано файлов: {added_count}",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
         else:
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка импорта",
                 content="Не удалось импортировать выбранные файлы.",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000
             )
 
     def _on_open_folder_clicked(self):
@@ -980,21 +953,17 @@ class KnowledgeManagerDialog(FramelessDialog):
             reg = KnowledgeManager.scan_and_sync()
             self.reload_documents()
             doc_count = reg.get("total_documents", len(reg.get("documents", {})))
-            InfoBar.success(
+            toast_success(
+                self,
                 title="Синхронизация завершена",
                 content=f"База знаний актуализирована. Документов в реестре: {doc_count}",
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=2500
             )
         except Exception as e:
             logger.error(f"[KnowledgeManagerDialog] Ошибка синхронизации: {e}", exc_info=True)
-            InfoBar.error(
+            toast_error(
+                self,
                 title="Ошибка синхронизации",
                 content=str(e),
-                parent=self,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3500
             )
 
     def _on_delete_document(self, filename: str):
@@ -1011,18 +980,14 @@ class KnowledgeManagerDialog(FramelessDialog):
             success = KnowledgeManager.delete_file(filename)
             self.reload_documents()
             if success:
-                InfoBar.success(
+                toast_success(
+                    self,
                     title="Удалено",
                     content=f"Документ «{filename}» удален из базы знаний.",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=2500
                 )
             else:
-                InfoBar.error(
+                toast_error(
+                    self,
                     title="Ошибка удаления",
                     content=f"Не удалось удалить документ «{filename}».",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=3000
                 )
