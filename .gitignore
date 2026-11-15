@@ -5,6 +5,7 @@ __pycache__/
 *.bak
 *.tmp
 *.log
+.cache/
 
 # Environments
 venv/

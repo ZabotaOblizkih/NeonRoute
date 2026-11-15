@@ -1,4 +1,5 @@
 import configparser
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
@@ -218,3 +219,50 @@ def test_get_clean_forge_env():
     # 3. Системные пути и CUDA сохранены
     assert "C:\\Windows\\System32" in cleaned_path
     assert "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.1\\bin" in cleaned_path
+
+
+def test_get_clean_forge_env_purges_runtime_python_and_sys_executable(monkeypatch, tmp_path):
+    """
+    Проверяет, что при запуске NeonRoute через встроенный runtime\\python\\
+    каталог sys.executable и runtime\\python гарантированно удаляются из PATH Forge.
+    """
+    fake_runtime = tmp_path / "NeonRoute" / "runtime" / "python"
+    fake_runtime.mkdir(parents=True, exist_ok=True)
+    fake_python = fake_runtime / "python.exe"
+    fake_python.touch()
+
+    monkeypatch.setattr(sys, "executable", str(fake_python))
+    monkeypatch.setattr(sys, "prefix", str(fake_runtime))
+
+    mock_env = {
+        "PATH": f"{fake_runtime};{fake_runtime / 'Scripts'};C:\\Windows\\System32;C:\\CUDA\\bin"
+    }
+    cleaned = get_clean_forge_env(mock_env)
+    cleaned_path = cleaned.get("PATH", "")
+
+    assert str(fake_runtime).lower() not in cleaned_path.lower()
+    assert "runtime\\python" not in cleaned_path.lower()
+    assert "C:\\Windows\\System32" in cleaned_path
+    assert "C:\\CUDA\\bin" in cleaned_path
+
+
+def test_get_python_cli_executable_resolves_python_from_pythonw(monkeypatch, tmp_path):
+    """
+    Проверяет, что get_python_cli_executable() при запуске под pythonw.exe
+    находит соседний python.exe в той же директории.
+    """
+    from utils.file_utils import get_python_cli_executable
+
+    fake_bin_dir = tmp_path / "runtime" / "python"
+    fake_bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_pythonw = fake_bin_dir / "pythonw.exe"
+    fake_python = fake_bin_dir / "python.exe"
+    fake_pythonw.touch()
+    fake_python.touch()
+
+    # Симулируем запуск под pythonw.exe
+    monkeypatch.setattr(sys, "executable", str(fake_pythonw))
+    resolved = get_python_cli_executable()
+    assert Path(resolved).resolve() == fake_python.resolve()
+    assert Path(resolved).name.lower() == "python.exe"
+

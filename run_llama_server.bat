@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal EnableDelayedExpansion
 chcp 65001 > nul
 title NeonRoute Local LLM Server (Universal Portable and Config Driven)

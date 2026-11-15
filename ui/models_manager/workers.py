@@ -16,6 +16,7 @@ import uuid
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from utils.file_utils import get_python_cli_executable
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent
 from PyQt6.QtGui import QMouseEvent
@@ -362,8 +363,9 @@ def resolve_torch_python(parent_widget=None) -> Optional[str]:
         return _GLOBAL_TORCH_PYTHON
 
     import sys
-    if verify_python(sys.executable):
-        _GLOBAL_TORCH_PYTHON = str(Path(sys.executable).resolve())
+    cli_python = get_python_cli_executable()
+    if verify_python(cli_python):
+        _GLOBAL_TORCH_PYTHON = str(Path(cli_python).resolve())
         return _GLOBAL_TORCH_PYTHON
 
     from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR
@@ -402,8 +404,8 @@ def resolve_torch_python(parent_widget=None) -> Optional[str]:
             _GLOBAL_TORCH_PYTHON = str(c.resolve())
             return _GLOBAL_TORCH_PYTHON
 
-    if verify_python(sys.executable):
-        return sys.executable
+    if verify_python(cli_python):
+        return cli_python
 
     if parent_widget is not None:
         from PyQt6.QtWidgets import QFileDialog

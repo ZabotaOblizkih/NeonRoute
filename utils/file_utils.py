@@ -38,3 +38,22 @@ def atomic_write_json(target_path: Path, data: Any, retries: int = 5, encoding: 
             except OSError:
                 pass
     return False
+
+
+def get_python_cli_executable() -> str:
+    """
+    Возвращает путь к консольному исполняемому файлу python.exe.
+    Если приложение запущено через pythonw.exe, находит соседний python.exe,
+    гарантируя корректное выполнение CLI-подпроцессов (pip, pytest, py_compile, скриптов).
+    """
+    import sys
+    exe = sys.executable
+    if not exe:
+        return "python"
+    p = Path(exe)
+    if p.name.lower() == "pythonw.exe":
+        candidate = p.with_name("python.exe")
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return str(p.resolve())
+

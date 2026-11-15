@@ -3,6 +3,7 @@ from typing import Optional, Any, Dict
 import configparser
 import logging
 import os
+import sys
 import re
 import string
 
@@ -307,7 +308,8 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
     """
     Формирует изолированную копию переменных окружения для запуска Forge.
     - Удаляет переменные окружения Python NeonRoute: VIRTUAL_ENV, PYTHONPATH, PYTHONHOME.
-    - Очищает активное виртуальное окружение из PATH, предотвращая
+    - Очищает активное виртуальное окружение и директорию интерпретатора NeonRoute
+      (включая runtime\\python, sys.executable parent и Scripts) из PATH, предотвращая
       подтягивание DLL и site-packages NeonRoute во встроенный Python Forge.
     - Сохраняет системные переменные Windows (SystemRoot, ComSpec, CUDA, Temp).
     """
@@ -318,30 +320,56 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
 
-    # 2. Очищаем PATH от записей активного venv
+    # 2. Очищаем PATH от записей активного venv и собственного Python NeonRoute
     raw_path = env.get("PATH", "")
     if raw_path:
         parts = raw_path.split(os.pathsep)
         cleaned_parts = []
 
-        # Нормализуем путь к venv для сравнения префиксов
-        venv_normalized = None
+        # Собираем префиксы каталогов Python NeonRoute для исключения
+        blocked_prefixes = []
+
         if venv_dir:
             try:
-                venv_normalized = str(Path(venv_dir).resolve()).lower()
+                blocked_prefixes.append(str(Path(venv_dir).resolve()).lower())
             except Exception:
                 pass
+
+        # Директория текущего интерпретатора NeonRoute (например, runtime\\python)
+        try:
+            exe_parent = str(Path(sys.executable).parent.resolve()).lower()
+            blocked_prefixes.append(exe_parent)
+        except Exception:
+            pass
+
+        # sys.prefix / sys.base_prefix
+        for prefix in (getattr(sys, "prefix", None), getattr(sys, "base_prefix", None)):
+            if prefix:
+                try:
+                    p_str = str(Path(prefix).resolve()).lower()
+                    if p_str not in blocked_prefixes:
+                        blocked_prefixes.append(p_str)
+                except Exception:
+                    pass
 
         for p in parts:
             if not p.strip():
                 continue
             try:
                 p_norm = str(Path(p).resolve()).lower()
-                # Удаляем путь если он внутри venv
-                if venv_normalized and (p_norm == venv_normalized or p_norm.startswith(venv_normalized + os.sep)):
+                # Удаляем путь если он совпадает с заблокированным или находится внутри него
+                is_blocked = False
+                for b_prefix in blocked_prefixes:
+                    if p_norm == b_prefix or p_norm.startswith(b_prefix + os.sep) or p_norm.startswith(b_prefix + "/"):
+                        is_blocked = True
+                        break
+                if is_blocked:
                     continue
-                # Страховка по вхождению .venv и bin/scripts NeonRoute
+
+                # Страховка по вхождению .venv, runtime/python и bin/scripts
                 if ".venv" in p_norm and ("scripts" in p_norm or "bin" in p_norm):
+                    continue
+                if ("runtime" + os.sep + "python") in p_norm or "runtime/python" in p_norm:
                     continue
             except Exception:
                 pass
@@ -350,4 +378,5 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
         env["PATH"] = os.pathsep.join(cleaned_parts)
 
     return env
+
 

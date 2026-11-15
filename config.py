@@ -6,6 +6,7 @@ Optimized for 8 GB VRAM (RTX 5050 / MSI Cyborg 15)
 import os
 from pathlib import Path
 from core.forge_locator import find_forge_root, resolve_forge_models_directory, parse_forge_launcher_args
+from utils.file_utils import get_python_cli_executable
 
 # Base Paths (Dynamically resolved relative to project root)
 BASE_DIR = Path(__file__).resolve().parent

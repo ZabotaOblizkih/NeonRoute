@@ -21,6 +21,7 @@ from typing import Set, Optional, Union, Tuple, List
 from dataclasses import dataclass
 
 from config import BASE_DIR, WORKSPACE_DIR, OUTPUTS_DIR, FORGE_ROOT_DIR
+from utils.file_utils import get_python_cli_executable
 
 logger = logging.getLogger("NeonRoute.SandboxManager")
 
@@ -321,7 +322,7 @@ class SandboxManager:
             
             if is_gui_app:
                 comp_proc = subprocess.run(
-                    [sys.executable, "-m", "py_compile", str(script_path)],
+                    [get_python_cli_executable(), "-m", "py_compile", str(script_path)],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -477,7 +478,7 @@ class SandboxManager:
                 )
 
                 gui_proc = subprocess.Popen(
-                    [sys.executable, "-c", monkey_patch_bootstrap, str(script_path)],
+                    [get_python_cli_executable(), "-c", monkey_patch_bootstrap, str(script_path)],
                     cwd=str(ws_dir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -541,7 +542,7 @@ class SandboxManager:
 
             import shlex
             cmd = [
-                sys.executable,
+                get_python_cli_executable(),
                 "-m",
                 "services.sandbox_runner",
                 str(script_path)
@@ -637,7 +638,7 @@ class SandboxManager:
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         try:
             proc = subprocess.run(
-                [sys.executable, "-m", "pytest", clean_name, "-v"],
+                [get_python_cli_executable(), "-m", "pytest", clean_name, "-v"],
                 cwd=ws_dir_str,
                 capture_output=True,
                 text=True,
@@ -902,7 +903,7 @@ class SandboxManager:
             env = dict(sys.modules.get("os", {}).environ or {})
             env["SDL_VIDEODRIVER"] = "dummy"  # Для headless проверки pygame, если доступно
             proc = subprocess.run(
-                [sys.executable, str(target)],
+                [get_python_cli_executable(), str(target)],
                 cwd=str(ws_dir),
                 capture_output=True,
                 text=True,

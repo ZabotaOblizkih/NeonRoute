@@ -9,9 +9,16 @@ echo          NeonRoute - Installation and Setup
 echo =======================================================
 echo.
 
-:: 1. Search for Python 3.10 or higher
-set "PYTHON_EXE="
+:: 1. Priority 1: Check for autonomous embedded Python runtime
+if exist "runtime\python\python.exe" (
+    set "PYTHON_BIN=runtime\python\python.exe"
+    set "IS_EMBEDDED=1"
+    echo [OK] Autonomous embedded Python runtime detected in .\r\nuntime\python\
+    goto :python_ready
+)
 
+:: 2. Priority 2: Fallback to searching system Python 3.10+
+set "PYTHON_EXE="
 for %%C in ("py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3" "python") do (
     %%~C -c "import sys; sys.exit(0 if sys.version_info[0] >= 3 and sys.version_info[1] >= 10 else 1)" >nul 2>&1
     if !ERRORLEVEL! EQU 0 (
@@ -26,54 +33,57 @@ if not defined PYTHON_EXE (
     echo Please install Python 3.10 or higher from https://www.python.org/
     echo Make sure to check Add Python to PATH during installation.
     echo =======================================================
-    pause
+    if not "%1"=="--unattended" if not defined CI pause
     exit /b 1
 )
 
 for /f "tokens=*" %%v in ('%PYTHON_EXE% --version 2^>^&1') do (
-    echo [OK] Found Python interpreter: %%v
+    echo [OK] Found system Python interpreter: %%v
 )
 
-:: 2. Create virtual environment
-if exist "venv\Scripts\python.exe" goto :venv_exists
-
-echo.
-echo [1/3] Creating virtual environment in .\venv ...
-%PYTHON_EXE% -m venv venv
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to create virtual environment.
-    pause
-    exit /b %ERRORLEVEL%
+:: 3. Create virtual environment for system Python fallback
+if exist "venv\Scripts\python.exe" (
+    echo.
+    echo [1/3] Virtual environment .\venv already exists. Updating packages...
+) else (
+    echo.
+    echo [1/3] Creating virtual environment in .\venv ...
+    %PYTHON_EXE% -m venv venv
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] Failed to create virtual environment.
+        if not "%1"=="--unattended" if not defined CI pause
+        exit /b !ERRORLEVEL!
+    )
+    echo [OK] Virtual environment created successfully.
 )
-echo [OK] Virtual environment created successfully.
-goto :upgrade_pip
+set "PYTHON_BIN=venv\Scripts\python.exe"
 
-:venv_exists
-echo.
-echo [1/3] Virtual environment .\venv already exists. Updating packages...
+:python_ready
+for /f "tokens=*" %%v in ('"%PYTHON_BIN%" --version 2^>^&1') do (
+    echo [OK] Active Python interpreter: %%v
+)
 
-:upgrade_pip
-:: 3. Upgrade pip
+:: 4. Check / Upgrade pip
 echo.
 echo [2/3] Checking and upgrading pip...
 if exist "wheels\" (
-    "venv\Scripts\python.exe" -m pip install --no-index --find-links=wheels --upgrade pip 2>nul
+    "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels --upgrade pip 2>nul
 ) else (
-    "venv\Scripts\python.exe" -m pip install --upgrade pip
+    "%PYTHON_BIN%" -m pip install --upgrade pip 2>nul
 )
 if %ERRORLEVEL% NEQ 0 (
     echo [WARNING] Pip upgrade skipped or warning encountered, continuing...
 )
 
-:: 4. Install dependencies
+:: 5. Install dependencies from requirements.txt
 echo.
 echo [3/3] Installing dependencies from requirements.txt...
 if exist "wheels\" (
     echo [OFFLINE] Found wheels directory. Installing from local cache...
-    "venv\Scripts\python.exe" -m pip install --no-index --find-links=wheels -r requirements.txt
+    "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels -r requirements.txt
 ) else (
     echo [ONLINE] Installing dependencies from PyPI...
-    "venv\Scripts\python.exe" -m pip install -r requirements.txt
+    "%PYTHON_BIN%" -m pip install -r requirements.txt
 )
 
 if %ERRORLEVEL% NEQ 0 (
@@ -81,7 +91,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Package installation failed.
     echo Please check network connection or wheels integrity and review the log above.
     echo =======================================================
-    pause
+    if not "%1"=="--unattended" if not defined CI pause
     exit /b %ERRORLEVEL%
 )
 
@@ -93,5 +103,5 @@ echo Launch options:
 echo   - run.bat       : standard silent launch without console
 echo   - run_debug.bat : launch with visible debug console
 echo =======================================================
-pause
+if not "%1"=="--unattended" if not defined CI pause
 exit /b 0

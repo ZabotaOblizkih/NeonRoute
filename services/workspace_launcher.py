@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 from config import WORKSPACE_DIR
 from services.sandbox_manager import SandboxManager
 from services.session_manager import SessionManager
+from utils.file_utils import get_python_cli_executable
 
 logger = logging.getLogger("NeonRoute.WorkspaceLauncher")
 
@@ -44,7 +45,7 @@ class WorkspaceLauncher:
             try:
                 clean_title = re.sub(r'["&|<>]', '', filename)
                 subprocess.Popen(
-                    ["cmd.exe", "/c", "start", f"{clean_title} — NeonRoute", "cmd.exe", "/k", sys.executable, str(p.resolve())],
+                    ["cmd.exe", "/c", "start", f"{clean_title} — NeonRoute", "cmd.exe", "/k", get_python_cli_executable(), str(p.resolve())],
                     cwd=str(ws_dir),
                     shell=False
                 )

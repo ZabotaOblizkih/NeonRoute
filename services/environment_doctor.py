@@ -7,6 +7,7 @@ import importlib.util
 from pathlib import Path
 from typing import List, Dict, Any
 from PyQt6.QtCore import QThread, pyqtSignal
+from utils.file_utils import get_python_cli_executable
 
 logger = logging.getLogger("NeonRoute.EnvironmentDoctor")
 
@@ -66,7 +67,7 @@ class PipInstallWorker(QThread):
         for pkg in self.packages:
             logger.info(f"[EnvironmentDoctor] Запуск установки pip: {pkg}...")
             self.progress.emit(f"Установка {pkg}...")
-            cmd = [sys.executable, "-m", "pip", "install", pkg]
+            cmd = [get_python_cli_executable(), "-m", "pip", "install", pkg]
             try:
                 proc = subprocess.Popen(
                     cmd,

@@ -14,6 +14,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -217,11 +219,82 @@ def run_test_gate(repo_root: Path, fast: bool = False) -> bool:
     return result.returncode == 0
 
 
+PORTABLE_PYTHON_URL = (
+    "https://github.com/astral-sh/python-build-standalone/releases/download/"
+    "20250106/cpython-3.10.16+20250106-x86_64-pc-windows-msvc-install_only.tar.gz"
+)
+PORTABLE_PYTHON_ARCHIVE_NAME = "cpython-3.10.16+20250106-x86_64-pc-windows-msvc-install_only.tar.gz"
+
+
+def ensure_embedded_python(repo_root: Path, target_runtime_dir: Path) -> bool:
+    """
+    Downloads and caches portable CPython 3.10 x64 (Astral python-build-standalone)
+    into .cache/portable_python/ and unpacks it into release_dir/runtime/python/.
+    """
+    cache_dir = repo_root / ".cache" / "portable_python"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = cache_dir / PORTABLE_PYTHON_ARCHIVE_NAME
+
+    if not archive_path.is_file():
+        print(f"Downloading portable Python runtime from:\n  {PORTABLE_PYTHON_URL}")
+        try:
+            req = urllib.request.Request(
+                PORTABLE_PYTHON_URL,
+                headers={"User-Agent": "NeonRoute-ReleaseBuilder"}
+            )
+            with urllib.request.urlopen(req) as resp, open(archive_path, "wb") as out_f:
+                total_len = resp.headers.get("Content-Length")
+                total = int(total_len) if total_len else 0
+                downloaded = 0
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    out_f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        pct = (downloaded / total) * 100
+                        print(
+                            f"\r  Progress: {downloaded / (1024*1024):.1f}/{total / (1024*1024):.1f} MB ({pct:.1f}%)",
+                            end="",
+                            flush=True
+                        )
+            print("\n  [OK] Download complete.")
+        except Exception as e:
+            print(f"\n  [ERROR] Failed to download portable Python: {e}")
+            if archive_path.exists():
+                archive_path.unlink()
+            return False
+    else:
+        print(f"Using cached portable Python archive:\n  {archive_path.resolve()}")
+
+    target_python_dir = target_runtime_dir / "python"
+    target_python_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Unpacking portable Python into:\n  {target_python_dir.resolve()} ...")
+
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.startswith("python/"):
+                    member.name = member.name[len("python/"):]
+                    if member.name:
+                        tar.extract(member, target_python_dir)
+        if not (target_python_dir / "python.exe").is_file():
+            print(f"  [ERROR] Unpacked runtime is missing python.exe in {target_python_dir}")
+            return False
+        print("  [OK] Portable Python runtime unpacked successfully.")
+        return True
+    except Exception as e:
+        print(f"  [ERROR] Failed to unpack portable Python: {e}")
+        return False
+
+
 def assemble_release(
     repo_root: Path,
     version: str,
     with_tests: bool = False,
-    bundle_wheels: bool = False
+    bundle_wheels: bool = False,
+    no_embedded_python: bool = False
 ) -> Tuple[Path, Path]:
     """
     Stage C: Assembles sterile release directory and packs into zip archive.
@@ -327,8 +400,17 @@ def assemble_release(
             "-d", str(wheels_dir)
         ], check=True)
 
-    # 9. Pack to ZIP archive
-    print(f"Compressing into ZIP archive: {zip_path.name}")
+    # 9. Autonomous Embedded Python Runtime
+    if not no_embedded_python:
+        print("\nEmbedding autonomous portable Python runtime...")
+        ok = ensure_embedded_python(repo_root, release_dir / "runtime")
+        if not ok:
+            raise RuntimeError("Failed to bundle autonomous portable Python runtime.")
+    else:
+        print("\n[INFO] Bundling of embedded Python runtime skipped (--no-embedded-python).")
+
+    # 10. Pack to ZIP archive
+    print(f"\nCompressing into ZIP archive: {zip_path.name}")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _, files in os.walk(release_dir):
             for file in files:
@@ -362,6 +444,7 @@ def main():
     parser.add_argument("--fast", action="store_true", help="Run fast test suite subset for quick build verification")
     parser.add_argument("--with-tests", action="store_true", help="Include tests/ folder in the release package (default: excluded)")
     parser.add_argument("--bundle-wheels", action="store_true", help="Download offline wheels package into release/wheels/")
+    parser.add_argument("--no-embedded-python", action="store_true", help="Exclude bundled portable Python runtime from release package")
     args = parser.parse_args()
 
     version = config.APP_VERSION
@@ -403,7 +486,8 @@ def main():
         REPO_ROOT,
         version=version,
         with_tests=args.with_tests,
-        bundle_wheels=args.bundle_wheels
+        bundle_wheels=args.bundle_wheels,
+        no_embedded_python=args.no_embedded_python
     )
 
     dir_size_mb = sum(f.stat().st_size for f in release_dir.rglob("*") if f.is_file()) / (1024 * 1024)
