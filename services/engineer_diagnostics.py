@@ -252,6 +252,19 @@ def diagnose_runtime_error(raw_error: str) -> str:
             "и обновляй положение на холсте через canvas.coords(self.ball, x1, y1, x2, y2) или canvas.move(self.ball, dx, dy)."
         )
 
+    if "module 'tkinter' has no attribute" in raw_error or 'module "tkinter" has no attribute' in raw_error:
+        hints.append(
+            "💡 [Диагностика NeonRoute]: В Tkinter нет констант клавиш вроде tk.SPACE или tk.LEFT.\n"
+            "Привязывай клавиши строковыми событиями: '<space>', '<Left>', '<Right>', '<Up>', '<Down>', '<Return>'."
+        )
+
+    if "'method' object is not subscriptable" in raw_error or '"method" object is not subscriptable' in raw_error:
+        hints.append(
+            "💡 [Диагностика NeonRoute]: Конфликт имён с tk.Tk.keys().\n"
+            "У объекта окна tk.Tk уже есть встроенный метод .keys(). "
+            "Не называй свой словарь состояний клавиш self.keys (используй self.pressed_keys или self.key_states)."
+        )
+
     if "не найдены валидные маркеры SEARCH/REPLACE" in raw_error.lower() or "искомый блок кода не найден" in raw_error.lower():
         hints.append(
             "💡 [Диагностика NeonRoute]: Ошибка в блоке SEARCH для patch_file.\n"

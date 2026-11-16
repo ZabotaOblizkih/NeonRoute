@@ -57,6 +57,41 @@ class EngineerContext:
     """Утилиты анализа файлов, контекста и песочницы для инженера NeonRoute."""
 
     @staticmethod
+    def _resolve_interactive_loop_format(text: str) -> Optional[str]:
+        """
+        Единая логика выбора между pygame и tkinter строго по границе начала слова:
+        Приоритет 1 — явный фреймворк.
+        Приоритет 2 — игра vs десктопная форма/утилита.
+        """
+        t = (text or "").lower()
+        # Приоритет 1 — явный фреймворк:
+        if re.search(r'(?<![а-яёa-z0-9_])(?:tkinter|customtkinter|ttk|tk|pyqt\d*|pyside\d*)(?![а-яёa-z0-9_])', t):
+            return "tkinter"
+        if re.search(r'(?<![а-яёa-z0-9_])pygame(?![а-яёa-z0-9_])', t):
+            return "pygame"
+
+        # Приоритет 2 — игра vs десктопная форма/утилита:
+        # Игровые слова (проверяются раньше кнопк*):
+        if re.search(r'(?<![а-яёa-z0-9_])(?:игр[а-яё]*|марио|mario|платформер[а-яё]*|аркад[а-яё]*|шутер[а-яё]*|кликер[а-яё]*|арканоид[а-яё]*|змейк[а-яё]*|тетрис[а-яё]*|2d|спрайт[а-яё]*|враг[а-яё]*|монет[а-яё]*)', t):
+            return "pygame"
+
+        # Десктопные утилиты / формы:
+        if re.search(r'(?<![а-яёa-z0-9_])(?:калькулятор[а-яё]*|конвертер[а-яё]*|таймер[а-яё]*|секундомер[а-яё]*|замет[а-яё]*|блокнот[а-яё]*|форм(?:а|ы|у|е|ой|ами)?|виджет[а-яё]*|оконн[а-яё]*\s+приложени[а-яё]*|gui\s+приложени[а-яё]*|кноп(?:ка|ки|ку|ке|кой|ок)[а-яё]*)', t):
+            return "tkinter"
+
+        return None
+
+    @staticmethod
+    def _is_word_text(text: str) -> bool:
+        t = (text or "").lower()
+        return bool(re.search(r'(?<![а-яёa-z0-9_])(?:\.docx?|word|ворд[а-яё]*|договор[а-яё]*|приказ[а-яё]*)', t))
+
+    @staticmethod
+    def _is_excel_text(text: str) -> bool:
+        t = (text or "").lower()
+        return bool(re.search(r'(?<![а-яёa-z0-9_])(?:\.xlsx?|excel|эксель[а-яё]*)', t))
+
+    @staticmethod
     def normalize_artifact_format(
         raw_val: str,
         task_text: str = "",
@@ -69,58 +104,42 @@ class EngineerContext:
             return val
         t = (task_text or "").lower()
 
-        # 1. Точные форматы, запрашиваемые Архитектором
-        if val == "interactive_loop":
-            if any(w in t for w in ("tkinter", "tk", "ttk", "pyqt", "pyside", "калькулятор", "кнопк", "форма")):
-                return "tkinter"
-            return "pygame"
-        if val == "batch_artifact":
-            if any(w in t for w in (".docx", "word", "ворд", "договор", "приказ")):
+        # 1. Интерактивные циклы (игры и GUI): точные форматы Архитектора и синонимы
+        if val in ("interactive_loop", "gui_app", "gui", "game", "2d_game") or skill_id == "interactive_loop":
+            loop_fmt = EngineerContext._resolve_interactive_loop_format(t)
+            return loop_fmt if loop_fmt else "pygame"
+
+        # 2. Документы и таблицы (batch_artifact)
+        if val in ("batch_artifact", "document", "docs", "doc", "spreadsheet", "table") or skill_id == "batch_artifact":
+            if EngineerContext._is_word_text(t):
                 return "word"
             return "excel"
-        if val == "pure_logic_tdd":
+
+        # 3. Чистая логика и TDD
+        if val == "pure_logic_tdd" or skill_id == "pure_logic_tdd":
             return "module"
-        if val in ("cli_automation", "service_backend"):
+
+        # 4. Автоматизация CLI и фоновые сервисы
+        if val in ("cli_automation", "service_backend", "cli_tool", "cli_script", "script", "console"):
             return "cli"
 
-        # 2. Синонимы и общие категории
-        if val in ("document", "docs", "doc", "spreadsheet", "table"):
-            if any(w in t for w in (".docx", "word", "ворд", "договор", "приказ")):
-                return "word"
-            return "excel"
-        if val in ("gui_app", "gui", "game", "2d_game"):
-            if any(w in t for w in ("tkinter", "tk", "ttk", "canvas", "калькулятор", "pyqt", "pyside", "кнопк", "форма")):
-                return "tkinter"
-            return "pygame"
-        if val in ("cli_tool", "cli_script", "script", "console"):
-            return "cli"
         if has_verification_script:
             return "module"
 
-        # 3. Сопоставление с ближайшим форматом по ключевым словам (превалирует над общим "module")
-        if any(k in t for k in (".xlsx", ".xls", "excel", "эксель")):
+        # 5. Сопоставление с ближайшим форматом по ключевым словам без совпадения val
+        if EngineerContext._is_excel_text(t):
             return "excel"
-        if any(k in t for k in (".docx", ".doc", "word", "ворд")):
+        if EngineerContext._is_word_text(t):
             return "word"
-        if any(k in t for k in ("tkinter", "customtkinter", "pyqt", "pyside", "ttk", "tk", "калькулятор", "кнопк", "форма")):
-            return "tkinter"
-        if any(k in t for k in ("pygame", "игра", "игры", "марио", "mario", "платформер", "аркада", "шутер", "кликер", "арканоид", "змейк", "тетрис", "2d", "gui приложение")):
-            return "pygame"
+
+        # Интерактивные маркеры проверяются ДО общего "класс"/"модуль"
+        loop_fmt = EngineerContext._resolve_interactive_loop_format(t)
+        if loop_fmt:
+            return loop_fmt
+
         if val in ("module", "library", "algo", "algorithm", "data_structure"):
             return "module"
-        if any(k in t for k in ("модуль", "module", "класс", "структур", "алгоритм")):
-            return "module"
-
-        # 4. Фоллбэк по переданному skill_id
-        if skill_id == "interactive_loop":
-            if any(w in t for w in ("tkinter", "tk", "ttk", "pyqt", "pyside", "калькулятор", "кнопк", "форма")):
-                return "tkinter"
-            return "pygame"
-        if skill_id == "batch_artifact":
-            if any(w in t for w in (".docx", "word", "ворд", "договор", "приказ")):
-                return "word"
-            return "excel"
-        if skill_id == "pure_logic_tdd":
+        if re.search(r'(?<![а-яёa-z0-9_])(?:модул[а-яё]*|module|класс[а-яё]*|структур[а-яё]*|алгоритм[а-яё]*)', t):
             return "module"
 
         return "cli"
