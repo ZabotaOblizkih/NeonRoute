@@ -588,15 +588,16 @@ class SubagentEngineer:
                 clean_summary = ToolEngine.strip_tool_tags(response_text).strip() if hasattr(ToolEngine, "strip_tool_tags") else response_text.strip()
                 if turn < max_turns and not is_analysis:
                     target_fn_hint = target_entry_file or target_artifact or 'app.py'
-                    retry_msg = (
-                        f"Ошибка применения replace_symbol:\n{last_error}\nИсправь параметры или код узла."
-                        if "replace_symbol" in (last_error or "") else
-                        (
+                    if "replace_symbol" in (last_error or ""):
+                        retry_msg = f"Ошибка применения replace_symbol:\n{last_error}\nИсправь параметры или код узла."
+                    else:
+                        retry_msg = (
                             f"В ответе отсутствуют созданные файлы или вызовы инструментов. Оформи полный код через "
                             f"<<TOOL:write_file filename=\"{target_fn_hint}\">>код<</TOOL:write_file>> "
                             f"и запусти его через <<TOOL:run_script filename=\"{target_fn_hint}\">>."
                         )
-                    )
+                        if last_error:
+                            retry_msg += f"\n\nТекущая ошибка, которую нужно устранить:\n{last_error[:600]}"
                     messages = [
                         messages[0],
                         messages[1],
@@ -1373,8 +1374,46 @@ class SubagentEngineer:
                     is_solid, substance_err = ToolEngine.check_artifact_substance(target_file, min_bytes=350)
                     if not is_solid:
                         logger.warning(f"🚨 [SubstanceGuard REJECT] Файл забракован: {substance_err}")
+                        current_fp = extract_error_fingerprint(substance_err)
+                        if current_fp and current_fp == last_error_fingerprint:
+                            consecutive_same_error_count += 1
+                            logger.warning(f"⚠️ [Детектор зацикливания] Повторение ошибки ({consecutive_same_error_count}/{max_same_error_retries}): {current_fp}")
+                        else:
+                            consecutive_same_error_count = 1
+                            last_error_fingerprint = current_fp
+
+                        if consecutive_same_error_count >= max_same_error_retries:
+                            loop_report = (
+                                f"⛔ [Останов по зацикливанию]: Инженер {max_same_error_retries} раза подряд наступил на идентичную ошибку:\n"
+                                f"«{current_fp}»\n\n"
+                                f"Автоматическое исправление остановлено для предотвращения деградации кода.\n"
+                                f"Детали последней ошибки:\n{substance_err}"
+                            )
+                            logger.error(loop_report)
+                            GitSandboxManager.record_failure(
+                                ws_dir=ws_dir,
+                                task_title=task_prompt,
+                                turn=turn,
+                                error_msg=substance_err or "Loop detected"
+                            )
+                            SubagentEngineer._rollback_workspace(ws_dir, file_backups)
+                            return {
+                                "success": False,
+                                "artifact_path": None,
+                                "file_name": target_entry_file or "",
+                                "stdout": stdout,
+                                "stderr": substance_err,
+                                "summary": loop_report
+                            }
+
+                        SubagentEngineer._rollback_workspace(ws_dir, file_backups)
                         diag_msg = f"Файл '{target_file.name}' забракован: {substance_err}. Запрещены пустые заглушки! Напиши полную реализацию."
-                        messages.append({"role": "user", "content": diag_msg})
+                        messages = [
+                            messages[0],
+                            messages[1],
+                            {"role": "assistant", "content": clean_summary or f"Исправляю реализацию {target_file.name}."},
+                            {"role": "user", "content": _build_goal_anchor(diag_msg)}
+                        ]
                         continue
                     else:
                         logger.info(f"✅ [SubstanceGuard PASS] Артефакт '{target_file.name}' прошёл валидацию.")

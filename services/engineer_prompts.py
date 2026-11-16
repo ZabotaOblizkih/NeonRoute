@@ -10,8 +10,11 @@ from typing import Dict, List, Optional
 # Сопоставление имени импорта с реальным именем пакета в PyPI / pip
 PACKAGE_PIP_MAP: Dict[str, str] = {
     "docx": "python-docx",
+    "python_docx": "python-docx",
     "cv2": "opencv-python",
+    "cv": "opencv-python",
     "PIL": "pillow",
+    "pil": "pillow",
     "yaml": "pyyaml",
     "bs4": "beautifulsoup4",
     "fitz": "pymupdf",

@@ -385,7 +385,7 @@ class CodeValidator:
                         if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str))
                     ]
                     if len(stmts) == 1:
-                        allowed_pass_prefixes = ("on_", "handle_", "__init__", "noop")
+                        allowed_pass_prefixes = ("__init__", "noop")
                         is_allowed_pass = any(node.name.startswith(pfx) or node.name == pfx.rstrip("_") for pfx in allowed_pass_prefixes)
                         if isinstance(stmts[0], ast.Pass) and not is_allowed_pass:
                             return False, (

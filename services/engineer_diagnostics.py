@@ -178,25 +178,33 @@ def diagnose_runtime_error(raw_error: str) -> str:
     m_mod = re.search(r"No module named ['\"]([^'\"]+)['\"]", raw_error)
     if m_mod:
         missing_mod = m_mod.group(1).split('.')[0]
-        ws_dir = SandboxManager.get_workspace_dir()
-        if (ws_dir / f"{missing_mod}.py").is_file():
-            hints.append(
-                f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' — это локальный файл проекта ({missing_mod}.py).\n"
-                f"Убедись, что файл импортируется корректно без опечаток: import {missing_mod}."
-            )
+        if missing_mod.lower() == "pil":
+            hints.append("💡 [Диагностика NeonRoute]: Модуль называется PIL (заглавными буквами). Используй: from PIL import Image или import PIL.")
+        elif missing_mod.lower() == "cv":
+            hints.append("💡 [Диагностика NeonRoute]: В Python библиотека OpenCV импортируется как cv2: import cv2.")
         else:
-            pip_pkg = resolve_pip_package(missing_mod)
-            if pip_pkg:
+            ws_dir = SandboxManager.get_workspace_dir()
+            if (ws_dir / f"{missing_mod}.py").is_file():
                 hints.append(
-                    f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' не установлен в окружении.\n"
-                    f"Установка через pip во время теста невозможна. "
-                    f"Если задачу можно решить средствами стандартной библиотеки — перепиши код без '{missing_mod}'. "
-                    f"Если библиотека строго необходима — сохрани корректный код для пакета '{pip_pkg}'."
+                    f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' — это локальный файл проекта ({missing_mod}.py).\n"
+                    f"Убедись, что файл импортируется корректно без опечаток: import {missing_mod}."
                 )
             else:
-                hints.append(
-                    f"💡 [Диагностика NeonRoute]: Отсутствует локальный модуль '{missing_mod}'. Создай файл '{missing_mod}.py' с требуемыми классами/функциями через <<TOOL:write_file filename=\"{missing_mod}.py\">>."
-                )
+                pip_pkg = resolve_pip_package(missing_mod)
+                if pip_pkg:
+                    hints.append(
+                        f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' не установлен в окружении.\n"
+                        f"Установка через pip во время теста невозможна. "
+                        f"Если задачу можно решить средствами стандартной библиотеки — перепиши код без '{missing_mod}'. "
+                        f"Если библиотека строго необходима — сохрани корректный код для пакета '{pip_pkg}'."
+                    )
+                else:
+                    hints.append(
+                        f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' не найден в рабочей папке и не входит в установленные пакеты. "
+                        f"Если это сторонняя библиотека — НЕ создавай фейковый файл '{missing_mod}.py', а проверь опечатку в import "
+                        f"или перепиши логику на стандартную библиотеку / доступные пакеты. "
+                        f"Создавать '{missing_mod}.py' допустимо только если это твой собственный внутренний модуль проекта."
+                    )
 
     if "'_Cell' object has no attribute 'font'" in raw_error or "'_Cell' object has no attribute 'fill'" in raw_error:
         hints.append(
@@ -289,6 +297,41 @@ def diagnose_runtime_error(raw_error: str) -> str:
         hints.append(
             "💡 [Диагностика NeonRoute]: В openpyxl нет метода write(). Используй:\n"
             "ws.cell(row=r, column=c).value = значение или ws['A1'].value = значение."
+        )
+
+    if "pygame.error" in raw_error and any(k in raw_error.lower() for k in ("couldn't open", "no such file", "unable to open", "file not found", "failed loading")):
+        hints.append(
+            "💡 [Диагностика NeonRoute]: Ошибка загрузки ресурса в Pygame (pygame.error).\n"
+            "В автономной песочнице нет внешних файлов картинок (.png), шрифтов (.ttf) или звуков (.wav).\n"
+            "Рисуй игровые объекты примитивами (pygame.draw.rect, pygame.draw.circle, pygame.draw.polygon, pygame.Surface) "
+            "и используй системные шрифты: pygame.font.SysFont(None, 32)."
+        )
+
+    if "PermissionError" in raw_error:
+        hints.append(
+            "💡 [Диагностика NeonRoute]: Ошибка доступа к файлу (PermissionError).\n"
+            "Файл заблокирован (возможно, открыт в Excel/Word) либо путь недоступен для записи. "
+            "Сохраняй файл в текущую рабочую папку под новым или безопасным именем."
+        )
+
+    if re.search(r"missing \d+ required positional|takes \d+ positional|unexpected keyword argument", raw_error):
+        hints.append(
+            "💡 [Диагностика NeonRoute]: Ошибка сигнатуры функции/метода (TypeError).\n"
+            "Несоответствие аргументов вызова и объявления функции/метода. "
+            "Сверь список параметров в def (включая self) с аргументами в точке вызова."
+        )
+
+    if "AttributeError:" in raw_error and "has no attribute" in raw_error:
+        hints.append(
+            "💡 [Диагностика NeonRoute]: Ошибка обращения к атрибуту (AttributeError).\n"
+            "Обращение к несуществующему полю/методу объекта. "
+            "Проверь инициализацию всех атрибутов в __init__ и точное имя метода."
+        )
+
+    if "IndexError" in raw_error:
+        hints.append(
+            "💡 [Диагностика NeonRoute]: Ошибка индексации (IndexError).\n"
+            "Выход за границы списка/коллекции. Проверяй len(...) и непустоту списка перед обращением по индексу."
         )
 
     if not hints:
