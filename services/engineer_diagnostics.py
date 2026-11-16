@@ -105,15 +105,19 @@ def extract_error_fingerprint(output: str) -> str:
 
     # Стандартный Python Traceback: ищем последний File "...", line X и финальное исключение
     file_line = ""
+    file_name = ""
     for line in reversed(lines):
         m = re.search(r'File\s+["\']([^"\']+)["\'],\s+line\s+(\d+)', line)
         if m:
             fname = Path(m.group(1)).name
             if fname not in ("sandbox_runner.py", "sandbox_guard.py", "runpy.py"):
+                file_name = fname
                 file_line = f"{fname}:{m.group(2)}"
                 break
 
     last_line = lines[-1][:150]
+    if ("ModuleNotFoundError" in last_line or "ImportError" in last_line) and file_name:
+        return f"{file_name}::{last_line}"
     return f"{file_line}::{last_line}" if file_line else last_line
 
 
@@ -209,10 +213,10 @@ def diagnose_runtime_error(raw_error: str) -> str:
                     )
                 else:
                     hints.append(
-                        f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' не найден в рабочей папке и не входит в установленные пакеты. "
-                        f"Если это сторонняя библиотека — НЕ создавай фейковый файл '{missing_mod}.py', а проверь опечатку в import "
-                        f"или перепиши логику на стандартную библиотеку / доступные пакеты. "
-                        f"Создавать '{missing_mod}.py' допустимо только если это твой собственный внутренний модуль проекта."
+                        f"💡 [Диагностика NeonRoute]: Модуль '{missing_mod}' не найден в рабочей папке и не входит в установленные пакеты.\n"
+                        f"- Либо реализуй нужные классы и функции прямо внутри основного файла и убери `import {missing_mod}`,\n"
+                        f"- либо создай недостающий файл '{missing_mod}.py' через `<<TOOL:write_file filename=\"{missing_mod}.py\">>` (если это собственный модуль проекта).\n"
+                        f"Если это сторонняя библиотека — НЕ создавай фейковый файл '{missing_mod}.py', а перепиши логику на стандартную библиотеку / доступные пакеты."
                     )
 
     if "'_Cell' object has no attribute 'font'" in raw_error or "'_Cell' object has no attribute 'fill'" in raw_error:

@@ -114,6 +114,7 @@ ENGINEER_SKILLS: Dict[str, Dict[str, Any]] = {
         ),
         "worker_rules": (
             "- Целевой файл по умолчанию game.py (для игр) или app.py (для GUI).\n"
+            "- Если целевой файл один (game.py или app.py), реализуй ВСЕ классы прямо внутри него. Запрещено импортировать несуществующие локальные модули ('from player import Player'), если ты не создаёшь эти файлы в этом же ответе через <<TOOL:write_file>>.\n"
             "- Обязательный блок if __name__ == '__main__': с созданием объектов и запуском игрового цикла с самого первого хода.\n"
             "- Для Pygame: pygame.init(), окно pygame.display.set_mode(), цикл clock.tick(60), опрос pygame.event.get(), pygame.display.flip() или update().\n"
             "- Прямой запрет pygame.time.delay() и time.sleep() внутри jump(), move() и основного цикла (анимация и физика только через скорости, гравитацию и clock.tick).\n"

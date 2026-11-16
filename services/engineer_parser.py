@@ -52,7 +52,7 @@ class EngineerResponseParser:
 
         # 1. Парсинг через теги write_file
         write_blocks = []
-        write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\']\s*>>?[\r\n]*(?P<content>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+|$)'
+        write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\']\s*>>?[\r\n]*(?P<content>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+|(?=<<TOOL:write_file\b)|$)'
         for m in re.finditer(write_pattern, response_text, flags=re.DOTALL | re.IGNORECASE):
             fn = m.group("filename").strip().strip("'\"`")
             cnt = m.group("content").strip()
@@ -286,21 +286,29 @@ class EngineerResponseParser:
                     return f"{stem}_{idx}{ext}"
                 return base
 
-            has_named_blocks = bool(re.search(r'```[a-zA-Z0-9_\-]*\s+(?:filename|file)=', response_text, re.IGNORECASE))
-            if has_named_blocks:
-                md_pattern = r'```(?:(?P<lang>[a-zA-Z0-9_\-]+))?(?:\s+(?:filename|file)=["\']?(?P<fn>[^\s"\'>]+)["\']?|:(?P<fn2>[^\s\r\n]+))?\s*[\r\n]+(?P<code>[\s\S]*?)(?:```|$)'
-                for m in re.finditer(md_pattern, response_text, re.IGNORECASE):
-                    lang = (m.group("lang") or "").lower()
-                    fn_hint = (m.group("fn") or m.group("fn2") or "").strip()
-                    c_body = m.group("code").strip()
-                    is_code_block = bool(c_body) and ((bool(fn_hint) and lang in ("python", "py", "python3")) or _has_py_indicators(c_body))
-                    if is_code_block:
-                        if not fn_hint:
-                            fn_hint = _extract_hint_from_context(m.start(), c_body)
-                        target_fn = _resolve_target_fn(c_body, fn_hint, used_target_files)
-                        used_target_files.add(target_fn)
-                        actions.write_blocks.append((target_fn, c_body))
-                        logger.info(f"[SubagentEngineer] Перехвачен код из Markdown для {target_fn}")
+            parsed_md_blocks = []
+            md_pattern = r'```(?:(?P<lang>[a-zA-Z0-9_\-]+))?(?:\s+(?:filename|file)=["\']?(?P<fn>[^\s"\'>]+)["\']?|:(?P<fn2>[^\s\r\n]+))?\s*[\r\n]+(?P<code>[\s\S]*?)(?:```|$)'
+            for m in re.finditer(md_pattern, response_text, re.IGNORECASE):
+                lang = (m.group("lang") or "").lower()
+                explicit_fn = (m.group("fn") or m.group("fn2") or "").strip()
+                c_body = m.group("code").strip()
+                is_code_block = bool(c_body) and ((bool(explicit_fn) and lang in ("python", "py", "python3")) or _has_py_indicators(c_body))
+                if is_code_block:
+                    fn_hint = explicit_fn
+                    if not fn_hint:
+                        fn_hint = _extract_hint_from_context(m.start(), c_body)
+                    parsed_md_blocks.append((bool(explicit_fn), fn_hint, c_body))
+
+            has_explicit_named = any(is_named for is_named, _, _ in parsed_md_blocks)
+            has_multiple_hinted = len({hint.lower() for _, hint, _ in parsed_md_blocks if hint}) >= 2
+            has_single_named_hint = len(parsed_md_blocks) == 1 and bool(parsed_md_blocks[0][1])
+
+            if has_explicit_named or has_multiple_hinted or has_single_named_hint:
+                for _, fn_hint, c_body in parsed_md_blocks:
+                    target_fn = _resolve_target_fn(c_body, fn_hint, used_target_files)
+                    used_target_files.add(target_fn)
+                    actions.write_blocks.append((target_fn, c_body))
+                    logger.info(f"[SubagentEngineer] Перехвачен код из Markdown для {target_fn}")
 
             if not actions.write_blocks:
                 orig_cnt = None
