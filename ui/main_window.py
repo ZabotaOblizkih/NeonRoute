@@ -139,13 +139,24 @@ class MainWindow(
 
         # Wallpaper & Dimming settings (MainWindow background rendering)
         from ui.common.image_utils import load_display_master_pixmap
+        from config import DEFAULT_BACKGROUND_PATH, BACKGROUNDS_DIR, CANONICAL_BACKGROUND_NAME
         self.background_path: Optional[str] = self.app_config.get("background_path", None)
         self.background_dim_opacity: int = self.app_config.get("background_dim_opacity", 140)
-        self.background_pixmap: Optional[QPixmap] = None
+
+        # Выбираем активный фон: кастомный из конфига или защищённый системный по умолчанию
+        active_bg_path: Optional[str] = None
         if self.background_path and Path(self.background_path).exists():
-            self.background_pixmap = load_display_master_pixmap(self.background_path)
+            active_bg_path = self.background_path
+        elif DEFAULT_BACKGROUND_PATH.exists():
+            active_bg_path = str(DEFAULT_BACKGROUND_PATH)
+        elif (BACKGROUNDS_DIR / CANONICAL_BACKGROUND_NAME).exists():
+            active_bg_path = str(BACKGROUNDS_DIR / CANONICAL_BACKGROUND_NAME)
+
+        self.background_pixmap: Optional[QPixmap] = None
         self._bg_render_cache: Optional[QPixmap] = None
-        self._update_background_cache()
+        self._active_bg_path: Optional[str] = active_bg_path
+        if active_bg_path and Path(active_bg_path).exists():
+            QTimer.singleShot(0, self._load_initial_background)
 
         self._log_console_dialog: Optional[LogConsoleDialog] = None
 
@@ -574,6 +585,15 @@ class MainWindow(
         # Character Gallery signal from Sidebar
         if hasattr(self, "sidebar") and hasattr(self.sidebar, "character_gallery_requested"):
             self.sidebar.character_gallery_requested.connect(self._import_character)
+
+    def _load_initial_background(self):
+        """Отложенная загрузка системного или кастомного фона для мгновенного отклика UI."""
+        if getattr(self, "_active_bg_path", None) and Path(self._active_bg_path).exists():
+            if self.background_pixmap is None:
+                from ui.common.image_utils import load_display_master_pixmap
+                self.background_pixmap = load_display_master_pixmap(self._active_bg_path)
+                self._update_background_cache()
+                self.update()
 
     def _start_background_services(self):
         self.task_queue.start()

@@ -151,8 +151,12 @@ class BackgroundSettingsDialog(QDialog):
 
     def _get_status_text(self) -> str:
         if self._current_path and Path(self._current_path).exists():
-            return f"Активный файл: {Path(self._current_path).name}"
-        return "Текущий фон: Стандартный темный"
+            from config import DEFAULT_BACKGROUND_PATH, CANONICAL_BACKGROUND_NAME
+            p_name = Path(self._current_path).name
+            if p_name in ("default_background.jpg", CANONICAL_BACKGROUND_NAME):
+                return "Текущий фон: Стандартный (NeonRoute)"
+            return f"Активный файл: {p_name}"
+        return "Текущий фон: Стандартный (NeonRoute)"
 
     def _choose_image(self):
         file_path, _ = QFileDialog.getOpenFileName(

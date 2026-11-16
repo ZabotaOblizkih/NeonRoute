@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QApplication
+    QPushButton, QApplication, QSizePolicy
 )
 
 def _get_selectable_text_browser():
@@ -262,6 +262,8 @@ class ConsoleOutputSpoilerWidget(QFrame):
 
 
 class GenerationInfoAccordionWidget(QWidget):
+    toggled = pyqtSignal(bool)
+
     def __init__(self, params: dict, max_width: Optional[int] = None, parent=None):
         super().__init__(parent)
         self.params = params or {}
@@ -271,8 +273,11 @@ class GenerationInfoAccordionWidget(QWidget):
 
     def _setup_ui(self):
         self.setStyleSheet("background: transparent; border: none;")
-        self.setMinimumWidth(420)
-        self.setMaximumWidth(520)
+        self.setMinimumWidth(320)
+        if self.max_width:
+            self.setMaximumWidth(self.max_width)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 2)
@@ -447,6 +452,86 @@ class GenerationInfoAccordionWidget(QWidget):
         self.content_frame.setVisible(self.is_expanded)
         arrow = "▾" if self.is_expanded else "▸"
         self.toggle_btn.setText(f"ℹ️ Инфо генерации {arrow}")
+        self.updateGeometry()
+        self.toggled.emit(self.is_expanded)
+
+    def update_adaptive_palette(self, palette: dict):
+        if not palette:
+            return
+        card_bg = palette.get("card", "#1E293B")
+        card_hover = palette.get("card_hover", "#334155")
+        accent = palette.get("accent", "#00F0FF")
+        card_border = palette.get("card_border", "#334155")
+        text_sec = palette.get("text_secondary", "#94A3B8")
+        text_pri = palette.get("text_primary", "#F8FAFC")
+        term_bg = palette.get("terminal_bg", "#0F172A")
+
+        self.toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {card_bg};
+                color: {accent};
+                border: 1px solid {card_border};
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 600;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                background-color: {card_hover};
+                border-color: {accent};
+            }}
+        """)
+        self.content_frame.setStyleSheet(f"""
+            QFrame#GenInfoContent {{
+                background-color: {term_bg};
+                border: 1px solid {card_border};
+                border-left: 3px solid {accent};
+                border-radius: 8px;
+                padding: 6px;
+            }}
+            QLabel {{
+                color: {text_sec};
+                font-size: 11px;
+                background: transparent;
+                border: none;
+            }}
+        """)
+        btn_copy_qss = f"""
+            QPushButton {{
+                background-color: {card_bg};
+                color: {accent};
+                border: 1px solid {card_border};
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 10px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: {card_hover};
+                border-color: {accent};
+            }}
+        """
+        if hasattr(self, "btn_copy_prompt") and self.btn_copy_prompt:
+            self.btn_copy_prompt.setStyleSheet(btn_copy_qss)
+        if hasattr(self, "btn_copy_neg") and self.btn_copy_neg:
+            self.btn_copy_neg.setStyleSheet(btn_copy_qss)
+
+        browser_qss = f"""
+            QTextBrowser {{
+                background-color: rgba(10, 14, 23, 0.7);
+                color: {text_pri};
+                font-family: Consolas, 'Courier New', monospace;
+                font-size: 11px;
+                border: 1px solid {card_border};
+                border-radius: 6px;
+                padding: 6px;
+            }}
+        """
+        if hasattr(self, "prompt_browser") and self.prompt_browser:
+            self.prompt_browser.setStyleSheet(browser_qss)
+        if hasattr(self, "neg_browser") and self.neg_browser:
+            self.neg_browser.setStyleSheet(browser_qss)
 
     def _copy_prompt(self):
         prompt = self.params.get("positive_prompt", "")

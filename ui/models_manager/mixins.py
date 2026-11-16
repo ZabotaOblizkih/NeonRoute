@@ -462,6 +462,10 @@ class ModelPipelineFormMixin:
         for w in widgets_to_block:
             w.blockSignals(False)
 
+        for s in (self.slider_steps, self.slider_cfg, self.slider_hires_denoise, self.slider_clip_skip):
+            if hasattr(s, "_adjustHandlePos"):
+                s._adjustHandlePos()
+
         self._update_fp8_button_state()
 
     def _populate_table(self):

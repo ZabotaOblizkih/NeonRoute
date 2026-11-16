@@ -180,39 +180,47 @@ def test_models_manager_preset_selection(qapp, isolated_storage):
 
 
 def test_models_manager_slider_spinbox_sync(qapp, isolated_storage):
-    """Проверяет двустороннюю синхронизацию слайдеров и спинбоксов."""
+    """Проверяет двустороннюю синхронизацию слайдеров и спинбоксов и точное позиционирование бегунка."""
     with patch.object(ModelsManagerDialog, "_start_forge_scan"):
         dialog = ModelsManagerDialog()
+
+    dialog.show()
 
     # Steps: Slider -> Spin
     dialog.slider_steps.setValue(42)
     assert dialog.spin_steps.value() == 42
+    expected_x = int((42 - 5) / (60 - 5) * dialog.slider_steps.grooveLength)
+    assert dialog.slider_steps.handle.x() == expected_x
 
-    # Steps: Spin -> Slider
+    # Steps: Spin -> Slider (даже при блокировке сигналов бегунок обязан сместиться)
     dialog.spin_steps.setValue(18)
     assert dialog.slider_steps.value() == 18
+    expected_x = int((18 - 5) / (60 - 5) * dialog.slider_steps.grooveLength)
+    assert dialog.slider_steps.handle.x() == expected_x
 
     # CFG: Slider -> Spin (деление на 10)
     dialog.slider_cfg.setValue(75)
     assert abs(dialog.spin_cfg.value() - 7.5) < 0.05
+    expected_x = int((75 - 10) / (150 - 10) * dialog.slider_cfg.grooveLength)
+    assert dialog.slider_cfg.handle.x() == expected_x
 
-    # CFG: Spin -> Slider (умножение на 10)
-    dialog.spin_cfg.setValue(4.2)
-    assert dialog.slider_cfg.value() == 42
+    # CFG: Spin -> Slider (умножение на 10, воспроизведение 7.0 со скриншота)
+    dialog.spin_cfg.setValue(7.0)
+    assert dialog.slider_cfg.value() == 70
+    expected_x = int((70 - 10) / (150 - 10) * dialog.slider_cfg.grooveLength)
+    assert dialog.slider_cfg.handle.x() == expected_x
 
-    # Clip Skip: Slider <-> Spin
-    dialog.slider_clip_skip.setValue(3)
-    assert dialog.spin_clip_skip.value() == 3
-    dialog.spin_clip_skip.setValue(1)
-    assert dialog.slider_clip_skip.value() == 1
+    # Clip Skip: Spin -> Slider (значение 2 со скриншота пользователя)
+    dialog.spin_clip_skip.setValue(2)
+    assert dialog.slider_clip_skip.value() == 2
+    expected_x = int((2 - 1) / (4 - 1) * dialog.slider_clip_skip.grooveLength)
+    assert dialog.slider_clip_skip.handle.x() == expected_x
 
-    # Hires Denoise: Slider -> Spin (деление на 100)
-    dialog.slider_hires_denoise.setValue(55)
-    assert abs(dialog.spin_hires_denoise.value() - 0.55) < 0.01
-
-    # Hires Denoise: Spin -> Slider (умножение на 100)
-    dialog.spin_hires_denoise.setValue(0.28)
-    assert dialog.slider_hires_denoise.value() == 28
+    # Hires Denoise: Spin -> Slider (значение 0.34 со скриншота пользователя)
+    dialog.spin_hires_denoise.setValue(0.34)
+    assert dialog.slider_hires_denoise.value() == 34
+    expected_x = int((34 - 10) / (90 - 10) * dialog.slider_hires_denoise.grooveLength)
+    assert dialog.slider_hires_denoise.handle.x() == expected_x
 
     dialog.reject()
 

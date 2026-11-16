@@ -336,7 +336,7 @@ def assemble_release(
             shutil.copy2(src, release_dir / rf)
 
     # 2. Source directories
-    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "docs", "scripts", "audio", "lorebooks", "exports"]
+    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "docs", "scripts", "audio", "lorebooks", "exports", "assets"]
     for sd in source_dirs:
         src = repo_root / sd
         dst = release_dir / sd
@@ -359,10 +359,12 @@ def assemble_release(
                     existing.unlink(missing_ok=True)
         (target_dir / ".gitkeep").touch()
 
-    # 4. Data directory (only base models & icons, zero personal data)
+    # 4. Data directory (user personas, lora registry & icons; zero personal data/local checkpoints)
+    # art_director_models.json intentionally excluded so local developer models do not leak into release.
+    # Clean defaults are auto-generated on first launch by services.art_director_config.
     data_dst = release_dir / "data"
     data_dst.mkdir(parents=True, exist_ok=True)
-    for df in ["art_director_models.json", "user_personas.json", "lora_registry.json"]:
+    for df in ["user_personas.json", "lora_registry.json"]:
         src_df = repo_root / "data" / df
         if src_df.is_file():
             shutil.copy2(src_df, data_dst / df)

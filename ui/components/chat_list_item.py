@@ -48,23 +48,23 @@ class ChatSessionItemWidget(QWidget):
         self._setup_ui(title)
 
     def sizeHint(self) -> QSize:
-        return QSize(240, 50)
+        return QSize(240, 42)
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(200, 48)
+        return QSize(200, 38)
 
     def _setup_ui(self, title: str):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet("background: transparent;")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 4, 8, 4)
+        layout.setContentsMargins(10, 2, 8, 2)
         layout.setSpacing(10)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        # 1. Circular Avatar (30x30)
+        # 1. Circular Avatar (28x28)
         self.avatar_lbl = QLabel(self)
-        self.avatar_lbl.setFixedSize(30, 30)
+        self.avatar_lbl.setFixedSize(28, 28)
         self.avatar_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self.avatar_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
 
@@ -73,7 +73,7 @@ class ChatSessionItemWidget(QWidget):
         self.title_lbl.setMinimumHeight(20)
         self.title_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.title_lbl.setStyleSheet("color: #F1F5F9; font-weight: 600; font-size: 13px; background: transparent;")
+        self.title_lbl.setStyleSheet("color: #F1F5F9; font-weight: 500; font-size: 13px; background: transparent;")
 
         self._apply_theme_and_avatar()
 
@@ -109,19 +109,19 @@ class ChatSessionItemWidget(QWidget):
         is_rp = (raw_mode in ("roleplay", "rp")) and not is_engineer
         p = Path(self.avatar_path) if self.avatar_path and Path(self.avatar_path).exists() else None
 
-        title_qss = "color: #F1F5F9; font-weight: 600; font-size: 13px; background: transparent;"
+        title_qss = "color: #F1F5F9; font-weight: 500; font-size: 13px; background: transparent;"
         self.title_lbl.setStyleSheet(title_qss)
 
         if is_engineer:
-            pix = render_circular_avatar(p, "Инженер", size=30, is_user=False)
+            pix = render_circular_avatar(p, "Инженер", size=28, is_user=False)
             self.avatar_lbl.setPixmap(pix)
         elif is_rp:
             name_seed = self.char_name or "Roleplay"
-            pix = render_circular_avatar(p, name_seed, size=30, is_user=False)
+            pix = render_circular_avatar(p, name_seed, size=28, is_user=False)
             self.avatar_lbl.setPixmap(pix)
         else:
             # Ассистент
-            pix = render_circular_avatar(p, "Элария", size=30, is_user=False)
+            pix = render_circular_avatar(p, "Элария", size=28, is_user=False)
             self.avatar_lbl.setPixmap(pix)
 
     def update_avatar(self, avatar_path: Optional[str]):

@@ -99,3 +99,14 @@ def test_ast_dependency_audit_smoke():
     """
     success, errors, _ = audit_ast_dependencies(BASE_DIR)
     assert success, f"AST аудит не прошёл: {errors}"
+
+
+def test_art_director_models_excluded_from_release():
+    """
+    Проверяет, что art_director_models.json исключён из списка копируемых файлов
+    в конвейере build_release.py, чтобы локальные чекпоинты разработчика не утекали в релиз.
+    """
+    build_script = (BASE_DIR / "scripts" / "build_release.py").read_text(encoding="utf-8")
+    assert '"art_director_models.json"' not in build_script, (
+        "art_director_models.json не должен присутствовать в списке копируемых в релиз файлов!"
+    )

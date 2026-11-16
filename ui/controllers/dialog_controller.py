@@ -208,21 +208,27 @@ class DialogControllerMixin:
         self.update()
 
     def _on_background_reset(self):
-        """Resets background to default dark cyberpunk theme."""
+        """Resets background to default NeonRoute theme."""
+        from config import DEFAULT_BACKGROUND_PATH, BACKGROUNDS_DIR, CANONICAL_BACKGROUND_NAME
         self.background_path = None
-        self.background_pixmap = None
-        self.app_config["background_path"] = None
+        self.app_config["background_path"] = ""
         ConfigManager.save_config(self.app_config)
 
         if self.current_session:
             self.current_session["background_path"] = None
             self._save_current_session()
 
-        self._bg_render_cache = None
+        default_bg = DEFAULT_BACKGROUND_PATH if DEFAULT_BACKGROUND_PATH.exists() else (BACKGROUNDS_DIR / CANONICAL_BACKGROUND_NAME)
+        if default_bg.exists():
+            self.background_pixmap = load_display_master_pixmap(str(default_bg))
+        else:
+            self.background_pixmap = None
+
+        self._update_background_cache()
         if hasattr(self, "chat_viewport") and self.chat_viewport:
-            self.chat_viewport.set_background(None)
+            self.chat_viewport.set_background(self.background_pixmap, alpha=self.background_dim_opacity)
         self.update()
-        self.statusBar().showMessage("Фон окна сброшен к стандартной теме.", 3000)
+        self.statusBar().showMessage("Фон окна сброшен к стандартному.", 3000)
 
     def _open_log_console_dialog(self, parent=None):
         """Opens live log viewer dialog."""

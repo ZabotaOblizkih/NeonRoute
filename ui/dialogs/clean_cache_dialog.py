@@ -18,7 +18,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QMessageBox, QFrame, QWidget
 )
 
-from config import FORGE_ROOT_DIR, HISTORY_DIR, BASE_DIR, LOGS_DIR, DATA_DIR, OUTPUTS_DIR, BACKGROUNDS_DIR, CONFIG_PATH, WORKSPACE_DIR
+from config import (
+    FORGE_ROOT_DIR, HISTORY_DIR, BASE_DIR, LOGS_DIR, DATA_DIR,
+    OUTPUTS_DIR, BACKGROUNDS_DIR, CONFIG_PATH, WORKSPACE_DIR,
+    DEFAULT_BACKGROUND_PATH, CANONICAL_BACKGROUND_NAME
+)
 
 logger = logging.getLogger("NeonRoute.CleanCacheDialog")
 
@@ -26,10 +30,22 @@ logger = logging.getLogger("NeonRoute.CleanCacheDialog")
 def get_protected_background_paths() -> set[Path]:
     """
     Returns a set of resolved absolute Paths for backgrounds that must not be deleted:
+    - Default application background (DEFAULT_BACKGROUND_PATH) and canonical file
     - Active background from config.json ('background_path')
     - Any background_image or background_path referenced in any chat history JSON
     """
     protected = set()
+
+    # 1. Защита стандартного системного фона
+    try:
+        if DEFAULT_BACKGROUND_PATH.exists():
+            protected.add(DEFAULT_BACKGROUND_PATH.resolve())
+        canonical_p = BACKGROUNDS_DIR / CANONICAL_BACKGROUND_NAME
+        if canonical_p.exists():
+            protected.add(canonical_p.resolve())
+    except Exception as e:
+        logger.warning(f"Error resolving default protected backgrounds: {e}")
+
     try:
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -145,11 +161,11 @@ class CacheScanWorker(QThread):
                 total = 0
                 if key == "backgrounds":
                     for p in paths:
-                        if p.is_file() and p.resolve() not in protected_bgs:
+                        if p.is_file() and p.resolve() not in protected_bgs and p.name not in (CANONICAL_BACKGROUND_NAME, "default_background.jpg"):
                             total += get_dir_size(p)
                         elif p.is_dir():
                             for f in p.rglob("*"):
-                                if f.is_file() and f.resolve() not in protected_bgs:
+                                if f.is_file() and f.resolve() not in protected_bgs and f.name not in (CANONICAL_BACKGROUND_NAME, "default_background.jpg"):
                                     total += get_dir_size(f)
                 else:
                     for p in paths:
@@ -186,7 +202,7 @@ class CacheCleanWorker(QThread):
                         continue
                     files_to_check = [p] if p.is_file() else list(p.rglob("*"))
                     for f in files_to_check:
-                        if f.is_file() and f.resolve() not in protected_bgs:
+                        if f.is_file() and f.resolve() not in protected_bgs and f.name not in (CANONICAL_BACKGROUND_NAME, "default_background.jpg"):
                             try:
                                 sz = f.stat().st_size
                                 f.unlink(missing_ok=True)

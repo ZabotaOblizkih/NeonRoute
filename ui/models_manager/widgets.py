@@ -106,6 +106,18 @@ class SamplingSlider(Slider):
             return
         super().mouseReleaseEvent(e)
 
+    def setValue(self, value: int):
+        super().setValue(value)
+        self._adjustHandlePos()
+
+    def setRange(self, min_val: int, max_val: int):
+        super().setRange(min_val, max_val)
+        self._adjustHandlePos()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._adjustHandlePos()
+
     def wheelEvent(self, e):
         e.ignore()
 

@@ -98,8 +98,8 @@ class SidebarWidget(QFrame):
         self.btn_new_chat.setMinimumWidth(160)
         self.btn_new_chat.setStyleSheet("""
             PushButton {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.10);
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 6px;
                 color: #E2E8F0;
                 font-size: 12px;
@@ -108,12 +108,12 @@ class SidebarWidget(QFrame):
                 text-align: center;
             }
             PushButton:hover {
-                background-color: rgba(0, 240, 255, 0.12);
-                border-color: rgba(0, 240, 255, 0.35);
-                color: #00F0FF;
+                background-color: rgba(0, 0, 0, 0.28);
+                border-color: rgba(255, 255, 255, 0.14);
+                color: #FFFFFF;
             }
             PushButton:pressed {
-                background-color: rgba(0, 240, 255, 0.08);
+                background-color: rgba(0, 0, 0, 0.40);
             }
         """)
         self.btn_new_chat.clicked.connect(self._handle_new_chat_clicked)
@@ -133,41 +133,31 @@ class SidebarWidget(QFrame):
             QListWidget:focus {
                 outline: none;
             }
-            /* 1. Объемная карточка в покое: градиент света сверху вниз, никаких рамок */
+            /* 1. Аккуратная плоская строчка Fluent в покое: полупрозрачный фон с видимыми гранями */
             QListWidget::item {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(28, 38, 56, 0.65),
-                    stop:1 rgba(14, 19, 29, 0.75));
-                margin: 3px 6px;
-                padding: 3px 4px;
-                border: none;
-                border-radius: 8px;
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 6px;
+                margin: 2px 6px;
+                padding: 2px 4px;
                 outline: none;
             }
-            /* 2. Единая подсветка-ореол вокруг карточки при наведении */
+            /* 2. Наведение мыши: легкое затемнение фона */
             QListWidget::item:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(0, 240, 255, 0.18),
-                    stop:0.6 rgba(0, 240, 255, 0.08),
-                    stop:1 rgba(0, 240, 255, 0.03));
-                border: none;
+                background-color: rgba(0, 0, 0, 0.28);
+                border: 1px solid rgba(255, 255, 255, 0.12);
             }
-            /* 3. Выбранный активный диалог: глубокий насыщенный киберпанк-ореол */
+            /* 3. Выбранный активный диалог: полупрозрачный фон с нейтральными мягкими гранями (без неона) */
             QListWidget::item:selected {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(0, 240, 255, 0.26),
-                    stop:0.6 rgba(0, 240, 255, 0.14),
-                    stop:1 rgba(0, 240, 255, 0.07));
-                border: none;
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
                 color: #FFFFFF;
             }
-            /* 4. Выбранный диалог при наведении */
+            /* 4. Выбранный диалог при наведении: легкое затемнение */
             QListWidget::item:selected:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(0, 240, 255, 0.32),
-                    stop:0.6 rgba(0, 240, 255, 0.18),
-                    stop:1 rgba(0, 240, 255, 0.09));
-                border: none;
+                background-color: rgba(0, 0, 0, 0.35);
+                border: 1px solid rgba(255, 255, 255, 0.18);
             }
         """)
         self.chat_list_widget.itemClicked.connect(self.window._on_chat_list_item_clicked)

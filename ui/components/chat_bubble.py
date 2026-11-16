@@ -420,8 +420,8 @@ class ChatMessageWidget(QWidget):
                     model_badge.setToolTip(f"🎨 Модель генерации: {model_info}")
                     self.art_layout.addWidget(model_badge)
 
-                if self.generation_params:
-                    self._render_generation_info_accordion(self.art_layout, max_width=None)
+                # Меню «Инфо генерации» перенесено в модальное окно ImagePreviewDialog
+                # для чистого отображения арта в бабле чата
 
                 bubble_layout.addWidget(self.art_container)
 
@@ -904,13 +904,6 @@ class ChatMessageWidget(QWidget):
         if self.negative_prompt and "negative_prompt" not in self.generation_params:
             self.generation_params["negative_prompt"] = self.negative_prompt
 
-        target_layout = None
-        if self.gen_info_widget is not None and self.gen_info_widget.parent():
-            target_layout = self.gen_info_widget.parent().layout()
-        if not target_layout:
-            target_layout = getattr(self, "art_layout", None) or (self.bubble_container.layout() if self.bubble_container else None)
-        self._render_generation_info_accordion(target_layout=target_layout, max_width=None)
-
     def set_translation(self, translated_text: str):
         self.translated_text = translated_text
         self.is_showing_translation = True
@@ -1205,20 +1198,15 @@ class ChatMessageWidget(QWidget):
 
         img_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
 
-        img_btn.clicked.connect(lambda: ImagePreviewDialog(image_path, self).exec())
-        c_layout.addWidget(img_btn)
-
         eff_params = generation_params or self.generation_params
-        if eff_params:
-            accordion = GenerationInfoAccordionWidget(eff_params, max_width=None, parent=container)
-            c_layout.addWidget(accordion)
-            self.gen_info_widget = accordion
+        img_btn.clicked.connect(lambda: ImagePreviewDialog(image_path, self, generation_params=eff_params).exec())
+        c_layout.addWidget(img_btn)
 
         return container
 
     def _open_image_preview(self, image_path: Path):
         if image_path and image_path.exists():
-            dlg = ImagePreviewDialog(image_path, self)
+            dlg = ImagePreviewDialog(image_path, self, generation_params=self.generation_params)
             dlg.exec()
 
     def _copy_text(self):
