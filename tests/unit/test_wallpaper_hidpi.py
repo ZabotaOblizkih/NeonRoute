@@ -4,9 +4,14 @@ Tests the 4-level progressive downscaling, devicePixelRatio buffer creation,
 and ChatBackgroundViewport / WindowStateMixin integration.
 """
 
+import os
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor, QPixmap
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget, QApplication
 
 from ui.common.image_utils import (
     load_display_master_pixmap,
@@ -14,7 +19,17 @@ from ui.common.image_utils import (
     create_hidpi_background_buffer,
 )
 from ui.components.chat_background import ChatBackgroundViewport
+from ui.components.chat_stream_widget import ChatScrollArea
+from ui.controllers.roleplay_controller import RoleplayControllerMixin
 from ui.controllers.window_state_controller import WindowStateMixin
+
+
+@pytest.fixture(scope="session", autouse=True)
+def qapp():
+    app = QApplication.instance()
+    if not app:
+        app = QApplication(["-platform", "offscreen"])
+    return app
 
 
 class DummyWindow(QWidget, WindowStateMixin):
@@ -117,3 +132,63 @@ def test_chat_background_viewport_lifecycle(qtbot):
     vp.set_background(None)
     assert not vp.has_background()
     assert vp._scaled_pixmap is None
+
+
+def test_chat_scroll_area_scroll_contents_by_updates_viewport(qtbot):
+    area = ChatScrollArea()
+    qtbot.addWidget(area)
+    vp = QWidget(area)
+    area.setViewport(vp)
+
+    update_called = []
+    vp.update = lambda: update_called.append(True)
+
+    # 1. dx == 0 and dy == 0: should NOT call update() (optimizing zero shifts)
+    area.scrollContentsBy(0, 0)
+    assert len(update_called) == 0
+
+    # 2. dy != 0: must call update() to prevent BitBlt jitter
+    area.scrollContentsBy(0, 10)
+    assert len(update_called) == 1
+
+    # 3. dx != 0: must call update()
+    area.scrollContentsBy(-5, 0)
+    assert len(update_called) == 2
+
+
+class DummyRPWindow(QWidget, RoleplayControllerMixin):
+    def __init__(self):
+        super().__init__()
+        self.current_session = None
+        self.background_pixmap = None
+        self.background_dim_opacity = 140
+        self.chat_viewport = ChatBackgroundViewport(self)
+        self.scroll_area = None
+
+
+def test_apply_chat_background_transparency_and_session_switching(tmp_path, qtbot):
+    win = DummyRPWindow()
+    qtbot.addWidget(win)
+
+    # Set a global window background
+    global_pix = QPixmap(800, 600)
+    global_pix.fill(QColor(50, 60, 70))
+    win.background_pixmap = global_pix
+
+    # 1. Session without custom scene background -> viewport must remain transparent (has_background == False)
+    win.current_session = {"id": "sess_1", "background_image": None}
+    win._apply_chat_background()
+    assert not win.chat_viewport.has_background()
+
+    # 2. Session with a valid personal scene background -> viewport must render scene background
+    test_img = tmp_path / "scene.png"
+    global_pix.save(str(test_img))
+    win.current_session = {"id": "sess_2", "background_image": str(test_img)}
+    win._apply_chat_background()
+    assert win.chat_viewport.has_background()
+
+    # 3. Switching back to session 1 without background -> viewport MUST reset to transparent mode
+    win.current_session = {"id": "sess_1", "background_image": None}
+    win._apply_chat_background()
+    assert not win.chat_viewport.has_background()
+

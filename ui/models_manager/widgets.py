@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtGui import QMouseEvent, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QHeaderView, QMessageBox, QFrame, QWidget, QApplication,
@@ -63,11 +63,13 @@ class SamplingSlider(Slider):
     - Живой трекинг в реальном времени self.setTracking(True)
     - ClickFocus и отключение случайного wheelEvent
     """
-    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None, accent_color: Optional[str] = None):
         super().__init__(orientation, parent=parent)
         self.setTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.handle.installEventFilter(self)
+        c = QColor(accent_color or "#6366F1")
+        self.setThemeColor(c, c)
 
     def eventFilter(self, watched, event):
         if watched == self.handle:
@@ -147,7 +149,7 @@ class SamplingDoubleSpinBox(CompactDoubleSpinBox):
                 border-color: rgba(255, 255, 255, 0.22);
             }
             SamplingDoubleSpinBox:focus, CompactDoubleSpinBox:focus {
-                border-color: rgba(0, 240, 255, 0.6);
+                border-color: rgba(99, 102, 241, 0.6);
                 background-color: rgba(20, 24, 35, 0.95);
                 color: #FFFFFF;
             }
@@ -187,7 +189,7 @@ class SamplingSpinBox(CompactSpinBox):
                 border-color: rgba(255, 255, 255, 0.22);
             }
             SamplingSpinBox:focus, CompactSpinBox:focus {
-                border-color: rgba(0, 240, 255, 0.6);
+                border-color: rgba(99, 102, 241, 0.6);
                 background-color: rgba(20, 24, 35, 0.95);
                 color: #FFFFFF;
             }
@@ -318,9 +320,9 @@ class RoutingResultBadge(QFrame):
             self._apply_style("vector")
             self.tag_lbl.setText(f"🧠 FASTEMBED ({score:.2f})")
             self.tag_lbl.setStyleSheet("""
-                background-color: rgba(0, 240, 255, 0.20);
-                color: #00F0FF;
-                border: 1px solid rgba(0, 240, 255, 0.50);
+                background-color: rgba(99, 102, 241, 0.20);
+                color: #A5B4FC;
+                border: 1px solid rgba(99, 102, 241, 0.50);
                 border-radius: 6px;
                 padding: 3px 8px;
                 font-size: 10px;
@@ -354,8 +356,8 @@ class RoutingResultBadge(QFrame):
             border_color = "rgba(16, 185, 129, 0.40)"
             bg_color = "rgba(16, 185, 129, 0.08)"
         elif mode == "vector":
-            border_color = "rgba(0, 240, 255, 0.40)"
-            bg_color = "rgba(0, 240, 255, 0.08)"
+            border_color = "rgba(99, 102, 241, 0.40)"
+            bg_color = "rgba(99, 102, 241, 0.08)"
         elif mode == "default":
             border_color = "rgba(56, 189, 248, 0.40)"
             bg_color = "rgba(56, 189, 248, 0.08)"

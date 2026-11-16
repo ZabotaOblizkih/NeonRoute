@@ -188,8 +188,10 @@ class DialogControllerMixin:
             self._save_current_session()
 
         self._update_background_cache()
-        if hasattr(self, "chat_viewport") and self.chat_viewport and self.chat_viewport.has_background():
-            self.chat_viewport.set_background(self.background_pixmap, alpha=self.background_dim_opacity)
+        if hasattr(self, "_apply_chat_background"):
+            self._apply_chat_background()
+        elif hasattr(self, "chat_viewport") and self.chat_viewport:
+            self.chat_viewport.set_background(None)
         self.update()
         self.statusBar().showMessage("Фон окна успешно обновлен.", 3000)
 
@@ -203,8 +205,10 @@ class DialogControllerMixin:
             self._save_current_session()
 
         self._update_background_cache()
-        if hasattr(self, "chat_viewport") and self.chat_viewport and self.chat_viewport.has_background():
-            self.chat_viewport.set_dim_alpha(self.background_dim_opacity)
+        if hasattr(self, "_apply_chat_background"):
+            self._apply_chat_background()
+        elif hasattr(self, "chat_viewport") and self.chat_viewport:
+            self.chat_viewport.set_background(None)
         self.update()
 
     def _on_background_reset(self):
@@ -225,8 +229,10 @@ class DialogControllerMixin:
             self.background_pixmap = None
 
         self._update_background_cache()
-        if hasattr(self, "chat_viewport") and self.chat_viewport:
-            self.chat_viewport.set_background(self.background_pixmap, alpha=self.background_dim_opacity)
+        if hasattr(self, "_apply_chat_background"):
+            self._apply_chat_background()
+        elif hasattr(self, "chat_viewport") and self.chat_viewport:
+            self.chat_viewport.set_background(None)
         self.update()
         self.statusBar().showMessage("Фон окна сброшен к стандартному.", 3000)
 

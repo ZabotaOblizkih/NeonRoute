@@ -61,7 +61,7 @@ class ADetailerSettingsDialog(QDialog):
             QDialog {
                 background-color: rgba(14, 19, 31, 0.98);
                 color: #CBD5E1;
-                border: 1px solid rgba(0, 240, 255, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.10);
                 border-radius: 12px;
             }
             QLabel {
@@ -77,7 +77,7 @@ class ADetailerSettingsDialog(QDialog):
             QToolTip {
                 background-color: #0E131F;
                 color: #CBD5E1;
-                border: 1px solid rgba(0, 240, 255, 0.4);
+                border: 1px solid rgba(99, 102, 241, 0.40);
                 border-radius: 6px;
                 padding: 6px 10px;
                 font-size: 12px;
@@ -118,7 +118,7 @@ class ADetailerSettingsDialog(QDialog):
         face_layout = QGridLayout(self.card_face)
         face_layout.setSpacing(10)
 
-        lbl_face_title = QLabel("<b style='color:#00F0FF;'>Слот 1: Лицо (Face)</b>", self.card_face)
+        lbl_face_title = QLabel("<b style='color:#818CF8;'>Слот 1: Лицо (Face)</b>", self.card_face)
         face_layout.addWidget(lbl_face_title, 0, 0, 1, 2)
 
         face_layout.addWidget(QLabel("Модель детектора:"), 1, 0)
@@ -189,7 +189,7 @@ class ADetailerSettingsDialog(QDialog):
         hands_layout.setSpacing(10)
 
         h_top = QHBoxLayout()
-        h_top.addWidget(QLabel("<b style='color:#00F0FF;'>Слот 2: Кисти рук (Hands)</b>", self.card_hands))
+        h_top.addWidget(QLabel("<b style='color:#818CF8;'>Слот 2: Кисти рук (Hands)</b>", self.card_hands))
         h_top.addStretch()
         self.switch_hands = SwitchButton(self.card_hands)
         self.switch_hands.setOnText("ВКЛ")

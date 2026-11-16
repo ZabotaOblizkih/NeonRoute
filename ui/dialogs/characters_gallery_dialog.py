@@ -16,18 +16,21 @@ from typing import Optional, Dict, Any, List, Union
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QRect, QRectF
 from PyQt6.QtGui import (
     QIcon, QPixmap, QColor, QPainter, QPainterPath,
-    QBrush, QPen, QLinearGradient, QRadialGradient, QFont, QImage
+    QBrush, QPen, QLinearGradient, QRadialGradient, QFont, QImage,
+    QTextOption, QPalette
 )
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QTextEdit, QTextBrowser, QPushButton, QListWidget, QListWidgetItem,
+    QTextEdit, QPlainTextEdit, QTextBrowser, QPushButton, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QWidget, QScrollArea, QSplitter,
     QFrame, QApplication, QCheckBox, QGraphicsDropShadowEffect,
-    QStyledItemDelegate
+    QStyledItemDelegate, QSizePolicy
 )
+from qframelesswindow import FramelessDialog
 
 from ui.components.step_progress_button import StepProgressButton
 from qfluentwidgets import (
+    FluentTitleBar,
     SearchLineEdit,
     PushButton,
     PrimaryPushButton,
@@ -51,6 +54,7 @@ from services.card_translator import (
     RE_TAG_PATTERN,
     RE_CJK_PATTERN
 )
+from ui.common.palette_utils import extract_adaptive_palette
 from ui.components.chat_bubble import render_circular_avatar
 from ui.dialogs.avatar_crop_dialog import AvatarCropDialog
 from ui.dialogs.local_lora_dialog import LocalLoraDialog
@@ -77,9 +81,10 @@ from ui.dialogs.gallery.character_card_widget import (
     CharacterCardWidget,
 )
 
-class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationMixin):
+class CharactersGalleryDialog(FramelessDialog, GalleryDnaPartyMixin, GalleryTranslationMixin):
     """
-    Two-pane characters gallery dialog with NeonRoute cyberpunk styling.
+    Two-pane characters gallery dialog with NeonRoute cyberpunk styling,
+    modernized to Windows 11 Fluent Design (FramelessDialog, FluentTitleBar, Dynamic Adaptive Palette).
     Left: List of characters with circular avatars.
     Right: Detailed view and editing of character card fields.
     """
@@ -94,9 +99,28 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
     _unmask_card_tags = CardTranslator.unmask_tags
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
+        self.setObjectName("CharactersGalleryDialog")
         self.setWindowTitle("Галерея персонажей — NeonRoute")
         self.setModal(True)
+
+        # Custom Fluent TitleBar (46px)
+        title_bar = FluentTitleBar(self)
+        self.setTitleBar(title_bar)
+        self.titleBar.setFixedHeight(46)
+        if hasattr(self.titleBar, "minBtn") and self.titleBar.minBtn:
+            self.titleBar.minBtn.hide()
+        if hasattr(self.titleBar, "maxBtn") and self.titleBar.maxBtn:
+            self.titleBar.maxBtn.hide()
+        if hasattr(self.titleBar, "closeBtn") and self.titleBar.closeBtn:
+            self.titleBar.closeBtn.setVisible(True)
+            self.titleBar.closeBtn.setNormalColor(QColor("#E2E8F0"))
+            self.titleBar.closeBtn.setHoverColor(QColor("#FFFFFF"))
+            try:
+                self.titleBar.closeBtn.clicked.disconnect()
+            except Exception:
+                pass
+            self.titleBar.closeBtn.clicked.connect(self.reject)
 
         self.characters: List[Dict[str, Any]] = []  # list of {"card": CharacterCard, "path": Path}
         self.active_entry: Optional[Dict[str, Any]] = None
@@ -118,14 +142,15 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
             except Exception as e:
                 logger.debug(f"Failed to connect task_queue signals in gallery: {e}")
 
-        self._apply_styles()
+        self._current_palette: Dict[str, str] = {}
         self._setup_ui()
+        self.update_adaptive_palette()
 
         screen = QApplication.primaryScreen().availableGeometry()
         target_w = min(1280, max(1020, int(screen.width() * 0.75)))
-        target_h = min(850, max(620, int(screen.height() * 0.85)))
+        target_h = min(850, max(620, int(screen.height() * 0.85))) + 46
         self.resize(target_w, target_h)
-        self.setMinimumSize(980, 580)
+        self.setMinimumSize(980, 626)  # 580 + 46 = 626
         self.splitter.setSizes([320, target_w - 320])
 
         self._load_characters()
@@ -197,107 +222,368 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         super().accept()
 
     def _apply_styles(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: rgba(14, 19, 31, 0.96);
-                color: #CBD5E1;
-                border: 1px solid rgba(0, 240, 255, 0.22);
+        """Обратная совместимость: делегирует вызов update_adaptive_palette."""
+        self.update_adaptive_palette()
+
+    def _resolve_pixmap(self) -> Optional[QPixmap]:
+        """Ищет активные обои в иерархии родительских окон для адаптивной палитры."""
+        try:
+            p = self.parent()
+            while p:
+                if hasattr(p, "background_pixmap") and p.background_pixmap and not p.background_pixmap.isNull():
+                    return p.background_pixmap
+                if hasattr(p, "window") and hasattr(p.window, "background_pixmap") and p.window.background_pixmap and not p.window.background_pixmap.isNull():
+                    return p.window.background_pixmap
+                if hasattr(p, "_bg_render_cache") and p._bg_render_cache and not p._bg_render_cache.isNull():
+                    return p._bg_render_cache
+                p = p.parent()
+            from config import DEFAULT_BACKGROUND_PATH
+            if DEFAULT_BACKGROUND_PATH.exists():
+                pix = QPixmap(str(DEFAULT_BACKGROUND_PATH))
+                if not pix.isNull():
+                    return pix
+        except Exception:
+            pass
+        return None
+
+    def update_adaptive_palette(self):
+        """
+        Адаптирует цветовую палитру окна, шапки, списка персонажей, карточек и кнопок под активные обои
+        с безопасным fallback на стандартную темную палитру.
+        """
+        pixmap = self._resolve_pixmap()
+        palette = extract_adaptive_palette(pixmap)
+        if not palette:
+            palette = extract_adaptive_palette(None)
+        self._current_palette = palette
+
+        bg = palette.get("bg", "#161B26")
+        border = palette.get("border", "#2D3748")
+        card = palette.get("card", "#21293B")
+        card_border = palette.get("card_border", "#334155")
+        card_hover = palette.get("card_hover", "#273144")
+        terminal_bg = palette.get("terminal_bg", "#0B0E14")
+        text_primary = palette.get("text_primary", "#F8FAFC")
+        text_secondary = palette.get("text_secondary", "#94A3B8")
+        btn_bg = palette.get("btn", "#2D3748")
+        btn_border = palette.get("btn_border", "#475569")
+        accent = palette.get("accent", "#6366F1")
+        btn_hover_text = palette.get("btn_hover_text", "#FFFFFF")
+
+        self.setStyleSheet(f"""
+            CharactersGalleryDialog#CharactersGalleryDialog {{
+                background-color: {bg};
+                border: 1px solid {border};
                 border-radius: 14px;
-            }
-            QLabel {
-                color: #94A3B8;
+            }}
+            FluentTitleBar {{
+                background-color: {bg};
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }}
+            FluentTitleBar QLabel {{
+                color: #F8FAFC;
+                font-family: 'Segoe UI', -apple-system, sans-serif;
+                font-weight: 600;
+                font-size: 13px;
+                background: transparent;
+            }}
+            QWidget#GalleryBodyWidget {{
+                background-color: {bg};
+                border: none;
+                border-bottom-left-radius: 14px;
+                border-bottom-right-radius: 14px;
+            }}
+            QLabel {{
+                background: transparent;
+                color: {text_secondary};
+                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
                 font-size: 11px;
                 font-weight: 700;
                 letter-spacing: 0.4px;
-            }
-            QLabel#HeaderTitle {
-                color: #00F0FF;
+                padding-bottom: 2px;
+            }}
+            QLabel#HeaderTitle {{
+                color: {accent};
                 font-size: 16px;
                 font-weight: bold;
                 letter-spacing: 0.5px;
-            }
-            QListWidget {
-                background-color: rgba(10, 13, 22, 0.85);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                background: transparent;
+            }}
+            QLabel#DnaTitleLabel {{
+                color: {accent};
+                font-size: 11px;
+                font-weight: bold;
+                background: transparent;
+            }}
+            QListWidget {{
+                background-color: {terminal_bg};
+                border: 1px solid {border};
                 border-radius: 10px;
                 padding: 6px;
                 outline: none;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 background-color: transparent;
                 color: transparent;
                 border: none;
                 padding: 0px;
                 margin-bottom: 4px;
-            }
-            QListWidget::item:selected {
+            }}
+            QListWidget::item:selected {{
                 background-color: transparent;
                 color: transparent;
                 border: none;
-            }
-            QLineEdit, TextEdit, QTextEdit {
-                background-color: rgba(10, 13, 20, 0.75);
-                color: #F8FAFC;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            QLineEdit, LineEdit,
+            QTextEdit, TextEdit,
+            QPlainTextEdit, PlainTextEdit,
+            QTextBrowser,
+            #InputName, #InputVisualDna, #InputDesc,
+            #InputPersonality, #InputScenario,
+            #InputSystemPrompt, #InputMesExample,
+            #InputFirstMes, #InputLorePreview {{
+                background-color: {terminal_bg};
+                color: {text_primary};
+                placeholder-text-color: {text_secondary};
+                border: 1px solid {border};
+                border-radius: 8px;
+                padding: 8px 10px;
+                font-size: 12px;
+                selection-background-color: {accent};
+                selection-color: #0A0D14;
+            }}
+            QLineEdit:focus, LineEdit:focus,
+            QTextEdit:focus, TextEdit:focus,
+            QPlainTextEdit:focus, PlainTextEdit:focus,
+            QTextBrowser:focus,
+            #InputName:focus, #InputVisualDna:focus, #InputDesc:focus,
+            #InputPersonality:focus, #InputScenario:focus,
+            #InputSystemPrompt:focus, #InputMesExample:focus,
+            #InputFirstMes:focus, #InputLorePreview:focus {{
+                border: 1px solid {accent};
+                background-color: {card_hover};
+            }}
+            SearchLineEdit {{
+                background-color: {terminal_bg};
+                color: {text_primary};
+                border: 1px solid {border};
                 border-radius: 8px;
                 padding: 6px 8px;
                 font-size: 12px;
-                selection-background-color: #00F0FF;
-                selection-color: #0A0D14;
-            }
-            QLineEdit:focus, TextEdit:focus, QTextEdit:focus {
-                border: 1px solid rgba(0, 240, 255, 0.55);
-                background-color: rgba(12, 17, 28, 0.90);
-            }
-            SmoothScrollArea, QScrollArea {
+            }}
+            SearchLineEdit:focus {{
+                border: 1px solid {accent};
+                background-color: {card_hover};
+            }}
+            QScrollArea#EditorScrollArea,
+            SmoothScrollArea#EditorScrollArea,
+            SmoothScrollArea, QScrollArea {{
                 border: none;
+                background: transparent;
                 background-color: transparent;
-            }
-            QFrame#EditorFrame {
-                background-color: rgba(18, 24, 38, 0.60);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            QWidget#EditorScrollContent {{
+                border: none;
+                background: transparent;
+                background-color: transparent;
+            }}
+            QScrollArea viewport,
+            SmoothScrollArea viewport {{
+                background: transparent;
+                background-color: transparent;
+            }}
+            QFrame#EditorFrame {{
+                background-color: {card};
+                border: 1px solid {card_border};
                 border-radius: 12px;
-            }
-            QPushButton#btn_tr_field, PushButton#btn_tr_field {
-                background-color: rgba(18, 30, 49, 0.80);
-                border: 1px solid rgba(30, 58, 95, 0.80);
-                color: #38BDF8;
+            }}
+            QPushButton#btn_tr_field, PushButton#btn_tr_field {{
+                background-color: {btn_bg};
+                border: 1px solid {btn_border};
+                color: {accent};
                 font-size: 11px;
                 padding: 3px 8px;
                 border-radius: 6px;
-            }
-            QPushButton#btn_tr_field:hover, PushButton#btn_tr_field:hover {
-                background-color: rgba(26, 46, 76, 0.90);
-                border-color: #00F0FF;
-                color: #00F0FF;
-            }
-            QPushButton#btn_page_nav, PushButton#btn_page_nav {
-                background-color: rgba(20, 28, 43, 0.80);
-                border: 1px solid rgba(30, 46, 72, 0.80);
-                color: #00F0FF;
+            }}
+            QPushButton#btn_tr_field:hover, PushButton#btn_tr_field:hover {{
+                background-color: {accent};
+                border-color: {accent};
+                color: {btn_hover_text};
+            }}
+            QPushButton#btn_page_nav, PushButton#btn_page_nav {{
+                background-color: {btn_bg};
+                border: 1px solid {btn_border};
+                color: {accent};
                 font-weight: bold;
                 padding: 2px 6px;
                 border-radius: 4px;
-            }
-            QPushButton#btn_page_nav:hover, PushButton#btn_page_nav:hover {
-                background-color: rgba(30, 45, 72, 0.95);
-                border-color: #00F0FF;
-            }
-            QPushButton#btn_page_nav:disabled, PushButton#btn_page_nav:disabled {
-                color: #475569;
-                border-color: rgba(30, 41, 59, 0.50);
-            }
+            }}
+            QPushButton#btn_page_nav:hover, PushButton#btn_page_nav:hover {{
+                background-color: {card_hover};
+                border-color: {accent};
+            }}
+            QPushButton#btn_page_nav:disabled, PushButton#btn_page_nav:disabled {{
+                color: {text_secondary};
+                border-color: {border};
+                background-color: transparent;
+            }}
+            QTextEdit#InputVisualDna {{
+                color: {text_primary};
+                font-family: 'Consolas', monospace;
+                font-size: 11px;
+                border: 1px solid {border};
+                border-radius: 8px;
+                background-color: {terminal_bg};
+                padding: 6px 10px;
+            }}
+            QTextEdit#InputVisualDna:focus {{
+                border: 1px solid {accent};
+                background-color: {card_hover};
+            }}
+            QTextEdit#InputSystemPrompt {{
+                color: {text_primary};
+                font-size: 11px;
+                border: 1px solid {border};
+                border-radius: 8px;
+                background-color: {terminal_bg};
+                padding: 8px 10px;
+            }}
+            QTextEdit#InputSystemPrompt:focus {{
+                border: 1px solid {accent};
+                background-color: {card_hover};
+            }}
+            QTextBrowser#InputLorePreview {{
+                background-color: {terminal_bg};
+                border: 1px solid {border};
+                border-radius: 8px;
+                padding: 8px 10px;
+                color: {text_primary};
+                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-size: 11px;
+                line-height: 1.3;
+            }}
+            QTextBrowser#InputLorePreview:focus {{
+                border: 1px solid {accent};
+                background-color: {card_hover};
+            }}
+            QFrame#TrafficLightFrame {{
+                background-color: {terminal_bg};
+                border: 1px solid {border};
+                border-radius: 8px;
+                padding: 6px 10px;
+                margin-top: 2px;
+                margin-bottom: 4px;
+            }}
+            QFrame#ProcessingBanner {{
+                background-color: {card};
+                border: 1px solid {accent};
+                border-radius: 6px;
+                padding: 6px 10px;
+                margin-top: 2px;
+                margin-bottom: 4px;
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {border};
+                min-height: 24px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {accent};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: none;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+            QScrollBar:horizontal {{
+                border: none;
+                background: transparent;
+                height: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background-color: {border};
+                min-width: 24px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {accent};
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
+                background: none;
+            }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+                background: none;
+            }}
         """)
+
+        # Настраиваем читаемый цвет placeholder для всех полей ввода
+        for edit in (
+            getattr(self, "input_visual_dna", None),
+            getattr(self, "input_name", None),
+            getattr(self, "input_desc", None),
+            getattr(self, "input_personality", None),
+            getattr(self, "input_scenario", None),
+            getattr(self, "input_system_prompt", None),
+            getattr(self, "input_mes_example", None),
+            getattr(self, "input_first_mes", None),
+            getattr(self, "search_bar", None),
+        ):
+            if edit:
+                pal = edit.palette()
+                pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(text_secondary))
+                edit.setPalette(pal)
+
+        if hasattr(self, "titleBar") and self.titleBar and hasattr(self.titleBar, "closeBtn") and self.titleBar.closeBtn:
+            self.titleBar.closeBtn.setNormalColor(QColor("#E2E8F0"))
+            self.titleBar.closeBtn.setHoverColor(QColor("#FFFFFF"))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Скрываем кнопки строго после super().showEvent(event)
+        if hasattr(self, "titleBar") and self.titleBar:
+            if hasattr(self.titleBar, "minBtn") and self.titleBar.minBtn:
+                self.titleBar.minBtn.hide()
+            if hasattr(self.titleBar, "maxBtn") and self.titleBar.maxBtn:
+                self.titleBar.maxBtn.hide()
+            if hasattr(self.titleBar, "closeBtn") and self.titleBar.closeBtn:
+                self.titleBar.closeBtn.setVisible(True)
+                self.titleBar.closeBtn.setNormalColor(QColor("#E2E8F0"))
+        self.update_adaptive_palette()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(18, 18, 18, 16)
-        root_layout.setSpacing(12)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        root_layout.addWidget(self.titleBar)
+
+        self.body_widget = QWidget(self)
+        self.body_widget.setObjectName("GalleryBodyWidget")
+        body_layout = QVBoxLayout(self.body_widget)
+        body_layout.setContentsMargins(18, 14, 18, 16)
+        body_layout.setSpacing(12)
 
         # Header title
         header_lbl = QLabel("🎴 ГАЛЕРЕЯ ПЕРСОНАЖЕЙ")
         header_lbl.setObjectName("HeaderTitle")
-        root_layout.addWidget(header_lbl)
+        body_layout.addWidget(header_lbl)
 
         # Main splitter (Left: List, Right: Editor)
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -331,14 +617,21 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         # --- RIGHT PANEL (EDITOR) ---
         right_container = QFrame()
         right_container.setObjectName("EditorFrame")
+        right_container.setMinimumWidth(0)
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(14, 14, 14, 14)
         right_layout.setSpacing(10)
 
         # Scroll Area for editor fields
         scroll = QScrollArea()
+        scroll.setObjectName("EditorScrollArea")
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_content = QWidget()
+        scroll_content.setObjectName("EditorScrollContent")
+        scroll_content.setMinimumWidth(0)
+        scroll_content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         form_layout = QVBoxLayout(scroll_content)
         form_layout.setContentsMargins(0, 0, 6, 0)
         form_layout.setSpacing(10)
@@ -365,17 +658,25 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         name_hdr.addWidget(QLabel("ИМЯ ПЕРСОНАЖА:"))
         self.lbl_group_status = QLabel("")
         self.lbl_group_status.setStyleSheet("color: #00F0FF; font-weight: bold; font-size: 11px;")
+        self.lbl_group_status.setMinimumWidth(0)
         name_hdr.addWidget(self.lbl_group_status)
 
         self.lbl_author_info = QLabel("")
+        self.lbl_author_info.setObjectName("LblAuthorInfo")
         self.lbl_author_info.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: normal; margin-left: 6px;")
+        self.lbl_author_info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_author_info.setMinimumWidth(0)
+        self.lbl_author_info.setWordWrap(False)
         name_hdr.addWidget(self.lbl_author_info)
 
         name_hdr.addStretch()
         name_box.addLayout(name_hdr)
 
         self.input_name = LineEdit()
+        self.input_name.setObjectName("InputName")
         self.input_name.setPlaceholderText("Имя персонажа...")
+        self.input_name.setMinimumWidth(0)
+        self.input_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         name_box.addWidget(self.input_name)
         top_row.addLayout(name_box, stretch=1)
 
@@ -397,39 +698,31 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
         # Traffic light frame placed immediately below character name
         self.traffic_light_frame = QFrame()
-        self.traffic_light_frame.setStyleSheet("""
-            QFrame {
-                background-color: #0A0E18;
-                border: 1px solid #1E283D;
-                border-radius: 8px;
-                padding: 6px 10px;
-                margin-top: 2px;
-                margin-bottom: 4px;
-            }
-        """)
+        self.traffic_light_frame.setObjectName("TrafficLightFrame")
+        self.traffic_light_frame.setMinimumWidth(0)
+        self.traffic_light_frame.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         tl_layout = QHBoxLayout(self.traffic_light_frame)
         tl_layout.setContentsMargins(4, 2, 4, 2)
         self.lbl_traffic_light = QLabel("🟢 Оптимальный объем: 0 токенов")
         self.lbl_traffic_light.setStyleSheet("font-size: 11px; font-weight: bold;")
+        self.lbl_traffic_light.setMinimumWidth(0)
+        self.lbl_traffic_light.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_traffic_light.setWordWrap(True)
         tl_layout.addWidget(self.lbl_traffic_light)
         form_layout.addWidget(self.traffic_light_frame)
 
         # Информационный баннер фоновой обработки карточки
         self.processing_banner = QFrame()
-        self.processing_banner.setStyleSheet("""
-            QFrame {
-                background-color: #121E31;
-                border: 1px solid #00F0FF;
-                border-radius: 6px;
-                padding: 6px 10px;
-                margin-top: 2px;
-                margin-bottom: 4px;
-            }
-        """)
+        self.processing_banner.setObjectName("ProcessingBanner")
+        self.processing_banner.setMinimumWidth(0)
+        self.processing_banner.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         pb_layout = QHBoxLayout(self.processing_banner)
         pb_layout.setContentsMargins(6, 4, 6, 4)
         self.lbl_processing_text = QLabel("⏳ Идет обработка карточки: анализ внешности, сопартийцев и окружения для Stable Diffusion...")
         self.lbl_processing_text.setStyleSheet("color: #00F0FF; font-size: 11px; font-weight: bold;")
+        self.lbl_processing_text.setMinimumWidth(0)
+        self.lbl_processing_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_processing_text.setWordWrap(True)
         pb_layout.addWidget(self.lbl_processing_text)
         self.processing_banner.setVisible(False)
         form_layout.addWidget(self.processing_banner)
@@ -440,7 +733,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_dna = QWidget()
         sec_dna_layout = QVBoxLayout(self.sec_dna)
         sec_dna_layout.setContentsMargins(0, 0, 0, 0)
-        sec_dna_layout.setSpacing(4)
+        sec_dna_layout.setSpacing(6)
 
         # Верхняя строка секции Visual DNA
         self.dna_header_widget = QWidget()
@@ -449,7 +742,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         dna_header_layout.setSpacing(8)
 
         self.lbl_dna_title = QLabel("🎨 ВНЕШНОСТЬ И ДЕТАЛИ ОБРАЗА (STABLE DIFFUSION):")
-        self.lbl_dna_title.setStyleSheet("color: #00F0FF; font-size: 11px; font-weight: bold;")
+        self.lbl_dna_title.setObjectName("DnaTitleLabel")
         dna_header_layout.addWidget(self.lbl_dna_title)
 
         dna_header_layout.addStretch()
@@ -484,10 +777,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         sec_dna_layout.addWidget(self.party_selector_container)
 
         self.input_visual_dna = QTextEdit()
-        self.input_visual_dna.setMinimumHeight(60)
-        self.input_visual_dna.setMaximumHeight(80)
+        self.input_visual_dna.setObjectName("InputVisualDna")
+        self.input_visual_dna.setFixedHeight(64)
         self.input_visual_dna.setPlaceholderText("Английские SD-теги: пол, возраст, раса, волосы, глаза, черты лица, телосложение. Без одежды.")
-        self.input_visual_dna.setStyleSheet("border: 1px solid #1E3A5F; background-color: #080D18; color: #38BDF8; font-family: 'Consolas', monospace; font-size: 11px;")
         sec_dna_layout.addWidget(self.input_visual_dna)
         form_layout.addWidget(self.sec_dna)
 
@@ -495,8 +787,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_desc = QWidget()
         sec_desc_layout = QVBoxLayout(self.sec_desc)
         sec_desc_layout.setContentsMargins(0, 0, 0, 0)
-        sec_desc_layout.setSpacing(4)
+        sec_desc_layout.setSpacing(6)
         desc_hdr = QHBoxLayout()
+        desc_hdr.setContentsMargins(0, 0, 0, 2)
         desc_hdr.addWidget(QLabel("ОПИСАНИЕ (DESCRIPTION):"))
         desc_hdr.addStretch()
         self.btn_tr_desc = PushButton(FIF.LANGUAGE, "🌐 Перевести")
@@ -505,6 +798,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         desc_hdr.addWidget(self.btn_tr_desc)
         sec_desc_layout.addLayout(desc_hdr)
         self.input_desc = QTextEdit()
+        self.input_desc.setObjectName("InputDesc")
         self.input_desc.setMinimumHeight(85)
         self.input_desc.setPlaceholderText("Внешность, история, личность и черты персонажа...")
         sec_desc_layout.addWidget(self.input_desc)
@@ -514,8 +808,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_pers = QWidget()
         sec_pers_layout = QVBoxLayout(self.sec_pers)
         sec_pers_layout.setContentsMargins(0, 0, 0, 0)
-        sec_pers_layout.setSpacing(4)
+        sec_pers_layout.setSpacing(6)
         pers_hdr = QHBoxLayout()
+        pers_hdr.setContentsMargins(0, 0, 0, 2)
         pers_hdr.addWidget(QLabel("ХАРАКТЕР / ЧЕРТЫ (PERSONALITY):"))
         pers_hdr.addStretch()
         self.btn_tr_pers = PushButton(FIF.LANGUAGE, "🌐 Перевести")
@@ -524,6 +819,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         pers_hdr.addWidget(self.btn_tr_pers)
         sec_pers_layout.addLayout(pers_hdr)
         self.input_personality = QTextEdit()
+        self.input_personality.setObjectName("InputPersonality")
         self.input_personality.setMinimumHeight(65)
         self.input_personality.setPlaceholderText("Характер, поведение, психологические черты...")
         sec_pers_layout.addWidget(self.input_personality)
@@ -533,8 +829,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_scen = QWidget()
         sec_scen_layout = QVBoxLayout(self.sec_scen)
         sec_scen_layout.setContentsMargins(0, 0, 0, 0)
-        sec_scen_layout.setSpacing(4)
+        sec_scen_layout.setSpacing(6)
         scen_hdr = QHBoxLayout()
+        scen_hdr.setContentsMargins(0, 0, 0, 2)
         scen_hdr.addWidget(QLabel("СЦЕНАРИЙ (SCENARIO / SETTING):"))
         scen_hdr.addStretch()
         self.btn_tr_scen = PushButton(FIF.LANGUAGE, "🌐 Перевести")
@@ -543,6 +840,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         scen_hdr.addWidget(self.btn_tr_scen)
         sec_scen_layout.addLayout(scen_hdr)
         self.input_scenario = QTextEdit()
+        self.input_scenario.setObjectName("InputScenario")
         self.input_scenario.setMinimumHeight(70)
         self.input_scenario.setPlaceholderText("Обстановка, сцена знакомства, текущий контекст...")
         sec_scen_layout.addWidget(self.input_scenario)
@@ -552,15 +850,16 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_system_prompt = QWidget()
         sec_sys_layout = QVBoxLayout(self.sec_system_prompt)
         sec_sys_layout.setContentsMargins(0, 0, 0, 0)
-        sec_sys_layout.setSpacing(4)
+        sec_sys_layout.setSpacing(6)
         sys_hdr = QHBoxLayout()
+        sys_hdr.setContentsMargins(0, 0, 0, 2)
         sys_hdr.addWidget(QLabel("АВТОРСКИЕ ПРАВИЛА / СИСТЕМНЫЙ ПРОМПТ (SYSTEM PROMPT):"))
         sys_hdr.addStretch()
         sec_sys_layout.addLayout(sys_hdr)
         self.input_system_prompt = QTextEdit()
+        self.input_system_prompt.setObjectName("InputSystemPrompt")
         self.input_system_prompt.setMinimumHeight(70)
         self.input_system_prompt.setPlaceholderText("Инструкции ведущего, правила форматирования, скрытые ограничения модели...")
-        self.input_system_prompt.setStyleSheet("border: 1px solid #2B1E3F; background-color: #0A0814; color: #DDD6FE; font-size: 11px;")
         sec_sys_layout.addWidget(self.input_system_prompt)
         form_layout.addWidget(self.sec_system_prompt)
 
@@ -568,8 +867,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_mes_example = QWidget()
         sec_ex_layout = QVBoxLayout(self.sec_mes_example)
         sec_ex_layout.setContentsMargins(0, 0, 0, 0)
-        sec_ex_layout.setSpacing(4)
+        sec_ex_layout.setSpacing(6)
         ex_hdr = QHBoxLayout()
+        ex_hdr.setContentsMargins(0, 0, 0, 2)
         ex_hdr.addWidget(QLabel("ПРИМЕРЫ ДИАЛОГА (MES_EXAMPLE):"))
         ex_hdr.addStretch()
         self.btn_tr_ex = PushButton(FIF.LANGUAGE, "🌐 Перевести")
@@ -578,6 +878,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         ex_hdr.addWidget(self.btn_tr_ex)
         sec_ex_layout.addLayout(ex_hdr)
         self.input_mes_example = QTextEdit()
+        self.input_mes_example.setObjectName("InputMesExample")
         self.input_mes_example.setMinimumHeight(80)
         self.input_mes_example.setPlaceholderText("Примеры реплик, диалогов и манеры речи персонажа...")
         sec_ex_layout.addWidget(self.input_mes_example)
@@ -587,8 +888,9 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_first_mes = QWidget()
         sec_first_layout = QVBoxLayout(self.sec_first_mes)
         sec_first_layout.setContentsMargins(0, 0, 0, 0)
-        sec_first_layout.setSpacing(4)
+        sec_first_layout.setSpacing(6)
         first_mes_hdr = QHBoxLayout()
+        first_mes_hdr.setContentsMargins(0, 0, 0, 2)
         first_mes_hdr.addWidget(QLabel("ПЕРВОЕ СООБЩЕНИЕ:"))
         first_mes_hdr.addStretch()
 
@@ -625,6 +927,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         sec_first_layout.addLayout(first_mes_hdr)
 
         self.input_first_mes = QTextEdit()
+        self.input_first_mes.setObjectName("InputFirstMes")
         self.input_first_mes.setMinimumHeight(85)
         self.input_first_mes.setPlaceholderText("Приветственная реплика и вводная сцена персонажа...")
         sec_first_layout.addWidget(self.input_first_mes)
@@ -634,26 +937,17 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.sec_lore_entries = QWidget()
         sec_lore_layout = QVBoxLayout(self.sec_lore_entries)
         sec_lore_layout.setContentsMargins(0, 0, 0, 0)
-        sec_lore_layout.setSpacing(4)
+        sec_lore_layout.setSpacing(6)
         self.lbl_lore_header = QLabel("📚 СТАТЬИ СПРАВОЧНИКА / ЛОРБУКА:")
+        self.lbl_lore_header.setStyleSheet("color: #38BDF8; font-size: 11px; font-weight: bold;")
+        sec_lore_layout.addWidget(self.lbl_lore_header)
         self.lbl_lore_header.setStyleSheet("color: #38BDF8; font-size: 11px; font-weight: bold;")
         sec_lore_layout.addWidget(self.lbl_lore_header)
 
         self.input_lore_preview = QTextBrowser()
+        self.input_lore_preview.setObjectName("InputLorePreview")
         self.input_lore_preview.setMinimumHeight(95)
         self.input_lore_preview.setMaximumHeight(220)
-        self.input_lore_preview.setStyleSheet("""
-            QTextBrowser {
-                background-color: #070B14;
-                border: 1px solid rgba(56, 189, 248, 0.25);
-                border-radius: 6px;
-                color: #CBD5E1;
-                font-family: 'Inter', 'Segoe UI', sans-serif;
-                font-size: 11px;
-                line-height: 1.3;
-                padding: 6px;
-            }
-        """)
         sec_lore_layout.addWidget(self.input_lore_preview)
         form_layout.addWidget(self.sec_lore_entries)
 
@@ -694,6 +988,37 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         add_bar_layout.addStretch()
         form_layout.addWidget(self.add_sections_bar)
 
+        # Line wrap & word wrap & horizontal policy for all multiline inputs
+        for edit in (
+            self.input_visual_dna,
+            self.input_desc,
+            self.input_personality,
+            self.input_scenario,
+            self.input_system_prompt,
+            self.input_mes_example,
+            self.input_first_mes,
+            self.input_lore_preview,
+        ):
+            edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+            edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+            edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            edit.setSizePolicy(QSizePolicy.Policy.Ignored, edit.sizePolicy().verticalPolicy())
+            edit.setMinimumWidth(0)
+
+        # Section containers constrained to never force wide minimum width
+        for sec in (
+            self.sec_dna,
+            self.sec_desc,
+            self.sec_pers,
+            self.sec_scen,
+            self.sec_system_prompt,
+            self.sec_mes_example,
+            self.sec_first_mes,
+            self.sec_lore_entries,
+            self.add_sections_bar,
+        ):
+            sec.setMinimumWidth(0)
+
         # Budget calculation bindings
         self.input_name.textChanged.connect(self._update_context_budget)
         self.input_visual_dna.textChanged.connect(self._update_context_budget)
@@ -711,7 +1036,7 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 5)
 
-        root_layout.addWidget(self.splitter, stretch=1)
+        body_layout.addWidget(self.splitter, stretch=1)
 
         # --- BOTTOM ACTION BAR ---
         btn_bar = QHBoxLayout()
@@ -749,7 +1074,8 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         self.btn_close.clicked.connect(self.reject)
         btn_bar.addWidget(self.btn_close)
 
-        root_layout.addLayout(btn_bar)
+        body_layout.addLayout(btn_bar)
+        root_layout.addWidget(self.body_widget, stretch=1)
 
     def _on_search_text_changed(self, text: str):
         """Фильтрует список персонажей в галерее по имени, тегам и описанию."""
@@ -945,7 +1271,8 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
         author = self._get_card_author(card)
         if hasattr(self, "lbl_author_info"):
             if author:
-                self.lbl_author_info.setText(f"✍️ {author}")
+                display_author = (author[:35] + "…") if len(author) > 35 else author
+                self.lbl_author_info.setText(f"✍️ {display_author}")
                 self.lbl_author_info.setToolTip(f"Автор карточки: {author}")
             else:
                 self.lbl_author_info.setText("✍️ Автор не указан")
@@ -1077,7 +1404,8 @@ class CharactersGalleryDialog(QDialog, GalleryDnaPartyMixin, GalleryTranslationM
 
         self.lbl_traffic_light.setText(status)
         self.lbl_traffic_light.setStyleSheet(f"color: {traffic['color']}; font-size: 11px; font-weight: bold;")
-        self.traffic_light_frame.setStyleSheet(f"background-color: #0A0E18; border: 1px solid {traffic['border']}; border-radius: 8px; padding: 6px 10px; margin-top: 2px; margin-bottom: 4px;")
+        term_bg = getattr(self, "_current_palette", {}).get("terminal_bg", "#0A0E18")
+        self.traffic_light_frame.setStyleSheet(f"background-color: {term_bg}; border: 1px solid {traffic['border']}; border-radius: 8px; padding: 6px 10px; margin-top: 2px; margin-bottom: 4px;")
 
         curr = self.list_widget.currentItem()
         if curr:

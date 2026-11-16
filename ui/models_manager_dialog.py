@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger("NeonRoute.ModelsManagerDialog")
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QHeaderView, QMessageBox, QFrame, QWidget, QApplication,
@@ -29,6 +30,7 @@ from qfluentwidgets import (
     TableWidget,
     FluentIcon as FIF,
     setTheme,
+    setThemeColor,
     Theme,
     InfoBar,
     InfoBarPosition,
@@ -42,6 +44,7 @@ from services.art_director_config import (
 from services.art_director.geometry import is_xl_model
 from services.forge_client import ForgeClient
 from services.forge_models import sync_registry_with_user_config
+from ui.common.palette_utils import extract_adaptive_palette
 
 # === ВЫДЕЛЕННЫЕ ВИДЖЕТЫ И ЭЛЕМЕНТЫ УПРАВЛЕНИЯ ===
 from ui.models_manager.widgets import (
@@ -150,129 +153,176 @@ class ModelsManagerDialog(
         # Неблокирующий фоновый опрос Forge сразу после отрисовки интерфейса
         self._start_forge_scan(silent=True)
 
-    def _setup_ui(self):
-        self.setStyleSheet("""
-            QDialog#ModelsManagerDialog {
-                background-color: rgba(10, 13, 20, 0.96);
+    def _resolve_pixmap(self) -> Optional[QPixmap]:
+        """Пытается получить фоновый pixmap из родительских окон или канонических обоев."""
+        p = self.parent()
+        while p:
+            if hasattr(p, "background_pixmap") and p.background_pixmap and not p.background_pixmap.isNull():
+                return p.background_pixmap
+            if hasattr(p, "_bg_render_cache") and p._bg_render_cache and not p._bg_render_cache.isNull():
+                return p._bg_render_cache
+            p = p.parent()
+        try:
+            from config import DEFAULT_BACKGROUND_PATH
+            if DEFAULT_BACKGROUND_PATH and Path(DEFAULT_BACKGROUND_PATH).exists():
+                pm = QPixmap(str(DEFAULT_BACKGROUND_PATH))
+                if not pm.isNull():
+                    return pm
+        except Exception:
+            pass
+        return None
+
+    def update_adaptive_palette(self):
+        """Адаптирует цветовую палитру диалога, карточек, заголовков и кнопок под активные обои."""
+        pixmap = self._resolve_pixmap()
+        palette = extract_adaptive_palette(pixmap)
+        self._current_palette = palette
+
+        try:
+            setThemeColor(QColor(palette['accent']), save=False)
+        except Exception:
+            pass
+
+        self.setStyleSheet(f"""
+            QDialog#ModelsManagerDialog {{
+                background-color: {palette['bg']};
                 color: #CBD5E1;
-                border: 1px solid rgba(0, 240, 255, 0.22);
+                border: 1px solid {palette['border']};
                 border-radius: 14px;
-            }
-            QLabel {
+            }}
+            QLabel {{
                 color: #CBD5E1;
-                font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
+                font-family: 'Segoe UI', -apple-system, sans-serif;
                 font-size: 12px;
-            }
-            QFrame#LeftPanel, QFrame#EditorPanel, QFrame#TestPanel {
-                background-color: rgba(14, 19, 31, 0.85);
-                border: 1px solid rgba(255, 255, 255, 0.07);
+            }}
+            QFrame#LeftPanel, QFrame#EditorPanel, QFrame#TestPanel {{
+                background-color: {palette['card']};
+                border: 1px solid {palette['border']};
                 border-radius: 12px;
-            }
-            QFrame#LeftPanel:hover, QFrame#EditorPanel:hover, QFrame#TestPanel:hover {
-                border-color: rgba(0, 240, 255, 0.18);
-            }
-            QFrame#ParamCard {
-                background-color: rgba(18, 24, 38, 0.60);
-                border: 1px solid rgba(255, 255, 255, 0.05);
+            }}
+            QFrame#LeftPanel:hover, QFrame#EditorPanel:hover, QFrame#TestPanel:hover {{
+                border-color: {palette['card_border']};
+            }}
+            QFrame#ParamCard {{
+                background-color: {palette['nav']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 8px;
                 padding: 10px;
-            }
-            QSplitter::handle {
+            }}
+            QSplitter::handle {{
                 background-color: rgba(255, 255, 255, 0.06);
                 width: 3px;
-            }
-            QSplitter::handle:hover {
-                background-color: #00F0FF;
-            }
-            TableWidget {
-                background-color: rgba(11, 15, 25, 0.90);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            QSplitter::handle:hover {{
+                background-color: {palette['accent']};
+            }}
+            TableWidget {{
+                background-color: {palette['nav']};
+                border: 1px solid {palette['card_border']};
                 border-radius: 8px;
                 color: #E2E8F0;
                 gridline-color: rgba(255, 255, 255, 0.04);
-                selection-background-color: rgba(0, 240, 255, 0.15);
-                selection-color: #00F0FF;
+                selection-background-color: {palette['card_hover']};
+                selection-color: #FFFFFF;
                 font-size: 12px;
-            }
-            TableWidget::item {
+            }}
+            TableWidget::item {{
                 padding: 6px 8px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-            }
-            TableWidget::item:selected {
-                background-color: rgba(0, 240, 255, 0.15);
-                color: #00F0FF;
+            }}
+            TableWidget::item:selected {{
+                background-color: {palette['card_hover']};
+                color: #FFFFFF;
                 font-weight: 600;
-            }
-            TableWidget::item:hover {
+            }}
+            TableWidget::item:hover {{
                 background-color: rgba(255, 255, 255, 0.04);
-            }
-            QHeaderView::section {
-                background-color: rgba(18, 24, 38, 0.95);
+            }}
+            QHeaderView::section {{
+                background-color: {palette['card']};
                 color: #94A3B8;
                 font-size: 11px;
                 font-weight: bold;
                 padding: 6px 8px;
                 border: none;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                border-bottom: 1px solid {palette['border']};
                 border-right: 1px solid rgba(255, 255, 255, 0.04);
-            }
-            PrimaryPushButton#PrimaryBtn {
-                background-color: #00F0FF;
-                color: #000000;
-                font-weight: 700;
-                border: 1px solid #00F0FF;
+            }}
+            PrimaryPushButton#PrimaryBtn {{
+                background-color: {palette['accent']};
+                color: #FFFFFF;
+                font-weight: 600;
+                border: 1px solid {palette['accent']};
                 border-radius: 6px;
-            }
-            PrimaryPushButton#PrimaryBtn:hover {
-                background-color: #38BDF8;
-                border-color: #38BDF8;
-                color: #000000;
-            }
-            PrimaryPushButton#PrimaryBtn:pressed {
-                background-color: #0284C7;
-                border-color: #0284C7;
-            }
-            PushButton#CloseBtn {
+            }}
+            PrimaryPushButton#PrimaryBtn:hover {{
+                background-color: {palette['btn_hover']};
+                border-color: {palette['btn_hover']};
+                color: #FFFFFF;
+            }}
+            PrimaryPushButton#PrimaryBtn:pressed {{
+                background-color: {palette['btn']};
+                border-color: {palette['btn_border']};
+            }}
+            PushButton#CloseBtn {{
                 background-color: rgba(255, 255, 255, 0.05);
                 color: #94A3B8;
                 border: 1px solid rgba(255, 255, 255, 0.10);
                 border-radius: 6px;
-            }
-            PushButton#CloseBtn:hover {
+            }}
+            PushButton#CloseBtn:hover {{
                 background-color: rgba(239, 68, 68, 0.20);
                 color: #F87171;
                 border-color: rgba(239, 68, 68, 0.40);
-            }
-            PushButton#AutoFillBtn {
-                background-color: rgba(56, 189, 248, 0.15);
-                color: #38BDF8;
-                border: 1px solid rgba(56, 189, 248, 0.35);
+            }}
+            PushButton#AutoFillBtn {{
+                background-color: rgba(99, 102, 241, 0.15);
+                color: {palette['group_title']};
+                border: 1px solid rgba(99, 102, 241, 0.35);
                 border-radius: 6px;
                 font-weight: 600;
-            }
-            PushButton#AutoFillBtn:hover {
-                background-color: rgba(56, 189, 248, 0.28);
-                border-color: #38BDF8;
+            }}
+            PushButton#AutoFillBtn:hover {{
+                background-color: rgba(99, 102, 241, 0.28);
+                border-color: {palette['group_title']};
                 color: #FFFFFF;
-            }
-            PushButton#ConvertFP8Btn {
+            }}
+            PushButton#ConvertFP8Btn {{
                 background-color: rgba(168, 85, 247, 0.15);
                 color: #C084FC;
                 border: 1px solid rgba(168, 85, 247, 0.35);
                 border-radius: 6px;
                 font-weight: 600;
-            }
-            PushButton#ConvertFP8Btn:hover {
+            }}
+            PushButton#ConvertFP8Btn:hover {{
                 background-color: rgba(168, 85, 247, 0.28);
                 border-color: #C084FC;
                 color: #FFFFFF;
-            }
-            PushButton#ConvertFP8Btn:disabled {
+            }}
+            PushButton#ConvertFP8Btn:disabled {{
                 background-color: rgba(255, 255, 255, 0.03);
                 color: #64748B;
                 border-color: rgba(255, 255, 255, 0.06);
-            }
+            }}
         """)
+
+        # Применяем акцентный оттенок к бегункам и трекам слайдеров
+        accent_color = QColor(palette['accent'])
+        for s in (
+            getattr(self, "slider_steps", None),
+            getattr(self, "slider_cfg", None),
+            getattr(self, "slider_hires_denoise", None),
+            getattr(self, "slider_clip_skip", None),
+        ):
+            if s is not None and hasattr(s, "setThemeColor"):
+                s.setThemeColor(accent_color, accent_color)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.update_adaptive_palette()
+
+    def _setup_ui(self):
+        self._current_palette = extract_adaptive_palette(self._resolve_pixmap())
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(18, 16, 18, 16)
@@ -284,10 +334,10 @@ class ModelsManagerDialog(
         title_lbl = QLabel("🎨 МОДЕЛИ ГЕНЕРАЦИИ, ПАРАМЕТРЫ ПАЙПЛАЙНА И РОУТИНГ", self)
         title_lbl.setStyleSheet("""
             font-size: 15px;
-            font-weight: 800;
-            letter-spacing: 1.2px;
-            color: #00F0FF;
-            font-family: 'Inter', 'Segoe UI', sans-serif;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            color: #F8FAFC;
+            font-family: 'Segoe UI', -apple-system, sans-serif;
         """)
         hdr_layout.addWidget(title_lbl)
 
@@ -327,6 +377,7 @@ class ModelsManagerDialog(
         tbl_bar.addStretch()
 
         self.btn_add_model = PrimaryPushButton("Добавить", left_widget, icon=FIF.ADD)
+        self.btn_add_model.setObjectName("PrimaryBtn")
         self.btn_add_model.setFixedHeight(30)
         self.btn_add_model.clicked.connect(self._add_empty_model_row)
         tbl_bar.addWidget(self.btn_add_model)
@@ -451,7 +502,7 @@ class ModelsManagerDialog(
         pipe_layout.setSpacing(10)
 
         lbl_pipe_hdr = QLabel("🎛️ ПАРАМЕТРЫ РЕНДЕРА SD WEBUI FORGE", card_pipeline)
-        lbl_pipe_hdr.setStyleSheet("font-size: 11px; font-weight: 700; color: #38BDF8; letter-spacing: 0.8px;")
+        lbl_pipe_hdr.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {self._current_palette['group_title']}; letter-spacing: 0.8px;")
         pipe_layout.addWidget(lbl_pipe_hdr)
 
         preset_box = QHBoxLayout()
@@ -541,7 +592,7 @@ class ModelsManagerDialog(
         ad_box.addWidget(self.btn_adetailer_config)
 
         self.lbl_ad_status = QLabel("ВКЛ [v8m/v9c]", card_pipeline)
-        self.lbl_ad_status.setStyleSheet("color: #00F0FF; font-weight: bold;")
+        self.lbl_ad_status.setStyleSheet(f"color: {self._current_palette['group_title']}; font-weight: bold;")
         ad_box.addWidget(self.lbl_ad_status)
         ad_box.addStretch()
 
@@ -628,7 +679,7 @@ class ModelsManagerDialog(
         rout_layout.setSpacing(8)
 
         lbl_rout_hdr = QLabel("🧠 СЕМАНТИЧЕСКИЙ РОУТИНГ И ПОДСКАЗКИ ДЛЯ LLM", card_routing)
-        lbl_rout_hdr.setStyleSheet("font-size: 11px; font-weight: 700; color: #00F0FF; letter-spacing: 0.8px;")
+        lbl_rout_hdr.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {self._current_palette['group_title']}; letter-spacing: 0.8px;")
         rout_layout.addWidget(lbl_rout_hdr)
 
         rout_layout.addWidget(QLabel("Описание стиля / ключевые темы FastEmbed:", card_routing))
@@ -704,6 +755,7 @@ class ModelsManagerDialog(
         actions_row.addWidget(self.btn_close)
 
         main_layout.addLayout(actions_row)
+        self.update_adaptive_palette()
         self._update_fp8_button_state()
 
     def _on_table_selection_changed(self):

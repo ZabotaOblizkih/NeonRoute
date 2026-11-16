@@ -593,6 +593,10 @@ class MainWindow(
                 from ui.common.image_utils import load_display_master_pixmap
                 self.background_pixmap = load_display_master_pixmap(self._active_bg_path)
                 self._update_background_cache()
+                if hasattr(self, "_apply_chat_background"):
+                    self._apply_chat_background()
+                elif hasattr(self, "chat_viewport") and self.chat_viewport:
+                    self.chat_viewport.set_background(None)
                 self.update()
 
     def _start_background_services(self):

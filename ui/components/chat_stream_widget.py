@@ -21,6 +21,18 @@ if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
 
+class ChatScrollArea(SmoothScrollArea):
+    """
+    Плавная скролл-арена для чата с гарантированной синхронизацией статического фона вьюпорта.
+    Исключает BitBlt-дёрганье (jitter) фонового изображения при прокрутке колесом мыши.
+    """
+
+    def scrollContentsBy(self, dx: int, dy: int):
+        super().scrollContentsBy(dx, dy)
+        if (dx != 0 or dy != 0) and self.viewport():
+            self.viewport().update()
+
+
 class ChatStreamWidget(QWidget):
     def __init__(self, window: 'MainWindow', parent=None):
         super().__init__(parent or window)
@@ -37,7 +49,7 @@ class ChatStreamWidget(QWidget):
         root_layout.setSpacing(0)
 
         # 1. Smooth Scroll Area (Windows 11 Fluid Scrolling)
-        self.scroll_area = SmoothScrollArea(self)
+        self.scroll_area = ChatScrollArea(self)
         self.scroll_area.setObjectName("ChatScrollArea")
         self.scroll_area.setStyleSheet("""
             QScrollArea#ChatScrollArea {

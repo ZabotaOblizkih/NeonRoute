@@ -316,7 +316,8 @@ class ModelPipelineFormMixin:
             hands_on = pipe.get("adetailer_hands_enabled", True)
             hand_s = pipe.get("adetailer_hands_model", "v9c").replace("hand_yolo", "").replace(".pt", "") if hands_on else "off"
             self.lbl_ad_status.setText(f"ВКЛ [{face_s}/{hand_s}]")
-            self.lbl_ad_status.setStyleSheet("color: #00F0FF; font-weight: bold;")
+            accent = getattr(self, "_current_palette", {}).get("group_title", "#818CF8")
+            self.lbl_ad_status.setStyleSheet(f"color: {accent}; font-weight: bold;")
 
     def _load_model_to_form(self, row_idx: int):
         if row_idx < 0 or row_idx >= len(self.row_widgets):

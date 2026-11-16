@@ -408,6 +408,12 @@ class GalleryDnaPartyMixin:
         companions = getattr(card, "companions", []) if card else []
         n_comps = len(companions)
 
+        palette = getattr(self, "_current_palette", None) or {}
+        accent = palette.get("accent", "#00F0FF")
+        card_border = palette.get("border", "#1E293B")
+        card_bg = palette.get("btn", "#0F172A")
+        text_sec = palette.get("text_secondary", "#94A3B8")
+
         for i, btn in enumerate(self.party_buttons):
             is_active = False
             if i < n_comps:
@@ -417,13 +423,13 @@ class GalleryDnaPartyMixin:
 
             if is_active:
                 btn.setStyleSheet(
-                    "border: 1px solid #00F0FF; background-color: rgba(0, 240, 255, 0.18); "
-                    "color: #00F0FF; font-weight: bold; padding: 3px 8px; border-radius: 4px; font-size: 11px;"
+                    f"border: 1px solid {accent}; background-color: rgba(0, 240, 255, 0.18); "
+                    f"color: {accent}; font-weight: bold; padding: 3px 8px; border-radius: 4px; font-size: 11px;"
                 )
             else:
                 btn.setStyleSheet(
-                    "border: 1px solid #1E293B; background-color: #0F172A; "
-                    "color: #94A3B8; font-weight: normal; padding: 3px 8px; border-radius: 4px; font-size: 11px;"
+                    f"border: 1px solid {card_border}; background-color: {card_bg}; "
+                    f"color: {text_sec}; font-weight: normal; padding: 3px 8px; border-radius: 4px; font-size: 11px;"
                 )
 
     def _on_companion_chip_clicked(self, idx: int):

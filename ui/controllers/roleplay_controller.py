@@ -49,11 +49,10 @@ class RoleplayControllerMixin:
                         applied = True
 
         if not applied:
+            # Если у сессии нет персонального фона сцены, сбрасываем вьюпорт в прозрачный режим.
+            # Глобальный фон окна рендерится без швов и дёрганья корневым MainWindow.
             if hasattr(self, "chat_viewport") and self.chat_viewport:
-                if hasattr(self, "background_pixmap") and self.background_pixmap and not self.background_pixmap.isNull():
-                    self.chat_viewport.set_background(self.background_pixmap, alpha=self.background_dim_opacity)
-                else:
-                    self.chat_viewport.set_background(None)
+                self.chat_viewport.set_background(None)
 
         if hasattr(self, "chat_viewport") and self.chat_viewport:
             self.chat_viewport.update()

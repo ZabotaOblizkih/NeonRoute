@@ -1529,7 +1529,7 @@ class ChatFlowControllerMixin:
                     self._turn_bubble.set_text(clean_ans)
                 except RuntimeError:
                     pass
-            self.chat_history.append({"role": "assistant", "content": clean_ans})
+            self._sync_turn(role="assistant", content=clean_ans, replace_last=True)
             self._is_post_tool_synthesis = False
             self._synthesis_first_chunk = False
             self._tool_loop_count = 0
@@ -1597,7 +1597,7 @@ class ChatFlowControllerMixin:
 
                     if hasattr(self._turn_bubble, "set_text"):
                         self._turn_bubble.set_text(fin_text)
-                    self.chat_history.append({"role": "assistant", "content": fin_text})
+                    self._sync_turn(role="assistant", content=fin_text, replace_last=True)
                     return
 
         # 4. Если инструментов нет — стандартный вывод отчета инженера
