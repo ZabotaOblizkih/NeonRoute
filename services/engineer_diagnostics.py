@@ -62,6 +62,9 @@ def clean_traceback(raw_tb: str, max_frames: int = 4) -> str:
     if current_block:
         filtered_blocks.append(current_block)
 
+    if not is_in_traceback:
+        return raw_tb.strip()
+
     # Если все фреймы оказались системными — возвращаем хотя бы текст ошибки
     if not filtered_blocks:
         return last_error_line or raw_tb.strip()
@@ -88,11 +91,17 @@ def extract_error_fingerprint(output: str) -> str:
 
     # Проверка на падение тестов unittest / pytest
     if "FAIL:" in text or "FAILED" in text:
-        fail_cases = re.findall(r'FAIL:\s+([^\s]+)', text)
-        last_line = lines[-1][:120]
-        if fail_cases:
-            return f"TEST_FAIL::{','.join(fail_cases)}::{last_line}"
-        return f"TEST_FAIL::{last_line}"
+        fail_cases = re.findall(r'(?:FAIL:|FAILED)\s+([^\s\r\n\[]+)', text)
+        clean_fails = [f for f in fail_cases if not f.startswith("[")]
+        err_type = ""
+        m_err = re.search(r'(?:E\s+|FAILED\s+.*?-\s+)([A-Za-z0-9_.]+(?:Error|Exception)?)', text)
+        if m_err:
+            err_type = m_err.group(1)
+        norm_last = re.sub(r'\s+in\s+\d+\.\d+s', '', lines[-1][:120])
+        fails_str = ','.join(clean_fails)
+        if clean_fails:
+            return f"TEST_FAIL::{fails_str}::{err_type or norm_last}"
+        return f"TEST_FAIL::{err_type or norm_last}"
 
     # Стандартный Python Traceback: ищем последний File "...", line X и финальное исключение
     file_line = ""

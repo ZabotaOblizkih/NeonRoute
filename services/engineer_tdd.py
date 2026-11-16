@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.git_sandbox import GitSandboxManager
 from services.sandbox_manager import SandboxManager
 from services.tool_engine import ToolEngine, sanitize_code
+from services.engineer_context import EngineerContext
+from services.engineer_diagnostics import diagnose_runtime_error, extract_error_fingerprint
 
 logger = logging.getLogger("NeonRoute.EngineerTDD")
 
@@ -53,13 +55,54 @@ class CodeFirstTDDPipeline:
 
         if not files:
             pure = extract_clean_code(response_text)
-            if pure and pure.strip():
+            if pure and pure.strip() and EngineerContext.has_python_code(pure):
                 files[default_filename] = pure.strip()
 
         for fn in list(files.keys()):
             files[fn] = sanitize_code(files[fn], fn)
 
         return files
+
+    @staticmethod
+    def _is_test_defect(last_error: str, test_file: str, mod_name: str, test_fix_count: int = 0) -> bool:
+        """
+        Определяет, вызвана ли ошибка падения тестов дефектом самого файла тестов
+        или же ошибкой в реализации тестируемого модуля.
+        """
+        # 1. AssertionError бизнес-логики - строго ошибка реализации модуля
+        if "AssertionError" in last_error:
+            return False
+
+        # 2. Если ошибка произошла внутри модуля (последний фрейм в mod_name) - ошибка реализации
+        tb_lines = [line.strip() for line in last_error.splitlines() if line.strip().startswith("File ")]
+        if tb_lines and mod_name in tb_lines[-1]:
+            return False
+
+        # 3. Ошибка тестового фреймворка (несуществующая фикстура)
+        if "fixture '" in last_error and "not found" in last_error:
+            return True
+
+        test_fn = Path(test_file).name
+        # 4. Сбой сбора тестов pytest
+        if f"ERROR collecting {test_fn}" in last_error:
+            return True
+
+        # 5. Синтаксическая/импортная/именная ошибка внутри самого тестового файла
+        if test_fn in last_error and any(err in last_error for err in ("SyntaxError", "IndentationError", "NameError", "ImportError", "ModuleNotFoundError")):
+            if tb_lines:
+                if any(test_fn in line for line in tb_lines) and not any(mod_name in line for line in tb_lines):
+                    return True
+            else:
+                return True
+
+        # 6. Сбой сигнатуры/атрибута непосредственно на строке вызова из test_file (не чаще 1-2 раз)
+        if test_fix_count < 2 and any(err in last_error for err in ("TypeError", "AttributeError")):
+            if tb_lines and any(test_fn in line for line in tb_lines) and not any(mod_name in line for line in tb_lines):
+                if "has no attribute" in last_error or "takes " in last_error or "missing " in last_error:
+                    return False
+                return True
+
+        return False
 
     @staticmethod
     def append_new_tests(existing_test_code: str, new_test_snippet: str) -> str:
@@ -240,6 +283,12 @@ class CodeFirstTDDPipeline:
         # === ШАГ 3 (ДВУСТОРОННЕЕ ИСЦЕЛЕНИЕ, ДО 15 ПОПЫТОК) ===
         _send("assistant", f"🔄 **Шаг 3 (Двустороннее исцеление)**: Запуск `pytest {test_file} -v`...")
         last_error = ""
+        last_error_fingerprint = None
+        consecutive_same_error_count = 0
+        consecutive_no_blocks_count = 0
+        max_same_error_retries = 3
+        test_fix_count = 0
+
         for attempt in range(1, 16):
             if on_status_callback and callable(on_status_callback):
                 on_status_callback("running", test_file, 0, "")
@@ -265,16 +314,41 @@ class CodeFirstTDDPipeline:
             last_error = test_res.output or test_res.stderr or "Pytest failed"
             logger.warning(f"⚠️ [TDD NEW_MODULE] Попытка {attempt}/15 упала: {last_error[:150]}")
 
-            is_odd = (attempt % 2 == 1)
+            current_fp = extract_error_fingerprint(last_error)
+            if current_fp and current_fp == last_error_fingerprint:
+                consecutive_same_error_count += 1
+                logger.warning(f"⚠️ [TDD NEW_MODULE] Детектор зацикливания: повтор ошибки ({consecutive_same_error_count}/{max_same_error_retries}): {current_fp}")
+            else:
+                consecutive_same_error_count = 1
+                last_error_fingerprint = current_fp
+
+            if consecutive_same_error_count >= max_same_error_retries:
+                fail_summary = (
+                    f"⛔ [Останов по зацикливанию TDD]: Модель {max_same_error_retries} раза подряд наступила на ошибку:\n"
+                    f"«{current_fp}»\n\nДетали последней ошибки:\n{last_error}"
+                )
+                logger.error(fail_summary)
+                _send("assistant", fail_summary)
+                return {
+                    "success": False,
+                    "target_artifact": mod_name,
+                    "verification_script": test_file,
+                    "verification_passed": False,
+                    "error": last_error,
+                    "summary": fail_summary
+                }
+
+            enriched_error = diagnose_runtime_error(last_error)
+            is_defect_in_test = cls._is_test_defect(last_error, test_file, mod_name, test_fix_count=test_fix_count)
             curr_impl = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore") if (ws_dir / mod_name).is_file() else ""
             curr_test = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
 
-            if is_odd:
-                # Нечётная попытка (1, 3, 5...): Исправление кода реализации (<module>.py)
-                _send("assistant", f"🔧 Попытка {attempt}/15 (нечётная): Исправляю код реализации `{mod_name}`...")
+            if not is_defect_in_test:
+                # Исправление кода реализации (<module>.py)
+                _send("assistant", f"🔧 Попытка {attempt}/15: Исправляю код реализации `{mod_name}`...")
                 fix_user = (
                     f"Тесты pytest `{test_file}` упали с ошибкой (Попытка {attempt}/15):\n"
-                    f"```\n{last_error}\n```\n\n"
+                    f"```\n{enriched_error}\n```\n\n"
                     f"Текущий код реализации `{mod_name}`:\n```python\n{curr_impl}\n```\n\n"
                     f"Текущий код тестов `{test_file}`:\n```python\n{curr_test}\n```\n\n"
                     f"Исправь код реализации `{mod_name}`, чтобы тесты выполнялись успешно. "
@@ -287,15 +361,31 @@ class CodeFirstTDDPipeline:
                 ]
                 fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=mod_name)
-                new_impl = blocks.get(mod_name) or (list(blocks.values())[0] if blocks else curr_impl)
-                new_impl = sanitize_code(new_impl, mod_name)
-                ToolEngine.write_file(mod_name, new_impl)
+                if not blocks:
+                    consecutive_no_blocks_count += 1
+                    if consecutive_no_blocks_count >= max_same_error_retries:
+                        fail_summary = f"⛔ [Останов по зацикливанию TDD]: Модель {max_same_error_retries} раза подряд не вернула код."
+                        logger.error(fail_summary)
+                        _send("assistant", fail_summary)
+                        return {
+                            "success": False,
+                            "target_artifact": mod_name,
+                            "verification_script": test_file,
+                            "verification_passed": False,
+                            "error": last_error,
+                            "summary": fail_summary
+                        }
+                else:
+                    consecutive_no_blocks_count = 0
+                    new_impl = blocks.get(mod_name) or list(blocks.values())[0]
+                    new_impl = sanitize_code(new_impl, mod_name)
+                    ToolEngine.write_file(mod_name, new_impl)
             else:
-                # Чётная попытка (2, 4, 6...): Если ошибка вызвана структурой теста (fixture not found, опечатка в assert, синтаксис теста) — корректируем test_<module>.py
-                _send("assistant", f"🧪 Попытка {attempt}/15 (чётная): Корректирую структуру тестов `{test_file}`...")
+                test_fix_count += 1
+                _send("assistant", f"🧪 Попытка {attempt}/15: Корректирую структуру тестов `{test_file}`...")
                 fix_user = (
                     f"Тесты pytest `{test_file}` упали с ошибкой (Попытка {attempt}/15):\n"
-                    f"```\n{last_error}\n```\n\n"
+                    f"```\n{enriched_error}\n```\n\n"
                     f"Ошибка вызвана структурой теста (fixture not found, опечатка в assert, синтаксис теста, неверные ожидания).\n"
                     f"Текущий код тестов `{test_file}`:\n```python\n{curr_test}\n```\n\n"
                     f"Текущий код реализации `{mod_name}`:\n```python\n{curr_impl}\n```\n\n"
@@ -311,9 +401,25 @@ class CodeFirstTDDPipeline:
                 ]
                 fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
-                new_test = blocks.get(test_file) or (list(blocks.values())[0] if blocks else curr_test)
-                new_test = sanitize_code(new_test, test_file)
-                ToolEngine.write_file(test_file, new_test)
+                if not blocks:
+                    consecutive_no_blocks_count += 1
+                    if consecutive_no_blocks_count >= max_same_error_retries:
+                        fail_summary = f"⛔ [Останов по зацикливанию TDD]: Модель {max_same_error_retries} раза подряд не вернула код."
+                        logger.error(fail_summary)
+                        _send("assistant", fail_summary)
+                        return {
+                            "success": False,
+                            "target_artifact": mod_name,
+                            "verification_script": test_file,
+                            "verification_passed": False,
+                            "error": last_error,
+                            "summary": fail_summary
+                        }
+                else:
+                    consecutive_no_blocks_count = 0
+                    new_test = blocks.get(test_file) or list(blocks.values())[0]
+                    new_test = sanitize_code(new_test, test_file)
+                    ToolEngine.write_file(test_file, new_test)
 
         fail_summary = f"Исчерпан лимит в 15 попыток исцеления для {mod_name}. Последняя ошибка:\n{last_error}"
         _send("assistant", f"⛔ {fail_summary}")
@@ -478,10 +584,11 @@ class CodeFirstTDDPipeline:
             max_tokens=4096
         )
         blocks2 = cls.extract_code_blocks(str(resp2 or ""), default_filename=mod_name)
-        new_mod_code = blocks2.get(mod_name) or (list(blocks2.values())[0] if blocks2 else orig_mod_code)
-        new_mod_code = sanitize_code(new_mod_code, mod_name)
-        ToolEngine.write_file(mod_name, new_mod_code)
-        _send("assistant", f"✅ Изменения внесены в `{mod_name}`.")
+        if blocks2:
+            new_mod_code = blocks2.get(mod_name) or (list(blocks2.values())[0] if blocks2 else orig_mod_code)
+            new_mod_code = sanitize_code(new_mod_code, mod_name)
+            ToolEngine.write_file(mod_name, new_mod_code)
+            _send("assistant", f"✅ Изменения внесены в `{mod_name}`.")
 
         # === ШАГ 3 (REGRESSION CHECK): Запуск старых тестов на новом коде ===
         if has_valid_baseline and (ws_dir / test_file).is_file():
@@ -494,12 +601,15 @@ class CodeFirstTDDPipeline:
                 _send("assistant", f"⚠️ Регрессия: старые тесты упали (попытка {reg_attempt}/5). Восстанавливаю обратную совместимость...")
                 curr_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore")
                 curr_test = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
+                reg_err = reg_res.output or reg_res.stderr or "Pytest regression failure"
+                enriched_reg_err = diagnose_runtime_error(reg_err)
+                is_reg_test_defect = cls._is_test_defect(reg_err, test_file, mod_name)
 
-                if reg_attempt % 2 == 1:
-                    # Нечётная попытка: исправление реализации модуля
+                if not is_reg_test_defect:
+                    # Исправление реализации модуля
                     reg_user = (
                         f"РЕГРЕССИОННЫЙ СБОЙ: Старые тесты {test_file} упали после добавления новых методов!\n"
-                        f"```\n{reg_res.output or reg_res.stderr}\n```\n\n"
+                        f"```\n{enriched_reg_err}\n```\n\n"
                         f"Текущий код {mod_name}:\n```python\n{curr_code}\n```\n\n"
                         f"Исходный рабочий код до изменений:\n```python\n{orig_mod_code}\n```\n\n"
                         f"Исправь реализацию {mod_name}, чтобы старые тесты {test_file} стали 100% зелеными, "
@@ -512,15 +622,16 @@ class CodeFirstTDDPipeline:
                     ]
                     reg_resp = client.chat_completion(messages=reg_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                     reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=mod_name)
-                    fixed_code = reg_blocks.get(mod_name) or (list(reg_blocks.values())[0] if reg_blocks else curr_code)
-                    fixed_code = sanitize_code(fixed_code, mod_name)
-                    ToolEngine.write_file(mod_name, fixed_code)
+                    if reg_blocks:
+                        fixed_code = reg_blocks.get(mod_name) or list(reg_blocks.values())[0]
+                        fixed_code = sanitize_code(fixed_code, mod_name)
+                        ToolEngine.write_file(mod_name, fixed_code)
                 else:
-                    # Чётная попытка: адаптация тестов под обновлённую спецификацию интерфейса
+                    # Адаптация тестов под обновлённую спецификацию интерфейса
                     _send("assistant", f"🧪 Регрессия: адаптация тестов `{test_file}` под обновлённую спецификацию интерфейса...")
                     reg_test_user = (
                         f"РЕГРЕССИОННЫЙ СБОЙ: Старые тесты {test_file} упали после изменения интерфейса (Попытка {reg_attempt}/5):\n"
-                        f"```\n{reg_res.output or reg_res.stderr}\n```\n\n"
+                        f"```\n{enriched_reg_err}\n```\n\n"
                         f"Спецификация интерфейса (interface_spec):\n```json\n{spec_str}\n```\n\n"
                         f"Текущий код модуля {mod_name}:\n```python\n{curr_code}\n```\n\n"
                         f"Текущий код тестов {test_file}:\n```python\n{curr_test}\n```\n\n"
@@ -536,10 +647,11 @@ class CodeFirstTDDPipeline:
                     ]
                     reg_resp = client.chat_completion(messages=reg_test_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                     reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=test_file)
-                    fixed_test = reg_blocks.get(test_file) or (list(reg_blocks.values())[0] if reg_blocks else curr_test)
-                    fixed_test = sanitize_code(fixed_test, test_file)
-                    ToolEngine.write_file(test_file, fixed_test)
-                    orig_test_code = fixed_test
+                    if reg_blocks:
+                        fixed_test = reg_blocks.get(test_file) or list(reg_blocks.values())[0]
+                        fixed_test = sanitize_code(fixed_test, test_file)
+                        ToolEngine.write_file(test_file, fixed_test)
+                        orig_test_code = fixed_test
 
                 reg_res = ToolEngine.run_pytest(test_file)
 
@@ -591,6 +703,12 @@ class CodeFirstTDDPipeline:
         # === ШАГ 5 (ФИНАЛЬНАЯ ВЕРИФИКАЦИЯ): Прогон всего набора тестов с двусторонним исцелением ===
         _send("assistant", f"🎯 **Шаг 5 (Финальная верификация)**: Запуск полного набора тестов `pytest {test_file} -v`...")
         last_error = ""
+        last_error_fingerprint = None
+        consecutive_same_error_count = 0
+        consecutive_no_blocks_count = 0
+        max_same_error_retries = 3
+        test_fix_count = 0
+
         for attempt in range(1, 16):
             if on_status_callback and callable(on_status_callback):
                 on_status_callback("running", test_file, 0, "")
@@ -616,15 +734,43 @@ class CodeFirstTDDPipeline:
             last_error = test_res.output or test_res.stderr or "Pytest failed"
             logger.warning(f"⚠️ [TDD INCREMENTAL] Попытка {attempt}/15 завершилась падением тестов: {last_error[:150]}")
 
-            is_odd = (attempt % 2 == 1)
+            current_fp = extract_error_fingerprint(last_error)
+            if current_fp and current_fp == last_error_fingerprint:
+                consecutive_same_error_count += 1
+                logger.warning(f"⚠️ [TDD INCREMENTAL] Детектор зацикливания: повтор ошибки ({consecutive_same_error_count}/{max_same_error_retries}): {current_fp}")
+            else:
+                consecutive_same_error_count = 1
+                last_error_fingerprint = current_fp
+
+            if consecutive_same_error_count >= max_same_error_retries:
+                ToolEngine.write_file(mod_name, orig_mod_code)
+                if orig_test_code and (ws_dir / test_file).is_file():
+                    ToolEngine.write_file(test_file, orig_test_code)
+                fail_summary = (
+                    f"⛔ [Останов по зацикливанию TDD]: Модель {max_same_error_retries} раза подряд наступила на ошибку:\n"
+                    f"«{current_fp}»\n\nВыполнен откат {mod_name} и {test_file}.\nДетали последней ошибки:\n{last_error}"
+                )
+                logger.error(fail_summary)
+                _send("assistant", fail_summary)
+                return {
+                    "success": False,
+                    "target_artifact": mod_name,
+                    "verification_script": test_file,
+                    "verification_passed": False,
+                    "error": last_error,
+                    "summary": fail_summary
+                }
+
+            enriched_error = diagnose_runtime_error(last_error)
+            is_defect_in_test = cls._is_test_defect(last_error, test_file, mod_name, test_fix_count=test_fix_count)
             curr_impl = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore") if (ws_dir / mod_name).is_file() else ""
             curr_test = (ws_dir / test_file).read_text(encoding="utf-8", errors="ignore") if (ws_dir / test_file).is_file() else ""
 
-            if is_odd:
-                _send("assistant", f"🔧 Попытка {attempt}/15 (нечётная): Исправляю код реализации `{mod_name}`...")
+            if not is_defect_in_test:
+                _send("assistant", f"🔧 Попытка {attempt}/15: Исправляю код реализации `{mod_name}`...")
                 fix_user = (
                     f"Тесты {test_file} упали при финальной верификации (Попытка {attempt}/15):\n"
-                    f"```\n{last_error}\n```\n\n"
+                    f"```\n{enriched_error}\n```\n\n"
                     f"Текущий код реализации `{mod_name}`:\n```python\n{curr_impl}\n```\n\n"
                     f"Текущий код тестов `{test_file}`:\n```python\n{curr_test}\n```\n\n"
                     f"Исправь реализацию `{mod_name}`, сохранив все методы (старые и новые). "
@@ -636,14 +782,34 @@ class CodeFirstTDDPipeline:
                 ]
                 fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=mod_name)
-                new_impl = blocks.get(mod_name) or (list(blocks.values())[0] if blocks else curr_impl)
-                new_impl = sanitize_code(new_impl, mod_name)
-                ToolEngine.write_file(mod_name, new_impl)
+                if not blocks:
+                    consecutive_no_blocks_count += 1
+                    if consecutive_no_blocks_count >= max_same_error_retries:
+                        ToolEngine.write_file(mod_name, orig_mod_code)
+                        if orig_test_code and (ws_dir / test_file).is_file():
+                            ToolEngine.write_file(test_file, orig_test_code)
+                        fail_summary = f"⛔ [Останов по зацикливанию TDD]: Модель {max_same_error_retries} раза подряд не вернула код."
+                        logger.error(fail_summary)
+                        _send("assistant", fail_summary)
+                        return {
+                            "success": False,
+                            "target_artifact": mod_name,
+                            "verification_script": test_file,
+                            "verification_passed": False,
+                            "error": last_error,
+                            "summary": fail_summary
+                        }
+                else:
+                    consecutive_no_blocks_count = 0
+                    new_impl = blocks.get(mod_name) or list(blocks.values())[0]
+                    new_impl = sanitize_code(new_impl, mod_name)
+                    ToolEngine.write_file(mod_name, new_impl)
             else:
-                _send("assistant", f"🧪 Попытка {attempt}/15 (чётная): Корректирую структуру тестов `{test_file}`...")
+                test_fix_count += 1
+                _send("assistant", f"🧪 Попытка {attempt}/15: Корректирую структуру тестов `{test_file}`...")
                 fix_user = (
                     f"Тесты {test_file} упали при финальной верификации (Попытка {attempt}/15):\n"
-                    f"```\n{last_error}\n```\n\n"
+                    f"```\n{enriched_error}\n```\n\n"
                     f"Ошибка вызвана структурой теста (fixture not found, опечатка в assert, синтаксис теста).\n"
                     f"Текущий код тестов `{test_file}`:\n```python\n{curr_test}\n```\n\n"
                     f"Текущий код реализации `{mod_name}`:\n```python\n{curr_impl}\n```\n\n"
@@ -659,11 +825,33 @@ class CodeFirstTDDPipeline:
                 ]
                 fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
-                new_test = blocks.get(test_file) or (list(blocks.values())[0] if blocks else curr_test)
-                new_test = sanitize_code(new_test, test_file)
-                ToolEngine.write_file(test_file, new_test)
+                if not blocks:
+                    consecutive_no_blocks_count += 1
+                    if consecutive_no_blocks_count >= max_same_error_retries:
+                        ToolEngine.write_file(mod_name, orig_mod_code)
+                        if orig_test_code and (ws_dir / test_file).is_file():
+                            ToolEngine.write_file(test_file, orig_test_code)
+                        fail_summary = f"⛔ [Останов по зацикливанию TDD]: Модель {max_same_error_retries} раза подряд не вернула код."
+                        logger.error(fail_summary)
+                        _send("assistant", fail_summary)
+                        return {
+                            "success": False,
+                            "target_artifact": mod_name,
+                            "verification_script": test_file,
+                            "verification_passed": False,
+                            "error": last_error,
+                            "summary": fail_summary
+                        }
+                else:
+                    consecutive_no_blocks_count = 0
+                    new_test = blocks.get(test_file) or list(blocks.values())[0]
+                    new_test = sanitize_code(new_test, test_file)
+                    ToolEngine.write_file(test_file, new_test)
 
         fail_summary = f"Исчерпан лимит в 15 попыток финальной верификации для {mod_name}. Последняя ошибка:\n{last_error}"
+        ToolEngine.write_file(mod_name, orig_mod_code)
+        if orig_test_code and (ws_dir / test_file).is_file():
+            ToolEngine.write_file(test_file, orig_test_code)
         _send("assistant", f"⛔ {fail_summary}")
         return {
             "success": False,
