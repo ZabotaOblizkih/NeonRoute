@@ -62,7 +62,7 @@ class EngineerPlanner:
         gpu_ratio: str = "1.0",
         available_libs: Optional[List[str]] = None,
         temperature: float = 0.70,
-        max_tokens: int = 1200,
+        max_tokens: int = 1800,
         session_metadata: Optional[Dict[str, Any]] = None,
         active_engineer_skill: Optional[str] = None,
         **kwargs: Any,
@@ -125,7 +125,8 @@ class EngineerPlanner:
 
         router = EngineerSkillRouter.get_instance()
 
-        if manual_skill and manual_skill != "auto" and manual_skill in router.skills:
+        is_manual_skill = bool(manual_skill and manual_skill != "auto" and manual_skill in router.skills)
+        if is_manual_skill:
             skill_id = manual_skill
             score = 1.0
             skill_meta = router.skills[skill_id]
@@ -204,22 +205,30 @@ class EngineerPlanner:
             parsed_format = EngineerContext.normalize_artifact_format(
                 raw_format,
                 f"{task_prompt} {context_hint}",
-                has_verification_script=bool(verification_script)
+                has_verification_script=bool(verification_script),
+                skill_id=skill_id
             )
 
             # Выставляем архетип с учетом реального формата артефакта, а не поверхностной метки "module"
-            if parsed_format in ("pygame", "tkinter"):
-                skill_id = "interactive_loop"
-            elif parsed_format in ("excel", "word"):
-                skill_id = "batch_artifact"
-            elif parsed_format == "cli":
-                skill_id = "cli_automation"
-            elif parsed_format == "module":
-                skill_id = "pure_logic_tdd"
-            elif raw_format in ("pure_logic_tdd", "interactive_loop", "batch_artifact", "service_backend", "cli_automation"):
-                skill_id = raw_format
+            if is_manual_skill:
+                if parsed_format in ("pygame", "tkinter"):
+                    skill_id = "interactive_loop"
+                elif parsed_format in ("excel", "word"):
+                    skill_id = "batch_artifact"
+                # Запрещено перезаписывать принудительный скилл на cli_automation или pure_logic_tdd
             else:
-                skill_id = "pure_logic_tdd"
+                if parsed_format in ("pygame", "tkinter") or raw_format == "interactive_loop":
+                    skill_id = "interactive_loop"
+                elif parsed_format in ("excel", "word"):
+                    skill_id = "batch_artifact"
+                elif parsed_format == "cli":
+                    skill_id = "cli_automation"
+                elif parsed_format == "module":
+                    skill_id = "pure_logic_tdd"
+                elif raw_format in ("pure_logic_tdd", "interactive_loop", "batch_artifact", "service_backend", "cli_automation"):
+                    skill_id = raw_format
+                else:
+                    skill_id = "pure_logic_tdd"
             intent = str(data.get("intent") or "new").strip().lower()
             if raw_task_type == "INCREMENTAL_FEATURE":
                 intent = "maintenance"
@@ -250,7 +259,8 @@ class EngineerPlanner:
             parsed_format = EngineerContext.normalize_artifact_format(
                 "",
                 f"{task_prompt} {context_hint}",
-                has_verification_script=has_vs
+                has_verification_script=has_vs,
+                skill_id=skill_id
             )
             intent = "maintenance" if (ws_files and any(k in task_prompt.lower() for k in ("добавь", "исправь", "почини", "почему", "не работает", "чтобы"))) else "new"
             if parsed_format in ("excel", "word"):
@@ -292,7 +302,11 @@ class EngineerPlanner:
             is_maintenance = (intent == "maintenance" and bool(ws_files))
 
         target_entry_file = verification_script or target_artifact
-        system_prompt = get_engineer_system_prompt(artifact_format=artifact_format, is_analysis=is_analysis)
+        system_prompt = get_engineer_system_prompt(
+            artifact_format=artifact_format,
+            is_analysis=is_analysis,
+            injected_worker_rules=router.skills.get(skill_id, {}).get("worker_rules", "")
+        )
 
         if intent == "review":
             is_maintenance = False

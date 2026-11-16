@@ -103,13 +103,20 @@ ENGINEER_SKILLS: Dict[str, Dict[str, Any]] = {
         "triggers": "pygame, tkinter, pyqt, игра, gui, графический интерфейс, canvas, анимация, окно",
         "default_artifact": "game.py",
         "architect_rules": (
-            "- Разделяй чистое логическое ядро (<name>_core.py) и визуализатор/раннер (game.py или app.py).\n"
-            "- Проектируй структуру игрового/событийного цикла (loop), обработку событий ввода, FPS и состояние приложения.\n"
+            "- Проектируй единый самодостаточный файл game.py (для игр) или app.py (для GUI), если пользователь явно не просил многофайловую структуру (запрещено дробить на <name>_core.py и game.py без визуализации).\n"
+            "- Обязательный чеклист сущностей в interface_spec для 2D-игр:\n"
+            "  1. Класс игрока (Player/Mario): позиция (x, y), скорости vx, vy, гравитация, флаг on_ground, методы update(...) и draw(screen).\n"
+            "  2. Класс уровня/мира (Level): полноценная карта платформ, метод draw(screen), обработка коллизий colliderect раздельно по X и Y.\n"
+            "  3. Игровые объекты и цель (враги/препятствия/монеты/финиш), счётчик score, состояния playing / game_over / win и перезапуск.\n"
+            "  4. Запрет на блокирующие задержки (pygame.time.delay, time.sleep) в методах и игровом цикле; управление только через игровой цикл (loop) и FPS (clock.tick).\n"
             "- Запрещено проектировать интерактивный CLI-ввод input(); взаимодействие только через оконные события (Pygame events, Tkinter binds)."
         ),
         "worker_rules": (
-            "- Целевой файл по умолчанию game.py (или app.py).\n"
-            "- Для Pygame: pygame.init(), окно pygame.display.set_mode(), цикл clock.tick(60), опрос pygame.event.get(), flip().\n"
+            "- Целевой файл по умолчанию game.py (для игр) или app.py (для GUI).\n"
+            "- Обязательный блок if __name__ == '__main__': с созданием объектов и запуском игрового цикла с самого первого хода.\n"
+            "- Для Pygame: pygame.init(), окно pygame.display.set_mode(), цикл clock.tick(60), опрос pygame.event.get(), pygame.display.flip() или update().\n"
+            "- Прямой запрет pygame.time.delay() и time.sleep() внутри jump(), move() и основного цикла (анимация и физика только через скорости, гравитацию и clock.tick).\n"
+            "- Обязательная отрисовка всех сущностей (фон, платформы, объекты, сам игрок, текст HUD/score) на screen перед pygame.display.flip()/update().\n"
             "- Для Tkinter/PyQt: root.mainloop(), привязка клавиш root.bind, работа с Canvas через coords/move по ID.\n"
             "- Коллизии через rect.colliderect(), запрещено строгое равенство координат (==).\n"
             "- Категорически запрещен input() (песочница неинтерактивна, входной поток закрыт)."

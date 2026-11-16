@@ -140,6 +140,40 @@ class ToolEngine:
             ]
             if not definitions:
                 return False, f"Файл '{file_path.name}' не содержит ни классов, ни функций (только импорты или pass, не содержит классов или функций)."
+
+            # Проверка на пустые методы-заглушки (методы класса / функции, тело которых состоит только из pass, ... или docstring)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    is_abstract = any(
+                        (getattr(d, "id", "") == "abstractmethod" or getattr(d, "attr", "") == "abstractmethod")
+                        for d in getattr(node, "decorator_list", [])
+                    )
+                    if is_abstract:
+                        continue
+                    stmts = [
+                        s for s in node.body
+                        if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str))
+                    ]
+                    if not stmts:
+                        return False, (
+                            f"Функция/метод '{node.name}' в файле '{file_path.name}' является пустой заглушкой "
+                            f"(содержит только docstring без тела реализации)."
+                        )
+                    if len(stmts) == 1:
+                        stmt = stmts[0]
+                        if isinstance(stmt, ast.Pass):
+                            return False, (
+                                f"Функция/метод '{node.name}' в файле '{file_path.name}' содержит только 'pass' "
+                                f"вместо рабочей реализации."
+                            )
+                        if isinstance(stmt, ast.Expr) and (
+                            getattr(stmt.value, "value", None) is Ellipsis or
+                            (isinstance(getattr(stmt, "value", None), ast.Constant) and stmt.value.value is Ellipsis)
+                        ):
+                            return False, (
+                                f"Функция/метод '{node.name}' в файле '{file_path.name}' заменена на заглушку '...' "
+                                f"вместо рабочей реализации."
+                            )
         except SyntaxError as e:
             return False, f"Синтаксическая ошибка в '{file_path.name}': {e}"
         return True, "OK"

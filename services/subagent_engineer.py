@@ -318,7 +318,7 @@ class SubagentEngineer:
             gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
             available_libs=scan_installed_libraries(),
             temperature=worker_temp,
-            max_tokens=1200,
+            max_tokens=1800,
             session_metadata=sess.get("metadata") if sess else None,
         )
         logger.info(f"📐 [Архитектор: Утверждённый план]: {plan.plan_content}")

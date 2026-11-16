@@ -57,37 +57,72 @@ class EngineerContext:
     """Утилиты анализа файлов, контекста и песочницы для инженера NeonRoute."""
 
     @staticmethod
-    def normalize_artifact_format(raw_val: str, task_text: str = "", has_verification_script: bool = False) -> str:
+    def normalize_artifact_format(
+        raw_val: str,
+        task_text: str = "",
+        has_verification_script: bool = False,
+        skill_id: Optional[str] = None
+    ) -> str:
         """Нормализует формат задачи по фиксированной матрице форматов NeonRoute."""
         val = (raw_val or "").strip().lower()
         if val in ("excel", "word", "pygame", "tkinter", "cli"):
             return val
         t = (task_text or "").lower()
+
+        # 1. Точные форматы, запрашиваемые Архитектором
+        if val == "interactive_loop":
+            if any(w in t for w in ("tkinter", "tk", "ttk", "pyqt", "pyside", "калькулятор", "кнопк", "форма")):
+                return "tkinter"
+            return "pygame"
+        if val == "batch_artifact":
+            if any(w in t for w in (".docx", "word", "ворд", "договор", "приказ")):
+                return "word"
+            return "excel"
+        if val == "pure_logic_tdd":
+            return "module"
+        if val in ("cli_automation", "service_backend"):
+            return "cli"
+
+        # 2. Синонимы и общие категории
         if val in ("document", "docs", "doc", "spreadsheet", "table"):
             if any(w in t for w in (".docx", "word", "ворд", "договор", "приказ")):
                 return "word"
             return "excel"
         if val in ("gui_app", "gui", "game", "2d_game"):
-            if any(w in t for w in ("tkinter", "tk", "ttk", "canvas", "калькулятор")):
+            if any(w in t for w in ("tkinter", "tk", "ttk", "canvas", "калькулятор", "pyqt", "pyside", "кнопк", "форма")):
                 return "tkinter"
             return "pygame"
         if val in ("cli_tool", "cli_script", "script", "console"):
             return "cli"
         if has_verification_script:
             return "module"
-        # Сопоставление с ближайшим форматом по ключевым словам (превалирует над общим "module")
+
+        # 3. Сопоставление с ближайшим форматом по ключевым словам (превалирует над общим "module")
         if any(k in t for k in (".xlsx", ".xls", "excel", "эксель")):
             return "excel"
         if any(k in t for k in (".docx", ".doc", "word", "ворд")):
             return "word"
-        if any(k in t for k in ("pygame", "тетрис", "змейк")):
-            return "pygame"
-        if any(k in t for k in ("tkinter", "customtkinter")):
+        if any(k in t for k in ("tkinter", "customtkinter", "pyqt", "pyside", "ttk", "tk", "калькулятор", "кнопк", "форма")):
             return "tkinter"
+        if any(k in t for k in ("pygame", "игра", "игры", "марио", "mario", "платформер", "аркада", "шутер", "кликер", "арканоид", "змейк", "тетрис", "2d", "gui приложение")):
+            return "pygame"
         if val in ("module", "library", "algo", "algorithm", "data_structure"):
             return "module"
         if any(k in t for k in ("модуль", "module", "класс", "структур", "алгоритм")):
             return "module"
+
+        # 4. Фоллбэк по переданному skill_id
+        if skill_id == "interactive_loop":
+            if any(w in t for w in ("tkinter", "tk", "ttk", "pyqt", "pyside", "калькулятор", "кнопк", "форма")):
+                return "tkinter"
+            return "pygame"
+        if skill_id == "batch_artifact":
+            if any(w in t for w in (".docx", "word", "ворд", "договор", "приказ")):
+                return "word"
+            return "excel"
+        if skill_id == "pure_logic_tdd":
+            return "module"
+
         return "cli"
 
     @staticmethod

@@ -341,12 +341,21 @@ class SandboxManager:
 
                 # Headless Smoke Harness: всестороннее тестирование GUI-событий без ложных срабатываний
                 monkey_patch_bootstrap = (
-                    "import sys, os, runpy\n"
+                    "import sys, os, runpy, atexit\n"
                     "target = sys.argv[1]\n"
                     "sys.argv = sys.argv[1:]\n"
                     "t_dir = os.path.dirname(os.path.abspath(target))\n"
                     "if t_dir not in sys.path:\n"
                     "    sys.path.insert(0, t_dir)\n\n"
+                    "_gui_passed = False\n"
+                    "_marker_emitted = False\n"
+                    "def _emit_marker():\n"
+                    "    global _marker_emitted\n"
+                    "    if _gui_passed and not _marker_emitted:\n"
+                    "        _marker_emitted = True\n"
+                    "        sys.stdout.write('[GUI_CHECKLIST_PASSED]\\n')\n"
+                    "        sys.stdout.flush()\n"
+                    "atexit.register(_emit_marker)\n\n"
                     "# 1. Tkinter: перехват падений, автоклик и грациозный выход\n"
                     "try:\n"
                     "    import tkinter as tk\n"
@@ -364,6 +373,7 @@ class SandboxManager:
                     "    tk.Tk.report_callback_exception = _monkey_report\n"
                     "    _orig_tk_mainloop = tk.Tk.mainloop\n"
                     "    def _monkey_tk_mainloop(self, n=0):\n"
+                    "        global _gui_passed\n"
                     "        def _stim_tk():\n"
                     "            try:\n"
                     "                def _click(w):\n"
@@ -379,26 +389,62 @@ class SandboxManager:
                     "                pass\n"
                     "        self.after(300, _stim_tk)\n"
                     "        self.after(800, self.destroy)\n"
-                    "        return _orig_tk_mainloop(self, n)\n"
+                    "        res = _orig_tk_mainloop(self, n)\n"
+                    "        _gui_passed = True\n"
+                    "        _emit_marker()\n"
+                    "        return res\n"
                     "    tk.Tk.mainloop = _monkey_tk_mainloop\n"
                     "except Exception:\n"
                     "    pass\n\n"
-                    "# 2. Pygame: безопасные события SDL2, эмуляция клавиш и проверка pygame.QUIT\n"
+                    "# 2. Pygame: безопасные события SDL2, эмуляция клавиш и проверка рендера\n"
                     "try:\n"
+                    "    os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')\n"
                     "    import pygame\n"
+                    "    _orig_set_mode = pygame.display.set_mode\n"
+                    "    _active_screen = None\n"
+                    "    def _monkey_set_mode(*args, **kwargs):\n"
+                    "        global _active_screen\n"
+                    "        _active_screen = _orig_set_mode(*args, **kwargs)\n"
+                    "        return _active_screen\n"
+                    "    pygame.display.set_mode = _monkey_set_mode\n"
                     "    _orig_event_get = pygame.event.get\n"
                     "    _frames = 0\n"
+                    "    _sample_3 = None\n"
+                    "    def _sample_pixels():\n"
+                    "        global _active_screen\n"
+                    "        scr = _active_screen or pygame.display.get_surface()\n"
+                    "        if scr is None:\n"
+                    "            return None\n"
+                    "        try:\n"
+                    "            w, h = scr.get_size()\n"
+                    "            if w <= 0 or h <= 0:\n"
+                    "                return None\n"
+                    "            pts = []\n"
+                    "            step_x = max(1, w // 16)\n"
+                    "            step_y = max(1, h // 16)\n"
+                    "            for ix in range(16):\n"
+                    "                x = min(w - 1, ix * step_x)\n"
+                    "                for iy in range(16):\n"
+                    "                    y = min(h - 1, iy * step_y)\n"
+                    "                    c = scr.get_at((x, y))\n"
+                    "                    pts.append((c.r, c.g, c.b))\n"
+                    "            return tuple(pts)\n"
+                    "        except Exception:\n"
+                    "            return None\n"
                     "    def _create_event(ev_type, **attrs):\n"
                     "        defaults = {'mod': 0, 'scancode': 0, 'window': None}\n"
                     "        defaults.update(attrs)\n"
                     "        try: return pygame.event.Event(ev_type, **defaults)\n"
                     "        except TypeError: return pygame.event.Event(ev_type, **attrs)\n"
                     "    def _monkey_event_get(*args, **kwargs):\n"
-                    "        global _frames\n"
+                    "        global _frames, _sample_3, _gui_passed\n"
                     "        evs = list(_orig_event_get(*args, **kwargs))\n"
                     "        _frames += 1\n"
-                    "        if _frames in (5, 15, 25):\n"
+                    "        if _frames == 3:\n"
+                    "            _sample_3 = _sample_pixels()\n"
+                    "        elif _frames in (5, 15, 25):\n"
                     "            try:\n"
+                    "                evs.append(_create_event(pygame.KEYDOWN, key=pygame.K_RIGHT, unicode=''))\n"
                     "                evs.append(_create_event(pygame.KEYDOWN, key=pygame.K_SPACE, unicode=' '))\n"
                     "                evs.append(_create_event(pygame.KEYDOWN, key=pygame.K_LEFT, unicode=''))\n"
                     "                evs.append(_create_event(pygame.MOUSEBUTTONDOWN, pos=(200, 200), button=1))\n"
@@ -406,12 +452,29 @@ class SandboxManager:
                     "                pass\n"
                     "        elif _frames in (6, 16, 26):\n"
                     "            try:\n"
+                    "                evs.append(_create_event(pygame.KEYUP, key=pygame.K_RIGHT, unicode=''))\n"
                     "                evs.append(_create_event(pygame.KEYUP, key=pygame.K_SPACE, unicode=' '))\n"
                     "                evs.append(_create_event(pygame.KEYUP, key=pygame.K_LEFT, unicode=''))\n"
                     "                evs.append(_create_event(pygame.MOUSEBUTTONUP, pos=(200, 200), button=1))\n"
                     "            except Exception:\n"
                     "                pass\n"
-                    "        elif _frames == 35:\n"
+                    "        elif _frames == 30:\n"
+                    "            s30 = _sample_pixels()\n"
+                    "            if s30 is None:\n"
+                    "                sys.stderr.write('Экран не инициализирован: отсутствует вызов pygame.display.set_mode().\\n')\n"
+                    "                sys.stderr.flush()\n"
+                    "                sys.exit(2)\n"
+                    "            uniq = set(s30)\n"
+                    "            if len(uniq) <= 1:\n"
+                    "                sys.stderr.write('Экран однотонный/пустой: объекты игры не отрисовываются.\\n')\n"
+                    "                sys.stderr.flush()\n"
+                    "                sys.exit(2)\n"
+                    "            if _sample_3 is not None and _sample_3 == s30:\n"
+                    "                sys.stderr.write('Экран полностью статичен: нажатия клавиш управления и течение времени не меняют картинку на экране (проверь отрисовку игрока, движение и физику).\\n')\n"
+                    "                sys.stderr.flush()\n"
+                    "                sys.exit(2)\n"
+                    "            _gui_passed = True\n"
+                    "        elif _frames >= 35:\n"
                     "            try: evs.append(_create_event(pygame.QUIT))\n"
                     "            except Exception: pass\n"
                     "        return evs\n"
@@ -432,15 +495,20 @@ class SandboxManager:
                     "            for i in range(len(self)): yield self[i]\n"
                     "    def _monkey_key_pressed():\n"
                     "        k = _orig_key_pressed()\n"
-                    "        active = {pygame.K_SPACE, pygame.K_LEFT, pygame.K_RIGHT} if _frames in (5, 6, 7, 15, 16, 17) else set()\n"
+                    "        active = {pygame.K_SPACE, pygame.K_LEFT, pygame.K_RIGHT} if _frames in (5, 6, 7, 15, 16, 17, 25, 26, 27) else set()\n"
                     "        return _SafeKeyWrapper(k, pressed=active)\n"
                     "    pygame.key.get_pressed = _monkey_key_pressed\n"
                     "    _orig_mouse_pressed = pygame.mouse.get_pressed\n"
                     "    def _monkey_mouse_pressed():\n"
-                    "        if _frames in (5, 6, 7, 15, 16, 17):\n"
+                    "        if _frames in (5, 6, 7, 15, 16, 17, 25, 26, 27):\n"
                     "            return (1, 0, 0)\n"
                     "        return _orig_mouse_pressed()\n"
                     "    pygame.mouse.get_pressed = _monkey_mouse_pressed\n"
+                    "    _orig_pygame_quit = pygame.quit\n"
+                    "    def _monkey_pygame_quit():\n"
+                    "        _emit_marker()\n"
+                    "        return _orig_pygame_quit()\n"
+                    "    pygame.quit = _monkey_pygame_quit\n"
                     "except Exception:\n"
                     "    pass\n\n"
                     "# 3. PyQt6 / PySide6: автоклик, глушение диалогов и выход\n"
@@ -456,6 +524,7 @@ class SandboxManager:
                     "            if QA and hasattr(QA, 'exec'):\n"
                     "                _orig_exec = QA.exec\n"
                     "                def _monkey_qt_exec(self):\n"
+                    "                    global _gui_passed\n"
                     "                    try: from PyQt6.QtCore import QTimer\n"
                     "                    except ImportError: from PySide6.QtCore import QTimer\n"
                     "                    def _stim_qt():\n"
@@ -467,7 +536,10 @@ class SandboxManager:
                     "                        except Exception: pass\n"
                     "                    QTimer.singleShot(300, _stim_qt)\n"
                     "                    QTimer.singleShot(800, QA.quit)\n"
-                    "                    return _orig_exec(self)\n"
+                    "                    res = _orig_exec(self)\n"
+                    "                    _gui_passed = True\n"
+                    "                    _emit_marker()\n"
+                    "                    return res\n"
                     "                QA.exec = _monkey_qt_exec\n"
                     "                break\n"
                     "        except Exception:\n"
@@ -501,6 +573,10 @@ class SandboxManager:
                             stderr=err_clean,
                             output=f"Ошибка выполнения GUI (рантайм, код {gui_proc.returncode}):\n{err_clean}"
                         )
+                    if "[GUI_CHECKLIST_PASSED]" in (out or "") or "[GUI_CHECKLIST_PASSED]" in (err or ""):
+                        logger.info(f"✅ [Smoke-тест GUI] Успех: {clean_name} выдержал стресс-тест событий ввода и рендера.")
+                        msg = f"[Smoke-тест GUI успешен]: Оконное приложение {clean_name} проверено событиями ввода и готово к работе."
+                        return ScriptExecutionResult(success=True, return_code=0, stdout=out or msg, stderr="", output=msg)
                 except subprocess.TimeoutExpired:
                     gui_proc.kill()
                     out, err = "", ""
@@ -509,21 +585,18 @@ class SandboxManager:
                     except Exception:
                         pass
 
-                    # Проверка на подавленные исключения в stderr
                     err_clean = (err or "").strip()
-                    if err_clean and any(k in err_clean for k in ("Traceback (most recent call last)", "Exception in Tkinter")):
-                        logger.warning(f"⚠️ [Smoke-тест GUI] Обнаружены скрытые ошибки в stderr {clean_name}: {err_clean.splitlines()[-1]}")
-                        return ScriptExecutionResult(
-                            success=False,
-                            return_code=1,
-                            stdout=out or "",
-                            stderr=err_clean,
-                            output=f"Ошибка при обработке событий GUI:\n{err_clean}"
-                        )
-
-                    logger.info(f"✅ [Smoke-тест GUI] Успех: {clean_name} выдержал стресс-тест событий ввода (0 ошибок).")
-                    msg = f"[Smoke-тест GUI успешен]: Оконное приложение {clean_name} проверено событиями ввода и готово к работе."
-                    return ScriptExecutionResult(success=True, return_code=0, stdout=msg, stderr="", output=msg)
+                    logger.warning(f"⚠️ [Smoke-тест GUI] Приложение {clean_name} зависло или не обработало сигнал завершения за 2.5 с.")
+                    timeout_msg = f"Ошибка GUI (таймаут 2.5 с): {clean_name} зависло в цикле событий и не завершилось штатно."
+                    if err_clean:
+                        timeout_msg += f"\n{err_clean}"
+                    return ScriptExecutionResult(
+                        success=False,
+                        return_code=124,
+                        stdout=out or "",
+                        stderr=err_clean or timeout_msg,
+                        output=timeout_msg
+                    )
         except Exception as _e_gui:
             logger.debug(f"GUI check skipped: {_e_gui}")
 

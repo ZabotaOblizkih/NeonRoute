@@ -313,6 +313,60 @@ class CodeValidator:
                         "Без этого окно закроется мгновенно. Добавь вызов цикла в точке входа."
                     )
 
+        # 3.5. Pygame Quality & Anti-Freeze Gate (только для entry file с pygame)
+        if is_entry_file and "pygame" in content:
+            def _get_call_path(fn_node) -> str:
+                if isinstance(fn_node, ast.Name):
+                    return fn_node.id
+                if isinstance(fn_node, ast.Attribute):
+                    prefix = _get_call_path(fn_node.value)
+                    return f"{prefix}.{fn_node.attr}" if prefix else fn_node.attr
+                return ""
+
+            # Проверка запрета блокирующего фриза (pygame.time.delay / time.sleep)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.While, ast.For)):
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Call):
+                            c_name = _get_call_path(sub.func)
+                            if c_name in ("pygame.time.delay", "time.sleep") or (
+                                isinstance(sub.func, ast.Attribute) and sub.func.attr == "delay" and "time" in _get_call_path(sub.func.value)
+                            ) or (
+                                isinstance(sub.func, ast.Attribute) and sub.func.attr == "sleep" and _get_call_path(sub.func.value) in ("time", "asyncio")
+                            ):
+                                return False, (
+                                    f"Ошибка блокирующего фриза (BlockingFreeze): Обнаружен вызов '{c_name or 'pygame.time.delay'}' "
+                                    f"в файле {filename}. Запрещено использовать блокирующие задержки в функциях, методах и игровом цикле. "
+                                    f"Прыжки, тайминги и анимация должны управляться через скорости, гравитацию и счётчики кадров (clock.tick)."
+                                )
+
+            # Проверка минимальной полноты рендера Pygame (минимум 2 вызова отрисовки и display.flip / display.update)
+            draw_calls_count = 0
+            has_display_update = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    c_name = _get_call_path(node.func)
+                    if c_name.startswith("pygame.draw.") or (
+                        isinstance(node.func, ast.Attribute) and node.func.attr == "blit"
+                    ) or c_name.endswith(".blit"):
+                        draw_calls_count += 1
+                    if c_name in ("pygame.display.flip", "pygame.display.update") or (
+                        isinstance(node.func, ast.Attribute) and node.func.attr in ("flip", "update") and "display" in _get_call_path(node.func.value)
+                    ):
+                        has_display_update = True
+
+            if not has_display_update:
+                return False, (
+                    f"Ошибка неполной реализации Pygame (MissingDisplayFlip): В файле {filename} отсутствует вызов "
+                    f"pygame.display.flip() или pygame.display.update(). Игровой цикл обязан выводить кадры на экран."
+                )
+            if draw_calls_count < 2:
+                return False, (
+                    f"Ошибка неполной реализации Pygame (InsufficientRenderCalls): В файле {filename} обнаружено "
+                    f"недостаточно вызовов отрисовки ({draw_calls_count} < 2). Игра должна отрисовывать как минимум игровой мир/платформы "
+                    f"и самого игрока/персонажа через pygame.draw.* или .blit()."
+                )
+
         # 4. Проверка областей видимости и необъявленных переменных (Scope Guard)
         sem_err = cls.check_undefined_names(content, filename)
         if sem_err:
