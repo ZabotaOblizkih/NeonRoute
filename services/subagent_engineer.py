@@ -455,7 +455,10 @@ class SubagentEngineer:
             logger.info(f"[Инженер] Автономный ход {turn}/{max_turns}")
             ws_dir = SandboxManager.get_workspace_dir()
             GitSandboxManager.create_checkpoint(ws_dir, f"turn_{turn}")
-            current_temp = worker_temp
+            if consecutive_same_error_count > 0:
+                current_temp = min(0.50, round(worker_temp + 0.15 * consecutive_same_error_count, 2))
+            else:
+                current_temp = worker_temp
 
             # Оповестить инспектор о старте:
             if inspector and hasattr(inspector, "sig_stream_started"):

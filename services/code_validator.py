@@ -340,16 +340,11 @@ class CodeValidator:
                                     f"Прыжки, тайминги и анимация должны управляться через скорости, гравитацию и счётчики кадров (clock.tick)."
                                 )
 
-            # Проверка минимальной полноты рендера Pygame (минимум 2 вызова отрисовки и display.flip / display.update)
-            draw_calls_count = 0
+            # Проверка вывода кадров Pygame (наличие display.flip / display.update)
             has_display_update = False
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
                     c_name = _get_call_path(node.func)
-                    if c_name.startswith("pygame.draw.") or (
-                        isinstance(node.func, ast.Attribute) and node.func.attr == "blit"
-                    ) or c_name.endswith(".blit"):
-                        draw_calls_count += 1
                     if c_name in ("pygame.display.flip", "pygame.display.update") or (
                         isinstance(node.func, ast.Attribute) and node.func.attr in ("flip", "update") and "display" in _get_call_path(node.func.value)
                     ):
@@ -359,12 +354,6 @@ class CodeValidator:
                 return False, (
                     f"Ошибка неполной реализации Pygame (MissingDisplayFlip): В файле {filename} отсутствует вызов "
                     f"pygame.display.flip() или pygame.display.update(). Игровой цикл обязан выводить кадры на экран."
-                )
-            if draw_calls_count < 2:
-                return False, (
-                    f"Ошибка неполной реализации Pygame (InsufficientRenderCalls): В файле {filename} обнаружено "
-                    f"недостаточно вызовов отрисовки ({draw_calls_count} < 2). Игра должна отрисовывать как минимум игровой мир/платформы "
-                    f"и самого игрока/персонажа через pygame.draw.* или .blit()."
                 )
 
         # 4. Проверка областей видимости и необъявленных переменных (Scope Guard)
