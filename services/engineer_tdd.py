@@ -142,7 +142,7 @@ class CodeFirstTDDPipeline:
         on_message_callback: Optional[Any] = None,
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
-        worker_temp: float = 0.70,
+        worker_temp: float = 0.20,
         **kwargs
     ) -> Dict[str, Any]:
         task_type = getattr(plan, "task_type", "NEW_MODULE")
@@ -187,7 +187,7 @@ class CodeFirstTDDPipeline:
         on_message_callback: Optional[Any] = None,
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
-        worker_temp: float = 0.70,
+        worker_temp: float = 0.20,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -444,7 +444,7 @@ class CodeFirstTDDPipeline:
         on_message_callback: Optional[Any] = None,
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
-        worker_temp: float = 0.70,
+        worker_temp: float = 0.20,
         **kwargs
     ) -> Dict[str, Any]:
         """

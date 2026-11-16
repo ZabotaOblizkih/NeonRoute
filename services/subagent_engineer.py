@@ -55,6 +55,7 @@ class SubagentEngineer:
     ENGINEER_CONTEXT_LENGTH = 28672
     ENGINEER_GPU_RATIO = "1.0"
     ENGINEER_MAX_TOKENS = 6144
+    CODER_TEMPERATURE: float = 0.20
 
     # Единый стандарт передачи кода модели (Sweet Spot для 7B/8B Q5)
     MAX_FULL_CODE_LINES = MAX_FULL_CODE_LINES
@@ -283,12 +284,13 @@ class SubagentEngineer:
         sess = SessionManager.load_session(active_sid) if active_sid else None
 
         if sess and isinstance(sess.get("sampling_params"), dict) and "temperature" in sess["sampling_params"]:
-            worker_temp = float(sess["sampling_params"]["temperature"])
+            raw_temp = float(sess["sampling_params"]["temperature"])
         else:
-            worker_temp = float(get_default_sampling_params("engineer").get("temperature", 0.70))
+            raw_temp = float(get_default_sampling_params("engineer").get("temperature", 0.70))
 
         # Предохранитель только от поломки токенизатора при экстремальных значениях
-        worker_temp = max(0.05, min(1.50, worker_temp))
+        architect_temp = max(0.05, min(1.50, raw_temp))
+        worker_temp = min(architect_temp, SubagentEngineer.CODER_TEMPERATURE)
 
         if client and hasattr(client, "ensure_model_loaded"):
             try:
@@ -318,7 +320,7 @@ class SubagentEngineer:
             context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
             gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
             available_libs=scan_installed_libraries(),
-            temperature=worker_temp,
+            temperature=architect_temp,
             max_tokens=1800,
             session_metadata=sess.get("metadata") if sess else None,
         )
@@ -1425,7 +1427,7 @@ class SubagentEngineer:
                         messages = [
                             messages[0],
                             messages[1],
-                            {"role": "assistant", "content": clean_summary or f"Исправляю реализацию {target_file.name}."},
+                            {"role": "assistant", "content": locals().get("clean_summary") or f"Исправляю реализацию {target_file.name}."},
                             {"role": "user", "content": _build_goal_anchor(diag_msg)}
                         ]
                         continue
@@ -1736,9 +1738,9 @@ class SubagentEngineer:
                 }
             ]
             try:
-                final_resp = client.chat_completion(messages=synth_messages, model=target_model, temperature=worker_temp, stream=False, emit_signal=False)
+                final_resp = client.chat_completion(messages=synth_messages, model=target_model, temperature=architect_temp, stream=False, emit_signal=False)
             except TypeError:
-                final_resp = client.chat_completion(messages=synth_messages, temperature=worker_temp, stream=False, emit_signal=False)
+                final_resp = client.chat_completion(messages=synth_messages, temperature=architect_temp, stream=False, emit_signal=False)
             clean_synth = ToolEngine.strip_tool_tags(final_resp or "").strip()
             return {
                 "success": True,
