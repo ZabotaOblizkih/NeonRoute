@@ -104,6 +104,7 @@ ENGINEER_SKILLS: Dict[str, Dict[str, Any]] = {
         "default_artifact": "game.py",
         "architect_rules": (
             "- Проектируй единый самодостаточный файл game.py (для игр) или app.py (для GUI), если пользователь явно не просил многофайловую структуру (запрещено дробить на <name>_core.py и game.py без визуализации).\n"
+            "- Обязательно включай в interface_spec.functions функцию точки входа 'main' (запуск окна, игрового цикла и вызов в if __name__ == '__main__':).\n"
             "- Обязательный чеклист сущностей в interface_spec для 2D-игр:\n"
             "  1. Класс игрока (Player/Mario): позиция (x, y), скорости vx, vy, гравитация, флаг on_ground, методы update(...) и draw(screen).\n"
             "  2. Класс уровня/мира (Level): полноценная карта платформ, метод draw(screen), обработка коллизий colliderect раздельно по X и Y.\n"

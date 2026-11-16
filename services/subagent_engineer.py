@@ -788,7 +788,12 @@ class SubagentEngineer:
                         f"Код полностью идентичен текущей версии на диске. "
                         f"Внеси необходимые изменения в реализацию и верни обновлённый код через <<TOOL:write_file filename=\"{target_name}\">>."
                     )
-                elif "сокращение кода" in syntax_err or "заглушку" in syntax_err:
+                elif "содержит пустую заглушку 'pass'" in syntax_err:
+                    diag_msg = (
+                        f"[ПУСТОЙ МЕТОД-ЗАГЛУШКА]\n{syntax_err}\n\n"
+                        f"Реализуй в нём рабочую логику либо удали пустой метод вместе с его вызовом, если логика там не требуется."
+                    )
+                elif "сокращение кода" in syntax_err or "заменена на заглушку '...'" in syntax_err:
                     diag_msg = (
                         f"[ОШИБКА ЦЕЛОСТНОСТИ ФАЙЛА]\n{syntax_err}\n\n"
                         f"Сохрани ВСЮ существующую логику и методы без заглушек '...'."
@@ -798,10 +803,16 @@ class SubagentEngineer:
                         f"[СЕМАНТИЧЕСКАЯ ОШИБКА В КОДЕ]\n{syntax_err}\n\n"
                         f"Исправь ошибку: обязательно добавь недостающий import либо инициализируй переменную перед использованием."
                     )
-                else:
+                elif "SyntaxError" in syntax_err or "IndentationError" in syntax_err:
                     diag_msg = (
                         f"[СИНТАКСИЧЕСКАЯ ОШИБКА В КОДЕ]\n{last_error}{extra_hint}\n\n"
                         f"Исправь синтаксис и верни корректный код через <<TOOL:write_file filename=\"{target_name}\">> "
+                        f"либо через <<TOOL:patch_file filename=\"{target_name}\">>."
+                    )
+                else:
+                    diag_msg = (
+                        f"[ОШИБКА ВАЛИДАЦИИ КОДА]\n{last_error}{extra_hint}\n\n"
+                        f"Устрани указанную проблему и верни корректный код через <<TOOL:write_file filename=\"{target_name}\">> "
                         f"либо через <<TOOL:patch_file filename=\"{target_name}\">>."
                     )
 
@@ -840,8 +851,11 @@ class SubagentEngineer:
                             f"🚨 ВНИМАНИЕ: Ошибка повторяется ({consecutive_same_error_count}/{max_same_error_retries})!\n"
                             f"Твой предыдущий вариант кода СНОВА отклонён валидатором из-за той же проблемы.\n"
                             f"Категорически запрещено повторять структуру из предыдущего ответа. "
-                            f"Внимательно изучи приведённый выше код с ошибкой и исправь инициализацию всех используемых коллекций и переменных прямо внутри вызываемой функции.\n\n"
                         )
+                        if "NameError" in last_error or "UnboundLocalError" in last_error or "Семантическая ошибка" in last_error:
+                            escalation_warning += "Внимательно изучи приведённый выше код с ошибкой и исправь инициализацию всех используемых коллекций и переменных прямо внутри вызываемой функции.\n\n"
+                        else:
+                            escalation_warning += "Внимательно изучи причину ошибки выше и измени структуру кода так, чтобы устранить её корень (например, удали лишний вызов или перепиши проблемный метод).\n\n"
                         diag_msg = escalation_warning + diag_msg
 
                     clean_user_prompt = _build_goal_anchor(diag_msg)

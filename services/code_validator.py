@@ -373,8 +373,17 @@ class CodeValidator:
             return False, sem_err
 
         # 5. AST Stub Guard: запрет пустых функций и методов без реализации
+        func_parent_map = {}
+        for cls_node in ast.walk(tree):
+            if isinstance(cls_node, ast.ClassDef):
+                for item in cls_node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        func_parent_map[id(item)] = cls_node.name
+
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parent_cls = func_parent_map.get(id(node))
+                qual_name = f"{parent_cls}.{node.name}" if parent_cls else node.name
                 is_abstract = any(
                     (getattr(d, "id", "") == "abstractmethod" or getattr(d, "attr", "") == "abstractmethod")
                     for d in getattr(node, "decorator_list", [])
@@ -389,12 +398,12 @@ class CodeValidator:
                         is_allowed_pass = any(node.name.startswith(pfx) or node.name == pfx.rstrip("_") for pfx in allowed_pass_prefixes)
                         if isinstance(stmts[0], ast.Pass) and not is_allowed_pass:
                             return False, (
-                                f"Метод/функция '{node.name}' в файле {filename} содержит пустую заглушку 'pass'. "
-                                f"Запрещено оставлять методы без логики. Реализуй полную рабочую логику."
+                                f"Метод/функция '{qual_name}' в файле {filename} содержит пустую заглушку 'pass'. "
+                                f"Реализуй полную рабочую логику либо удали пустой метод '{qual_name}' и его лишние вызовы, если он не нужен."
                             )
                         if isinstance(stmts[0], ast.Expr) and getattr(stmts[0].value, "value", None) is Ellipsis and not is_allowed_pass:
                             return False, (
-                                f"Метод/функция '{node.name}' в файле {filename} заменена на заглушку '...'. "
+                                f"Метод/функция '{qual_name}' в файле {filename} заменена на заглушку '...'. "
                                 f"Запрещено сокращать логику. Выведи полную реализацию."
                             )
 
@@ -580,7 +589,8 @@ class CodeValidator:
                                     f"Контрактная ошибка (MissingMethod): В файле '{fn}' вызывается метод '{method_name}' "
                                     f"у объекта '{obj_name}' (экземпляр класса '{class_name}' из '{def_file}'), "
                                     f"но метод '{method_name}' отсутствует в классе '{class_name}'. "
-                                    f"Добавь реализацию `def {method_name}(self):` в класс '{class_name}' ({def_file})."
+                                    f"Либо добавь рабочую реализацию `def {method_name}(self):` в класс '{class_name}' ({def_file}), "
+                                    f"либо удали лишний вызов `{obj_name}.{method_name}()` в '{fn}', если метод не нужен."
                                 )
             except Exception:
                 pass
