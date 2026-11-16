@@ -316,7 +316,7 @@ class EngineerResponseParser:
                                 except Exception:
                                     pass
                 code = EngineerContext.extract_pure_py(response_text, orig_content=orig_cnt)
-                if code:
+                if code and EngineerContext.has_python_code(code):
                     target_fn = _resolve_target_fn(code, used_names=used_target_files)
                     used_target_files.add(target_fn)
                     actions.write_blocks.append((target_fn, code))

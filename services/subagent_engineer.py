@@ -251,6 +251,7 @@ class SubagentEngineer:
         turn = 0
         last_error_fingerprint = None
         consecutive_same_error_count = 0
+        consecutive_no_action_turns = 0
         loop_succeeded = False
         turn1_test_signature_mismatch = False
 
@@ -554,33 +555,25 @@ class SubagentEngineer:
                 last_error = parsed_actions.last_error
 
 
-            if not write_blocks and not patch_blocks and not replace_blocks:
-                clean_summary = ToolEngine.strip_tool_tags(response_text).strip() if hasattr(ToolEngine, "strip_tool_tags") else response_text.strip()
-                if not last_error:
-                    last_error = "Модель не сформировала блоки создания файлов."
-                current_fp = extract_error_fingerprint(last_error)
+            has_run_scripts = bool(re.search(r'<<TOOL:run_script', response_text, re.IGNORECASE))
+            has_any_actions = bool(write_blocks or patch_blocks or replace_blocks or has_run_scripts)
 
-                if current_fp and current_fp == last_error_fingerprint:
-                    consecutive_same_error_count += 1
-                    logger.warning(f"⚠️ [Детектор зацикливания] Повторение ошибки ({consecutive_same_error_count}/{max_same_error_retries}): {current_fp}")
-                else:
-                    consecutive_same_error_count = 1
-                    last_error_fingerprint = current_fp
-
-                if consecutive_same_error_count >= max_same_error_retries:
-                    loop_report = (
-                        f"⛔ [Останов по зацикливанию]: Инженер {max_same_error_retries} раза подряд наступил на идентичную ошибку:\n"
-                        f"«{current_fp}»\n\n"
-                        f"Автоматическое исправление остановлено для предотвращения деградации кода.\n"
-                        f"Детали последней ошибки:\n{last_error}"
+            if not has_any_actions:
+                consecutive_no_action_turns += 1
+                logger.warning(f"⚠️ [Ход без действий] Модель не вызвала инструменты ({consecutive_no_action_turns}/3)")
+                if consecutive_no_action_turns >= 3:
+                    no_action_report = (
+                        "⛔ [Останов по отсутствию действий]: Инженер 3 хода подряд возвращает текстовый ответ "
+                        "без вызова инструментов кодогенерации (write_file, patch_file, replace_symbol, run_script).\n"
+                        "Сессия остановлена для предотвращения зацикливания диалога."
                     )
-                    logger.error(loop_report)
+                    logger.error(no_action_report)
                     ws_dir = SandboxManager.get_workspace_dir()
                     GitSandboxManager.record_failure(
                         ws_dir=ws_dir,
                         task_title=task_prompt,
                         turn=turn,
-                        error_msg=last_error or "Loop detected"
+                        error_msg="No actions executed for 3 consecutive turns"
                     )
                     SubagentEngineer._rollback_workspace(ws_dir, file_backups)
                     return {
@@ -588,18 +581,20 @@ class SubagentEngineer:
                         "artifact_path": None,
                         "file_name": target_entry_file or "",
                         "stdout": stdout,
-                        "stderr": last_error,
-                        "summary": loop_report
+                        "stderr": "Отсутствуют действия модели 3 хода подряд.",
+                        "summary": no_action_report
                     }
 
+                clean_summary = ToolEngine.strip_tool_tags(response_text).strip() if hasattr(ToolEngine, "strip_tool_tags") else response_text.strip()
                 if turn < max_turns and not is_analysis:
+                    target_fn_hint = target_entry_file or target_artifact or 'app.py'
                     retry_msg = (
                         f"Ошибка применения replace_symbol:\n{last_error}\nИсправь параметры или код узла."
                         if "replace_symbol" in (last_error or "") else
                         (
-                            "В ответе отсутствуют созданные файлы. Оформи полный код через "
-                            "<<TOOL:write_file filename=\"make_doc.py\">>код<</TOOL:write_file>> "
-                            "и запусти его через <<TOOL:run_script filename=\"make_doc.py\">>."
+                            f"В ответе отсутствуют созданные файлы или вызовы инструментов. Оформи полный код через "
+                            f"<<TOOL:write_file filename=\"{target_fn_hint}\">>код<</TOOL:write_file>> "
+                            f"и запусти его через <<TOOL:run_script filename=\"{target_fn_hint}\">>."
                         )
                     )
                     messages = [
@@ -611,6 +606,8 @@ class SubagentEngineer:
                     continue
                 else:
                     break
+            else:
+                consecutive_no_action_turns = 0
 
             # Сохранение снимка существующих файлов перед первой попыткой
             ws_dir = SandboxManager.get_workspace_dir()
@@ -751,6 +748,12 @@ class SubagentEngineer:
                         f"Автоматическое исправление остановлено для предотвращения деградации кода.\n"
                         f"Детали последней ошибки:\n{last_error}"
                     )
+                    if any(k in last_error for k in ("Экран полностью статичен", "Экран однотонный", "слились с цветом фона", "объекты игры не отрисовываются")):
+                        loop_report += (
+                            "\n\n💡 Возможная причина: цвет игрока/объектов совпал с цветом фона "
+                            "(например, зелёный игрок на зелёном фоне), из-за чего персонаж стал невидим. "
+                            "Уточните разные контрастные цвета для фона и игрока."
+                        )
                     logger.error(loop_report)
                     ws_dir = SandboxManager.get_workspace_dir()
                     GitSandboxManager.record_failure(
@@ -950,6 +953,12 @@ class SubagentEngineer:
                         f"Автоматическое исправление остановлено для предотвращения деградации кода.\n"
                         f"Детали последней ошибки:\n{last_error}"
                     )
+                    if any(k in last_error for k in ("Экран полностью статичен", "Экран однотонный", "слились с цветом фона", "объекты игры не отрисовываются")):
+                        loop_report += (
+                            "\n\n💡 Возможная причина: цвет игрока/объектов совпал с цветом фона "
+                            "(например, зелёный игрок на зелёном фоне), из-за чего персонаж стал невидим. "
+                            "Уточните разные контрастные цвета для фона и игрока."
+                        )
                     logger.error(loop_report)
                     ws_dir = SandboxManager.get_workspace_dir()
                     GitSandboxManager.record_failure(
@@ -1163,31 +1172,23 @@ class SubagentEngineer:
                 # Извлекаем git diff до отката рабочей области
                 last_turn_diff = GitSandboxManager.get_working_diff(ws_dir)
                 executed_code = ""
-                for fn, cnt in write_blocks:
-                    if Path(fn).name.lower() == Path(script_to_run).name.lower():
-                        executed_code = cnt
-                        break
-                if not executed_code:
-                    f_path = ws_dir / script_to_run
-                    if f_path.is_file():
-                        try:
-                            executed_code = f_path.read_text(encoding="utf-8", errors="ignore")
-                        except Exception:
-                            pass
-
-                clean_code = ""
-                f_clean = ws_dir / script_to_run
-                if f_clean.is_file():
+                f_path = ws_dir / script_to_run
+                if f_path.is_file():
                     try:
-                        clean_code = f_clean.read_text(encoding="utf-8", errors="ignore")
+                        executed_code = f_path.read_text(encoding="utf-8", errors="ignore")
                     except Exception:
                         pass
-                if not clean_code:
-                    clean_code = executed_code
+                if not executed_code:
+                    for fn, cnt in write_blocks:
+                        if Path(fn).name.lower() == Path(script_to_run).name.lower():
+                            executed_code = cnt
+                            break
+
+                clean_code = executed_code
 
                 SubagentEngineer._rollback_workspace(ws_dir, file_backups, write_blocks=write_blocks)
 
-                clean_lines = clean_code.splitlines()
+                clean_lines = clean_code.splitlines() if clean_code else []
                 line_count = len(clean_lines)
 
                 last_error = run_res.output or run_res.error or "Неизвестная ошибка выполнения"
@@ -1223,6 +1224,12 @@ class SubagentEngineer:
                         f"Автоматическое исправление остановлено для предотвращения деградации кода.\n"
                         f"Детали последней ошибки:\n{last_error}"
                     )
+                    if any(k in last_error for k in ("Экран полностью статичен", "Экран однотонный", "слились с цветом фона", "объекты игры не отрисовываются")):
+                        loop_report += (
+                            "\n\n💡 Возможная причина: цвет игрока/объектов совпал с цветом фона "
+                            "(например, зелёный игрок на зелёном фоне), из-за чего персонаж стал невидим. "
+                            "Уточните разные контрастные цвета для фона и игрока."
+                        )
                     logger.error(loop_report)
                     ws_dir = SandboxManager.get_workspace_dir()
                     GitSandboxManager.record_failure(
@@ -1257,11 +1264,12 @@ class SubagentEngineer:
                             f"Задача: «{task_prompt}»\n"
                             f"Ошибка выполнения {script_to_run}:\n{enriched_error}\n\n"
                         )
+                        rca_code = executed_code or clean_code
                         if line_count <= max_code_lines:
-                            rca_user_content += f"Код скрипта ({script_to_run}):\n```python\n{executed_code or clean_code}\n```\n\n"
+                            rca_user_content += f"Код скрипта ({script_to_run}):\n```python\n{rca_code}\n```\n\n"
                         else:
-                            skel = ASTSkeletonizer.skeletonize(clean_code)
-                            crash_slice = extract_crash_slice(executed_code or clean_code, last_error, filename=script_to_run, window=slice_window)
+                            skel = ASTSkeletonizer.skeletonize(rca_code)
+                            crash_slice = extract_crash_slice(rca_code, last_error, filename=script_to_run, window=slice_window)
                             rca_user_content += f"Скелет файла ({script_to_run}):\n```python\n{skel}\n```\n\n"
                             if crash_slice:
                                 rca_user_content += f"Место сбоя ({script_to_run}):\n```python\n{crash_slice}\n```\n\n"
