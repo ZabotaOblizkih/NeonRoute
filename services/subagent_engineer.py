@@ -1307,6 +1307,7 @@ class SubagentEngineer:
                                     model=target_model,
                                     temperature=0.10,
                                     max_tokens=600,
+                                    repeat_penalty=1.10,
                                     stream=False,
                                     emit_signal=False
                                 )

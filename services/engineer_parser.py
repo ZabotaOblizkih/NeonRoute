@@ -52,7 +52,7 @@ class EngineerResponseParser:
 
         # 1. Парсинг через теги write_file
         write_blocks = []
-        write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\']\s*>>?[\r\n]*(?P<content>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+|(?=<<TOOL:write_file\b)|$)'
+        write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\']\s*>>?[\r\n]*(?P<content>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+|(?=<<TOOL:\w+)|$)'
         for m in re.finditer(write_pattern, response_text, flags=re.DOTALL | re.IGNORECASE):
             fn = m.group("filename").strip().strip("'\"`")
             cnt = m.group("content").strip()
@@ -105,6 +105,30 @@ class EngineerResponseParser:
                 found_cp_tc = True
                 c_res = ToolEngine.execute_tool_call(tc)
                 actions.git_checkpoint_results.append(c_res.output)
+
+        # Дедупликация write_blocks: для одинаковых имен файлов сохраняем самый длинный блок
+        if actions.write_blocks:
+            best_by_fn: Dict[str, str] = {}
+            for fn, cnt in actions.write_blocks:
+                if fn not in best_by_fn or len(cnt) > len(best_by_fn[fn]):
+                    best_by_fn[fn] = cnt
+            actions.write_blocks = list(best_by_fn.items())
+
+        # Защита от короткого огрызка в теге при наличии полноценного кода в Markdown
+        if actions.write_blocks:
+            m_blocks = re.findall(r'```(?:python|py)?\s*[\r\n]+([\s\S]*?)```', response_text, re.IGNORECASE)
+            valid_md_blocks = [b.strip() for b in m_blocks if len(b.strip()) > 250 and EngineerContext.has_python_code(b.strip())]
+            if valid_md_blocks:
+                filtered_write_blocks = []
+                for fn, cnt in actions.write_blocks:
+                    if fn.lower().endswith((".py", ".pyw")) and (len(cnt) < 200 or not EngineerContext.has_python_code(cnt)):
+                        logger.warning(
+                            f"[EngineerParser] Тег write_file для '{fn}' содержал огрызок ({len(cnt)} симв.), "
+                            f"но в ответе найден полноценный Markdown-код ({len(valid_md_blocks[0])} симв.). Очищаем огрызок."
+                        )
+                        continue
+                    filtered_write_blocks.append((fn, cnt))
+                actions.write_blocks = filtered_write_blocks
 
         if not found_cp_tc and "git_checkpoint" in response_text.lower():
             cp_pattern = r'<<TOOL:git_checkpoint(?:\s+(?P<params>[^>\r\n]+?))?>>?(?:(?P<body>.*?)(?:<<?/+TOOL(?::git_checkpoint)?>>?|`+/+TOOL(?::git_checkpoint)?`+|$))?'
