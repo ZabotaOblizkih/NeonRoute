@@ -1449,7 +1449,8 @@ class SubagentEngineer:
                     is_solid, substance_err = ToolEngine.check_artifact_substance(
                         target_file,
                         min_bytes=350,
-                        interface_spec=active_spec
+                        interface_spec=active_spec,
+                        strict_contract=bool(self.verification_script)
                     )
                     if not is_solid:
                         logger.warning(f"🚨 [SubstanceGuard REJECT] Файл забракован: {substance_err}")

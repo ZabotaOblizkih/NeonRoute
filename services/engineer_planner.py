@@ -242,64 +242,6 @@ class EngineerPlanner:
 
                 funcs_list = interface_spec.get("functions")
                 if isinstance(funcs_list, list):
-                    app_level_cls = None
-                    if isinstance(classes_list, list):
-                        for c in classes_list:
-                            if isinstance(c, dict):
-                                c_name = str(c.get("name", "")).lower()
-                                if any(k in c_name for k in ("level", "game", "app", "world", "manager")):
-                                    app_level_cls = c
-                                    break
-
-                    if not app_level_cls and isinstance(classes_list, list) and py_candidates:
-                        for py_p in py_candidates:
-                            try:
-                                t_skel = ast.parse(py_p.read_text(encoding="utf-8", errors="ignore"))
-                                for n in t_skel.body:
-                                    if isinstance(n, ast.ClassDef) and any(k in n.name.lower() for k in ("level", "game", "app", "world", "manager")):
-                                        app_level_cls = {"name": n.name, "methods": []}
-                                        classes_list.append(app_level_cls)
-                                        break
-                                if app_level_cls:
-                                    break
-                            except Exception:
-                                pass
-
-                    # Сбор словаря известных классов known_classes_map и их существующих методов
-                    known_classes_map: Dict[str, dict] = {}
-                    class_existing_methods: Dict[str, Set[str]] = {}
-
-                    if isinstance(classes_list, list):
-                        for c in classes_list:
-                            if isinstance(c, dict) and c.get("name"):
-                                c_lower = str(c.get("name")).lower()
-                                known_classes_map[c_lower] = c
-                                method_names = {
-                                    m.get("name") if isinstance(m, dict) else m
-                                    for m in c.get("methods", [])
-                                }
-                                class_existing_methods.setdefault(c_lower, set()).update(method_names)
-
-                    if py_candidates:
-                        for py_p in py_candidates:
-                            try:
-                                t_skel = ast.parse(py_p.read_text(encoding="utf-8", errors="ignore"))
-                                for n in t_skel.body:
-                                    if isinstance(n, ast.ClassDef):
-                                        c_lower = n.name.lower()
-                                        if c_lower not in known_classes_map:
-                                            new_cls_dict = {"name": n.name, "methods": []}
-                                            if isinstance(classes_list, list):
-                                                classes_list.append(new_cls_dict)
-                                            known_classes_map[c_lower] = new_cls_dict
-                                        m_names = {
-                                            m.name for m in n.body
-                                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
-                                        }
-                                        class_existing_methods.setdefault(c_lower, set()).update(m_names)
-                            except Exception:
-                                pass
-
                     seen_fn_names = set()
                     cleaned_funcs = []
                     for fn in funcs_list:
@@ -311,61 +253,9 @@ class EngineerPlanner:
                         seen_fn_names.add(fn_name)
 
                         fn_args = fn.get("args")
-                        if isinstance(fn_args, list) and fn_args and fn_args[0] == "self":
-                            if app_level_cls is not None:
-                                app_level_cls.setdefault("methods", []).append(dict(fn))
-                                continue
-                            else:
-                                fn["args"] = [a for a in fn_args if a != "self"]
-                                fn_args = fn["args"]
-
-                        fn_name_lower = fn_name.lower()
-                        if fn_name_lower not in ("main", "main_loop", "run", "run_game"):
-                            first_arg = None
-                            if isinstance(fn_args, list):
-                                for a in fn_args:
-                                    if isinstance(a, str) and a.lower() != "self":
-                                        first_arg = a.lower()
-                                        break
-
-                            matched_c_lower = None
-                            for c_lower in known_classes_map:
-                                if fn_name_lower.startswith(f"{c_lower}_") or (first_arg and first_arg == c_lower):
-                                    matched_c_lower = c_lower
-                                    break
-
-                            if matched_c_lower:
-                                target_cls = known_classes_map[matched_c_lower]
-                                existing_m = class_existing_methods.get(matched_c_lower, set())
-                                has_update_or_events = any(k in existing_m for k in ("update", "handle_event", "handle_events", "process_input", "draw"))
-                                if has_update_or_events:
-                                    if not fn_name_lower.startswith(f"{matched_c_lower}_"):
-                                        target_cls.setdefault("methods", []).append(dict(fn))
-                                    continue
-
+                        if isinstance(fn_args, list):
+                            fn["args"] = [a for a in fn_args if a != "self"]
                         cleaned_funcs.append(fn)
-
-                    # Санитизация дублирующих точек входа при наличии контроллера Game/App с main/run
-                    has_controller_main = False
-                    if isinstance(classes_list, list):
-                        for c in classes_list:
-                            if isinstance(c, dict):
-                                c_name = str(c.get("name", "")).lower()
-                                if any(k in c_name for k in ("game", "app", "application")):
-                                    methods = c.get("methods", [])
-                                    method_names = {
-                                        m.get("name") if isinstance(m, dict) else m
-                                        for m in methods
-                                    }
-                                    if "main" in method_names or "run" in method_names:
-                                        has_controller_main = True
-                                        break
-                    if has_controller_main:
-                        ENTRYPOINT_DUPLICATES = {"main_loop", "init_game", "run_game", "start_game"}
-                        cleaned_funcs = [
-                            fn for fn in cleaned_funcs
-                            if fn.get("name") not in ENTRYPOINT_DUPLICATES
-                        ]
 
                     interface_spec["functions"] = cleaned_funcs
 
