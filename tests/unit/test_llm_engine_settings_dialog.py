@@ -37,6 +37,11 @@ class DummyLLMEngineParent(QMainWindow):
     def __init__(self):
         super().__init__()
         self.background_pixmap = None
+        self.app_config = {
+            "thinking_mode": "auto",
+            "kv_cache_type": "q8_0",
+            "flash_attention_enabled": True
+        }
         self.process_manager = MagicMock()
         self.process_manager.is_lm_studio_running.return_value = True
         self.process_manager.restart_llama_server_async = MagicMock()
@@ -256,4 +261,39 @@ def test_save_clicked_only_thinking_mode_does_not_restart_server(qapp, dummy_win
     assert not dummy_window.process_manager.restart_llama_server_async.called
 
     dialog.deleteLater()
+
+
+def test_thinking_mode_syncs_with_parent_app_config_and_shutdown(qapp, dummy_window):
+    """
+    Проверяет устранение Бага №1:
+    При сохранении диалога `dummy_window.app_config['thinking_mode']` синхронизируется в памяти,
+    и при последующем штатном завершении (ShutdownWorker) сохранённый `thinking_mode` не сбрасывается в 'auto'.
+    """
+    from ui.dialogs.llm_engine_settings_dialog import LLMEngineSettingsDialog
+
+    dummy_window.app_config["thinking_mode"] = "auto"
+    dialog = LLMEngineSettingsDialog(parent=dummy_window)
+
+    # Меняем thinking_mode на 'on'
+    dialog.segmented_thinking.setCurrentItem("on")
+
+    saved_configs = []
+
+    def mock_save(cfg):
+        saved_configs.append(dict(cfg))
+
+    with patch("utils.config_manager.ConfigManager.save_config", side_effect=mock_save), \
+         patch("utils.config_manager.ConfigManager.load_config", return_value={"thinking_mode": "on"}):
+        dialog.btn_save.click()
+
+    # Проверяем, что app_config родительского окна синхронизирован в памяти
+    assert dummy_window.app_config.get("thinking_mode") == "on"
+
+    # Симулируем работу ShutdownWorker: он записывает на диск dummy_window.app_config
+    # Если родительский config не был синхронизирован, он бы перезаписал "on" старым "auto"
+    shutdown_saved = dict(dummy_window.app_config)
+    assert shutdown_saved.get("thinking_mode") == "on"
+
+    dialog.deleteLater()
+
 

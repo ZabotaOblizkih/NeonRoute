@@ -215,3 +215,126 @@ def test_assistant_flow_thinking_model_tokens_resolution():
         target_max_tokens = min(int(user_max_tokens), MASTER_MAX_RESPONSE_TOKENS)
 
     assert target_max_tokens == 3500
+
+
+def test_engineer_planner_strips_thinking_tags_and_parses_json():
+    """Проверяет, что EngineerPlanner очищает <think> теги и успешно парсит JSON план."""
+    from services.engineer_planner import EngineerPlanner
+
+    mock_client = MagicMock()
+    mock_client.chat_completion.return_value = (
+        "<think>\n"
+        "Need to build a CLI utility with modular structure.\n"
+        "Let's output valid JSON architecture specification.\n"
+        "</think>\n"
+        "```json\n"
+        "{\n"
+        '  "architecture": "Modular Architecture",\n'
+        '  "entry_point": "main.py",\n'
+        '  "key_modules": ["main.py", "utils.py"],\n'
+        '  "implementation_plan": ["Init main", "Add utils"]\n'
+        "}\n"
+        "```"
+    )
+
+    thought_chunks = []
+    def on_thought(token):
+        thought_chunks.append(token)
+
+    plan = EngineerPlanner.plan_architecture(
+        task_prompt="Create CLI tool",
+        client=mock_client,
+        enable_thinking=True,
+        thought_chunk_callback=on_thought,
+        max_tokens=1800
+    )
+
+    assert plan is not None
+    assert plan.target_entry_file == "main.py"
+    assert "main.py" in plan.planned_files
+
+    # Проверяем, что для thinking моделей eff_max_tokens был повышен >= 4096
+    call_kwargs = mock_client.chat_completion.call_args[1]
+    assert call_kwargs.get("max_tokens") >= 4096
+    assert call_kwargs.get("enable_thinking") is True
+
+
+def test_engineer_response_parser_strips_thinking_blocks(tmp_path):
+    """Проверяет, что EngineerResponseParser отсекает блок <think> перед поиском действий и файлов."""
+    from services.engineer_parser import EngineerResponseParser
+    from services.engineer_planner import ArchitectPlan
+
+    response_text = (
+        "<think>\n"
+        "Here are internal reasoning steps before generating tool calls.\n"
+        "</think>\n"
+        '<<TOOL:write_file filename="module.py">>\n'
+        'def hello():\n'
+        '    return "world"\n'
+        '<</TOOL:write_file>>\n'
+    )
+
+    plan = ArchitectPlan(
+        artifact_format="cli",
+        artifact_type="cli_tool",
+        target_artifact="module.py",
+        verification_script=None,
+        target_entry_file="module.py",
+        plan_desc="",
+        is_maintenance=False,
+        is_ephemeral=False,
+        plan_content="",
+        system_prompt="",
+        planned_files=["module.py"],
+        task_type="NEW_MODULE",
+        target_file="module.py",
+        interface_spec={}
+    )
+
+    actions = EngineerResponseParser.parse_turn_actions(
+        response_text=response_text,
+        ws_dir=tmp_path,
+        plan=plan,
+        task_prompt="Create module",
+        context_hint="",
+        target_artifact="module.py",
+        target_entry_file="module.py",
+        script_to_run=None,
+        turn=1,
+        turn1_test_signature_mismatch=False,
+        verification_script=None,
+        declared_entry_file="module.py",
+        is_maintenance=False,
+        planned_files=["module.py"],
+        file_backups={}
+    )
+
+    assert actions.has_any_actions()
+    assert len(actions.write_blocks) == 1
+    fn, content = actions.write_blocks[0]
+    assert fn == "module.py"
+    assert "def hello():" in content
+    assert "<think>" not in content
+
+
+def test_engineer_tdd_extract_code_blocks_strips_thinking():
+    """Проверяет, что CodeFirstTDDPipeline.extract_code_blocks не включает блоки <think> в извлечённый код."""
+    from services.engineer_tdd import CodeFirstTDDPipeline
+
+    response_text = (
+        "<think>\n"
+        "Let's write a unit test for our feature.\n"
+        "</think>\n"
+        "```python filename=\"test_app.py\"\n"
+        "def test_example():\n"
+        "    assert True\n"
+        "```\n"
+    )
+
+    blocks = CodeFirstTDDPipeline.extract_code_blocks(response_text, default_filename="test_app.py")
+    assert "test_app.py" in blocks
+    code = blocks["test_app.py"]
+    assert "def test_example():" in code
+    assert "<think>" not in code
+    assert "</think>" not in code
+

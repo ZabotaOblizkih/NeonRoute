@@ -15,6 +15,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.git_sandbox import GitSandboxManager
 from services.sandbox_manager import SandboxManager
 from services.tool_engine import ToolEngine, sanitize_code
+from services.regex_filter import TextRegexFilter
+from services.thought_stream_parser import ThoughtStreamParser
+from services.assistant_flow import resolve_effective_thinking
 from services.engineer_tdd import CodeFirstTDDPipeline
 from services.code_engine import CodeValidator, ASTSkeletonizer, AutoImporter
 from services.engineer_prompts import (
@@ -113,6 +116,7 @@ class SubagentEngineer:
         on_message_callback: Optional[Any] = None,
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
+        on_thought_callback: Optional[Any] = None,
         **kwargs
     ) -> Dict[str, Any]:
         worker = cls()
@@ -127,6 +131,7 @@ class SubagentEngineer:
             on_message_callback=on_message_callback,
             on_status_callback=on_status_callback,
             inspector=inspector,
+            on_thought_callback=on_thought_callback,
             **kwargs
         )
         cls.active_verification_script = worker.active_verification_script
@@ -148,9 +153,13 @@ class SubagentEngineer:
         on_message_callback: Optional[Any] = None,
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
+        on_thought_callback: Optional[Any] = None,
         **kwargs
     ) -> Dict[str, Any]:
         from services.vision_utils import VisionUtils
+
+        if on_thought_callback is None and "on_thought_callback" in kwargs:
+            on_thought_callback = kwargs.pop("on_thought_callback")
 
         system_prompt = get_engineer_system_prompt(artifact_format="cli", is_analysis=is_analysis)
 
@@ -192,6 +201,53 @@ class SubagentEngineer:
                     target_model = models[0]
             except Exception:
                 pass
+
+        effective_thinking = resolve_effective_thinking(
+            mode="engineer",
+            model_name=target_model or "",
+            explicit_override=kwargs.get("enable_thinking"),
+        )
+
+        def make_thought_stream_handler(on_normal_chunk: Optional[Any] = None):
+            parser = ThoughtStreamParser()
+            def _handler(chunk: str):
+                if not chunk:
+                    return
+                if on_thought_callback and callable(on_thought_callback):
+                    events = parser.feed(chunk)
+                    for ev_type, ev_data in events:
+                        if ev_type == "start_think":
+                            on_thought_callback("start", "")
+                        elif ev_type == "thought_chunk":
+                            on_thought_callback("chunk", ev_data)
+                        elif ev_type == "end_think":
+                            dur = getattr(parser, "duration", 0.0)
+                            tc = getattr(parser, "token_count", 0)
+                            on_thought_callback("end", f"{dur:.2f}:{tc}")
+                        elif ev_type == "normal_chunk":
+                            if on_normal_chunk and callable(on_normal_chunk):
+                                on_normal_chunk(ev_data)
+                else:
+                    if on_normal_chunk and callable(on_normal_chunk):
+                        on_normal_chunk(chunk)
+
+            def _finalize():
+                if on_thought_callback and callable(on_thought_callback):
+                    events = parser.finalize()
+                    for ev_type, ev_data in events:
+                        if ev_type == "start_think":
+                            on_thought_callback("start", "")
+                        elif ev_type == "thought_chunk":
+                            on_thought_callback("chunk", ev_data)
+                        elif ev_type == "end_think":
+                            dur = getattr(parser, "duration", 0.0)
+                            tc = getattr(parser, "token_count", 0)
+                            on_thought_callback("end", f"{dur:.2f}:{tc}")
+                        elif ev_type == "normal_chunk":
+                            if on_normal_chunk and callable(on_normal_chunk):
+                                on_normal_chunk(ev_data)
+
+            return _handler, _finalize
 
         is_vision_model = bool(target_model and any(k in str(target_model).lower() for k in ("vl", "vision", "4o", "omni", "pixtral")))
 
@@ -311,21 +367,27 @@ class SubagentEngineer:
         ws_dir = SandboxManager.get_workspace_dir()
         GitSandboxManager.ensure_baseline(ws_dir, task_prompt)
 
-        plan = EngineerPlanner.plan_architecture(
-            task_prompt=task_prompt,
-            context_hint=context_hint,
-            ws_dir=ws_dir,
-            client=client,
-            target_model=target_model,
-            session_history=session_history,
-            is_analysis=is_analysis,
-            context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
-            gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
-            available_libs=scan_installed_libraries(),
-            temperature=architect_temp,
-            max_tokens=1800,
-            session_metadata=sess.get("metadata") if sess else None,
-        )
+        arch_th_handler, arch_th_finalize = make_thought_stream_handler(None)
+        try:
+            plan = EngineerPlanner.plan_architecture(
+                task_prompt=task_prompt,
+                context_hint=context_hint,
+                ws_dir=ws_dir,
+                client=client,
+                target_model=target_model,
+                session_history=session_history,
+                is_analysis=is_analysis,
+                context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
+                gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
+                available_libs=scan_installed_libraries(),
+                temperature=architect_temp,
+                max_tokens=1800,
+                session_metadata=sess.get("metadata") if sess else None,
+                enable_thinking=effective_thinking,
+                thought_chunk_callback=arch_th_handler,
+            )
+        finally:
+            arch_th_finalize()
         logger.info(f"📐 [Архитектор: Утверждённый план]: {plan.plan_content}")
 
         format_badge = "🎮 Pygame" if plan.artifact_format == "pygame" else f"📦 {plan.artifact_format.upper()}"
@@ -434,19 +496,25 @@ class SubagentEngineer:
         ) or kwargs.get("enable_tdd", False)
         if is_tdd_mode:
             logger.info(f"🧪 [Code-First TDD] Активирован двухфазный пайплайн для {plan.task_type} ({plan.target_file or plan.target_artifact})")
-            res = CodeFirstTDDPipeline.run(
-                plan=plan,
-                client=client,
-                target_model=target_model,
-                ws_dir=ws_dir,
-                task_prompt=task_prompt,
-                context_hint=context_hint,
-                on_message_callback=on_message_callback,
-                on_status_callback=on_status_callback,
-                inspector=inspector,
-                worker_temp=worker_temp,
-                **kwargs
-            )
+            tdd_th_handler, tdd_th_finalize = make_thought_stream_handler(None)
+            try:
+                res = CodeFirstTDDPipeline.run(
+                    plan=plan,
+                    client=client,
+                    target_model=target_model,
+                    ws_dir=ws_dir,
+                    task_prompt=task_prompt,
+                    context_hint=context_hint,
+                    on_message_callback=on_message_callback,
+                    on_status_callback=on_status_callback,
+                    inspector=inspector,
+                    worker_temp=worker_temp,
+                    enable_thinking=effective_thinking,
+                    thought_chunk_callback=tdd_th_handler,
+                    **kwargs
+                )
+            finally:
+                tdd_th_finalize()
             self.active_verification_script = res.get("verification_script")
             self.target_artifact = res.get("target_artifact")
             self.verification_script = res.get("verification_script")
@@ -475,43 +543,45 @@ class SubagentEngineer:
             extractor = CodeStreamExtractor(
                 on_code_chunk_callback=lambda ch: inspector.sig_stream_chunk.emit(ch) if (inspector and hasattr(inspector, "sig_stream_chunk")) else None
             )
-            def _chunk_handler(chunk_text: str):
-                extractor.feed(chunk_text)
+            worker_th_handler, worker_th_finalize = make_thought_stream_handler(extractor.feed)
 
             try:
-                response_text = client.chat_completion(
-                    messages=messages,
-                    model=target_model,
-                    temperature=current_temp,
-                    max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
-                    context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
-                    gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
-                    stream=True,
-                    emit_signal=False,
-                    chunk_callback=_chunk_handler
-                )
-            except TypeError:
                 try:
                     response_text = client.chat_completion(
                         messages=messages,
                         model=target_model,
                         temperature=current_temp,
                         max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                        context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
+                        gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
                         stream=True,
                         emit_signal=False,
-                        chunk_callback=_chunk_handler
+                        chunk_callback=worker_th_handler,
+                        enable_thinking=effective_thinking
                     )
                 except TypeError:
-                    response_text = client.chat_completion(
-                        messages=messages,
-                        model=target_model,
-                        temperature=current_temp,
-                        max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
-                        stream=False,
-                        emit_signal=False
-                    )
-                    if response_text and not extractor.in_code_block:
-                        extractor.feed(str(response_text))
+                    try:
+                        response_text = client.chat_completion(
+                            messages=messages,
+                            model=target_model,
+                            temperature=current_temp,
+                            max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                            stream=True,
+                            emit_signal=False,
+                            chunk_callback=worker_th_handler,
+                            enable_thinking=effective_thinking
+                        )
+                    except TypeError:
+                        response_text = client.chat_completion(
+                            messages=messages,
+                            model=target_model,
+                            temperature=current_temp,
+                            max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                            stream=False,
+                            emit_signal=False
+                        )
+                        if response_text and not extractor.in_code_block:
+                            extractor.feed(str(response_text))
             except Exception as e:
                 logger.error(f"LM Studio call failed in SubagentEngineer: {e}")
                 return {
@@ -527,6 +597,8 @@ class SubagentEngineer:
                     "verification_script": self.verification_script,
                     "verification_passed": False
                 }
+            finally:
+                worker_th_finalize()
 
             extractor.finalize()
             full_generated_text = str(response_text or "")
@@ -1339,7 +1411,8 @@ class SubagentEngineer:
                                     max_tokens=600,
                                     repeat_penalty=1.10,
                                     stream=False,
-                                    emit_signal=False
+                                    emit_signal=False,
+                                    enable_thinking=(False if effective_thinking is not None else None)
                                 )
                             except TypeError:
                                 rca_resp = client.chat_completion(
@@ -1350,7 +1423,7 @@ class SubagentEngineer:
                                     stream=False,
                                     emit_signal=False
                                 )
-                            rca_text = str(rca_resp or "").strip()
+                            rca_text = TextRegexFilter.strip_thought_blocks(str(rca_resp or "")).strip()
                             if rca_text:
                                 logger.info(f"🔍 [Архитектор: Разбор ошибки и план решения]:\n{rca_text}")
                         except Exception as _e_rca:
@@ -1847,10 +1920,26 @@ class SubagentEngineer:
                 }
             ]
             try:
-                final_resp = client.chat_completion(messages=synth_messages, model=target_model, temperature=architect_temp, stream=False, emit_signal=False)
+                final_resp = client.chat_completion(
+                    messages=synth_messages,
+                    model=target_model,
+                    temperature=architect_temp,
+                    stream=False,
+                    emit_signal=False,
+                    enable_thinking=effective_thinking
+                )
             except TypeError:
-                final_resp = client.chat_completion(messages=synth_messages, temperature=architect_temp, stream=False, emit_signal=False)
-            clean_synth = ToolEngine.strip_tool_tags(final_resp or "").strip()
+                try:
+                    final_resp = client.chat_completion(
+                        messages=synth_messages,
+                        temperature=architect_temp,
+                        stream=False,
+                        emit_signal=False,
+                        enable_thinking=effective_thinking
+                    )
+                except TypeError:
+                    final_resp = client.chat_completion(messages=synth_messages, temperature=architect_temp, stream=False, emit_signal=False)
+            clean_synth = TextRegexFilter.strip_thought_blocks(ToolEngine.strip_tool_tags(final_resp or "")).strip()
             return {
                 "success": True,
                 "artifact_path": None,

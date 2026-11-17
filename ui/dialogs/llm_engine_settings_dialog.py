@@ -674,6 +674,19 @@ class LLMEngineSettingsDialog(FramelessDialog):
             cfg["flash_attention_enabled"] = fa_enabled
             cfg["thinking_mode"] = selected_thinking
             ConfigManager.save_config(cfg)
+            self.app_cfg = cfg
+            self.current_kv = selected_kv
+            self.current_fa = fa_enabled
+            self.current_thinking = selected_thinking
+
+            parent_win = self._parent_ref or self.parent()
+            top_win = parent_win.window() if (parent_win and hasattr(parent_win, "window")) else None
+            for win in (parent_win, top_win):
+                if win is not None and isinstance(getattr(win, "app_config", None), dict):
+                    win.app_config["kv_cache_type"] = selected_kv
+                    win.app_config["flash_attention_enabled"] = fa_enabled
+                    win.app_config["thinking_mode"] = selected_thinking
+
             logger.info(
                 f"[LLMEngineSettingsDialog] Сохранено: kv_cache_type={selected_kv}, "
                 f"flash_attention={fa_enabled}, thinking_mode={selected_thinking}"

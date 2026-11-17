@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from services.git_sandbox import GitSandboxManager
 from services.sandbox_manager import SandboxManager
+from services.regex_filter import TextRegexFilter
 from services.tool_engine import ToolEngine, sanitize_code
 from services.engineer_context import EngineerContext
 from services.engineer_diagnostics import diagnose_runtime_error, extract_error_fingerprint
@@ -38,6 +39,7 @@ class CodeFirstTDDPipeline:
     def extract_code_blocks(response_text: str, default_filename: str) -> Dict[str, str]:
         """Извлекает блоки write_file или markdown код с автоматической санитизацией от самоимпорта."""
         files: Dict[str, str] = {}
+        response_text = TextRegexFilter.strip_thought_blocks(str(response_text or ""))
         write_pattern = r'<<TOOL:write_file\s+(?:filename|path|file)=["\'](?P<filename>[^"\']+)["\']\s*>>?[\r\n]*(?P<content>.*?)(?:<<?/+TOOL(?::write_file)?>>?|`+/+TOOL(?::write_file)?`+|$)'
         for m in re.finditer(write_pattern, response_text, flags=re.DOTALL | re.IGNORECASE):
             fn = m.group("filename").strip().strip("'\"`")
@@ -131,6 +133,48 @@ class CodeFirstTDDPipeline:
         return existing_test_code.rstrip() + "\n\n\n" + clean_new + "\n"
 
     @classmethod
+    def _call_completion(
+        cls,
+        client: Any,
+        messages: List[Dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int = 4096,
+        enable_thinking: Optional[bool] = None,
+        thought_chunk_callback: Optional[Any] = None,
+        **extra_kwargs
+    ) -> str:
+        use_stream = bool(thought_chunk_callback and enable_thinking is not False)
+        call_kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": use_stream,
+            "emit_signal": False
+        }
+        if use_stream:
+            call_kwargs["chunk_callback"] = thought_chunk_callback
+        if enable_thinking is not None:
+            call_kwargs["enable_thinking"] = enable_thinking
+        call_kwargs.update(extra_kwargs)
+
+        try:
+            try:
+                return client.chat_completion(**call_kwargs)
+            except TypeError:
+                call_kwargs_fallback = dict(call_kwargs)
+                call_kwargs_fallback.pop("chunk_callback", None)
+                call_kwargs_fallback["stream"] = False
+                try:
+                    return client.chat_completion(**call_kwargs_fallback)
+                except TypeError:
+                    call_kwargs_fallback.pop("enable_thinking", None)
+                    return client.chat_completion(**call_kwargs_fallback)
+        except Exception as e:
+            raise e
+
+    @classmethod
     def run(
         cls,
         plan: Any,
@@ -143,8 +187,14 @@ class CodeFirstTDDPipeline:
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
         worker_temp: float = 0.20,
+        enable_thinking: Optional[bool] = None,
+        thought_chunk_callback: Optional[Any] = None,
         **kwargs
     ) -> Dict[str, Any]:
+        if enable_thinking is None and "enable_thinking" in kwargs:
+            enable_thinking = kwargs.pop("enable_thinking")
+        if thought_chunk_callback is None and "thought_chunk_callback" in kwargs:
+            thought_chunk_callback = kwargs.pop("thought_chunk_callback")
         task_type = getattr(plan, "task_type", "NEW_MODULE")
         if task_type == "INCREMENTAL_FEATURE":
             return cls.run_incremental_feature(
@@ -158,6 +208,8 @@ class CodeFirstTDDPipeline:
                 on_status_callback=on_status_callback,
                 inspector=inspector,
                 worker_temp=worker_temp,
+                enable_thinking=enable_thinking,
+                thought_chunk_callback=thought_chunk_callback,
                 **kwargs
             )
         else:
@@ -172,6 +224,8 @@ class CodeFirstTDDPipeline:
                 on_status_callback=on_status_callback,
                 inspector=inspector,
                 worker_temp=worker_temp,
+                enable_thinking=enable_thinking,
+                thought_chunk_callback=thought_chunk_callback,
                 **kwargs
             )
 
@@ -188,8 +242,14 @@ class CodeFirstTDDPipeline:
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
         worker_temp: float = 0.20,
+        enable_thinking: Optional[bool] = None,
+        thought_chunk_callback: Optional[Any] = None,
         **kwargs
     ) -> Dict[str, Any]:
+        if enable_thinking is None and "enable_thinking" in kwargs:
+            enable_thinking = kwargs.pop("enable_thinking")
+        if thought_chunk_callback is None and "thought_chunk_callback" in kwargs:
+            thought_chunk_callback = kwargs.pop("thought_chunk_callback")
         """
         Ветка NEW_MODULE:
         Шаг 1 (Код): Реализация модуля по JSON-спецификации Архитектора + sanitize_code.
@@ -232,11 +292,14 @@ class CodeFirstTDDPipeline:
             f"4. Оформи полный код модуля через <<TOOL:write_file filename=\"{mod_name}\">>код<</TOOL:write_file>>."
         )
 
-        resp1 = client.chat_completion(
+        resp1 = cls._call_completion(
+            client=client,
             messages=[{"role": "system", "content": step1_system}, {"role": "user", "content": step1_user}],
             model=target_model,
             temperature=worker_temp,
-            max_tokens=4096
+            max_tokens=4096,
+            enable_thinking=enable_thinking,
+            thought_chunk_callback=thought_chunk_callback
         )
         files1 = cls.extract_code_blocks(str(resp1 or ""), default_filename=mod_name)
         impl_code = files1.get(mod_name) or (list(files1.values())[0] if files1 else "# Empty module\n")
@@ -264,11 +327,14 @@ class CodeFirstTDDPipeline:
                 f"4. Покрой тестами все публичные методы, аргументы, проверки типов и исключения (pytest.raises(ValueError)).\n"
                 f"5. Оформи тестовый файл через <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
             )
-            resp2 = client.chat_completion(
+            resp2 = cls._call_completion(
+                client=client,
                 messages=[{"role": "system", "content": step2_system}, {"role": "user", "content": step2_user}],
                 model=target_model,
                 temperature=worker_temp,
-                max_tokens=4096
+                max_tokens=4096,
+                enable_thinking=enable_thinking,
+                thought_chunk_callback=thought_chunk_callback
             )
             files2 = cls.extract_code_blocks(str(resp2 or ""), default_filename=test_file)
             test_code = files2.get(test_file) or (list(files2.values())[0] if files2 else "")
@@ -359,7 +425,15 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — ведущий инженер Python. Исправь код реализации модуля, устранив ошибки логики."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                fix_resp = cls._call_completion(
+                    client=client,
+                    messages=fix_msgs,
+                    model=target_model,
+                    temperature=worker_temp,
+                    max_tokens=4096,
+                    enable_thinking=enable_thinking,
+                    thought_chunk_callback=thought_chunk_callback
+                )
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=mod_name)
                 if not blocks:
                     consecutive_no_blocks_count += 1
@@ -399,7 +473,15 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй структуру и ассерты теста."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                fix_resp = cls._call_completion(
+                    client=client,
+                    messages=fix_msgs,
+                    model=target_model,
+                    temperature=worker_temp,
+                    max_tokens=4096,
+                    enable_thinking=enable_thinking,
+                    thought_chunk_callback=thought_chunk_callback
+                )
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
                 if not blocks:
                     consecutive_no_blocks_count += 1
@@ -445,8 +527,14 @@ class CodeFirstTDDPipeline:
         on_status_callback: Optional[Any] = None,
         inspector: Optional[Any] = None,
         worker_temp: float = 0.20,
+        enable_thinking: Optional[bool] = None,
+        thought_chunk_callback: Optional[Any] = None,
         **kwargs
     ) -> Dict[str, Any]:
+        if enable_thinking is None and "enable_thinking" in kwargs:
+            enable_thinking = kwargs.pop("enable_thinking")
+        if thought_chunk_callback is None and "thought_chunk_callback" in kwargs:
+            thought_chunk_callback = kwargs.pop("thought_chunk_callback")
         """
         Ветка INCREMENTAL_FEATURE:
         Шаг 1 (Pre-flight Baseline Check): Прогон существующих тестов модуля (100% Green).
@@ -494,11 +582,14 @@ class CodeFirstTDDPipeline:
                 f"Напиши базовые тесты для фиксации текущего функционала в файле {test_file}."
             )
 
-            boot_resp = client.chat_completion(
+            boot_resp = cls._call_completion(
+                client=client,
                 messages=[{"role": "system", "content": boot_system}, {"role": "user", "content": boot_user}],
                 model=target_model,
                 temperature=worker_temp,
-                max_tokens=4096
+                max_tokens=4096,
+                enable_thinking=enable_thinking,
+                thought_chunk_callback=thought_chunk_callback
             )
             boot_blocks = cls.extract_code_blocks(str(boot_resp or ""), default_filename=test_file)
             boot_test_code = boot_blocks.get(test_file) or (list(boot_blocks.values())[0] if boot_blocks else "")
@@ -515,7 +606,15 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": f"Исправь опечатки в {test_file} под существующий эталонный код модуля. Создавай объекты внутри тестов без фикстур."},
                     {"role": "user", "content": f"Код модуля {mod_name}:\n```python\n{orig_mod_code}\n```\n\nТекущий тест:\n```python\n{boot_test_code}\n```\n\nОшибка pytest:\n{boot_check.output or boot_check.stderr}"}
                 ]
-                fix_resp = client.chat_completion(messages=fix_boot_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                fix_resp = cls._call_completion(
+                    client=client,
+                    messages=fix_boot_msgs,
+                    model=target_model,
+                    temperature=worker_temp,
+                    max_tokens=4096,
+                    enable_thinking=enable_thinking,
+                    thought_chunk_callback=thought_chunk_callback
+                )
                 f_blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
                 boot_test_code = f_blocks.get(test_file) or (list(f_blocks.values())[0] if f_blocks else boot_test_code)
                 boot_test_code = sanitize_code(boot_test_code, test_file)
@@ -577,11 +676,14 @@ class CodeFirstTDDPipeline:
             f"Верни обновлённый монолитный код через <<TOOL:write_file filename=\"{mod_name}\">>код<</TOOL:write_file>>."
         )
 
-        resp2 = client.chat_completion(
+        resp2 = cls._call_completion(
+            client=client,
             messages=[{"role": "system", "content": step2_system}, {"role": "user", "content": step2_user}],
             model=target_model,
             temperature=worker_temp,
-            max_tokens=4096
+            max_tokens=4096,
+            enable_thinking=enable_thinking,
+            thought_chunk_callback=thought_chunk_callback
         )
         blocks2 = cls.extract_code_blocks(str(resp2 or ""), default_filename=mod_name)
         if blocks2:
@@ -620,7 +722,15 @@ class CodeFirstTDDPipeline:
                         {"role": "system", "content": "Ты — старший инженер Python. Устрани регрессию, восстановив работу старого функционала."},
                         {"role": "user", "content": reg_user}
                     ]
-                    reg_resp = client.chat_completion(messages=reg_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                    reg_resp = cls._call_completion(
+                        client=client,
+                        messages=reg_msgs,
+                        model=target_model,
+                        temperature=worker_temp,
+                        max_tokens=4096,
+                        enable_thinking=enable_thinking,
+                        thought_chunk_callback=thought_chunk_callback
+                    )
                     reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=mod_name)
                     if reg_blocks:
                         fixed_code = reg_blocks.get(mod_name) or list(reg_blocks.values())[0]
@@ -645,7 +755,15 @@ class CodeFirstTDDPipeline:
                         {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй тесты под обновлённую спецификацию интерфейса."},
                         {"role": "user", "content": reg_test_user}
                     ]
-                    reg_resp = client.chat_completion(messages=reg_test_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                    reg_resp = cls._call_completion(
+                        client=client,
+                        messages=reg_test_msgs,
+                        model=target_model,
+                        temperature=worker_temp,
+                        max_tokens=4096,
+                        enable_thinking=enable_thinking,
+                        thought_chunk_callback=thought_chunk_callback
+                    )
                     reg_blocks = cls.extract_code_blocks(str(reg_resp or ""), default_filename=test_file)
                     if reg_blocks:
                         fixed_test = reg_blocks.get(test_file) or list(reg_blocks.values())[0]
@@ -688,11 +806,14 @@ class CodeFirstTDDPipeline:
             f"4. НЕ дублируй существующие импорты и заголовки, верни новые тестовые функции в блоке <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
         )
 
-        resp4 = client.chat_completion(
+        resp4 = cls._call_completion(
+            client=client,
             messages=[{"role": "system", "content": step4_system}, {"role": "user", "content": step4_user}],
             model=target_model,
             temperature=worker_temp,
-            max_tokens=4096
+            max_tokens=4096,
+            enable_thinking=enable_thinking,
+            thought_chunk_callback=thought_chunk_callback
         )
         new_test_snippet = extract_clean_code(str(resp4 or ""))
         updated_test_code = cls.append_new_tests(orig_test_code, new_test_snippet)
@@ -780,7 +901,15 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — ведущий инженер Python. Исправь реализацию модуля, чтобы тесты стали зелеными."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                fix_resp = cls._call_completion(
+                    client=client,
+                    messages=fix_msgs,
+                    model=target_model,
+                    temperature=worker_temp,
+                    max_tokens=4096,
+                    enable_thinking=enable_thinking,
+                    thought_chunk_callback=thought_chunk_callback
+                )
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=mod_name)
                 if not blocks:
                     consecutive_no_blocks_count += 1
@@ -823,7 +952,15 @@ class CodeFirstTDDPipeline:
                     {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй структуру и ассерты теста."},
                     {"role": "user", "content": fix_user}
                 ]
-                fix_resp = client.chat_completion(messages=fix_msgs, model=target_model, temperature=worker_temp, max_tokens=4096)
+                fix_resp = cls._call_completion(
+                    client=client,
+                    messages=fix_msgs,
+                    model=target_model,
+                    temperature=worker_temp,
+                    max_tokens=4096,
+                    enable_thinking=enable_thinking,
+                    thought_chunk_callback=thought_chunk_callback
+                )
                 blocks = cls.extract_code_blocks(str(fix_resp or ""), default_filename=test_file)
                 if not blocks:
                     consecutive_no_blocks_count += 1

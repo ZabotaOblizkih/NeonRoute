@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 
 from services.tool_engine import ToolEngine
 from services.code_validator import CodeValidator
+from services.regex_filter import TextRegexFilter
 from services.engineer_context import EngineerContext, BINARY_EXTENSIONS
 
 logger = logging.getLogger("NeonRoute.EngineerParser")
@@ -49,6 +50,7 @@ class EngineerResponseParser:
     ) -> ParsedTurnActions:
         actions = ParsedTurnActions()
         response_text = str(response_text or "")
+        response_text = TextRegexFilter.strip_thought_blocks(response_text)
 
         # 1. Парсинг через теги write_file
         write_blocks = []

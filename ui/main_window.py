@@ -109,6 +109,7 @@ class MainWindow(
     _sig_reload_lms = pyqtSignal(float)
     _sig_cancel_lms = pyqtSignal()
     _sig_engineer_plan_card = pyqtSignal(str)
+    _sig_engineer_thought = pyqtSignal(str, str)
     _sig_inspector_status = pyqtSignal(str, str, int, str)
 
     def __init__(self):
@@ -241,6 +242,7 @@ class MainWindow(
         self._sig_reload_lms.connect(self._do_reload_active_lms_timer)
         self._sig_cancel_lms.connect(self._do_cancel_lms_reload)
         self._sig_engineer_plan_card.connect(self._on_engineer_plan_card)
+        self._sig_engineer_thought.connect(self._on_engineer_thought)
         self._sig_inspector_status.connect(self._on_inspector_status)
 
         from services.mode_coordinator import ModeCoordinator, AppMode
@@ -807,6 +809,13 @@ class MainWindow(
     def _on_engineer_plan_card(self, card_text: str):
         if hasattr(self, "_display_engineer_plan_card"):
             self._display_engineer_plan_card(card_text)
+
+    @pyqtSlot(str, str)
+    def _on_engineer_thought(self, ev_type: str, ev_data: str):
+        if hasattr(self, "_display_engineer_thought"):
+            self._display_engineer_thought(ev_type, ev_data)
+        elif hasattr(self, "_on_engineer_thought"):
+            self._on_engineer_thought(ev_type, ev_data)
 
     @pyqtSlot(str, str, int, str)
     def _on_inspector_status(self, status: str, filename: str, line_num: int, error_msg: str):

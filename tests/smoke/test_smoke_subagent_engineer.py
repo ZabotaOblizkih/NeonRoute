@@ -92,3 +92,72 @@ def test_subagent_full_lifecycle_mock(clean_subagent_env):
     assert isinstance(res, dict)
     assert res.get("success") is True, f"Субагент завершился с ошибкой: {res}"
     assert "SUCCESS_ENGINEER_RUN" in res.get("stdout", "")
+
+
+def test_subagent_full_lifecycle_with_thinking_tags(clean_subagent_env):
+    """Проверка сквозного цикла субагента при работе с thinking-моделью (<think>...</think> в потоке)."""
+    valid_code = (
+        "import sys\n\n"
+        "def main():\n"
+        "    print('SUCCESS_THINKING_ENGINEER_RUN')\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n"
+        "# " + ("A" * 360) + "\n"
+    )
+
+    class MockThinkingLMClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat_completion(self, messages, *args, **kwargs):
+            self.calls += 1
+            chunk_cb = kwargs.get("chunk_callback")
+            if self.calls == 1:
+                # Архитектор выдаёт рассуждения в <think>, затем JSON план
+                raw_plan = json.dumps({
+                    "artifact_type": "script",
+                    "intent": "implement",
+                    "target_artifact": "think_main.py",
+                    "verification_script": "think_main.py",
+                    "plan": "Создать скрипт think_main.py и запустить"
+                })
+                ret = f"<think>\nАнализирую задачу и архитектуру...\n</think>\n```json\n{raw_plan}\n```"
+            else:
+                # Ход Инженера: рассуждения в <think>, затем вызовы инструментов
+                ret = (
+                    "<think>\nПишу валидный код и запускаю скрипт...\n</think>\n"
+                    f'<<TOOL:write_file filename="think_main.py">>\n{valid_code}\n<</TOOL:write_file>>\n'
+                    f'<<TOOL:run_script filename="think_main.py">><</TOOL:run_script>>'
+                )
+
+            # Симулируем потоковую передачу токенов
+            if chunk_cb and callable(chunk_cb):
+                for token in ret.split(" "):
+                    chunk_cb(token + " ")
+            return ret
+
+    client = MockThinkingLMClient()
+    thought_events = []
+
+    def on_thought(stage, chunk):
+        thought_events.append((stage, chunk))
+
+    res = SubagentEngineer.run_worker(
+        task_prompt="Создай консольный скрипт think_main.py",
+        context_hint="",
+        lm_client=client,
+        model_id="deepseek-r1-distill-qwen-14b",
+        on_thought_callback=on_thought,
+        enable_thinking=True
+    )
+
+    assert isinstance(res, dict)
+    assert res.get("success") is True, f"Субагент с thinking завершился с ошибкой: {res}"
+    assert "SUCCESS_THINKING_ENGINEER_RUN" in res.get("stdout", "")
+
+    # Проверяем, что коллбэк мыслей получил события
+    stages = [ev[0] for ev in thought_events]
+    assert "start" in stages
+    assert "chunk" in stages
+

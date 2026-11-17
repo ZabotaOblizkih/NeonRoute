@@ -1107,6 +1107,7 @@ class SessionManager:
         session_history: Optional[List[Dict[str, str]]] = None,
         on_message_callback: Optional[Any] = None,
         on_status_callback: Optional[Any] = None,
+        on_thought_callback: Optional[Any] = None,
         **kwargs
     ) -> dict:
         """Делегирует исполнение в изолированный SubagentEngineer."""
@@ -1122,6 +1123,7 @@ class SessionManager:
             session_history=session_history,
             on_message_callback=on_message_callback,
             on_status_callback=on_status_callback,
+            on_thought_callback=on_thought_callback,
             **kwargs
         )
 

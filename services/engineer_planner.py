@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set
 
+from services.regex_filter import TextRegexFilter
 from services.sandbox_manager import SandboxManager
 from services.git_sandbox import GitSandboxManager
 from services.engineer_context import EngineerContext
@@ -65,8 +66,15 @@ class EngineerPlanner:
         max_tokens: int = 1800,
         session_metadata: Optional[Dict[str, Any]] = None,
         active_engineer_skill: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        thought_chunk_callback: Optional[Any] = None,
         **kwargs: Any,
     ) -> ArchitectPlan:
+        if enable_thinking is None and "enable_thinking" in kwargs:
+            enable_thinking = kwargs.pop("enable_thinking")
+        if thought_chunk_callback is None and "thought_chunk_callback" in kwargs:
+            thought_chunk_callback = kwargs.pop("thought_chunk_callback")
+        eff_max_tokens = max(int(max_tokens or 1800), 4096) if enable_thinking is True else max_tokens
         if ws_dir is None:
             ws_dir = SandboxManager.get_workspace_dir()
 
@@ -187,32 +195,46 @@ class EngineerPlanner:
         plan_desc = ""
 
         logger.info("📐 [Архитектор] Запуск проектирования архитектуры...")
+        use_stream = bool(thought_chunk_callback and enable_thinking is not False)
+        call_kwargs: Dict[str, Any] = {
+            "messages": arch_messages,
+            "model": target_model,
+            "temperature": temperature,
+            "max_tokens": eff_max_tokens,
+            "context_length": context_length,
+            "gpu_ratio": gpu_ratio,
+            "stream": use_stream,
+            "emit_signal": False
+        }
+        if use_stream:
+            call_kwargs["chunk_callback"] = thought_chunk_callback
+        if enable_thinking is not None:
+            call_kwargs["enable_thinking"] = enable_thinking
+
         try:
             try:
-                arch_resp = client.chat_completion(
-                    messages=arch_messages,
-                    model=target_model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    context_length=context_length,
-                    gpu_ratio=gpu_ratio,
-                    stream=False,
-                    emit_signal=False
-                )
+                arch_resp = client.chat_completion(**call_kwargs)
             except TypeError:
-                arch_resp = client.chat_completion(
-                    messages=arch_messages,
-                    model=target_model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=False,
-                    emit_signal=False
-                )
+                call_kwargs_min = dict(call_kwargs)
+                call_kwargs_min.pop("context_length", None)
+                call_kwargs_min.pop("gpu_ratio", None)
+                try:
+                    arch_resp = client.chat_completion(**call_kwargs_min)
+                except TypeError:
+                    arch_resp = client.chat_completion(
+                        messages=arch_messages,
+                        model=target_model,
+                        temperature=temperature,
+                        max_tokens=eff_max_tokens,
+                        stream=False,
+                        emit_signal=False
+                    )
 
-            m_json = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', str(arch_resp or ""))
-            raw_json = m_json.group(1) if m_json else str(arch_resp or "")
+            clean_arch_resp = TextRegexFilter.strip_thought_blocks(str(arch_resp or ""))
+            m_json = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', clean_arch_resp)
+            raw_json = m_json.group(1) if m_json else clean_arch_resp
             if not m_json:
-                m_bare = re.search(r'(\{[\s\S]*\})', str(arch_resp or ""))
+                m_bare = re.search(r'(\{[\s\S]*\})', clean_arch_resp)
                 if m_bare:
                     raw_json = m_bare.group(1)
             data = json.loads(raw_json.strip())

@@ -417,6 +417,7 @@ class EngineerControllerMixin:
             try:
                 on_msg_cb = lambda *args: getattr(self, "_sig_engineer_plan_card", None) and self._sig_engineer_plan_card.emit(args[-1])
                 on_status_cb = lambda st, fn, ln, em: getattr(self, "_sig_inspector_status", None) and self._sig_inspector_status.emit(st, fn, ln, em)
+                on_thought_cb = lambda ev_type, ev_data: getattr(self, "_sig_engineer_thought", None) and self._sig_engineer_thought.emit(str(ev_type), str(ev_data))
                 with SandboxManager.session_scope(target_sid):
                     sm = SessionManager(lm_client=getattr(self, "lm_client", None))
                     return sm.run_ephemeral_engineer_worker(
@@ -427,6 +428,7 @@ class EngineerControllerMixin:
                         session_history=session_history,
                         on_message_callback=on_msg_cb,
                         on_status_callback=on_status_cb,
+                        on_thought_callback=on_thought_cb,
                         inspector=getattr(self, "workspace_inspector", None)
                     )
             except Exception as e:
@@ -608,6 +610,64 @@ class EngineerControllerMixin:
             if hasattr(self, "_force_reset_busy_state"):
                 self._force_reset_busy_state()
 
+    def _on_engineer_thought(self, ev_type: str, ev_data: str):
+        self._display_engineer_thought(ev_type, ev_data)
+
+    def _display_engineer_thought(self, ev_type: str, ev_data: str):
+        if getattr(self, "typing_loader", None) is not None:
+            self._remove_typing_loader()
+
+        active_task = None
+        if hasattr(self, "_active_tasks"):
+            for t in self._active_tasks.values():
+                if t.metadata and t.metadata.get("is_ephemeral_doc"):
+                    active_task = t
+                    break
+
+        existing_bubble = active_task.metadata.get("bubble") if active_task else None
+        if existing_bubble is not None:
+            try:
+                from PyQt6 import sip
+                if sip.isdeleted(existing_bubble):
+                    existing_bubble = None
+            except Exception:
+                pass
+
+        if existing_bubble is None and ev_type in ("start", "chunk"):
+            avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
+            initial_text = "⚡ **Инженер**: Анализ и планирование..."
+            bubble = self._append_message("Элария", initial_text, is_user=False, avatar_path=avatar)
+            if active_task:
+                active_task.metadata["bubble"] = bubble
+                active_task.metadata["plan_text"] = initial_text
+                active_task.metadata["message_id"] = getattr(bubble, "message_id", None)
+            existing_bubble = bubble
+
+        if existing_bubble is not None:
+            if ev_type == "start":
+                if hasattr(existing_bubble, "get_or_create_thought_spoiler"):
+                    existing_bubble.get_or_create_thought_spoiler()
+            elif ev_type == "chunk":
+                if hasattr(existing_bubble, "append_thought_chunk"):
+                    existing_bubble.append_thought_chunk(ev_data)
+            elif ev_type == "end":
+                dur = 0.0
+                tc = 0
+                if ":" in ev_data:
+                    parts = ev_data.split(":", 1)
+                    try:
+                        dur = float(parts[0])
+                    except ValueError:
+                        dur = 0.0
+                    try:
+                        tc = int(parts[1])
+                    except ValueError:
+                        tc = 0
+                if hasattr(existing_bubble, "finalize_thought"):
+                    existing_bubble.finalize_thought(dur, tc)
+            if hasattr(self, "_scroll_to_bottom"):
+                self._scroll_to_bottom()
+
     def _display_engineer_plan_card(self, card_text: str):
         if getattr(self, "typing_loader", None) is not None:
             self._remove_typing_loader()
@@ -637,6 +697,10 @@ class EngineerControllerMixin:
                 active_task.metadata["message_id"] = getattr(bubble, "message_id", None)
         else:
             bubble = existing_bubble
+            if active_task and getattr(active_task, "metadata", {}).get("plan_text") == "⚡ **Инженер**: Анализ и планирование...":
+                if hasattr(bubble, "set_text"):
+                    bubble.set_text(card_text)
+                active_task.metadata["plan_text"] = card_text
             m_step = re.search(r'🛠️\s*\*+Инженер\*+:\s*(.+)', card_text)
             if m_step:
                 raw_step = m_step.group(1).strip()
