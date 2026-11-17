@@ -357,7 +357,15 @@ class EngineerResponseParser:
         clean_blocks = []
         for fn, cnt in actions.write_blocks:
             cnt_clean = re.sub(r'<<?/?(?:TOOL|tool)(?::\w+)?(?:\s+[^>\r\n]*?)?>>?', '', cnt)
+            if fn.lower().endswith((".py", ".pyw")):
+                inner_md = re.findall(r'```(?:python|py)?\s*[\r\n]+([\s\S]*?)```', cnt_clean, re.IGNORECASE)
+                valid_inner = [b.strip() for b in inner_md if EngineerContext.has_python_code(b.strip())]
+                if valid_inner:
+                    cnt_clean = max(valid_inner, key=len)
+                else:
+                    cnt_clean = re.sub(r'[\r\n]+```[\s\S]*$', '', cnt_clean)
             cnt_clean = re.sub(r'^```[a-zA-Z0-9_\-]*\s*', '', cnt_clean)
+            cnt_clean = re.sub(r'[\r\n]+```[\s\S]*$', '', cnt_clean)
             cnt_clean = re.sub(r'\s*```$', '', cnt_clean).strip()
             ext = Path(fn).suffix.lower()
             if ext in BINARY_EXTENSIONS:
@@ -376,11 +384,22 @@ class EngineerResponseParser:
                         except Exception:
                             orig_cnt = None
                 _before_extract_len = len(cnt_clean)
-                cnt_clean = EngineerContext.extract_pure_py(cnt_clean, orig_content=orig_cnt)
-                if _before_extract_len > 300 and len(cnt_clean) < 200:
-                    logger.warning(
-                        f"[EngineerParser] extract_pure_py сжал '{fn}' с {_before_extract_len} до {len(cnt_clean)} симв.: {cnt_clean!r}"
-                    )
+                is_already_valid = False
+                try:
+                    t_cand = ast.parse(cnt_clean)
+                    if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom, ast.Assign, ast.If, ast.While, ast.For)) for n in t_cand.body):
+                        is_already_valid = True
+                except SyntaxError:
+                    pass
+
+                if not is_already_valid:
+                    extracted_py = EngineerContext.extract_pure_py(cnt_clean, orig_content=orig_cnt)
+                    if EngineerContext.has_python_code(extracted_py):
+                        cnt_clean = extracted_py
+                    if _before_extract_len > 300 and len(cnt_clean) < 200:
+                        logger.warning(
+                            f"[EngineerParser] extract_pure_py сжал '{fn}' с {_before_extract_len} до {len(cnt_clean)} симв.: {cnt_clean!r}"
+                        )
                 cnt_clean = CodeValidator.apply_ast_linter_to_code(cnt_clean)
             if fn and cnt_clean:
                 clean_blocks.append((fn, cnt_clean))

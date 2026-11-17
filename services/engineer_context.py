@@ -200,7 +200,11 @@ class EngineerContext:
         # 3. Случай оборванного ответа (незакрытый блок в конце генерации)
         unclosed = re.search(r'```(?:python|py)?\s*[\r\n]+([\s\S]+)$', text, re.IGNORECASE)
         if unclosed:
-            return unclosed.group(1).strip()
+            unclosed_cand = unclosed.group(1).strip()
+            if EngineerContext.has_python_code(unclosed_cand):
+                return unclosed_cand
+            # Если после ``` нет Python-кода (закрытие блока перед хвостовым текстом вроде ### Запуск...)
+            text = re.sub(r'[\r\n]+```[\s\S]*$', '', text).strip()
 
         # 4. Если блок кода не был обернут в markdown вовсе:
         # Проверяем, не является ли весь текст целиком валидным Python-кодом (защита констант до import)
