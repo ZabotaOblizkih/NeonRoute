@@ -258,6 +258,7 @@ class SubagentEngineer:
         turn1_test_signature_mismatch = False
 
         last_error = ""
+        last_rejected_code_context = ""
         script_to_run = None
         stdout = ""
         stderr = ""
@@ -605,10 +606,20 @@ class SubagentEngineer:
                         if last_error:
                             clean_err = clean_traceback(last_error)
                             retry_msg += f"\n\nТекущая ошибка, которую нужно устранить:\n{clean_err[-1200:]}"
+                            if last_rejected_code_context and last_rejected_code_context not in retry_msg:
+                                retry_msg += last_rejected_code_context
+                    target_fn_for_draft = target_fn_hint
+                    assistant_draft = (
+                        f"Приступаю к исправлению кода и полной перезаписи файла через инструмент:\n"
+                        f"<<TOOL:write_file filename=\"{target_fn_for_draft}\">>\n"
+                        f"# (предыдущая ревизия {target_fn_for_draft} отклонена проверкой)\n"
+                        f"<</TOOL:write_file>>"
+                    )
+                    retry_msg += "\n\nВАЖНО: Не пиши текстовых подтверждений согласия без кода! Сразу выведи полный исправленный код внутри блока <<TOOL:write_file filename=\"...\">> и вызови <<TOOL:run_script filename=\"...\">>."
                     messages = [
                         messages[0],
                         messages[1],
-                        {"role": "assistant", "content": clean_summary or "Ожидаю код."},
+                        {"role": "assistant", "content": assistant_draft},
                         {"role": "user", "content": _build_goal_anchor(retry_msg)}
                     ]
                     continue
@@ -803,16 +814,19 @@ class SubagentEngineer:
                     diag_msg = (
                         f"[ПУСТОЙ МЕТОД-ЗАГЛУШКА]\n{syntax_err}\n\n"
                         f"Реализуй в нём рабочую логику либо удали пустой метод вместе с его вызовом, если логика там не требуется."
+                        f" Верни полный исправленный код через <<TOOL:write_file filename=\"{target_name}\">> и запусти его через <<TOOL:run_script filename=\"{target_entry_file or target_name}\">>."
                     )
                 elif "сокращение кода" in syntax_err or "заменена на заглушку '...'" in syntax_err:
                     diag_msg = (
                         f"[ОШИБКА ЦЕЛОСТНОСТИ ФАЙЛА]\n{syntax_err}\n\n"
                         f"Сохрани ВСЮ существующую логику и методы без заглушек '...'."
+                        f" Верни полный исправленный код через <<TOOL:write_file filename=\"{target_name}\">> и запусти его через <<TOOL:run_script filename=\"{target_entry_file or target_name}\">>."
                     )
                 elif "Семантическая ошибка" in syntax_err or "NameError" in syntax_err:
                     diag_msg = (
                         f"[СЕМАНТИЧЕСКАЯ ОШИБКА В КОДЕ]\n{syntax_err}\n\n"
                         f"Исправь ошибку: обязательно добавь недостающий import либо инициализируй переменную перед использованием."
+                        f" Верни полный исправленный код через <<TOOL:write_file filename=\"{target_name}\">> и запусти его через <<TOOL:run_script filename=\"{target_entry_file or target_name}\">>."
                     )
                 elif "SyntaxError" in syntax_err or "IndentationError" in syntax_err:
                     patch_opt = f" либо через <<TOOL:patch_file filename=\"{target_name}\">>" if is_maintenance else ""
@@ -845,16 +859,23 @@ class SubagentEngineer:
                     if rejected_code:
                         lines_rej = rejected_code.splitlines()
                         if len(lines_rej) <= max_code_lines:
-                            diag_msg += f"\n\n[ОТКЛОНЁННЫЙ ВАРИАНТ КОДА С ОШИБКОЙ ({len(lines_rej)} строк)]:\n```python\n{rejected_code}\n```"
+                            last_rejected_code_context = f"\n\n[ОТКЛОНЁННЫЙ ВАРИАНТ КОДА С ОШИБКОЙ ({len(lines_rej)} строк)]:\n```python\n{rejected_code}\n```"
                         else:
                             skel = ASTSkeletonizer.skeletonize(rejected_code)
-                            diag_msg += f"\n\n[АРХИТЕКТУРНЫЙ СКЕЛЕТ КОДА]:\n```python\n{skel}\n```"
+                            last_rejected_code_context = f"\n\n[АРХИТЕКТУРНЫЙ СКЕЛЕТ КОДА]:\n```python\n{skel}\n```"
                             m_line = re.search(r'на строке (\d+)', syntax_err)
                             if m_line:
                                 err_l = int(m_line.group(1))
                                 s_idx = max(0, err_l - slice_window)
                                 e_idx = min(len(lines_rej), err_l + slice_window)
-                                diag_msg += f"\n\n[КОНТЕКСТ МЕСТА СБОЯ (строки {s_idx+1}-{e_idx})]:\n```python\n{chr(10).join(lines_rej[s_idx:e_idx])}\n```"
+                                last_rejected_code_context += f"\n\n[КОНТЕКСТ МЕСТА СБОЯ (строки {s_idx+1}-{e_idx})]:\n```python\n{chr(10).join(lines_rej[s_idx:e_idx])}\n```"
+                        diag_msg += last_rejected_code_context
+                        specific_err = syntax_err or last_error
+                        diag_msg += (
+                            f"\n\n🚨 КОНКРЕТНОЕ ТРЕБОВАНИЕ К ИСПРАВЛЕНИЮ ЭТОГО КОДА:\n"
+                            f"{specific_err}\n"
+                            "Запрещено возвращать приведённый выше код без изменений! Обязательно внеси указанные правки в код перед записью в <<TOOL:write_file>>."
+                        )
 
                     # Динамическая эскалация промпта при повторении идентичной ошибки
                     if consecutive_same_error_count >= 2:
@@ -869,11 +890,16 @@ class SubagentEngineer:
                             escalation_warning += "Внимательно изучи причину ошибки выше и измени структуру кода так, чтобы устранить её корень (например, удали лишний вызов или перепиши проблемный метод).\n\n"
                         diag_msg = escalation_warning + diag_msg
 
+                    diag_msg += "\n\nВАЖНО: Не пиши текстовых подтверждений согласия без кода! Сразу выведи полный исправленный код внутри блока <<TOOL:write_file filename=\"...\">> и вызови <<TOOL:run_script filename=\"...\">>."
                     clean_user_prompt = _build_goal_anchor(diag_msg)
-                    if is_noop_error:
-                        assistant_draft = f"Понял (попытка {turn}), вношу изменения в целевую логику файла."
-                    else:
-                        assistant_draft = f"Понял (попытка {turn}), устраняю ошибку в коде."
+
+                    target_fn_for_draft = target_name
+                    assistant_draft = (
+                        f"Приступаю к исправлению кода и полной перезаписи файла через инструмент:\n"
+                        f"<<TOOL:write_file filename=\"{target_fn_for_draft}\">>\n"
+                        f"# (предыдущая ревизия {target_fn_for_draft} отклонена проверкой)\n"
+                        f"<</TOOL:write_file>>"
+                    )
 
                     messages = [
                         messages[0],
@@ -1330,7 +1356,6 @@ class SubagentEngineer:
                         except Exception as _e_rca:
                             logger.warning(f"🔍 [Архитектор] Сбой этапа анализа ошибки: {_e_rca}")
 
-                    assistant_draft = f"Понял, устраняю ошибку выполнения в {script_to_run}."
                     logger.info(f"🔄 [Self-Correction] Ход {turn} завершился ошибкой. Подготовка к ходу {turn + 1}...")
 
                     diag_body = f"Скрипт {script_to_run} упал с ошибкой:\n{enriched_error}\n\n"
@@ -1345,24 +1370,47 @@ class SubagentEngineer:
                         )
 
                     if line_count <= max_code_lines:
+                        last_rejected_code_context = (
+                            f"\n\n[ТЕКУЩАЯ ВЕРСИЯ {script_to_run} НА ДИСКЕ ({line_count} строк)]:\n"
+                            f"```python\n{clean_code}\n```"
+                        )
+                        diag_body += f"{last_rejected_code_context.lstrip()}\n\n"
+                    else:
+                        skel = ASTSkeletonizer.skeletonize(clean_code)
+                        crash_slice = extract_crash_slice(executed_code or clean_code, last_error, filename=script_to_run, window=slice_window)
+                        last_rejected_code_context = f"\n\n[АРХИТЕКТУРНЫЙ СКЕЛЕТ ФАЙЛА {script_to_run}]:\n```python\n{skel}\n```"
+                        if crash_slice:
+                            last_rejected_code_context += f"\n\n[КОНТЕКСТ МЕСТА СБОЯ]:\n```python\n{crash_slice}\n```"
+                        diag_body += f"{last_rejected_code_context.lstrip()}\n\n"
+
+                    specific_err = last_error or enriched_error
+                    diag_body += (
+                        f"🚨 КОНКРЕТНОЕ ТРЕБОВАНИЕ К ИСПРАВЛЕНИЮ ЭТОГО КОДА:\n"
+                        f"{specific_err}\n"
+                        "Запрещено возвращать приведённый выше код без изменений! Обязательно внеси указанные правки в код перед записью в <<TOOL:write_file>>.\n\n"
+                    )
+
+                    if line_count <= max_code_lines:
                         diag_body += (
-                            f"[ТЕКУЩАЯ ВЕРСИЯ {script_to_run} НА ДИСКЕ ({line_count} строк)]:\n"
-                            f"```python\n{clean_code}\n```\n\n"
                             f"Устрани ошибку и верни полный обновлённый файл через <<TOOL:write_file filename=\"{script_to_run}\">> "
                             f"и запусти его через <<TOOL:run_script filename=\"{self.active_verification_script or script_to_run}\">>."
                         )
                     else:
-                        skel = ASTSkeletonizer.skeletonize(clean_code)
-                        crash_slice = extract_crash_slice(executed_code or clean_code, last_error, filename=script_to_run, window=slice_window)
-                        diag_body += f"[АРХИТЕКТУРНЫЙ СКЕЛЕТ ФАЙЛА {script_to_run}]:\n```python\n{skel}\n```\n\n"
-                        if crash_slice:
-                            diag_body += f"[КОНТЕКСТ МЕСТА СБОЯ]:\n```python\n{crash_slice}\n```\n\n"
                         diag_body += (
                             f"Внеси точечное исправление через <<TOOL:patch_file filename=\"{script_to_run}\">> либо верни полный файл через <<TOOL:write_file filename=\"{script_to_run}\">> "
                             f"и запусти его через <<TOOL:run_script filename=\"{self.active_verification_script or script_to_run}\">>."
                         )
 
+                    diag_body += "\n\nВАЖНО: Не пиши текстовых подтверждений согласия без кода! Сразу выведи полный исправленный код внутри блока <<TOOL:write_file filename=\"...\">> и вызови <<TOOL:run_script filename=\"...\">>."
                     runtime_prompt = _build_goal_anchor(diag_body)
+
+                    target_fn_for_draft = script_to_run
+                    assistant_draft = (
+                        f"Приступаю к исправлению кода и полной перезаписи файла через инструмент:\n"
+                        f"<<TOOL:write_file filename=\"{target_fn_for_draft}\">>\n"
+                        f"# (предыдущая ревизия {target_fn_for_draft} отклонена проверкой)\n"
+                        f"<</TOOL:write_file>>"
+                    )
 
                     messages = [
                         messages[0],
@@ -1397,9 +1445,15 @@ class SubagentEngineer:
 
                 if exit_code == 0:
                     target_file = ws_dir / (self.target_artifact or "app.py")
-                    is_solid, substance_err = ToolEngine.check_artifact_substance(target_file, min_bytes=350)
+                    active_spec = getattr(plan, "interface_spec", None) if not getattr(plan, "is_ephemeral", False) else None
+                    is_solid, substance_err = ToolEngine.check_artifact_substance(
+                        target_file,
+                        min_bytes=350,
+                        interface_spec=active_spec
+                    )
                     if not is_solid:
                         logger.warning(f"🚨 [SubstanceGuard REJECT] Файл забракован: {substance_err}")
+                        last_error = substance_err
                         current_fp = extract_error_fingerprint(substance_err)
                         if current_fp and current_fp == last_error_fingerprint:
                             consecutive_same_error_count += 1
@@ -1432,17 +1486,61 @@ class SubagentEngineer:
                                 "summary": loop_report
                             }
 
+                        rej_content = ""
+                        try:
+                            if target_file.is_file():
+                                rej_content = target_file.read_text(encoding="utf-8", errors="ignore")
+                        except Exception:
+                            rej_content = ""
                         SubagentEngineer._rollback_workspace(ws_dir, file_backups)
-                        diag_msg = f"Файл '{target_file.name}' забракован: {substance_err}. Запрещены пустые заглушки! Напиши полную реализацию."
+                        rej_ctx = ""
+                        if rej_content:
+                            rej_lines = rej_content.splitlines()
+                            if len(rej_lines) <= max_code_lines:
+                                rej_ctx = f"\n\n[ОТКЛОНЁННЫЙ ВАРИАНТ КОДА С ОШИБКОЙ ({len(rej_lines)} строк)]:\n```python\n{rej_content}\n```"
+                            else:
+                                skel = ASTSkeletonizer.skeletonize(rej_content)
+                                rej_ctx = f"\n\n[АРХИТЕКТУРНЫЙ СКЕЛЕТ КОДА]:\n```python\n{skel}\n```"
+                        elif last_rejected_code_context:
+                            rej_ctx = last_rejected_code_context
+                        last_rejected_code_context = rej_ctx
+
+                        target_fn_hint = target_entry_file or target_artifact or target_file.name
+                        diag_msg = (
+                            f"Файл '{target_file.name}' забракован SubstanceGuard:\n{substance_err}\n\n"
+                            f"Устрани замечание, сохрани полную реализацию без заглушек и с выполнением всех обязательных контрактов."
+                        )
+                        if rej_ctx:
+                            diag_msg += rej_ctx
+                            diag_msg += (
+                                f"\n\n🚨 КОНКРЕТНОЕ ТРЕБОВАНИЕ К ИСПРАВЛЕНИЮ ЭТОГО КОДА:\n"
+                                f"{substance_err}\n"
+                                "Запрещено возвращать приведённый выше код без изменений! Обязательно внеси указанные правки в код перед записью в <<TOOL:write_file>>."
+                            )
+                        diag_msg += (
+                            f"\n\nВерни исправленный код через <<TOOL:write_file filename=\"{target_fn_hint}\">> "
+                            f"и запусти его через <<TOOL:run_script filename=\"{target_fn_hint}\">>."
+                        )
+                        diag_msg += "\n\nВАЖНО: Не пиши текстовых подтверждений согласия без кода! Сразу выведи полный исправленный код внутри блока <<TOOL:write_file filename=\"...\">> и вызови <<TOOL:run_script filename=\"...\">>."
+
+                        target_fn_for_draft = target_fn_hint
+                        assistant_draft = (
+                            f"Приступаю к исправлению кода и полной перезаписи файла через инструмент:\n"
+                            f"<<TOOL:write_file filename=\"{target_fn_for_draft}\">>\n"
+                            f"# (предыдущая ревизия {target_fn_for_draft} отклонена проверкой)\n"
+                            f"<</TOOL:write_file>>"
+                        )
                         messages = [
                             messages[0],
                             messages[1],
-                            {"role": "assistant", "content": locals().get("clean_summary") or f"Исправляю реализацию {target_file.name}."},
+                            {"role": "assistant", "content": assistant_draft},
                             {"role": "user", "content": _build_goal_anchor(diag_msg)}
                         ]
                         continue
                     else:
                         logger.info(f"✅ [SubstanceGuard PASS] Артефакт '{target_file.name}' прошёл валидацию.")
+                        last_rejected_code_context = ""
+                        last_error = ""
 
                 # Проверяем критерий завершения задачи:
                 # 1. Если verification_script задан — он обязан быть выполнен с exit_code == 0

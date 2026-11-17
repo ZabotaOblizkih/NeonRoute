@@ -123,7 +123,11 @@ class ToolEngine:
 
     @staticmethod
 
-    def check_artifact_substance(file_path: Path, min_bytes: int = 300) -> Tuple[bool, str]:
+    def check_artifact_substance(
+        file_path: Path,
+        min_bytes: int = 300,
+        interface_spec: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str]:
         """Проверяет, что созданный артефакт содержит реальный код, а не пустую заглушку."""
         file_path = Path(file_path)
         if not file_path.is_file():
@@ -142,8 +146,41 @@ class ToolEngine:
                 return False, f"Файл '{file_path.name}' не содержит ни классов, ни функций (только импорты или pass, не содержит классов или функций)."
 
             # Проверка на пустые методы-заглушки (методы класса / функции, тело которых состоит только из pass, ... или docstring)
+            LIFECYCLE_HOOK_NAMES = {
+                "update", "on_update", "tick", "handle_event", "on_event",
+                "on_close", "on_exit", "close", "cleanup", "teardown", "dispose",
+                "on_enter", "on_leave", "on_focus", "on_click", "on_key_press", "on_key_release"
+            }
+
+            func_parent_map = {}
+            cls_has_real_method = {}
+            for cls_node in ast.walk(tree):
+                if isinstance(cls_node, ast.ClassDef):
+                    has_real = False
+                    is_exc = any(
+                        any(err_name in getattr(b, "id", getattr(b, "attr", "")) for err_name in ("Exception", "BaseException", "Error"))
+                        for b in cls_node.bases
+                    )
+                    for item in cls_node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            func_parent_map[id(item)] = cls_node
+                            m_stmts = [
+                                s for s in item.body
+                                if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str))
+                            ]
+                            if m_stmts:
+                                if len(m_stmts) > 1:
+                                    has_real = True
+                                else:
+                                    s0 = m_stmts[0]
+                                    if not isinstance(s0, ast.Pass) and not (isinstance(s0, ast.Expr) and getattr(s0.value, "value", None) is Ellipsis):
+                                        has_real = True
+                    cls_has_real_method[id(cls_node)] = (has_real, is_exc)
+
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    parent_cls_node = func_parent_map.get(id(node))
+                    qual_name = f"{parent_cls_node.name}.{node.name}" if parent_cls_node else node.name
                     is_abstract = any(
                         (getattr(d, "id", "") == "abstractmethod" or getattr(d, "attr", "") == "abstractmethod")
                         for d in getattr(node, "decorator_list", [])
@@ -154,26 +191,183 @@ class ToolEngine:
                         s for s in node.body
                         if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str))
                     ]
-                    if not stmts:
-                        return False, (
-                            f"Функция/метод '{node.name}' в файле '{file_path.name}' является пустой заглушкой "
-                            f"(содержит только docstring без тела реализации)."
-                        )
-                    if len(stmts) == 1:
-                        stmt = stmts[0]
-                        if isinstance(stmt, ast.Pass):
-                            return False, (
-                                f"Функция/метод '{node.name}' в файле '{file_path.name}' содержит только 'pass' "
-                                f"вместо рабочей реализации."
-                            )
-                        if isinstance(stmt, ast.Expr) and (
-                            getattr(stmt.value, "value", None) is Ellipsis or
-                            (isinstance(getattr(stmt, "value", None), ast.Constant) and stmt.value.value is Ellipsis)
+
+                    is_allowed_pass = False
+                    if parent_cls_node is not None:
+                        has_real_peer, is_exc = cls_has_real_method.get(id(parent_cls_node), (False, False))
+                        if is_exc:
+                            is_allowed_pass = True
+                        elif has_real_peer and (
+                            node.name.startswith(("__init__", "noop", "on_")) or node.name in LIFECYCLE_HOOK_NAMES
                         ):
+                            is_allowed_pass = True
+                    else:
+                        if node.name.startswith(("noop",)):
+                            is_allowed_pass = True
+
+                    if not stmts:
+                        if not is_allowed_pass:
                             return False, (
-                                f"Функция/метод '{node.name}' в файле '{file_path.name}' заменена на заглушку '...' "
+                                f"Функция/метод '{qual_name}' в файле '{file_path.name}' является пустой заглушкой "
+                                f"(содержит только docstring без тела реализации)."
+                            )
+                    elif len(stmts) == 1:
+                        stmt = stmts[0]
+                        if isinstance(stmt, ast.Pass) and not is_allowed_pass:
+                            return False, (
+                                f"Функция/метод '{qual_name}' в файле '{file_path.name}' содержит только 'pass' "
                                 f"вместо рабочей реализации."
                             )
+                        if (
+                            (isinstance(stmt, ast.Expr) and getattr(stmt.value, "value", None) is Ellipsis) or
+                            (isinstance(stmt, ast.Expr) and isinstance(getattr(stmt, "value", None), ast.Constant) and stmt.value.value is Ellipsis)
+                        ) and not is_allowed_pass:
+                            return False, (
+                                f"Функция/метод '{qual_name}' в файле '{file_path.name}' заменена на заглушку '...' "
+                                f"вместо рабочей реализации."
+                            )
+
+            # Проверка соответствия архитектурному контракту interface_spec
+            if interface_spec and isinstance(interface_spec, dict):
+                ENTRYPOINT_ALIASES = {
+                    "main", "main_loop", "run", "run_game", "start",
+                    "start_game", "init_game", "setup", "setup_game"
+                }
+                OPTIONAL_CLASS_METHODS = {"reset", "restart", "cleanup", "close"}
+
+                defined_classes = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+                defined_callables = {
+                    n.name for n in ast.walk(tree)
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+                class_methods_map: Dict[str, Set[str]] = {}
+                class_logic_weight: Dict[str, int] = {}
+
+                def _is_docstring_node(s: ast.stmt) -> bool:
+                    if isinstance(s, ast.Expr):
+                        val = getattr(s, "value", None)
+                        if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                            return True
+                        if getattr(ast, "Str", None) and isinstance(val, ast.Str):
+                            return True
+                    return False
+
+                for n in ast.walk(tree):
+                    if isinstance(n, ast.ClassDef):
+                        class_methods_map[n.name] = {
+                            item.name for item in n.body
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        }
+                        class_logic_weight[n.name] = sum(
+                            1 for m in n.body
+                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name not in ("__init__", "init")
+                            for s in ast.walk(m)
+                            if isinstance(s, ast.stmt) and not _is_docstring_node(s)
+                        )
+
+                main_has_input_or_logic = False
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Name) and any(k in node.id.lower() for k in ("keydown", "keyup", "key", "event", "keys")):
+                        main_has_input_or_logic = True
+                        break
+                    elif isinstance(node, ast.Attribute) and any(k in node.attr.lower() for k in ("keydown", "keyup", "get_pressed", "event")):
+                        main_has_input_or_logic = True
+                        break
+
+                has_any_entrypoint = bool(defined_callables & ENTRYPOINT_ALIASES) or any(
+                    isinstance(n, (ast.If, ast.While, ast.For)) for n in tree.body
+                )
+
+                spec_classes = []
+                for cls_info in interface_spec.get("classes", []):
+                    if isinstance(cls_info, dict) and cls_info.get("name"):
+                        spec_classes.append(cls_info.get("name"))
+                    elif isinstance(cls_info, str) and cls_info:
+                        spec_classes.append(cls_info)
+                all_spec_classes_present = all(c in defined_classes for c in spec_classes) if spec_classes else True
+
+                missing_items = []
+                for cls_info in interface_spec.get("classes", []):
+                    if isinstance(cls_info, dict):
+                        cls_name = cls_info.get("name")
+                        methods_list = cls_info.get("methods", [])
+                    elif isinstance(cls_info, str):
+                        cls_name = cls_info
+                        methods_list = []
+                    else:
+                        continue
+                    if not cls_name:
+                        continue
+                    if cls_name not in defined_classes:
+                        missing_items.append(f"класс '{cls_name}'")
+                    else:
+                        cls_methods = class_methods_map.get(cls_name, set())
+                        has_init = bool(cls_methods & {"__init__", "init"})
+                        has_substantive = any(m not in ("__init__", "init") for m in cls_methods)
+
+                        for m_info in methods_list:
+                            if isinstance(m_info, dict):
+                                m_name = m_info.get("name")
+                            elif isinstance(m_info, str):
+                                m_name = m_info
+                            else:
+                                continue
+                            if not m_name or m_name in ("__init__", "init"):
+                                continue
+                            if m_name in OPTIONAL_CLASS_METHODS and ((has_init and has_substantive) or len(cls_methods) >= 2):
+                                continue
+                            if m_name not in cls_methods and m_name not in defined_callables:
+                                missing_items.append(f"метод '{cls_name}.{m_name}'")
+
+                for fn_info in interface_spec.get("functions", []):
+                    if isinstance(fn_info, dict):
+                        fn_name = fn_info.get("name")
+                        fn_args = fn_info.get("args", [])
+                    elif isinstance(fn_info, str):
+                        fn_name = fn_info
+                        fn_args = []
+                    else:
+                        continue
+                    if not fn_name:
+                        continue
+                    if fn_name in ENTRYPOINT_ALIASES and has_any_entrypoint and all_spec_classes_present:
+                        continue
+
+                    if fn_name not in defined_callables:
+                        # Проверка ООП-инкапсуляции: привязана ли функция к существующему классу
+                        matched_cls_name = None
+                        fn_name_lower = fn_name.lower()
+                        first_arg = None
+                        if isinstance(fn_args, list):
+                            for a in fn_args:
+                                if isinstance(a, str) and a.lower() != "self":
+                                    first_arg = a.lower()
+                                    break
+
+                        for c_name in defined_classes:
+                            c_lower = c_name.lower()
+                            if fn_name_lower.startswith(f"{c_lower}_") or fn_name_lower.endswith(f"_{c_lower}"):
+                                matched_cls_name = c_name
+                                break
+                            if first_arg and first_arg == c_lower:
+                                matched_cls_name = c_name
+                                break
+
+                        if matched_cls_name:
+                            weight = class_logic_weight.get(matched_cls_name, 0)
+                            num_methods = len(class_methods_map.get(matched_cls_name, set()))
+                            if weight >= 4 or num_methods >= 3:
+                                # Поведение инкапсулировано внутри класса matched_cls_name
+                                continue
+
+                        missing_items.append(f"функция/метод '{fn_name}'")
+
+                if missing_items:
+                    return False, (
+                        f"Нарушение архитектурного контракта (interface_spec) в файле '{file_path.name}': "
+                        f"отсутствуют обязательные классы/методы/функции: {', '.join(missing_items)}. "
+                        f"Реализуй все перечисленные элементы и вызови их в логике программы."
+                    )
         except SyntaxError as e:
             return False, f"Синтаксическая ошибка в '{file_path.name}': {e}"
         return True, "OK"

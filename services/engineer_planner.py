@@ -155,6 +155,31 @@ class EngineerPlanner:
             )
             arch_messages[1]["content"] += f"\n{hist_text}"
 
+        # Инъекция компактного AST-скелета существующих .py файлов для Архитектора (чтобы исключить проектирование вслепую)
+        py_candidates: List[Path] = []
+        if context_hint:
+            hint_p = ws_dir / Path(context_hint).name.strip()
+            if hint_p.is_file() and hint_p.suffix.lower() in (".py", ".pyw"):
+                py_candidates.append(hint_p)
+        if not py_candidates and ws_dir and ws_dir.exists():
+            py_candidates = [
+                ws_dir / fn for fn in ws_file_names
+                if fn.lower().endswith((".py", ".pyw")) and (ws_dir / fn).is_file()
+            ][:2]
+        if py_candidates:
+            from services.code_validator import CodeValidator
+            skel_blocks = []
+            for py_p in py_candidates:
+                try:
+                    raw_py = py_p.read_text(encoding="utf-8", errors="ignore")
+                    skel_str = CodeValidator.generate_ast_skeleton(raw_py)
+                    if skel_str:
+                        skel_blocks.append(f"[СУЩЕСТВУЮЩАЯ СТРУКТУРА ФАЙЛА {py_p.name}]:\n```python\n{skel_str}\n```")
+                except Exception:
+                    pass
+            if skel_blocks:
+                arch_messages[1]["content"] += "\n\n" + "\n\n".join(skel_blocks)
+
         parsed_format = "cli"
         intent = "new"
         target_artifact = "main.py"
@@ -200,6 +225,150 @@ class EngineerPlanner:
 
             raw_task_type = str(data.get("task_type") or "").strip().upper()
             interface_spec = data.get("interface_spec") or {}
+            if isinstance(interface_spec, dict):
+                classes_list = interface_spec.get("classes")
+                if isinstance(classes_list, list):
+                    for cls_item in classes_list:
+                        if isinstance(cls_item, dict) and isinstance(cls_item.get("methods"), list):
+                            seen_m_names = set()
+                            deduped_methods = []
+                            for m in cls_item["methods"]:
+                                if isinstance(m, dict):
+                                    m_name = m.get("name")
+                                    if m_name and m_name not in seen_m_names:
+                                        seen_m_names.add(m_name)
+                                        deduped_methods.append(m)
+                            cls_item["methods"] = deduped_methods
+
+                funcs_list = interface_spec.get("functions")
+                if isinstance(funcs_list, list):
+                    app_level_cls = None
+                    if isinstance(classes_list, list):
+                        for c in classes_list:
+                            if isinstance(c, dict):
+                                c_name = str(c.get("name", "")).lower()
+                                if any(k in c_name for k in ("level", "game", "app", "world", "manager")):
+                                    app_level_cls = c
+                                    break
+
+                    if not app_level_cls and isinstance(classes_list, list) and py_candidates:
+                        for py_p in py_candidates:
+                            try:
+                                t_skel = ast.parse(py_p.read_text(encoding="utf-8", errors="ignore"))
+                                for n in t_skel.body:
+                                    if isinstance(n, ast.ClassDef) and any(k in n.name.lower() for k in ("level", "game", "app", "world", "manager")):
+                                        app_level_cls = {"name": n.name, "methods": []}
+                                        classes_list.append(app_level_cls)
+                                        break
+                                if app_level_cls:
+                                    break
+                            except Exception:
+                                pass
+
+                    # Сбор словаря известных классов known_classes_map и их существующих методов
+                    known_classes_map: Dict[str, dict] = {}
+                    class_existing_methods: Dict[str, Set[str]] = {}
+
+                    if isinstance(classes_list, list):
+                        for c in classes_list:
+                            if isinstance(c, dict) and c.get("name"):
+                                c_lower = str(c.get("name")).lower()
+                                known_classes_map[c_lower] = c
+                                method_names = {
+                                    m.get("name") if isinstance(m, dict) else m
+                                    for m in c.get("methods", [])
+                                }
+                                class_existing_methods.setdefault(c_lower, set()).update(method_names)
+
+                    if py_candidates:
+                        for py_p in py_candidates:
+                            try:
+                                t_skel = ast.parse(py_p.read_text(encoding="utf-8", errors="ignore"))
+                                for n in t_skel.body:
+                                    if isinstance(n, ast.ClassDef):
+                                        c_lower = n.name.lower()
+                                        if c_lower not in known_classes_map:
+                                            new_cls_dict = {"name": n.name, "methods": []}
+                                            if isinstance(classes_list, list):
+                                                classes_list.append(new_cls_dict)
+                                            known_classes_map[c_lower] = new_cls_dict
+                                        m_names = {
+                                            m.name for m in n.body
+                                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                        }
+                                        class_existing_methods.setdefault(c_lower, set()).update(m_names)
+                            except Exception:
+                                pass
+
+                    seen_fn_names = set()
+                    cleaned_funcs = []
+                    for fn in funcs_list:
+                        if not isinstance(fn, dict):
+                            continue
+                        fn_name = fn.get("name")
+                        if not fn_name or fn_name in seen_fn_names:
+                            continue
+                        seen_fn_names.add(fn_name)
+
+                        fn_args = fn.get("args")
+                        if isinstance(fn_args, list) and fn_args and fn_args[0] == "self":
+                            if app_level_cls is not None:
+                                app_level_cls.setdefault("methods", []).append(dict(fn))
+                                continue
+                            else:
+                                fn["args"] = [a for a in fn_args if a != "self"]
+                                fn_args = fn["args"]
+
+                        fn_name_lower = fn_name.lower()
+                        if fn_name_lower not in ("main", "main_loop", "run", "run_game"):
+                            first_arg = None
+                            if isinstance(fn_args, list):
+                                for a in fn_args:
+                                    if isinstance(a, str) and a.lower() != "self":
+                                        first_arg = a.lower()
+                                        break
+
+                            matched_c_lower = None
+                            for c_lower in known_classes_map:
+                                if fn_name_lower.startswith(f"{c_lower}_") or (first_arg and first_arg == c_lower):
+                                    matched_c_lower = c_lower
+                                    break
+
+                            if matched_c_lower:
+                                target_cls = known_classes_map[matched_c_lower]
+                                existing_m = class_existing_methods.get(matched_c_lower, set())
+                                has_update_or_events = any(k in existing_m for k in ("update", "handle_event", "handle_events", "process_input", "draw"))
+                                if has_update_or_events:
+                                    if not fn_name_lower.startswith(f"{matched_c_lower}_"):
+                                        target_cls.setdefault("methods", []).append(dict(fn))
+                                    continue
+
+                        cleaned_funcs.append(fn)
+
+                    # Санитизация дублирующих точек входа при наличии контроллера Game/App с main/run
+                    has_controller_main = False
+                    if isinstance(classes_list, list):
+                        for c in classes_list:
+                            if isinstance(c, dict):
+                                c_name = str(c.get("name", "")).lower()
+                                if any(k in c_name for k in ("game", "app", "application")):
+                                    methods = c.get("methods", [])
+                                    method_names = {
+                                        m.get("name") if isinstance(m, dict) else m
+                                        for m in methods
+                                    }
+                                    if "main" in method_names or "run" in method_names:
+                                        has_controller_main = True
+                                        break
+                    if has_controller_main:
+                        ENTRYPOINT_DUPLICATES = {"main_loop", "init_game", "run_game", "start_game"}
+                        cleaned_funcs = [
+                            fn for fn in cleaned_funcs
+                            if fn.get("name") not in ENTRYPOINT_DUPLICATES
+                        ]
+
+                    interface_spec["functions"] = cleaned_funcs
+
             raw_format = str(data.get("format") or data.get("artifact_type") or "").strip().lower()
 
             parsed_format = EngineerContext.normalize_artifact_format(

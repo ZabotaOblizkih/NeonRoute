@@ -362,17 +362,41 @@ class CodeValidator:
             return False, sem_err
 
         # 5. AST Stub Guard: запрет пустых функций и методов без реализации
+        LIFECYCLE_HOOK_NAMES = {
+            "update", "on_update", "tick", "handle_event", "on_event",
+            "on_close", "on_exit", "close", "cleanup", "teardown", "dispose",
+            "on_enter", "on_leave", "on_focus", "on_click", "on_key_press", "on_key_release"
+        }
+
         func_parent_map = {}
+        cls_has_real_method = {}
         for cls_node in ast.walk(tree):
             if isinstance(cls_node, ast.ClassDef):
+                has_real = False
+                is_exc = any(
+                    any(err_name in getattr(b, "id", getattr(b, "attr", "")) for err_name in ("Exception", "BaseException", "Error"))
+                    for b in cls_node.bases
+                )
                 for item in cls_node.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        func_parent_map[id(item)] = cls_node.name
+                        func_parent_map[id(item)] = cls_node
+                        m_stmts = [
+                            s for s in item.body
+                            if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str))
+                        ]
+                        if m_stmts:
+                            if len(m_stmts) > 1:
+                                has_real = True
+                            else:
+                                s0 = m_stmts[0]
+                                if not isinstance(s0, ast.Pass) and not (isinstance(s0, ast.Expr) and getattr(s0.value, "value", None) is Ellipsis):
+                                    has_real = True
+                cls_has_real_method[id(cls_node)] = (has_real, is_exc)
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                parent_cls = func_parent_map.get(id(node))
-                qual_name = f"{parent_cls}.{node.name}" if parent_cls else node.name
+                parent_cls_node = func_parent_map.get(id(node))
+                qual_name = f"{parent_cls_node.name}.{node.name}" if parent_cls_node else node.name
                 is_abstract = any(
                     (getattr(d, "id", "") == "abstractmethod" or getattr(d, "attr", "") == "abstractmethod")
                     for d in getattr(node, "decorator_list", [])
@@ -383,14 +407,29 @@ class CodeValidator:
                         if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str))
                     ]
                     if len(stmts) == 1:
-                        allowed_pass_prefixes = ("__init__", "noop")
-                        is_allowed_pass = any(node.name.startswith(pfx) or node.name == pfx.rstrip("_") for pfx in allowed_pass_prefixes)
-                        if isinstance(stmts[0], ast.Pass) and not is_allowed_pass:
+                        s0 = stmts[0]
+                        is_pass = isinstance(s0, ast.Pass)
+                        is_ellipsis = isinstance(s0, ast.Expr) and getattr(s0.value, "value", None) is Ellipsis
+
+                        is_allowed_pass = False
+                        if parent_cls_node is not None:
+                            has_real_peer, is_exc = cls_has_real_method.get(id(parent_cls_node), (False, False))
+                            if is_exc:
+                                is_allowed_pass = True
+                            elif has_real_peer and (
+                                node.name.startswith(("__init__", "noop", "on_")) or node.name in LIFECYCLE_HOOK_NAMES
+                            ):
+                                is_allowed_pass = True
+                        else:
+                            if node.name.startswith(("noop",)):
+                                is_allowed_pass = True
+
+                        if is_pass and not is_allowed_pass:
                             return False, (
                                 f"Метод/функция '{qual_name}' в файле {filename} содержит пустую заглушку 'pass'. "
                                 f"Реализуй полную рабочую логику либо удали пустой метод '{qual_name}' и его лишние вызовы, если он не нужен."
                             )
-                        if isinstance(stmts[0], ast.Expr) and getattr(stmts[0].value, "value", None) is Ellipsis and not is_allowed_pass:
+                        if is_ellipsis and not is_allowed_pass:
                             return False, (
                                 f"Метод/функция '{qual_name}' в файле {filename} заменена на заглушку '...'. "
                                 f"Запрещено сокращать логику. Выведи полную реализацию."
