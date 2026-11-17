@@ -315,3 +315,74 @@ def test_multiple_think_blocks_merged_into_thought_text():
     assert parser.normal_text.strip() == "Чистовой ответ без утечки мыслей!"
     assert "<think>" not in parser.normal_text
     assert "Вторая мысль" not in parser.normal_text
+
+
+def test_gemma4_split_channel_tags_in_normal_text():
+    """Проверка разорванных на стыке чанков <|cha + nnel>thought и <chan + nel|> в NORMAL_TEXT."""
+    parser = ThoughtStreamParser()
+    chunks = [
+        "Текст до мыслей. <|cha",
+        "nnel>thoughtРассуждаем над задачей инженера.",
+        " Анализ архитектуры завершён.<chan",
+        "nel|>def solution():\n    return 42"
+    ]
+    for c in chunks:
+        parser.feed(c)
+    parser.finalize()
+
+    assert parser.state == ThinkParserState.THINK_FINISHED
+    assert "Рассуждаем над задачей инженера" in parser.thought_text
+    assert "Анализ архитектуры завершён" in parser.thought_text
+    assert "<|channel>" not in parser.thought_text
+    assert "<channel|>" not in parser.thought_text
+    assert "def solution():" in parser.normal_text
+    assert "<|channel>" not in parser.normal_text
+    assert "<channel|>" not in parser.normal_text
+    assert parser.normal_text.startswith("Текст до мыслей. ")
+
+
+def test_gemma4_split_channel_tags_inside_think_block():
+    """Проверка разорванных канальных тегов Gemma 4 внутри стандартного блока <think>...</think>."""
+    parser = ThoughtStreamParser()
+    chunks = [
+        "<think>Начало мыслей. <|cha",
+        "nnel>thoughtВнутренний повтор тега <chan",
+        "nel|>Конец мыслей.</think>Чистовой код программы"
+    ]
+    for c in chunks:
+        parser.feed(c)
+    parser.finalize()
+
+    assert parser.state == ThinkParserState.THINK_FINISHED
+    assert "Начало мыслей." in parser.thought_text
+    assert "Внутренний повтор тега" in parser.thought_text
+    assert "Конец мыслей." in parser.thought_text
+    assert "<|channel>thought" not in parser.thought_text
+    assert "<channel|>" not in parser.thought_text
+    assert parser.normal_text.strip() == "Чистовой код программы"
+
+
+def test_text_regex_filter_gemma4_channel_block():
+    """Проверка TextRegexFilter.strip_thought_blocks на Gemma 4 тегах и сохранение кода."""
+    from services.regex_filter import TextRegexFilter
+
+    raw_text = (
+        "<|channel>thought\n"
+        "Скрытые мысли модели Gemma 4, которые не должны попасть в код.\n"
+        "<channel|>\n"
+        "```python\n"
+        "# Пример, содержащий <|channel>thought внутри кода\n"
+        "def hello():\n"
+        "    return '<channel|>'\n"
+        "```\n"
+        "<|channel>thought\n"
+        "Второй незакрытый блок мыслей"
+    )
+
+    cleaned = TextRegexFilter.strip_thought_blocks(raw_text, mask_code=True)
+    assert "Скрытые мысли модели Gemma 4" not in cleaned
+    assert "Второй незакрытый блок мыслей" not in cleaned
+    assert "def hello():" in cleaned
+    assert "return '<channel|>'" in cleaned
+    assert "# Пример, содержащий <|channel>thought внутри кода" in cleaned
+

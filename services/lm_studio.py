@@ -754,6 +754,9 @@ class LMStudioClient(QObject):
                 first_token_time = None
                 tokens_count = 0
                 in_reasoning_stream = False
+                rc_line_buf = ""
+                rc_recent_lines: List[str] = []
+                rc_loop_broken = False
 
                 try:
                     for line_bytes in resp.iter_lines(decode_unicode=False):
@@ -810,8 +813,40 @@ class LMStudioClient(QObject):
                                     if emit_signal:
                                         self.token_streamed.emit(piece)
 
+                                if rc_piece:
+                                    rc_line_buf += rc_piece
+                                    while "\n" in rc_line_buf:
+                                        full_line, rc_line_buf = rc_line_buf.split("\n", 1)
+                                        norm_line = full_line.strip()
+                                        if norm_line and (len(norm_line) >= 8 or "<|channel>" in norm_line):
+                                            rc_recent_lines.append(norm_line)
+                                            if len(rc_recent_lines) > 16:
+                                                rc_recent_lines.pop(0)
+                                            if len(rc_recent_lines) >= 12 and len(set(rc_recent_lines[-12:])) == 1:
+                                                logger.warning("[LMStudio] Reasoning Anti-Loop: прервано зацикливание в reasoning_content.")
+                                                if in_reasoning_stream:
+                                                    in_reasoning_stream = False
+                                                    accumulated.append("</think>")
+                                                    if chunk_callback and callable(chunk_callback):
+                                                        try:
+                                                            chunk_callback("</think>")
+                                                        except Exception:
+                                                            pass
+                                                    if emit_signal:
+                                                        self.token_streamed.emit("</think>")
+                                                try:
+                                                    resp.close()
+                                                except Exception:
+                                                    pass
+                                                rc_loop_broken = True
+                                                break
+                                    if rc_loop_broken:
+                                        break
+
                             except Exception:
                                 continue
+                        if rc_loop_broken:
+                            break
                     if in_reasoning_stream:
                         in_reasoning_stream = False
                         accumulated.append("</think>")

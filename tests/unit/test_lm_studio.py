@@ -504,6 +504,44 @@ class TestChatCompletion:
         assert "Thinking step 1 and step 2" in result
         assert "Final answer" in result
 
+    def test_reasoning_anti_loop_breaks_on_repetition(self, lms_client, monkeypatch):
+        """12+ identical reasoning lines terminate the stream with exactly one </think>."""
+        sse_lines = [
+            b'data: {"choices": [{"delta": {"reasoning_content": "<|channel>thought\\n"}}]}'
+            for _ in range(14)
+        ] + [
+            b'data: {"choices": [{"delta": {"reasoning_content": "extra thinking after loop\\n"}}]}',
+            b'data: [DONE]'
+        ]
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.iter_lines.return_value = sse_lines
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        self._patch_session_post(monkeypatch, lms_client, lambda url, *a, **k: mock_resp)
+
+        result = lms_client.chat_completion(messages=[{"role": "user", "content": "loop"}], stream=True)
+        assert result.count("<think>") == 1
+        assert result.count("</think>") == 1
+        assert "extra thinking after loop" not in result
+        mock_resp.close.assert_called()
+
+    def test_repeated_code_in_content_piece_not_interrupted(self, lms_client, monkeypatch):
+        """Repeated code lines in content_piece must NOT be interrupted by the reasoning anti-loop."""
+        sse_lines = [
+            b'data: {"choices": [{"delta": {"content": "    print(\'loop\')\\n"}}]}'
+            for _ in range(20)
+        ] + [
+            b'data: {"choices": [{"delta": {"content": "main()\\n"}}]}',
+            b'data: [DONE]'
+        ]
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.iter_lines.return_value = sse_lines
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        self._patch_session_post(monkeypatch, lms_client, lambda url, *a, **k: mock_resp)
+
+        result = lms_client.chat_completion(messages=[{"role": "user", "content": "code"}], stream=True)
+        assert result.count("print('loop')") == 20
+        assert "main()" in result
+
     def test_chat_completion_streaming_malformed_chunk_tolerance(self, lms_client, monkeypatch):
         """Ensures corrupted SSE JSON chunks are skipped without raising exceptions."""
         sse_lines = [

@@ -34,13 +34,16 @@ class ThoughtStreamParser:
     THINK_CLOSE_TAG = "</think>"
     OPEN_TAGS = ("<think>", "<thought>", "<reasoning>", "<analyze>")
     CLOSE_TAGS = ("</think>", "</thought>", "</reasoning>", "</analyze>")
-    ALL_TAGS = OPEN_TAGS + CLOSE_TAGS
+    CHANNEL_OPEN_TAGS = ("<|channel>thought", "<|channel>analysis")
+    CHANNEL_CLOSE_TAGS = ("<channel|>", "<|channel>response", "<|channel>final")
+    ALL_TAGS = OPEN_TAGS + CLOSE_TAGS + CHANNEL_OPEN_TAGS + CHANNEL_CLOSE_TAGS
 
     def __init__(self):
         self.state: ThinkParserState = ThinkParserState.NORMAL_TEXT
         self.buffer: str = ""
         self.thought_text: str = ""
         self.normal_text: str = ""
+        self._opened_via_channel: bool = False
 
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
@@ -69,14 +72,28 @@ class ThoughtStreamParser:
             if self.state in (ThinkParserState.NORMAL_TEXT, ThinkParserState.THINK_FINISHED):
                 if self._failsafe_triggered:
                     # Если сработал предохранитель 16K, больше в IN_THINK не входим, вычищая шальные теги
-                    clean_c = re.sub(r"</?(think|thought|reasoning|analyze)>", "", combined, flags=re.IGNORECASE)
+                    clean_c = re.sub(r"</?(think|thought|reasoning|analyze)>|<\|channel>(?:thought|analysis|response|final)|<channel\|>", "", combined, flags=re.IGNORECASE)
                     if clean_c:
                         self.normal_text += clean_c
                         events.append(("normal_chunk", clean_c))
                     break
 
-                open_match = re.search(r"<(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
+                drop_match = re.search(r"<channel\|>|<\|channel>(?:response|final)", combined, re.IGNORECASE)
+                open_match = re.search(r"<(think|thought|reasoning|analyze)>|<\|channel>(?:thought|analysis)", combined, re.IGNORECASE)
                 close_match = re.search(r"</(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
+
+                # Служебные теги закрытия каналов вне мыслей просто съедаются без попадания в normal_text
+                if (
+                    drop_match
+                    and (not open_match or drop_match.start() < open_match.start())
+                    and (not close_match or drop_match.start() < close_match.start())
+                ):
+                    pre_text = combined[:drop_match.start()]
+                    if pre_text:
+                        self.normal_text += pre_text
+                        events.append(("normal_chunk", pre_text))
+                    combined = combined[drop_match.end():]
+                    continue
 
                 # Сценарий неявного <think> (когда llama-server вставил <think> в промпт, и в потоке пришел </think>)
                 if (
@@ -105,10 +122,13 @@ class ThoughtStreamParser:
                     self._finalize_timing()
                     events.append(("end_think", ""))
                     self.state = ThinkParserState.THINK_FINISHED
+                    self._opened_via_channel = False
                     combined = combined[close_match.end():]
                     continue
 
                 if open_match:
+                    matched_open = open_match.group(0).lower()
+                    is_channel_open = matched_open.startswith("<|channel>")
                     pre_text = combined[:open_match.start()]
                     if pre_text:
                         if self.state == ThinkParserState.NORMAL_TEXT or pre_text.strip():
@@ -117,6 +137,7 @@ class ThoughtStreamParser:
 
                     was_finished = (self.state == ThinkParserState.THINK_FINISHED)
                     self.state = ThinkParserState.IN_THINK
+                    self._opened_via_channel = is_channel_open
                     if self.start_time is None:
                         self.start_time = time.time()
 
@@ -153,13 +174,20 @@ class ThoughtStreamParser:
                     break
 
             elif self.state == ThinkParserState.IN_THINK:
-                # Игнорируем вложенные открывающие <think> внутри уже открытого блока мыслей
-                combined = re.sub(r"<(think|thought|reasoning|analyze)>", "", combined, flags=re.IGNORECASE)
+                # Игнорируем вложенные открывающие теги внутри уже открытого блока мыслей
+                combined = re.sub(r"<(think|thought|reasoning|analyze)>|<\|channel>(?:thought|analysis)", "", combined, flags=re.IGNORECASE)
                 if not combined:
                     break
 
-                # Ищем закрывающий тег </think> или </thought>
-                match = re.search(r"</(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
+                # Если блок открыт стандартным <think>, вырезаем внутренние канальные маркеры
+                if not self._opened_via_channel:
+                    combined = re.sub(r"<channel\|>|<\|channel>(?:response|final)", "", combined, flags=re.IGNORECASE)
+                    if not combined:
+                        break
+                    match = re.search(r"</(think|thought|reasoning|analyze)>", combined, re.IGNORECASE)
+                else:
+                    match = re.search(r"</(think|thought|reasoning|analyze)>|<channel\|>|<\|channel>(?:response|final)", combined, re.IGNORECASE)
+
                 if match:
                     th_part = combined[:match.start()]
                     if th_part:

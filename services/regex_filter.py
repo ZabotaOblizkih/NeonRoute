@@ -23,6 +23,8 @@ class TextRegexFilter:
     _RE_INLINE_CODE = re.compile(r'`[^`\r\n]+`')
     _RE_CLOSING_THINK_TAG = re.compile(r'</(?:think|analyze|thought|reasoning)>', re.IGNORECASE)
     _RE_OPENING_THINK_TAG = re.compile(r'<(?:think|analyze|thought|reasoning)>', re.IGNORECASE)
+    _RE_GEMMA_CHANNEL_BLOCK = re.compile(r'<\|channel>thought[\s\S]*?(?:<channel\|>|<\|channel>(?!thought)|$)', re.IGNORECASE)
+    _RE_GEMMA_STRAY_CHANNEL = re.compile(r'<\|channel>[a-zA-Z0-9_:-]*|<channel\|>', re.IGNORECASE)
 
     RE_IMAGE_TAG = _RE_IMAGE_TAG
 
@@ -81,7 +83,9 @@ class TextRegexFilter:
 
         work = cls._RE_THOUGHT_CLEAN.sub('', work)
         work = cls._RE_IMPLICIT_THOUGHT_CLOSE.sub('', work)
+        work = cls._RE_GEMMA_CHANNEL_BLOCK.sub('', work)
         work = cls._RE_STRAY_THOUGHT_TAG.sub('', work)
+        work = cls._RE_GEMMA_STRAY_CHANNEL.sub('', work)
 
         if mask_code:
             work = cls.restore_markdown_code(work, placeholders)

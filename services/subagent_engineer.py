@@ -537,8 +537,9 @@ class SubagentEngineer:
             logger.info(f"[Инженер] Автономный ход {turn}/{max_turns}")
             ws_dir = SandboxManager.get_workspace_dir()
             GitSandboxManager.create_checkpoint(ws_dir, f"turn_{turn}")
-            if consecutive_same_error_count > 0:
-                current_temp = min(0.50, round(worker_temp + 0.15 * consecutive_same_error_count, 2))
+            stall_steps = max(consecutive_same_error_count, consecutive_no_action_turns)
+            if stall_steps > 0:
+                current_temp = min(0.50, round(worker_temp + 0.15 * stall_steps, 2))
             else:
                 current_temp = worker_temp
 
@@ -570,7 +571,13 @@ class SubagentEngineer:
                         emit_signal=False,
                         chunk_callback=worker_th_handler,
                         enable_thinking=effective_thinking,
-                        respect_master_cap=False
+                        respect_master_cap=False,
+                        top_p=0.95,
+                        min_p=0.05,
+                        dry_multiplier=0.80,
+                        dry_base=1.75,
+                        dry_allowed_length=3,
+                        dry_penalty_last_n=512,
                     )
                 except TypeError:
                     try:
@@ -579,11 +586,13 @@ class SubagentEngineer:
                             model=target_model,
                             temperature=current_temp,
                             max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                            context_length=SubagentEngineer.ENGINEER_CONTEXT_LENGTH,
+                            gpu_ratio=SubagentEngineer.ENGINEER_GPU_RATIO,
                             stream=True,
                             emit_signal=False,
                             chunk_callback=worker_th_handler,
                             enable_thinking=effective_thinking,
-                            respect_master_cap=False
+                            respect_master_cap=False,
                         )
                     except TypeError:
                         try:
@@ -595,19 +604,32 @@ class SubagentEngineer:
                                 stream=True,
                                 emit_signal=False,
                                 chunk_callback=worker_th_handler,
-                                enable_thinking=effective_thinking
+                                enable_thinking=effective_thinking,
+                                respect_master_cap=False,
                             )
                         except TypeError:
-                            response_text = client.chat_completion(
-                                messages=messages,
-                                model=target_model,
-                                temperature=current_temp,
-                                max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
-                                stream=False,
-                                emit_signal=False
-                            )
-                            if response_text and not extractor.in_code_block:
-                                extractor.feed(str(response_text))
+                            try:
+                                response_text = client.chat_completion(
+                                    messages=messages,
+                                    model=target_model,
+                                    temperature=current_temp,
+                                    max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                                    stream=True,
+                                    emit_signal=False,
+                                    chunk_callback=worker_th_handler,
+                                    enable_thinking=effective_thinking,
+                                )
+                            except TypeError:
+                                response_text = client.chat_completion(
+                                    messages=messages,
+                                    model=target_model,
+                                    temperature=current_temp,
+                                    max_tokens=SubagentEngineer.ENGINEER_MAX_TOKENS,
+                                    stream=False,
+                                    emit_signal=False,
+                                )
+                                if response_text and not extractor.in_code_block:
+                                    extractor.feed(str(response_text))
             except Exception as e:
                 logger.error(f"LM Studio call failed in SubagentEngineer: {e}")
                 return {
