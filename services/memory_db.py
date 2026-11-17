@@ -1022,20 +1022,27 @@ def handle_memory_command(text: str, db: Optional[MemoryDB] = None) -> Tuple[boo
 # Фоновый прогрев FastEmbed и LanceDB при запуске (устраняет микрофриз первого сообщения)
 import threading
 
-def warmup_memory_engine(delay: float = 6.0):
+def warmup_memory_engine(delay: float = 6.0, on_finished=None):
     """
     Централизованный фоновый прогрев FastEmbed и LanceDB с отсрочкой (Deferred Warmup),
     чтобы исключить конкуренцию за CPU и шину памяти во время загрузки весов LLM.
     """
     def _run():
-        if delay > 0:
-            time.sleep(delay)
         try:
-            _get_embedding_engine()
-            if "memory_db" in globals() and globals()["memory_db"] is not None:
-                globals()["memory_db"].sync_and_reindex_facts()
-        except Exception as e:
-            logger.debug(f"Async warmup exception: {e}")
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                _get_embedding_engine()
+                if "memory_db" in globals() and globals()["memory_db"] is not None:
+                    globals()["memory_db"].sync_and_reindex_facts()
+            except Exception as e:
+                logger.debug(f"Async warmup exception: {e}")
+        finally:
+            if callable(on_finished):
+                try:
+                    on_finished()
+                except Exception as cb_err:
+                    logger.debug(f"warmup_memory_engine callback error: {cb_err}")
 
     threading.Thread(target=_run, daemon=True, name="FastEmbedWarmup").start()
 

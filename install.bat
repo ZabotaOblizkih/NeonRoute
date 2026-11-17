@@ -13,7 +13,7 @@ echo.
 if exist "runtime\python\python.exe" (
     set "PYTHON_BIN=runtime\python\python.exe"
     set "IS_EMBEDDED=1"
-    echo [OK] Autonomous embedded Python runtime detected in .\r\nuntime\python\
+    echo [OK] Autonomous embedded Python runtime detected in .\runtime\python\
     goto :python_ready
 )
 
@@ -44,10 +44,10 @@ for /f "tokens=*" %%v in ('%PYTHON_EXE% --version 2^>^&1') do (
 :: 3. Create virtual environment for system Python fallback
 if exist "venv\Scripts\python.exe" (
     echo.
-    echo [1/3] Virtual environment .\venv already exists. Updating packages...
+    echo [1/5] Virtual environment .\venv already exists. Updating packages...
 ) else (
     echo.
-    echo [1/3] Creating virtual environment in .\venv ...
+    echo [1/5] Creating virtual environment in .\venv ...
     %PYTHON_EXE% -m venv venv
     if !ERRORLEVEL! NEQ 0 (
         echo [ERROR] Failed to create virtual environment.
@@ -65,7 +65,7 @@ for /f "tokens=*" %%v in ('"%PYTHON_BIN%" --version 2^>^&1') do (
 
 :: 4. Check / Upgrade pip
 echo.
-echo [2/3] Checking and upgrading pip...
+echo [2/5] Checking and upgrading pip...
 if exist "wheels\" (
     "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels --upgrade pip 2>nul
 ) else (
@@ -77,7 +77,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 :: 5. Install dependencies from requirements.txt
 echo.
-echo [3/3] Installing dependencies from requirements.txt...
+echo [3/5] Installing dependencies from requirements.txt...
 if exist "wheels\" (
     echo [OFFLINE] Found wheels directory. Installing from local cache...
     "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels -r requirements.txt
@@ -97,7 +97,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 :: 6. Check and download llama-server binary
 echo.
-echo [4/4] Checking llama-server engine...
+echo [4/5] Checking llama-server engine...
 set "SKIP_LLAMA="
 if "%1"=="--skip-llama" set "SKIP_LLAMA=1"
 if "%2"=="--skip-llama" set "SKIP_LLAMA=1"
@@ -113,11 +113,23 @@ if defined SKIP_LLAMA (
     )
 )
 
+:: 7. Create application shortcuts
+echo.
+echo [5/5] Creating application shortcuts...
+set "SHORTCUT_ARGS="
+if "%1"=="--unattended" set "SHORTCUT_ARGS=--no-desktop"
+if "%2"=="--unattended" set "SHORTCUT_ARGS=--no-desktop"
+"%PYTHON_BIN%" scripts\create_shortcuts.py %SHORTCUT_ARGS%
+if !ERRORLEVEL! NEQ 0 (
+    echo [WARNING] Shortcut creation skipped or failed, continuing...
+)
+
 echo.
 echo =======================================================
 echo [SUCCESS] NeonRoute installation completed successfully!
 echo.
 echo Launch options:
+echo   - NeonRoute.lnk : desktop or project folder shortcut
 echo   - run.bat       : standard silent launch without console
 echo   - run_debug.bat : launch with visible debug console
 echo =======================================================

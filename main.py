@@ -8,14 +8,16 @@ import sys
 import logging
 import traceback
 from pathlib import Path
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from config import (
     BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR,
-    CHARACTERS_DIR, APP_NAME, APP_VERSION
+    CHARACTERS_DIR, APP_NAME, APP_VERSION, SPLASH_PATH, APP_ICON_PATH
 )
-from ui.main_window import MainWindow
+# NOTE: ui.main_window is intentionally NOT imported here at module level.
+# It is deferred inside main() so the splash screen can show and animate
+# during the heavy transitive import chain (~50+ modules).
 
 
 def global_exception_handler(exc_type, exc_value, exc_traceback):
@@ -116,10 +118,49 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
 
-    window = MainWindow()
-    window.showMaximized()
+    if APP_ICON_PATH.exists():
+        from PyQt6.QtGui import QIcon
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
 
+    # --- Splash screen: visible immediately while MainWindow loads ---
+    splash = None
+    if SPLASH_PATH.exists():
+        from ui.widgets.splash_screen import SmoothSplashScreen
+        splash = SmoothSplashScreen(SPLASH_PATH)
+        splash.show()
+        splash.attach_import_pulse()   # keeps GIF animating during heavy import
+        app.processEvents()
+
+    def _boot_main_window() -> None:
+        try:
+            # Heavy transitive import of ~50+ modules happens here,
+            # while the splash is visible and animating via import pulse.
+            from ui.main_window import MainWindow
+
+            if splash:
+                splash.pump_animation()
+
+            window = MainWindow()
+            app._main_window = window  # keep strong reference, prevent GC
+
+            def _on_startup_ready() -> None:
+                window.showMaximized()
+                if splash:
+                    splash.fade_out_and_close(duration_ms=450)
+
+            # Wait for all background milestones (knowledge_sync, memory_warmup, llm_server)
+            window.startup_ready.connect(_on_startup_ready)
+        except Exception:
+            # If MainWindow construction crashes, ensure splash is dismissed
+            if splash:
+                splash.fade_out_and_close(duration_ms=450)
+            raise
+
+    # 15 ms delay gives the event loop one full paint cycle so the splash
+    # frame is composited on-screen before the blocking import starts.
+    QTimer.singleShot(15, _boot_main_window)
     sys.exit(app.exec())
+    # --- End splash integration ---
 
 
 if __name__ == "__main__":

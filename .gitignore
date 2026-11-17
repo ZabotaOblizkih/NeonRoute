@@ -18,6 +18,8 @@ dist/
 build/
 *.egg-info/
 PyQt-Fluent-Widgets/
+*.lnk
+NeonRoute.lnk
 
 # Testing & Quality Assurance
 .coverage

@@ -561,8 +561,7 @@ def collect_git_commits(
         if not s:
             continue
 
-        short_h = h[:7] if h else ""
-        formatted = f"* {s} ({short_h})" if short_h else f"* {s}"
+        formatted = f"- {s}"
         all_commits.append(formatted)
 
         norm_s = s.lower()
@@ -759,9 +758,52 @@ def prompt_interactive_versioning(
         print(f"  [!] Ошибка: {err_msg}. Попробуйте снова.")
 
     while True:
-        print("\nВведите описание изменений (завершите строкой END или пустым вводом; 'all' = показать все коммиты):")
-        lines: List[str] = []
-        show_all = False
+        print("\nВведите описание изменений (Enter на пустой строке — подставить все новые коммиты, 'all' — показать скрытые):")
+        try:
+            first_line = input()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[INFO] Ввод прерван.")
+            first_line = ""
+
+        stripped_first = first_line.strip()
+
+        if stripped_first.lower() == "all":
+            print("\nВсе коммиты до последнего релиза (включая служебные):")
+            if all_commits:
+                for c in all_commits:
+                    print(f"  {c}")
+            else:
+                print("  [INFO] Коммитов не найдено.")
+            continue
+
+        if not stripped_first:
+            # Single Enter on empty line: immediately finish and substitute filtered commits
+            if relevant:
+                print("  [INFO] Ввод пуст. Автоматически подставлены новые коммиты git.")
+                changes_text = "\n".join(relevant)
+                break
+            else:
+                print("  [WARNING] Новых коммитов не найдено. Введите хотя бы одну строку описания:")
+                lines = []
+                while True:
+                    try:
+                        line = input()
+                    except (EOFError, KeyboardInterrupt):
+                        break
+                    if line.strip() == "END":
+                        break
+                    if not line.strip() and lines:
+                        break
+                    if line.strip():
+                        lines.append(line)
+                if lines:
+                    changes_text = "\n".join(lines).strip()
+                else:
+                    changes_text = "- Технические оптимизации и исправления ошибок."
+                break
+
+        # User entered custom text starting on line 1
+        lines = [first_line]
         while True:
             try:
                 line = input()
@@ -769,30 +811,11 @@ def prompt_interactive_versioning(
                 break
             if line.strip() == "END":
                 break
-            if not line.strip() and lines:
-                break
-            if not line.strip() and not lines:
-                break
-            if not lines and line.strip().lower() == "all":
-                show_all = True
+            if not line.strip():
                 break
             lines.append(line)
-
-        if show_all:
-            print("\nВсе коммиты до последнего релиза (включая служебные):")
-            for c in all_commits:
-                print(f"  {c}")
-            continue
+        changes_text = "\n".join(lines).strip()
         break
-
-    changes_text = "\n".join(lines).strip()
-    if not changes_text:
-        fallback_commits = relevant if relevant else all_commits
-        if fallback_commits:
-            print("  [INFO] Ввод пуст. Используется список коммитов git.")
-            changes_text = "\n".join(fallback_commits[:20])
-        else:
-            changes_text = "- Технические оптимизации и исправления ошибок."
 
     rollback_state = {
         "config_path": config_path,
@@ -963,7 +986,7 @@ def main():
 
     # Stage D: Automatic Git Release Commit
     version_changed = (rollback_state is not None and version != rollback_state.get("old_version"))
-    if version_changed and not args.no_git_commit:
+    if version_changed and not args.no_git_commit and not args.non_interactive:
         is_test_or_ci = bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
         if not is_test_or_ci:
             create_release_git_commit(

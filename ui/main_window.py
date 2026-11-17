@@ -106,6 +106,8 @@ class MainWindow(
     EngineerControllerMixin
 ):
     models_refreshed = pyqtSignal()
+    startup_ready = pyqtSignal()
+    _startup_milestone_done = pyqtSignal(str)
     _sig_reload_lms = pyqtSignal(float)
     _sig_cancel_lms = pyqtSignal()
     _sig_engineer_plan_card = pyqtSignal(str)
@@ -244,6 +246,16 @@ class MainWindow(
         self._sig_engineer_plan_card.connect(self._on_engineer_plan_card)
         self._sig_engineer_thought.connect(self._on_engineer_thought)
         self._sig_inspector_status.connect(self._on_inspector_status)
+
+        # Startup Readiness Barrier & Watchdog
+        self._pending_startup_milestones = {"knowledge_sync", "memory_warmup", "llm_server"}
+        self._startup_barrier_released = False
+        self._startup_milestone_done.connect(self._on_startup_milestone_done)
+        self._startup_watchdog_timer = QTimer(self)
+        self._startup_watchdog_timer.setSingleShot(True)
+        self._startup_watchdog_timer.setInterval(18000)  # 18-second fallback
+        self._startup_watchdog_timer.timeout.connect(self._force_release_startup_barrier)
+        self._startup_watchdog_timer.start()
 
         from services.mode_coordinator import ModeCoordinator, AppMode
         self.mode_coordinator = ModeCoordinator(self)
@@ -609,19 +621,26 @@ class MainWindow(
         import threading
         def _background_services_worker():
             try:
-                if not self.process_manager.is_lm_studio_running():
+                if self.process_manager.is_lm_studio_running():
+                    self._startup_milestone_done.emit("llm_server")
+                else:
                     self.process_manager.start_lm_studio_async()
             except Exception as lms_err:
                 logger.warning(f"[MainWindow] Ошибка фонового запуска LLM: {lms_err}")
+                self._startup_milestone_done.emit("llm_server")
 
             try:
                 from services.art_director.prompting import warmup_argos
                 from services.memory_db import warmup_memory_engine
                 warmup_argos()
-                warmup_memory_engine()
-                logger.info("[MainWindow] Фоновый прогрев Argos и MemoryEngine успешно завершен.")
+                warmup_memory_engine(
+                    delay=0.2,
+                    on_finished=lambda: self._startup_milestone_done.emit("memory_warmup")
+                )
+                logger.info("[MainWindow] Фоновый прогрев Argos и MemoryEngine успешно запущен.")
             except Exception as warmup_err:
                 logger.warning(f"[MainWindow] Ошибка фонового прогрева подсистем: {warmup_err}")
+                self._startup_milestone_done.emit("memory_warmup")
 
         threading.Thread(target=_background_services_worker, daemon=True, name="BackgroundServicesWorker").start()
 
@@ -640,12 +659,6 @@ class MainWindow(
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(1200, self._perform_hardware_kv_autotune)
 
-        if cfg.get("check_dependencies_on_startup", True):
-            missing = EnvironmentDoctor.check_missing()
-            if missing:
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(800, self.open_dependency_dialog)
-
         # Фоновая синхронизация базы знаний Эларии (CPU, 0 МБ VRAM)
         try:
             from services.knowledge_manager import KnowledgeSyncWorker
@@ -654,6 +667,7 @@ class MainWindow(
             self._knowledge_sync_worker.start()
         except Exception as e:
             logger.warning(f"[NeonRoute] Не удалось запустить фоновую синхронизацию знаний: {e}")
+            self._startup_milestone_done.emit("knowledge_sync")
 
         # Инвалидация базы знаний на лету (KnowledgeWatcher)
         try:
@@ -663,13 +677,62 @@ class MainWindow(
         except Exception as e:
             logger.warning(f"[NeonRoute] Не удалось запустить KnowledgeWatcher: {e}")
 
-        # Умный одноразовый онбординг SD WebUI Forge (только для мощных GPU NVIDIA)
+    def _on_startup_milestone_done(self, milestone: str):
+        """Thread-safe handler for completed startup milestones."""
+        if milestone in self._pending_startup_milestones:
+            self._pending_startup_milestones.discard(milestone)
+            logger.info(f"[StartupBarrier] Milestone '{milestone}' done. Remaining: {self._pending_startup_milestones}")
+            if not self._pending_startup_milestones:
+                self._release_startup_barrier()
+
+    def _force_release_startup_barrier(self):
+        """Watchdog fallback triggering if any milestone times out."""
+        if not self._startup_barrier_released:
+            logger.warning(
+                f"[StartupBarrier] Watchdog timeout reached (18s). "
+                f"Forcing barrier release. Remaining milestones: {self._pending_startup_milestones}"
+            )
+            self._pending_startup_milestones.clear()
+            self._release_startup_barrier()
+
+    def _release_startup_barrier(self):
+        """Releases the startup barrier, emits startup_ready, and runs deferred modals."""
+        if self._startup_barrier_released:
+            return
+        self._startup_barrier_released = True
+        if hasattr(self, "_startup_watchdog_timer") and self._startup_watchdog_timer.isActive():
+            self._startup_watchdog_timer.stop()
+
+        logger.info("[StartupBarrier] All startup milestones verified. Emitting startup_ready signal.")
+        self.startup_ready.emit()
+
+        # Run deferred startup dialogs once MainWindow is visible
+        from utils.config_manager import ConfigManager
+        cfg = ConfigManager.load_config()
+        if cfg.get("check_dependencies_on_startup", True):
+            missing = EnvironmentDoctor.check_missing()
+            if missing:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(800, self.open_dependency_dialog)
+
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(1500, self._check_forge_onboarding)
+
+    def _on_process_action_completed(self, action_name: str, success: bool, message: str):
+        if action_name == "lms_start":
+            self._startup_milestone_done.emit("llm_server")
+        super()._on_process_action_completed(action_name, success, message)
+
+    def _on_server_state_changed(self, old_state: str, new_state: str):
+        norm = (new_state or "").lower()
+        if norm in ("ready", "error", "stopped"):
+            self._startup_milestone_done.emit("llm_server")
+        super()._on_server_state_changed(old_state, new_state)
 
     def _on_knowledge_sync_finished(self, registry_data: dict):
         total = registry_data.get("total_documents", len(registry_data.get("documents", {})))
         logger.info(f"[NeonRoute] Фоновая синхронизация базы знаний завершена: {total} документов.")
+        self._startup_milestone_done.emit("knowledge_sync")
 
     def _sync_splitter_layout(self, is_engineer: bool):
         """

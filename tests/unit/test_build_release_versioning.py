@@ -256,10 +256,11 @@ def test_collect_git_commits_stops_at_release_head_marker(tmp_path):
          patch("subprocess.run", return_value=mock_res):
         relevant, ignored, all_commits = collect_git_commits(tmp_path)
 
-    # Должны быть собраны только 1 и 2 коммиты
+    # Должны быть собраны только 1 и 2 коммиты в чистом формате "- <subject>"
     assert len(all_commits) == 2
-    assert any("fix: new feature fix" in c for c in relevant)
-    assert any("fea: another improvement" in c for c in relevant)
+    assert relevant == ["- fix: new feature fix", "- fea: another improvement"]
+    assert all(c.startswith("- ") for c in all_commits)
+    assert not any(c.startswith("* ") for c in all_commits)
 
     # Коммит с [release-head] и более старый не должны попасть никуда
     for c in all_commits:
@@ -376,3 +377,123 @@ def test_auto_commit_not_created_when_version_unchanged(tmp_path):
         version_changed = (rollback_state is not None and ver != rollback_state.get("old_version"))
         assert version_changed is False
         mock_commit.assert_not_called()
+
+
+def test_prompt_interactive_single_enter_substitutes_all_commits(tmp_path):
+    """
+    Проверяет, что при запросе описания изменений нажатие одного Enter на пустой первой строке:
+    1. Немедленно завершает ввод без ожидания второго Enter.
+    2. Автоматически подставляет все новые отфильтрованные коммиты в формате '- <subject>'.
+    3. В hotfix.md и rollback_state попадают только чистые строки без 'commit ', 'Author:', 'Date:'.
+    """
+    config_file = tmp_path / "config.py"
+    config_file.write_text('APP_VERSION = "0.9.8-beta"\n', encoding="utf-8")
+    hotfix_file = tmp_path / "hotfix.md"
+
+    mock_git_output = (
+        "1111111111111111111111111111111111111111\x1ffix(engine): resolve mmap load mode\x1fBody 1\x1e"
+        "2222222222222222222222222222222222222222\x1ffea(cuda): download cudart runtime\x1fBody 2\x1e"
+        f"3333333333333333333333333333333333333333\x1fv0.9.8: release commit\x1fNote\n\n{RELEASE_COMMIT_MARKER}\x1e"
+    )
+
+    mock_res = MagicMock()
+    mock_res.returncode = 0
+    mock_res.stdout = mock_git_output
+
+    # Ровно два значения: 1) новая версия, 2) пустая строка (один Enter)
+    # Если скрипт попытается запросить вторую строку, iter выбросит StopIteration и тест упадет!
+    input_iter = iter(["0.9.9-beta", ""])
+
+    with patch("shutil.which", return_value="git"), \
+         patch("subprocess.run", return_value=mock_res), \
+         patch("builtins.input", side_effect=lambda *args: next(input_iter)), \
+         patch("sys.stdin.isatty", return_value=True):
+        new_ver, rollback_state = prompt_interactive_versioning(tmp_path, non_interactive=False)
+
+    assert new_ver == "0.9.9-beta"
+    assert rollback_state is not None
+
+    changes_text = rollback_state.get("changes_text", "")
+    assert "- fix(engine): resolve mmap load mode" in changes_text
+    assert "- fea(cuda): download cudart runtime" in changes_text
+
+    # Проверяем отсутствие шума машинного git log
+    for noise in ["commit ", "Author:", "Date:", RELEASE_COMMIT_MARKER]:
+        assert noise not in changes_text
+
+    hotfix_content = hotfix_file.read_text(encoding="utf-8")
+    assert "## v0.9.9-beta" in hotfix_content
+    assert "- fix(engine): resolve mmap load mode" in hotfix_content
+    assert "- fea(cuda): download cudart runtime" in hotfix_content
+    for noise in ["commit ", "Author:", "Date:", RELEASE_COMMIT_MARKER]:
+        assert noise not in hotfix_content
+
+
+def test_prompt_interactive_all_keyword_displays_ignored_and_reprompts(tmp_path):
+    """
+    Проверяет, что ввод 'all' на первой строке описания показывает все коммиты
+    (включая скрытые служебные) и перезапрашивает описание.
+    """
+    config_file = tmp_path / "config.py"
+    config_file.write_text('APP_VERSION = "0.9.8-beta"\n', encoding="utf-8")
+    hotfix_file = tmp_path / "hotfix.md"
+
+    mock_git_output = (
+        "1111111111111111111111111111111111111111\x1ffix(core): real change\x1fBody 1\x1e"
+        "2222222222222222222222222222222222222222\x1fwip: ignored commit\x1fBody 2\x1e"
+        f"3333333333333333333333333333333333333333\x1fv0.9.8: release\x1f\n\n{RELEASE_COMMIT_MARKER}\x1e"
+    )
+
+    mock_res = MagicMock()
+    mock_res.returncode = 0
+    mock_res.stdout = mock_git_output
+
+    # 1) Новая версия, 2) "all" -> вывод всех, 3) "" -> завершение подстановкой
+    input_iter = iter(["0.9.9-beta", "all", ""])
+
+    with patch("shutil.which", return_value="git"), \
+         patch("subprocess.run", return_value=mock_res), \
+         patch("builtins.input", side_effect=lambda *args: next(input_iter)), \
+         patch("sys.stdin.isatty", return_value=True):
+        new_ver, rollback_state = prompt_interactive_versioning(tmp_path, non_interactive=False)
+
+    assert new_ver == "0.9.9-beta"
+    changes_text = rollback_state.get("changes_text", "")
+    assert "- fix(core): real change" in changes_text
+    # Игнорированный commit 'wip:' не должен попасть в итоговый changes_text при автоподстановке
+    assert "wip: ignored commit" not in changes_text
+
+
+def test_prompt_interactive_single_enter_when_zero_commits_warns_and_prompts_manual(tmp_path):
+    """
+    Проверяет, что если новых коммитов 0, нажатие Enter выводит предупреждение
+    и запрашивает ручной ввод хотя бы одной строки описания.
+    """
+    config_file = tmp_path / "config.py"
+    config_file.write_text('APP_VERSION = "0.9.8-beta"\n', encoding="utf-8")
+    hotfix_file = tmp_path / "hotfix.md"
+
+    # Сразу первый коммит содержит RELEASE_COMMIT_MARKER -> новых коммитов 0
+    mock_git_output = (
+        f"3333333333333333333333333333333333333333\x1fv0.9.8: release\x1f\n\n{RELEASE_COMMIT_MARKER}\x1e"
+    )
+
+    mock_res = MagicMock()
+    mock_res.returncode = 0
+    mock_res.stdout = mock_git_output
+
+    # 1) Новая версия
+    # 2) "" (Enter на первой строке - коммитов 0, поэтому выдается предупреждение)
+    # 3) "- Ручное описание релиза"
+    # 4) "" (пустая строка для завершения ручного ввода)
+    input_iter = iter(["0.9.9-beta", "", "- Ручное описание релиза", ""])
+
+    with patch("shutil.which", return_value="git"), \
+         patch("subprocess.run", return_value=mock_res), \
+         patch("builtins.input", side_effect=lambda *args: next(input_iter)), \
+         patch("sys.stdin.isatty", return_value=True):
+        new_ver, rollback_state = prompt_interactive_versioning(tmp_path, non_interactive=False)
+
+    assert new_ver == "0.9.9-beta"
+    changes_text = rollback_state.get("changes_text", "")
+    assert "- Ручное описание релиза" in changes_text

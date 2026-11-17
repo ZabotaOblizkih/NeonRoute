@@ -26,6 +26,8 @@ DEFAULT_ASSISTANT_AVATAR = AVATARS_DIR / "assistant.jpg"
 DEFAULT_ENGINEER_AVATAR = AVATARS_DIR / "engenier.jpg"
 DEFAULT_ROLEPLAY_AVATAR = AVATARS_DIR / "RP_chat.jpg"
 DEFAULT_BACKGROUND_PATH = ASSETS_DIR / "default_background.jpg"
+SPLASH_PATH = ASSETS_DIR / "splash.gif"
+APP_ICON_PATH = ASSETS_DIR / "neonroute.ico"
 CANONICAL_BACKGROUND_NAME = "bg_bg_Gemini_Generated_Image_y0d0cmy0d0cmy0d0.jpg"
 KNOWLEDGE_BASE_DIR = BASE_DIR / "knowledge_base"
 KNOWLEDGE_REGISTRY_PATH = KNOWLEDGE_BASE_DIR / "registry.json"
@@ -162,7 +164,7 @@ DEFAULT_SD_SETTINGS = {
 
 # Application UI Strings & Metadata
 APP_NAME = "NeonRoute"
-APP_VERSION = "0.9.8-beta"
+APP_VERSION = "0.9.8.1A"
 APP_TAGLINE = "Local AI Orchestrator • 8GB VRAM Optimized"
 
 # Базовый промпт ролевого режима (по умолчанию, если не задана карточка)
