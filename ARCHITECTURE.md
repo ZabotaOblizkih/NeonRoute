@@ -45,6 +45,12 @@
 | **ADR-29** | `HEAD` | `scripts/build_release.py`, `install.bat`, `run.bat`, `run_debug.bat`, `run_llama_server.bat`, `core/forge_locator.py`, `utils/file_utils.py`, `config.py`, `services/sandbox_manager.py`, `services/environment_doctor.py`, `services/workspace_launcher.py`, `ui/models_manager/workers.py`, `README.md`, `tests/unit/test_forge_locator.py`, `tests/smoke/test_release_pipeline_smoke.py` | 1) Зависимость релизной сборки от предустановленного пользователем системного Python в PATH создавала высокий порог входа и приводила к сбоям при конфликтах версий (3.12+, x86 вместо x64).<br>2) При запуске через встроенный Python каталог `runtime\python\` мог протекать в PATH дочернего процесса Forge, вызывая смешение DLL и пакетов со встроенным `system\python\` Forge.<br>3) Запуск через `pythonw.exe` приводил к молчаливому падению консольных CLI-подпроцессов (`pip`, `pytest`, интерактивный запуск скриптов Инженера в `cmd.exe /k`).<br>4) Несогласованность batch-файлов: UTF-8 BOM в `run_llama_server.bat`, зависание `pause` при автоматическом тестировании и отсутствие приоритета автономного рантайма. | 1) Интеграция автономного портативного CPython 3.10.16 x64 (Astral `python-build-standalone`) в релизный конвейер `scripts/build_release.py` с кэшированием в `.cache/portable_python/` (исключён из git и zip) и CLI-флагом `--no-embedded-python`; размер архива релиза со встроенным рантаймом составляет всего 44.80 МБ.<br>2) Изоляция окружения Forge: расширение `get_clean_forge_env` в `core/forge_locator.py` с гарантированным вырезанием из `PATH` каталогов `sys.executable`, `sys.prefix` и любых вхождений `runtime\python\`, предотвращая коллизии с Forge.<br>3) Разработка хелпера `get_python_cli_executable()` в `utils/file_utils.py` (экспортирован в `config.py`): автоматическое разрешение `pythonw.exe -> python.exe` для дочерних процессов `SandboxManager`, `EnvironmentDoctor`, `WorkspaceLauncher` и `workers.py`.<br>4) Полировка батников: строго Windows CRLF, UTF-8 без BOM, очистка unquoted спецсимволов echo, внедрение поддержки `--unattended`/`CI`; двухуровневый каскад `install.bat` (Приоритет 1: автономный `runtime\python\python.exe` без создания `venv\`; Приоритет 2: системный Python 3.10+ с `venv\`); автоматический запуск `run.bat` / `run_debug.bat` через встроенный рантайм.<br>5) Добавлены тесты `tests/smoke/test_release_pipeline_smoke.py` и `tests/unit/test_forge_locator.py`. Пройдена 100% живая верификация в изолированной чистой Temp-среде с air-gap PATH. База расширена до 674 тестов (100% Pass Rate). |
 | **ADR-30** | `HEAD` | `utils/system_monitor.py`, `services/layer_budgeter.py`, `scripts/build_release.py`, `services/llama_downloader.py`, `scripts/download_llama_server.py`, `install.bat`, `services/server_config.py`, `ui/main_window.py`, `ui/controllers/hardware_engine.py`, `ui/dialogs/forge_onboarding_dialog.py`, `ui/dialogs/llm_engine_settings_dialog.py`, `utils/config_manager.py`, `README.md`, `tests/` | 1) На видеокартах AMD Radeon / Intel Arc / iGPU модуль `SystemMonitor` при отсутствии NVML возвращал заглушку 8192 МБ, провоцируя завышенный NGL в `LayerBudgeter` и сброс тензоров в Host RAM / CUDA OOM.<br>2) Скрипт сборки релиза копировал каталоги `bin/` и `models/` вместе с локальными бинарниками llama-server и тяжелыми GGUF-моделями (нарушение гигиены дистрибутива).<br>3) Пользователю требовалось вручную искать бинарники llama-server на GitHub (путаница тэгов v1.0.0 и сборок CUDA/Vulkan) и настраивать папку `bin/`.<br>4) При первом запуске или отсутствии `active_model` система не подхватывала первую попавшуюся `.gguf` модель из `models/`, а в диалоге настроек LLM отсутствовала возможность загрузки движка и изменения пути к моделям.<br>5) Диалог онбординга Forge вызывал недоумение у пользователей на картах AMD/Intel или в чисто текстовом режиме. | 1) Честный детектор GPU через Windows Registry (`_detect_windows_gpu_via_registry`): опрос ветки `Class\{4d36e968-e325-11ce-bfc1-08002be10318}`, считывание `DriverDesc` и 64-битного `HardwareInformation.qwMemorySize` с отсевом Basic Display Adapter; корректный VRAM для AMD/Intel; безопасный режим `NGL=0` при `total_vram <= 512` или без GPU; экспорт `vendor` в `detect_hardware_kv_profile`.<br>2) Стерилизация релиза: исключение `bin` и `models` из копируемых `source_dirs` и их динамическое создание в виде чистых директорий с `.gitkeep`.<br>3) Авто-загрузчик llama-server (`services/llama_downloader.py` + `scripts/download_llama_server.py`): распознавание вендора GPU, выбор архитектуры (CUDA 12.4 / Vulkan / CPU), обход ночных тэгов GitHub API, распаковка в `bin/`, верификация `--version` через `CREATE_NO_WINDOW`, флаг `--if-missing` и интеграция в `install.bat` с поддержкой `--skip-llama`.<br>4) Авто-выбор модели: автоматическая фиксация первого `.gguf` файла при старте; в `LLMEngineSettingsDialog` добавлена карточка «Движок llama-server и папка моделей» с фоновой загрузкой через `QThread` и кнопкой обзора `models_dir`.<br>5) Умный однократный онбординг Forge (`ForgeOnboardingDialog`): строгий показ один раз (`forge_onboarding_shown=False`) только на дискретных NVIDIA GPU с VRAM $\ge 3800$ МБ (с предупреждениями для 4 ГБ и архитектур Blackwell CC $\ge 10.0$); полное сокрытие на AMD/Intel и при `PYTEST_CURRENT_TEST`.<br>6) Созданы 3 юнит-сьюта (`test_gpu_detection_fallback.py`, `test_llama_downloader.py`, `test_seamless_onboarding_and_models.py`) и смоук-тест `install.bat`. База расширена до 692 тестов (100% Pass Rate). |
 | **ADR-31** | `HEAD` | `services/engineer_context.py`, `services/engineer_planner.py`, `services/engineer_skill_router.py`, `services/engineer_prompts.py`, `services/subagent_engineer.py`, `services/code_validator.py`, `services/tool_engine.py`, `services/sandbox_manager.py`, `scripts/repro_engineer_baseline.py` | 1) `normalize_artifact_format` сбрасывал формат `interactive_loop` в `cli`, а `EngineerPlanner` затирал принудительно выбранный пользователем скилл на `cli_automation` и не пробрасывал `worker_rules` в системный промпт Работяги.<br>2) Правила Архитектора требовали дробления на `<name>_core.py` и `game.py`, порождая неработоспособные обрубки без визуализации.<br>3) AST-валидатор пропускал блокирующие вызовы `pygame.time.delay` / `time.sleep` и не проверял наличие вызовов рендера/flip, а `ToolEngine.check_artifact_substance` пропускал пустые методы-заглушки (`pass`, `...`, docstring).<br>4) `SandboxManager` проваливался в повторный бесконечный прогон через `sandbox_runner` при успешном `rc == 0`, а при `TimeoutExpired` ложно возвращал `success=True`. | 1) В `EngineerContext.normalize_artifact_format`: поддержка параметра `skill_id`, детерминированное распознавание всех форматов Архитектора (`interactive_loop`, `batch_artifact`, `pure_logic_tdd`, `cli_automation`), расширение словаря ключевых слов для игр и GUI, безопасный fallback по `skill_id`.<br>2) В `EngineerPlanner`: фиксация флага `is_manual_skill` с запретом деградации на `cli_automation`/`pure_logic_tdd`, обязательный проброс `injected_worker_rules` в системный промпт, увеличение лимита `max_tokens` до 1800 (вместе с `SubagentEngineer`).<br>3) В `ENGINEER_SKILLS["interactive_loop"]`: проектирование единого самодостаточного `game.py`/`app.py`, строгий чеклист сущностей 2D-игры (`Player`, `Level`, объекты, счёт, коллизии без delay), обязательный запуск точки входа с 1-го хода.<br>4) В `CodeValidator`: AST-гейт против блокирующего фриза (`delay`/`sleep`) и проверка минимальной полноты рендера (минимум 2 вызова отрисовки + `flip`/`update`); в `ToolEngine.check_artifact_substance` — блокировка методов-заглушек.<br>5) В `SandboxManager`: 16×16 детерминированный сэмплер пикселей Pygame на кадрах 3 и 30 с детекцией однотонного (<=1 цвета) и статичного экрана (`sys.exit(2)`), протокол маркера `[GUI_CHECKLIST_PASSED]`, немедленный возврат при `rc == 0` и строгий `success=False` при таймауте.<br>6) Базовый стенд `scripts/repro_engineer_baseline.py` расширен позитивным тестом `GOOD_PYGAME_MARIO`. База расширена до 721 теста (100% Pass Rate). |
+| **ADR-32** | `HEAD` | `services/engineer_parser.py`, `services/subagent_engineer.py`, `services/sandbox_manager.py`, `services/engineer_diagnostics.py`, `scripts/repro_loop_and_color_bug.py`, `scripts/repro_wave1_errors_and_gui.py` | 1) Парсер принимал обычную текстовую болтовню модели за Python-код и затирал исходный файл проекта.<br>2) Пустые и чисто текстовые ответы модели сбрасывали счетчик зацикливания `consecutive_same_error_count`, приводя к бесконечному циклу.<br>3) Экран со сливающимися цветами (зеленый игрок на зеленом фоне) не распознавался как ошибка, и модель не получала подсказок по палитре.<br>4) Пустые окна Tkinter без вызова `.pack()/.grid()/.place()` и Pygame без `flip()/update()` не детектировались до запуска. | 1) В `EngineerResponseParser`: строгий фильтр `EngineerContext.has_python_code` на ветке фоллбэка чистого кода (болтовня отсекается до `write_blocks`).<br>2) В `SubagentEngineer`: защита счетчика зацикливания от пустых ответов (`consecutive_same_error_count` сохраняется и инкрементируется при повторе), принудительный останов при исчерпании лимита с выводом понятного сообщения пользователю.<br>3) В `SandboxManager`: 16×16 детерминированный сэмплер пикселей с анализом среза палитры видимых цветов экрана (напр. `[(0, 255, 0): 98%, (255, 255, 255): 2%]`), детекция статичности экрана и выдача подсказки о контрасте игрока/объектов и фона.<br>4) В `diagnose_runtime_error`: специализированная детекция `module bad modification`, подсказки по `pygame.error` (отсутствие внешних файлов ресурсов) и `TypeError` при сложении координат с кортежами. |
+| **ADR-33** | `HEAD` | `services/engineer_tdd.py`, `services/subagent_engineer.py`, `scripts/repro_wave2_tdd.py` | 1) В цикле двустороннего исцеления TDD модель-кодер при ошибках в реализации переписывала сам файл тестов `test_<mod>.py`, удаляя проверки и делая тесты тривиально пустыми.<br>2) Детектор зацикливания TDD игнорировал падения `pytest`, из-за чего модель крутила все 15 попыток с одной и той же ошибкой.<br>3) Промпт исправления кода не содержал диагностических рекомендаций `diagnose_runtime_error`. | 1) В `CodeFirstTDDPipeline`: строгий промпт-гард тестера и запрет модификации файла тестов на нечетных итерациях; принудительный откат файла тестов к эталону.<br>2) Внедрение детектора зацикливания в TDD-пайплайн на базе `extract_error_fingerprint`: фиксация отпечатка `TEST_FAIL::<file>::<test>::<error>` с лимитом 3 повторения и досрочным остановом.<br>3) Интеграция базы диагностических рецептов `diagnose_runtime_error` непосредственно в промпт починки реализации в TDD-пайплайне. |
+| **ADR-34** | `HEAD` | `services/code_validator.py`, `services/subagent_engineer.py`, `services/engineer_skill_router.py`, `scripts/repro_validator_deadlock.py` | 1) Тупиковая вилка валидаторов: `check_cross_module_contracts` требовал добавить отсутствующий метод (`MissingMethod`), модель добавляла метод с `pass`, а `AST Stub Guard` блокировал его как пустую заглушку, загоняя 7B-модель в дедлок.<br>2) AST Stub Guard выдавал только короткое имя функции без имени класса, запутывая модель при наличии методов с одинаковыми именами.<br>3) Блок эскалации `escalation_warning` безусловно требовал «исправить инициализацию коллекций и переменных», сбивая модель с толку при ошибках контрактов и синтаксиса.<br>4) Архитектор для `interactive_loop` не требовал точку входа `main` в `interface_spec.functions`. | 1) В `CodeValidator.check_cross_module_contracts`: расширение альтернативы ошибки — «Либо добавь рабочую реализацию `def <method>(self):` в класс, либо удали лишний вызов, если метод не нужен».<br>2) В `CodeValidator.validate_python_syntax`: привязка методов к родительским классам через `func_parent_map` с выводом квалифицированного имени `f"{parent_cls}.{node.name}"` (напр. `'Level.update'`), и предложение удалить пустой метод вместе с его вызовами.<br>3) В `SubagentEngineer`: дифференцированная классификация ошибок (`[ПУСТОЙ МЕТОД-ЗАГЛУШКА]`, `[ОШИБКА ЦЕЛОСТНОСТИ ФАЙЛА]`, `[СЕМАНТИЧЕСКАЯ ОШИБКА]`, `[СИНТАКСИЧЕСКАЯ ОШИБКА]`, `[ОШИБКА ВАЛИДАЦИИ]`); совет про инициализацию коллекций строго изолирован под `NameError/UnboundLocalError`, для остальных ошибок — универсальное требование изменить структуру кода.<br>4) В `ENGINEER_SKILLS["interactive_loop"]["architect_rules"]`: обязательное включение точки входа `'main'` в `interface_spec.functions`. |
+| **ADR-35** | `HEAD` | `services/engineer_context.py`, `services/engineer_diagnostics.py`, `scripts/repro_format_matrix.py` | 1) Метод `normalize_artifact_format` содержал дубли логики на 4 уровнях с подстрочной проверкой `in t`: слово «платформами» ложно матчило «форма» и превращало игры в `tkinter`, а «кнопка старта» в аркаде сбивала игру в десктопное приложение.<br>2) Запросы вида «калькулятор с классом истории» сваливались в `module` из-за опережающей проверки слова «класс».<br>3) Отсутствие в диагностике рецептов для типовых ловушек Tkinter (константы клавиш `tk.SPACE/tk.LEFT` и коллизия имени со встроенным методом `tk.Tk.keys()`). | 1) Централизованный метод `EngineerContext._resolve_interactive_loop_format` с регулярными выражениями строго по границам слов `(?<![а-яёa-z0-9_])`: Приоритет 1 (явный фреймворк `tkinter/customtkinter/ttk/pyqt` vs `pygame`) $\rightarrow$ Приоритет 2 (игры `марио/платформер/аркада/шутер` vs десктопные формы `калькулятор/таймер/форм(?:а|ы|у|е|ой|ами)?/кнопка`) $\rightarrow$ дефолт `pygame`.<br>2) В безымянной ветке: проверка интерактивных маркеров вынесена до проверки на «класс»/«модуль», а ключевые слова документов (`.xlsx`, `.docx`) переведены на границы слов.<br>3) В `diagnose_runtime_error`: рецепт при `module 'tkinter' has no attribute` (привязка клавиш строками `'<space>'`, `'<Left>'`) и при `'method' object is not subscriptable` (конфликт со встроенным методом `tk.Tk.keys()`, рекомендация `self.pressed_keys`). |
+| **ADR-36** | `HEAD` | `services/subagent_engineer.py`, `services/engineer_tdd.py`, `services/code_validator.py`, `scripts/repro_engineer_temps.py`, `scripts/repro_sprite_draw_false_reject.py` | 1) Работяга-кодер наследовал высокую пользовательскую температуру диалога (0.70–0.85), генерируя стохастический и нестабильный код вместо строго детерминированного.<br>2) При повторе одной и той же ошибки валидатора модель на низкой температуре застревала в локальном минимуме, посимвольно повторяя отклонённый код до исчерпания 3 попыток.<br>3) Статический валидатор `InsufficientRenderCalls` (`draw_calls_count < 2`) ложно блокировал полноценные игры на базе `pygame.sprite.Group.draw(screen)` и игры с одиночной отрисовкой в цикле. | 1) В `SubagentEngineer`: введена константа `CODER_TEMPERATURE = 0.20`; разделены `architect_temp = max(0.05, min(1.50, raw_temp))` (планирование Архитектора и синтез ответов) и `worker_temp = min(architect_temp, SubagentEngineer.CODER_TEMPERATURE)` (детерминированная кодогенерация и TDD-пайплайн); дефолт `worker_temp = 0.20` в `CodeFirstTDDPipeline`.<br>2) В цикле генерации кода внедрен динамический анти-ступор температуры: `current_temp = min(0.50, round(worker_temp + 0.15 * consecutive_same_error_count, 2))` (ход 1: 0.20, повтор 1: 0.35, повтор 2: 0.50), позволяющий модели выйти из застрявшей конструкции без превышения безопасного порога 0.50.<br>3) Из `CodeValidator.validate_python_syntax` полностью удален искусственный статический счетчик `InsufficientRenderCalls` (`draw_calls_count < 2`); контроль фактического рендера и движения возложен на динамический 16×16 сэмплер пикселей в `SandboxManager`. |
+| **ADR-37** | `HEAD` | `services/engineer_parser.py`, `services/engineer_skill_router.py`, `services/engineer_prompts.py`, `services/engineer_diagnostics.py`, `scripts/repro_multifile_markdown_loss.py` | 1) Многофайловый парсер `EngineerResponseParser` терял вспомогательные модули (напр. `player.py`), если модель оформляла их стандартными Markdown-блоками с двоеточием ````python:player.py``` или заголовками `**player.py**`, из-за узкого флага `has_named_blocks`.<br>2) Незакрытые теги `<<TOOL:write_file>>` приводили к поглощению последующих файлов в теле первого файла.<br>3) Детектор зацикливания сбрасывался при смещении строки импорта на $\pm 1$ строчку в стектрейсе `ModuleNotFoundError`.<br>4) Модель в однофайловых задачах генерировала оборванные импорты несуществующих локальных файлов (`from player import Player`), не создавая их. | 1) В `EngineerResponseParser.parse_turn_actions`: поддержка синтаксиса ````python:fn```, атрибутов `filename=/file=` и контекстных заголовков Markdown (`**file.py**`, `### file.py`, `# file.py`); активация многофайловой записи при наличии именованных блоков либо $\ge 2$ блоков с уникальными подсказками, с сохранением `extract_pure_py` для одиночных ревизий в режиме maintenance.<br>2) В `write_pattern` добавлен позитивный lookahead `(?=<<TOOL:write_file\b)`, предотвращающий поглощение следующего файла при отсутствии закрывающего тега.<br>3) В `extract_error_fingerprint`: для `ModuleNotFoundError` и `ImportError` формируется стабильный отпечаток без номера строки (`f"{file_name}::{last_line}"`), исключающий сброс детектора зацикливания при смещении строк.<br>4) В `get_engineer_system_prompt` (ОБЩИЕ ПРАВИЛА КОДОГЕНЕРАЦИИ, п. 4) и в `ENGINEER_SKILLS["interactive_loop"]["worker_rules"]` закреплен строгий запрет локальных импортов несуществующих файлов без их одновременного создания отдельными блоками инструментов. |
 
 ---
 
@@ -229,19 +235,19 @@ NeonRoute/
 │   ├── chub_client.py                   # [416 строк] REST API клиент каталога Chub.ai (поиск, очистка промо-мусора)
 │   ├── civitai_service.py               # [181 строка] Запрос параметров модели по AutoV2 SHA-256 с Civitai API
 │   ├── code_engine.py                   # [327 строк] ASTSkeletonizer, ExecutionSandbox, AutoImporter (Zero-Token Healing)
-│   ├── code_validator.py                # [614 строк] AST-валидатор синтаксиса, Scope Guard, Stub/Reachability Guard
+│   ├── code_validator.py                # [666 строк] AST-валидатор синтаксиса, Scope Guard, квалифицированный Stub Guard (Class.method), BlockingFreeze, MissingDisplayFlip
 │   ├── context_window_builder.py        # [840 строк] Сборщик контекста LLM, «Три якоря», Sliding CoT, проброс selected_forge_checkpoint
 │   ├── direct_command_parser.py         # [108 строк] Парсер CLI-параметров прямого рендера (!арт / !art)
 │   ├── document_parser.py               # [630 строк] Универсальный CPU-парсер документов (.pdf, .docx, .xlsx, .pptx, etc.) и format_markdown_table
-│   ├── engineer_context.py              # [354 строки] Сбор файлового контекста и AST-скелетирование песочницы
-│   ├── engineer_diagnostics.py          # [351 строка] Очистка стектрейсов clean_traceback, экспертная диагностика
-│   ├── engineer_parser.py               # [371 строка] Парсер ответов LLM, извлечение инструментов
-│   ├── engineer_planner.py              # [519 строк] Фаза «Архитектор»: 3-уровневая AST-локализация узлов >250 строк
-│   ├── engineer_prompts.py              # [128 строк] Мета-промпты Архитектора, Инженера и RCA
+│   ├── engineer_context.py              # [413 строк] Сбор файлового контекста, детерминированная нормализация форматов по границам слов (_resolve_interactive_loop_format)
+│   ├── engineer_diagnostics.py          # [420 строк] Очистка стектрейсов, стабильный отпечаток ошибок extract_error_fingerprint, экспертные рецепты Tkinter/Pygame
+│   ├── engineer_parser.py               # [380 строк] Отказоустойчивый парсер инструментов и Markdown (python:file, **file.py**, lookahead write_file)
+│   ├── engineer_planner.py              # [519 строк] Фаза «Архитектор»: 3-уровневая AST-локализация узлов >250 строк, фиксация ручного скилла
+│   ├── engineer_prompts.py              # [132 строки] Мета-промпты Архитектора, Инженера и RCA (запрет оборванных локальных импортов)
 │   ├── engineer_review.py               # [169 строк] Ветка статического аудита, Git Diff и чекпоинтов
-│   ├── engineer_skill_router.py         # [605 строк] Векторный роутер 5 инженерных архетипов на CPU (FastEmbed)
+│   ├── engineer_skill_router.py         # [614 строк] Векторный роутер 5 архетипов на CPU (FastEmbed), контракт точки входа 'main' и правила монолитности
 │   ├── engineer_stream.py               # [79 строк] Потоковый парсинг токенов LLM (CodeStreamExtractor)
-│   ├── engineer_tdd.py                  # [678 строк] Двухфазный Code-First TDD пайплайн (NEW_MODULE / INCREMENTAL_FEATURE)
+│   ├── engineer_tdd.py                  # [866 строк] Code-First TDD пайплайн (защита эталонных тестов, детектор зацикливания TEST_FAIL, worker_temp=0.20)
 │   ├── entity_mapper.py                 # [160 строк] Детерминированный конвертер кириллических сущностей в теги SD 1.5
 │   ├── environment_doctor.py            # [124 строки] Аудит окружения и фоновая установка пакетов через PipInstallWorker
 │   ├── file_generator.py                # [318 строк] Генератор стилизованных документов Excel (.xlsx) и Word (.docx)
@@ -279,7 +285,7 @@ NeonRoute/
 │   ├── session_manager.py               # [993 строки] Управление сессиями диалогов (SQLite WAL + Zero-fsync JSON mirror)
 │   ├── skill_router.py                  # [391 строка] Роутер микро-скиллов Ассистента (7 базовых + custom)
 │   ├── stt_service.py                   # [68 строк] Сервис голосового ввода (Faster-Whisper stub)
-│   ├── subagent_engineer.py             # [1787 строк] Автономный субагент «Инженер»: Review/Git, TDD, SubstanceGuard
+│   ├── subagent_engineer.py             # [1853 строки] Автономный субагент «Инженер»: двухфазный цикл, разделение температур (architect/worker=0.20), анти-ступор (0.20->0.50), SubstanceGuard
 │   ├── task_queue.py                    # [243 строки] Однопоточная приоритетная очередь задач (TaskQueueWorker)
 │   ├── tavern_models.py                 # [692 строки] Модели CharacterCard и LoreEntry: 11 архетипов, пол, POV
 │   ├── tavern_parser.py                 # [864 строки] Парсер карточек Tavern V1/V2/CCv3 и Chub (JSON/PNG/WebP)
@@ -1461,3 +1467,175 @@ flowchart TD
 8. `test_models_manager_test_routing_flow`: верификация роутинга: ввод промпта, асинхронное сопоставление через FastEmbed ONNX и отображение бейджа `RoutingResultBadge`.
 9. `test_models_manager_save_all_flow`: атомарное сохранение всей таблицы в `data/art_director_models.json`, обновление векторов роутера и синхронизация реестра Forge.
 10. `test_models_manager_safe_shutdown_and_worker_cleanup`: надежный жизненный цикл: отключение сигналов, вызов abort, безопасная изоляция через `register_orphaned_worker` без NameError.
+
+### 7.6. Регрессионный сьют и воспроизводящие стенды подсистемы «Инженер» (`scripts/repro_*.py`)
+
+Для гарантированной защиты от регрессий и верификации автономного субагента «Инженер» развернута матрица из 9 специализированных воспроизводящих стендов:
+
+1. **`scripts/repro_engineer_baseline.py` (ТЗ №1)**: верификация сквозного пайплайна «Инженер» для 2D-игр и GUI: нормализация `interactive_loop -> pygame`, инжекция правил Pygame в системный промпт, выявление `MissingEntryPoint`, блокировка `pygame.time.delay` валидатором `CodeValidator`, отбраковка заглушек `ToolEngine.check_artifact_substance`, динамический Smoke-тест `SandboxManager` (негативные и позитивные сценарии `GOOD_PYGAME_MARIO`).
+2. **`scripts/repro_loop_and_color_bug.py` (ТЗ №2)**: защита парсера от болтовни (обычный русский текст без кода не попадает в `write_blocks`), защита счётчика зацикливания `consecutive_same_error_count` от пустых ответов модели, детекция слияния цветов игрока и фона в `SandboxManager` со срезом палитры.
+3. **`scripts/repro_wave1_errors_and_gui.py` (Волна 1)**: диагностика ошибок `pygame.error` / `TypeError`, отбраковка пустых/неразмещенных окон Tkinter (без `.pack()/.grid()/.place()`), детекция Pygame без `flip()/update()`, анализ статичного экрана со срезом палитры, AST Stub Guard на методах классов.
+4. **`scripts/repro_wave2_tdd.py` (Волна 2)**: защита эталонного файла тестов `test_<module>.py` от деградации и порчи моделью-кодером при сбоях в реализации, детектор зацикливания TDD на отпечатке `TEST_FAIL::<file>::<test>::<error>` с остановом за 3 повторения, инъекция диагностических подсказок `diagnose_runtime_error` в промпт починки кода.
+5. **`scripts/repro_validator_deadlock.py` (ТЗ №5)**: устранение тупиковой вилки валидаторов (`MissingMethod` $\leftrightarrow$ `AST Stub Guard`), выдача альтернативы удаления лишнего вызова, вывод квалифицированных имен `Class.method` (напр. `'Level.update'`), контекстная эскалация ошибок (совет про инициализацию переменных выдается строго при `NameError/UnboundLocalError`).
+6. **`scripts/repro_format_matrix.py` (ТЗ №6)**: детерминированная матрица 9 сценариев нормализации форматов по границам слов `(?<![а-яёa-z0-9_])`: приоритет явного фреймворка над жанром, устранение подстрочных коллизий («платформами» не триггерит форму Tkinter, «кнопка» в аркаде не сбивает игру), рецепты диагностики Tkinter (`tk.SPACE/tk.LEFT` и коллизия с `tk.Tk.keys()`).
+7. **`scripts/repro_engineer_temps.py` (ТЗ №7)**: разделение температур Архитектора и Работяги: при пользовательской температуре `0.85` Архитектор получает `0.85`, а кодер-работяга строго детерминированные `0.20` (`CODER_TEMPERATURE`); при ручной низкой температуре `0.15` значение не завышается.
+8. **`scripts/repro_sprite_draw_false_reject.py` (ТЗ №8)**: устранение ложного гейта `InsufficientRenderCalls` (`draw_calls_count < 2`): игры на `pygame.sprite.Group.draw(screen)` и игры с одиночной отрисовкой в цикле успешно проходят `CodeValidator` (`valid=True`) и подтверждаются живым Smoke-тестом `SandboxManager` (`rc=0`).
+9. **`scripts/repro_multifile_markdown_loss.py` (ТЗ №9 и 9.1)**: многофайловый парсер Markdown (извлечение всех файлов при синтаксисе ````python:player.py``` и заголовках `**player.py**`), защита от поглощения файлов lookahead `(?=<<TOOL:write_file\b)`, сценарий `MAINTENANCE_BEFORE_AFTER` (извлечение ровно 1 файла `app.py` с новым кодом без дублирования `app_2.py`), стабильный отпечаток `ModuleNotFoundError` при смещении строки импорта.
+
+---
+
+## 8. Архитектура автономного субагента «Инженер» (Autonomous Software Engineer Subagent Architecture)
+
+Подсистема автономного субагента «Инженер» (`services/subagent_engineer.py`) представляет собой изолированный программный конвейер полного цикла разработки, инспекции, тестирования и самокоррекции программного кода в песочнице. Архитектура оптимизирована под локальные квантованные 7B/8B LLM (Qwen2.5-Coder-7B, Llama-3-8B) в условиях жесткого аппаратного бюджета (8 ГБ VRAM).
+
+```mermaid
+flowchart TD
+    subgraph UI ["Пользовательский интерфейс"]
+        USER["Запрос пользователя\n(CLI, GUI, Игра, Модуль, Документ)"]
+        SKILL_SELECT["Выбор скилла / Векторный роутер\n(interactive_loop, pure_logic_tdd, batch_artifact, cli_automation)"]
+    end
+
+    subgraph PHASE1 ["Фаза 1: Архитектор (Планирование и контракт)"]
+        ARCH_PLAN["EngineerPlanner.plan_architecture\n(Температура = architect_temp / user_temp)"]
+        AST_LOCALIZE["3-уровневая AST-локализация контекста\n(Скелетирование модулей > 250 строк)"]
+        CONTRACT_SPEC["interface_spec (JSON)\n(Классы, методы, функции, точка входа 'main')"]
+        SKILL_INJECT["Инъекция стандартов реализации скилла\n(worker_rules в системный промпт)"]
+    end
+
+    subgraph PHASE2 ["Фаза 2: Работяга-кодер (Детерминированная кодогенерация)"]
+        WORKER_TEMP["worker_temp = min(architect_temp, 0.20)\n(Детерминированная генерация)"]
+        ANTI_STALL["Динамический анти-ступор температуры\n(При повторе ошибки: 0.20 -> 0.35 -> 0.50)"]
+        PARSER["EngineerResponseParser\n(<<TOOL:write_file>>, python:file, **file.py**)"]
+        LOOKAHEAD["Lookahead защита от поглощения\n(?=<<TOOL:write_file)"]
+    end
+
+    subgraph VALIDATION ["Контур статической AST-валидации (CodeValidator)"]
+        V_PARSE["1. Синтаксический разбор ast.parse"]
+        V_SAFETY["2. AST Safety Guard (Блокировка сокетов/низкоуровневых модулей)"]
+        V_ENTRY["3. MissingEntryPoint Guard (if __name__ == '__main__':)"]
+        V_SCOPE["4. Scope Guard (Проверка объявленности имен)"]
+        V_STUB["5. Квалифицированный Stub Guard (Class.method, запрет pass/...)"]
+        V_CONTRACT["6. Cross-Module Contract Validator (MissingMethod)"]
+        V_FREEZE["7. Anti-Freeze Guard (Запрет pygame.time.delay / sleep)"]
+        V_FLIP["8. MissingDisplayFlip (Наличие display.flip / update)"]
+    end
+
+    subgraph TDD_FLOW ["TDD-конвейер (CodeFirstTDDPipeline)"]
+        TDD_RUN["Двустороннее исцеление (до 15 попыток)"]
+        TDD_TEST_GUARD["Иммутабельность тестов на шагах кода\n(Запрет деградации test_<mod>.py)"]
+        TDD_LOOP_DETECTOR["Детектор зацикливания TEST_FAIL\n(Лимит 3 повторения отпечатка)"]
+    end
+
+    subgraph RUNTIME_SANDBOX ["Песочница и сенсоры рантайма (SandboxManager)"]
+        SMOKE_GUI["16x16 детерминированный сэмплер пикселей Pygame\n(Кадры 3 и 30, синтез ввода)"]
+        PALETTE_CHECK["Анализ палитры и детекция статичности\n(Контраст объектов и фона)"]
+        TK_EMPTY_CHECK["Детектор пустых окон Tkinter\n(Проверка наличия .pack/.grid/.place)"]
+        SUBSTANCE["SubstanceGuard (Запрет пустых файлов < 350 байт)"]
+        GIT_SANDBOX["GitSandboxManager (Локальные чекпоинты и rollback)"]
+    end
+
+    subgraph DIAGNOSTICS ["Диагностика и адаптивная эскалация"]
+        FINGERPRINT["Стабильный цифровой отпечаток ошибки\n(ModuleNotFoundError без смещения строк)"]
+        EXPERT_DIAG["diagnose_runtime_error (Рецепты Tkinter, Pygame, docx, SQLite)"]
+        ESCALATION["Контекстная эскалация при повторах\n(Дифференциация NameError vs архитектура)"]
+    end
+
+    USER --> SKILL_SELECT
+    SKILL_SELECT --> ARCH_PLAN
+    ARCH_PLAN --> AST_LOCALIZE
+    AST_LOCALIZE --> CONTRACT_SPEC
+    CONTRACT_SPEC --> SKILL_INJECT
+    SKILL_INJECT --> WORKER_TEMP
+    WORKER_TEMP --> ANTI_STALL
+    ANTI_STALL --> PARSER
+    PARSER --> LOOKAHEAD
+    LOOKAHEAD --> VALIDATION
+    VALIDATION -- "TDD модуль" --> TDD_FLOW
+    VALIDATION -- "Скрипт / GUI / Игра" --> RUNTIME_SANDBOX
+    TDD_FLOW -- "Сбой тестов" --> DIAGNOSTICS
+    RUNTIME_SANDBOX -- "Ошибка рантайма" --> DIAGNOSTICS
+    DIAGNOSTICS --> ANTI_STALL
+    RUNTIME_SANDBOX -- "Успех (rc=0)" --> GIT_SANDBOX
+```
+
+### 8.1. Двухфазный архитектурный цикл и разделение температур
+
+1. **Фаза «Архитектор» (`EngineerPlanner.plan_architecture`)**:
+   - Работает на пользовательской температуре $T_{\text{architect}} = T_{\text{user}}$ (по умолчанию 0.70; при ручной настройке до 0.85). Это обеспечивает гибкость архитектурного проектирования, разнообразие игровых механик и генерацию сценариев.
+   - Формирует строгую JSON-спецификацию контрактов `interface_spec`: классы, сигнатуры методов, типы аргументов и обязательную функцию точки входа `'main'`.
+   - Производит 3-уровневую локализацию контекста: при объеме существующих файлов $> 250$ строк передаются не сырые файлы, а их AST-скелеты (`ASTSkeletonizer`), экономя контекстное окно LLM.
+
+2. **Фаза «Работяга-кодер» (`SubagentEngineer.execute_worker`)**:
+   - Введена константа `SubagentEngineer.CODER_TEMPERATURE = 0.20`.
+   - Температура рабочего кодера рассчитывается как:
+     $$T_{\text{worker}} = \min(T_{\text{architect}}, \text{CODER\_TEMPERATURE})$$
+   - Это гарантирует строгую детерминированность кодогенерации, точное следование сигнатурам `interface_spec` и отсутствие стохастических галлюцинаций в синтаксисе. Если пользователь вручную выставил низкую температуру (напр. 0.10–0.15), она сохраняется и не завышается до 0.20.
+   - Финальный синтез текста ответа пользователю выполняется на температуре Архитектора $T_{\text{architect}}$.
+
+### 8.2. Динамический анти-ступор температуры при самокоррекции
+
+При работе на низкой температуре ($0.20$) в случае отклонения кода валидатором 7B-модели склонны застревать в локальном минимуме, посимвольно воспроизводя отклонённый фрагмент. Для преодоления этой проблемы внедрен адаптивный алгоритм анти-ступора:
+
+$$T_{\text{current}} = \begin{cases} T_{\text{worker}}, & \text{если } \text{consecutive\_same\_error} = 0 \\ \min\left(0.50, \text{round}(T_{\text{worker}} + 0.15 \times \text{consecutive\_same\_error}, 2)\right), & \text{если } \text{consecutive\_same\_error} > 0 \end{cases}$$
+
+- **Ход 1 (чистый ход)**: $T = 0.20$ — максимальная точность генерации.
+- **Повтор ошибки 1/3**: $T = 0.35$ — легкое расширение вариативности для поиска альтернативного решения.
+- **Повтор ошибки 2/3**: $T = 0.50$ — достаточная энтропия для изменения структуры кода и выхода из застрявшего паттерна.
+- **Потолок**: жестко ограничен $0.50$, исключая деградацию кода в галлюцинации.
+
+### 8.3. Многоуровневый контур статической AST-валидации (`CodeValidator`)
+
+Перед сохранением любого файла на диск и передачей в песочницу скрипт проходит 8-ступенчатый синхронный статический аудит:
+
+1. **AST Parse**: проверка синтаксиса Python без запуска интерпретатора.
+2. **AST Safety Guard**: блокировка импортов из черного списка низкоуровневых/сетевых библиотек песочницы.
+3. **MissingEntryPoint Guard**: для исполняемых скриптов обязательно наличие корневого вызова и блока `if __name__ == '__main__':`.
+4. **Scope Guard (`check_undefined_names`)**: выявление необъявленных переменных, пропущенных импортов и `UnboundLocalError`.
+5. **Квалифицированный AST Stub Guard**: запрет пустых функций и методов, содержащих только `pass`, `...` или docstring. Ошибка выводится с квалифицированным именем родительского класса (`qual_name = f"{parent_cls}.{node.name}"`, напр. `'Level.update'`), предлагая два выхода: реализовать полную логику либо удалить пустой метод вместе с его вызовами.
+6. **Cross-Module Contract Validator (`check_cross_module_contracts`)**: устранена тупиковая вилка валидаторов `MissingMethod`. При вызове отсутствующего метода диагностика сообщает: *«Либо добавь рабочую реализацию `def <method>(self):` в класс, либо удали лишний вызов `<obj>.<method>()`, если метод не нужен»*.
+7. **Anti-Freeze Guard (`BlockingFreeze`)**: запрет вызовов `pygame.time.delay` и `time.sleep` внутри функций, методов и игрового цикла. Вся анимация и тайминги должны управляться через скорости, гравитацию и `clock.tick(60)`.
+8. **MissingDisplayFlip Guard**: проверка обязательного наличия `pygame.display.flip()` или `pygame.display.update()`. Ложный статический счетчик `InsufficientRenderCalls` (`draw_calls_count < 2`) полностью ликвидирован, что открыло нативную поддержку `pygame.sprite.Group.draw(screen)` и модульных архитектур.
+
+### 8.4. Сенсорная песочница и Smoke-тесты GUI (`SandboxManager`)
+
+Для проверки фактической работоспособности оконных приложений песочница запускает автономный Smoke-тест с синтетическими сенсорами:
+
+1. **16×16 детерминированный сэмплер пикселей Pygame**:
+   - Сэмплирует состояние экрана на кадрах 3 и 30.
+   - **Детектор однотонного экрана**: если количество уникальных цветов палитры $\le 1$, фиксируется пустой холст (`sys.exit(2)`).
+   - **Детектор статичного экрана и слияния цветов**: если нажатия клавиш управления (синтезированные события стрелок и пробела) и течение времени не меняют картинку между кадрами 3 и 30, приложение бракуется. Диагностический отчет выводит реальный процентный срез палитры экрана (напр. `[(0, 255, 0): 98%, (255, 255, 255): 2%]`) и выдает рекомендацию сделать цвет персонажа/объектов контрастным фону.
+2. **Детектор пустых окон Tkinter**:
+   - Инспектирует дерево виджетов корневого окна `root.winfo_children()`.
+   - Если виджеты не добавлены или не размещены через менеджеры геометрии (`.pack()`, `.grid()`, `.place()`), окно закрывается с кодом 2 и выдачей диагностической подсказки.
+3. **SubstanceGuard**:
+   - Автоматическая отбраковка файлов размером менее 350 байт как подозрительно неполных, предотвращающая сохранение скелетов-пустышек.
+
+### 8.5. Двусторонний Code-First TDD-конвейер (`CodeFirstTDDPipeline`)
+
+Для задач чистой бизнес-логики и алгоритмов (`pure_logic_tdd`) развернут 15-шаговый итерационный конвейер:
+- **Нечетные шаги**: модель выступает как инженер и исправляет код реализации. Файл тестов `test_<module>.py` защищен от перезаписи: любые попытки модели переписать или упростить тесты пресекаются принудительным откатом тестов к эталонной версии.
+- **Четные шаги**: модель выступает как тестировщик и уточняет тесты только при контрактных изменениях спецификации.
+- **Детектор зацикливания TDD**: отслеживает цифровой отпечаток `TEST_FAIL::<file>::<test>::<error>`. При повторе одной и той же ошибки 3 раза подряд цикл немедленно прерывается с сохранением безопасного отката.
+- **Инъекция базы рецептов**: при падении тестов стектрейс `pytest` обогащается целевыми рекомендациями из `diagnose_runtime_error`.
+
+### 8.6. Отказоустойчивый многофайловый парсер (`EngineerResponseParser`)
+
+1. **Универсальный захват блоков**:
+   - Распознает стандартные теги `<<TOOL:write_file filename="...">>`, Markdown с двоеточием ````python:filename.py```, атрибуты `filename=`/`file=` и контекстные заголовки Markdown (`**player.py**`, `### level.py`, `# player.py`).
+   - Автоматически активирует многофайловую запись, если найдено $\ge 2$ блоков с уникальными именами, предотвращая потерю вспомогательных модулей при разбиении на файлы.
+2. **Защита от поглощения файлов (Lookahead Guard)**:
+   - В регулярное выражение `write_pattern` добавлен позитивный lookahead `(?=<<TOOL:write_file\b)`, предотвращающий проглатывание последующих файлов, если модель опустила закрывающий тег `<</TOOL:write_file>>`.
+3. **Стабильный цифровой отпечаток ошибок (`extract_error_fingerprint`)**:
+   - Для `ModuleNotFoundError` и `ImportError` отпечаток формируется без номера строки (`f"{file_name}::{last_line}"`). Смещение строки `import player` на $\pm 1$ строчку не сбрасывает счетчик детектора зацикливания.
+4. **Запрет оборванных локальных импортов**:
+   - В системный промпт инженера (`get_engineer_system_prompt`) и правила скилла `interactive_loop` внедрено строгое требование: запрещено импортировать локальные модули (`from player import Player`), если файлы не создаются в этом же ответе. Для однофайловых проектов все классы реализуются внутри целевого файла.
+
+### 8.7. Детерминированная нормализация форматов (`EngineerContext`)
+
+Метод `EngineerContext.normalize_artifact_format` очищен от подстрочных дублей и переведен на централизованный резолвер `_resolve_interactive_loop_format` с регулярными выражениями строго по границам начала и конца слов `(?<![а-яёa-z0-9_])`:
+- **Приоритет 1 (Явный фреймворк)**: `tkinter`, `customtkinter`, `ttk`, `pyqt`, `pyside` $\rightarrow$ `"tkinter"`; `pygame` $\rightarrow$ `"pygame"`.
+- **Приоритет 2 (Жанр игры vs Десктопная форма)**:
+  - Игровые маркеры (`марио`, `платформер`, `аркада`, `шутер`, `змейка`, `тетрис`, `монета`, `враг`) проверяются первыми $\rightarrow$ `"pygame"`.
+  - Десктопные маркеры (`калькулятор`, `конвертер`, `таймер`, `заметки`, `форм(?:а|ы|у|е|ой|ами)?`, `виджет`, `кнопка`) $\rightarrow$ `"tkinter"`. Слово «платформами» больше не вызывает ложного срабатывания на корень «форм».
+- **Защита от деградации в модуль**: проверка интерактивных маркеров вынесена до общих слов «класс» и «структура», благодаря чему запросы вроде *«калькулятор с классом истории»* корректно маршрутизируются в `"tkinter"`, а не в `"module"`.
+
