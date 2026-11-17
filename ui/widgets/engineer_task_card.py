@@ -53,6 +53,7 @@ from ui.components.chat_bubble import (
     SelectableTextBrowser,
     ConsoleOutputSpoilerWidget
 )
+from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
 
 logger = logging.getLogger("NeonRoute.EngineerTaskCard")
 
@@ -543,6 +544,7 @@ class EngineerTaskCardWidget(QWidget):
         self.card_layout = QVBoxLayout(self.card)
         self.card_layout.setContentsMargins(14, 12, 14, 12)
         self.card_layout.setSpacing(10)
+        self._thought_spoilers: Dict[str, Any] = {}
 
         # ---------------------------------------------------------------------
         # 1. Верхний статус-бар задачи (Activity Header)
@@ -851,47 +853,77 @@ class EngineerTaskCardWidget(QWidget):
         self.summary_browser.setVisible(False)
         self._update_bubble_geometry()
 
-    def append_thought_chunk(self, chunk: str):
+    def get_or_create_thought_spoiler(self, phase: str = "architect"):
+        """Совместимость с контроллерами диалога и поддержка раздельных спойлеров Архитектор/Инженер."""
+        if sip.isdeleted(self):
+            return None
+        phase_key = str(phase or "architect").lower().strip()
+        if not hasattr(self, "_thought_spoilers"):
+            self._thought_spoilers = {}
+
+        if phase_key not in self._thought_spoilers:
+            spoiler = ThoughtSpoilerWidget(self.card)
+            if phase_key == "architect":
+                spoiler.title_lbl.setText("Ход мыслей · Архитектор")
+            else:
+                spoiler.title_lbl.setText("Ход мыслей · Инженер")
+
+            idx = self.card_layout.indexOf(self.files_container)
+            if idx >= 0:
+                self.card_layout.insertWidget(idx, spoiler)
+            else:
+                self.card_layout.addWidget(spoiler)
+            self._thought_spoilers[phase_key] = spoiler
+        else:
+            spoiler = self._thought_spoilers[phase_key]
+            spoiler._is_streaming = True
+            if hasattr(spoiler, "metrics_label"):
+                spoiler.metrics_label.setText("Анализ данных...")
+                spoiler.metrics_label.setStyleSheet("color: #38BDF8; font-size: 11px; background: transparent;")
+            if spoiler.is_collapsed:
+                spoiler.set_collapsed(False)
+
+        spoiler.setVisible(True)
+        return spoiler
+
+    def append_thought_chunk(self, chunk: str, phase: str = "architect"):
         """Интеграция с ThoughtStreamParser."""
         if sip.isdeleted(self):
             return
         if not chunk:
             return
-        self.spoiler.setVisible(True)
-        self.spoiler.set_plan_title("💭 Архитектура и анализ")
-        self.spoiler.append_plan_chunk(chunk)
+        spoiler = self.get_or_create_thought_spoiler(phase=phase)
+        if spoiler and hasattr(spoiler, "append_thought_chunk"):
+            spoiler.append_thought_chunk(chunk)
         self._update_bubble_geometry()
 
-    def finalize_thought(self, duration_sec: float = 0.0, token_count: int = 0):
+    def finalize_thought(self, duration_sec: float = 0.0, token_count: int = 0, phase: str = "architect"):
         """Завершение фазы мыслей с фиксацией метрик и плавным сворачиванием."""
         if sip.isdeleted(self):
             return
-        dur_text = f"{max(0.0, float(duration_sec)):.1f}".replace(",", ".")
-        status_msg = f"{token_count} токенов • {dur_text} сек"
-        self.spoiler.set_collapsed(True, status=status_msg)
+        phase_key = str(phase or "architect").lower().strip()
+        if hasattr(self, "_thought_spoilers") and phase_key in self._thought_spoilers:
+            spoiler = self._thought_spoilers[phase_key]
+            if hasattr(spoiler, "finalize_thought"):
+                spoiler.finalize_thought(duration_sec, token_count)
+        elif hasattr(self, "spoiler") and self.spoiler.isVisible():
+            dur_text = f"{max(0.0, float(duration_sec)):.1f}".replace(",", ".")
+            status_msg = f"{token_count} токенов • {dur_text} сек"
+            self.spoiler.set_collapsed(True, status=status_msg)
         self._update_bubble_geometry()
 
-    def set_thought_data(self, text: str, duration: float = 0.0, token_count: int = 0):
+    def set_thought_data(self, text: str, duration: float = 0.0, token_count: int = 0, phase: str = "architect"):
         """Восстановление хода мыслей из сохраненной истории сессии."""
         if sip.isdeleted(self):
             return
         clean_t = str(text or "").strip()
         if not clean_t:
             return
-        self.spoiler.setVisible(True)
-        self.spoiler.set_plan_text(clean_t, title="💭 Архитектура и анализ")
-        dur_text = f"{max(0.0, float(duration)):.1f}".replace(",", ".")
-        tc = token_count if token_count > 0 else max(1, len(clean_t) // 4)
-        self.spoiler.set_collapsed(True, animated=False, status=f"{tc} токенов • {dur_text} сек")
+        spoiler = self.get_or_create_thought_spoiler(phase=phase)
+        if spoiler and hasattr(spoiler, "set_thought_data"):
+            spoiler.set_thought_data(clean_t, duration, token_count)
         self.mark_completed()
         self._update_bubble_geometry()
-
-    def get_or_create_thought_spoiler(self):
-        """Совместимость с контроллерами диалога."""
-        if sip.isdeleted(self):
-            return None
-        self.spoiler.setVisible(True)
-        return self.spoiler
 
     def add_workspace_file_card(self, file_path: Path | str, on_run: Optional[Callable] = None) -> CompactWorkspaceFileBadge:
         """

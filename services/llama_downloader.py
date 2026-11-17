@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -29,10 +30,23 @@ USER_AGENT = "NeonRoute-LlamaDownloader"
 
 
 def is_llama_server_installed(target_dir: Optional[Path] = None) -> bool:
-    """Проверяет наличие рабочего llama-server.exe в bin/."""
+    """
+    Проверяет наличие рабочего llama-server.exe в bin/.
+    Если обнаружен ggml-cuda.dll, обязательно проверяет наличие cudart64_*.dll И cublas64_*.dll.
+    """
     bin_dir = target_dir or config.LOCAL_BIN_DIR
     exe_path = bin_dir / "llama-server.exe"
-    return exe_path.is_file() and exe_path.stat().st_size > 1024
+    if not (exe_path.is_file() and exe_path.stat().st_size > 1024):
+        return False
+
+    cuda_backend = bin_dir / "ggml-cuda.dll"
+    if cuda_backend.is_file():
+        has_cudart = any(bin_dir.glob("cudart64_*.dll"))
+        has_cublas = any(bin_dir.glob("cublas64_*.dll"))
+        if not (has_cudart and has_cublas):
+            return False
+
+    return True
 
 
 def resolve_required_build(vendor: Optional[str] = None) -> str:
@@ -162,28 +176,72 @@ def select_download_urls(assets: List[Dict[str, Any]], build_type: str) -> List[
     return selected
 
 
-def download_file(url: str, dest_path: Path, progress_callback: Optional[Callable[[int, int], None]] = None) -> None:
-    """Скачивает файл по прямой ссылке с отслеживанием прогресса."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def download_file(
+    url: str,
+    dest_path: Path,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    timeout: int = 60,
+    max_retries: int = 3,
+    retry_delay: float = 2.0,
+) -> None:
+    """
+    Скачивает файл по прямой ссылке с таймаутом 60 сек, поддержкой докачки (Range/206)
+    и до 3 повторных попыток при сетевых сбоях.
+    """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = dest_path.with_suffix(dest_path.suffix + ".part")
 
-    with urllib.request.urlopen(req, timeout=30) as resp, open(temp_path, "wb") as out_f:
-        total_len = resp.headers.get("Content-Length")
-        total = int(total_len) if total_len else 0
-        downloaded = 0
-        while True:
-            chunk = resp.read(65536)
-            if not chunk:
-                break
-            out_f.write(chunk)
-            downloaded += len(chunk)
-            if progress_callback:
-                progress_callback(downloaded, total)
+    last_error: Optional[Exception] = None
 
-    if dest_path.exists():
-        dest_path.unlink()
-    temp_path.replace(dest_path)
+    for attempt in range(1, max_retries + 1):
+        try:
+            existing_bytes = temp_path.stat().st_size if temp_path.exists() else 0
+            headers = {"User-Agent": USER_AGENT}
+            if existing_bytes > 0:
+                headers["Range"] = f"bytes={existing_bytes}-"
+
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status_code = getattr(resp, "status", getattr(resp, "code", 200))
+                content_len = resp.headers.get("Content-Length")
+                total_len = int(content_len) if content_len else 0
+
+                if status_code == 206:
+                    mode = "ab"
+                    downloaded = existing_bytes
+                    total = existing_bytes + total_len
+                else:
+                    mode = "wb"
+                    downloaded = 0
+                    total = total_len
+
+                with open(temp_path, mode) as out_f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        out_f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(downloaded, total)
+
+            if dest_path.exists():
+                dest_path.unlink()
+            temp_path.replace(dest_path)
+            return
+
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                f"[LlamaDownloader] Ошибка скачивания {dest_path.name} (попытка {attempt}/{max_retries}): {e}"
+            )
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+            else:
+                break
+
+    if last_error:
+        raise last_error
 
 
 def extract_binaries(zip_path: Path, target_dir: Path) -> int:
@@ -209,14 +267,25 @@ def extract_binaries(zip_path: Path, target_dir: Path) -> int:
 
 def verify_llama_server_binary(target_dir: Path) -> Tuple[bool, str]:
     """
-    Проверяет валидность скачанного llama-server.exe запуском с флагом --version
-    через CREATE_NO_WINDOW без всплывающего окна консоли.
+    Проверяет валидность скачанного llama-server.exe запуском с флагом --version.
+    Если присутствует ggml-cuda.dll, проверяет наличие библиотек CUDA (cudart64_*.dll, cublas64_*.dll)
+    и (если видеокарта NVIDIA) что llama-server.exe --list-devices не возвращает (none).
     """
     exe_path = target_dir / "llama-server.exe"
     if not exe_path.is_file():
         return False, "Файл llama-server.exe не найден в целевой директории."
 
+    cuda_backend = target_dir / "ggml-cuda.dll"
+    if cuda_backend.is_file():
+        has_cudart = any(target_dir.glob("cudart64_*.dll"))
+        has_cublas = any(target_dir.glob("cublas64_*.dll"))
+        if not (has_cudart and has_cublas):
+            return False, "Сборка CUDA неполная: отсутствуют cudart64_*.dll или cublas64_*.dll"
+
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    env = os.environ.copy()
+    env["PATH"] = f"{str(target_dir)}{os.pathsep}{env.get('PATH', '')}"
+
     try:
         res = subprocess.run(
             [str(exe_path), "--version"],
@@ -224,15 +293,46 @@ def verify_llama_server_binary(target_dir: Path) -> Tuple[bool, str]:
             stderr=subprocess.PIPE,
             text=True,
             timeout=5,
+            cwd=str(target_dir),
+            env=env,
             creationflags=flags,
         )
         output = (res.stdout or res.stderr or "").strip()
-        if res.returncode == 0 or "version:" in output.lower() or "llama" in output.lower():
-            return True, output.splitlines()[0] if output else "OK"
-        return True, output[:80] if output else "OK"
+        if not (res.returncode == 0 or "version:" in output.lower() or "llama" in output.lower()):
+            return False, f"Ошибка выполнения llama-server.exe --version: {output[:80]}"
+        ver_info = output.splitlines()[0] if output else "OK"
     except Exception as e:
         logger.warning(f"[LlamaDownloader] Ошибка валидации llama-server.exe: {e}")
         return False, str(e)
+
+    if cuda_backend.is_file():
+        is_nvidia = False
+        try:
+            from services.layer_budgeter import LayerBudgeter
+            profile = LayerBudgeter.detect_hardware_kv_profile()
+            is_nvidia = profile.get("vendor", "").lower() == "nvidia"
+        except Exception:
+            pass
+
+        if is_nvidia:
+            try:
+                dev_res = subprocess.run(
+                    [str(exe_path), "--list-devices"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=5,
+                    cwd=str(target_dir),
+                    env=env,
+                    creationflags=flags,
+                )
+                dev_out = (dev_res.stdout or dev_res.stderr or "").strip()
+                if "(none)" in dev_out.lower() or "available devices: (none)" in dev_out.lower():
+                    return False, "CUDA сборка не видит GPU устройств: Available devices: (none)"
+            except Exception as e:
+                logger.debug(f"[LlamaDownloader] Проверка --list-devices пропущена: {e}")
+
+    return True, ver_info
 
 
 def download_and_extract_llama_server(
@@ -262,21 +362,34 @@ def download_and_extract_llama_server(
     cache_dir = Path(tempfile.gettempdir()) / "neonroute_llama_download"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    downloaded_archives: List[Tuple[str, Path]] = []
+
+    # Фаза 1: Скачивание всех архивов в cache_dir
     for asset_name, url in urls:
         local_archive = cache_dir / asset_name
         logger.info(f"[LlamaDownloader] Загрузка {asset_name} ...")
         if progress_callback:
             progress_callback(f"Загрузка {asset_name}...", 0, 100)
 
-        def _prog(cur, tot):
+        def _prog(cur, tot, aname=asset_name):
             if progress_callback:
-                progress_callback(f"Загрузка {asset_name}...", cur, tot)
+                progress_callback(f"Загрузка {aname}...", cur, tot)
 
         try:
             download_file(url, local_archive, _prog)
+            downloaded_archives.append((asset_name, local_archive))
+        except Exception as e:
+            return False, f"Ошибка при скачивании {asset_name}: {e}"
+
+    # Фаза 2: Распаковка только после успешного скачивания всех архивов
+    for asset_name, local_archive in downloaded_archives:
+        logger.info(f"[LlamaDownloader] Распаковка {asset_name} ...")
+        if progress_callback:
+            progress_callback(f"Распаковка {asset_name}...", 0, 100)
+        try:
             extract_binaries(local_archive, dest_dir)
         except Exception as e:
-            return False, f"Ошибка при скачивании или распаковке {asset_name}: {e}"
+            return False, f"Ошибка при распаковке {asset_name}: {e}"
 
     # Проверка бинарника
     ok, ver_info = verify_llama_server_binary(dest_dir)

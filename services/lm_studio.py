@@ -549,6 +549,7 @@ class LMStudioClient(QObject):
         stop: Optional[List[str]] = None,
         is_roleplay: Optional[bool] = None,
         enable_thinking: Optional[bool] = None,
+        respect_master_cap: bool = True,
         **kwargs
     ) -> str:
         """
@@ -559,6 +560,8 @@ class LMStudioClient(QObject):
         chunk_callback = kwargs.pop("chunk_callback", None)
         if enable_thinking is None and "enable_thinking" in kwargs:
             enable_thinking = kwargs.pop("enable_thinking")
+        if "respect_master_cap" in kwargs:
+            respect_master_cap = kwargs.pop("respect_master_cap")
         with _LMS_SOCKET_LOCK:
             target_m = model or getattr(self, "_last_loaded_model_id", None)
             if _is_default_model_placeholder(target_m):
@@ -616,7 +619,8 @@ class LMStudioClient(QObject):
         est_tokens = sum(SessionManager._estimate_message_tokens(m) for m in req_messages if isinstance(m, dict))
 
         context_limit = max(target_ctx, getattr(self, "_current_loaded_ctx", target_ctx))
-        requested = min(int(max_tokens or 1536), MASTER_MAX_RESPONSE_TOKENS)
+        raw_req = int(max_tokens or 1536)
+        requested = min(raw_req, MASTER_MAX_RESPONSE_TOKENS) if respect_master_cap else raw_req
         available_tokens = context_limit - est_tokens - 64
         safe_max_tokens = max(128, min(requested, max(128, available_tokens)))
 

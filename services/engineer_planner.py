@@ -210,6 +210,8 @@ class EngineerPlanner:
             call_kwargs["chunk_callback"] = thought_chunk_callback
         if enable_thinking is not None:
             call_kwargs["enable_thinking"] = enable_thinking
+        if enable_thinking is True:
+            call_kwargs["respect_master_cap"] = False
 
         try:
             try:
@@ -218,6 +220,7 @@ class EngineerPlanner:
                 call_kwargs_min = dict(call_kwargs)
                 call_kwargs_min.pop("context_length", None)
                 call_kwargs_min.pop("gpu_ratio", None)
+                call_kwargs_min.pop("respect_master_cap", None)
                 try:
                     arch_resp = client.chat_completion(**call_kwargs_min)
                 except TypeError:

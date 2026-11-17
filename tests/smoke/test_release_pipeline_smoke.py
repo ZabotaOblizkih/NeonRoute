@@ -110,3 +110,18 @@ def test_art_director_models_excluded_from_release():
     assert '"art_director_models.json"' not in build_script, (
         "art_director_models.json не должен присутствовать в списке копируемых в релиз файлов!"
     )
+
+
+def test_hotfix_excluded_from_release():
+    """
+    Проверяет, что каталог hotfix_v098/ исключён из конвейера сборки релиза build_release.py
+    и не попадёт в итоговый zip-архив дистрибутива.
+    """
+    build_script = (BASE_DIR / "scripts" / "build_release.py").read_text(encoding="utf-8")
+    assert '"hotfix_v098"' not in build_script, (
+        "hotfix_v098 не должен присутствовать в списке копируемых в релиз каталогов!"
+    )
+    # Проверяем, что в assemble_release явно не добавлены hotfix-директории
+    from scripts.build_release import assemble_release
+    # Проверяем список source_dirs в коде
+    assert 'item.startswith("hotfix_")' in build_script

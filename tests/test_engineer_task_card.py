@@ -3,7 +3,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 from PyQt6.QtWidgets import QApplication, QWidget
-from ui.widgets.engineer_task_card import CompactWorkspaceFileBadge
+from ui.widgets.engineer_task_card import CompactWorkspaceFileBadge, EngineerTaskCardWidget
+from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
 
 @pytest.fixture(scope="session")
 def qapp():
@@ -41,3 +42,45 @@ def test_badge_inspector_nav_does_not_execute_script(qapp):
 
     # 2. Ключевая проверка отсутствия сайд-эффекта запуска
     assert not run_mock.called, "on_run НЕ должен вызываться при навигации в инспектор!"
+
+
+def test_engineer_task_card_dual_thought_spoilers(qapp):
+    """
+    Проверяет разделение хода мыслей в EngineerTaskCardWidget на два отдельных
+    ThoughtSpoilerWidget для фаз 'architect' и 'worker' с разными заголовками.
+    """
+    widget = EngineerTaskCardWidget(sender="Элария", text="Запуск задачи", is_active=True)
+
+    # 1. Стриминг мыслей Архитектора
+    widget.append_thought_chunk("Проектирую структуру игры...", phase="architect")
+    widget.finalize_thought(duration_sec=1.2, token_count=45, phase="architect")
+
+    # 2. Стриминг мыслей Работяги-Инженера
+    widget.append_thought_chunk("Пишу игровой цикл и обработку событий...", phase="worker")
+    widget.finalize_thought(duration_sec=2.8, token_count=130, phase="worker")
+
+    # Проверяем наличие двух независимых спойлеров
+    assert len(widget._thought_spoilers) == 2
+    assert "architect" in widget._thought_spoilers
+    assert "worker" in widget._thought_spoilers
+
+    arch_spoiler = widget._thought_spoilers["architect"]
+    worker_spoiler = widget._thought_spoilers["worker"]
+
+    assert isinstance(arch_spoiler, ThoughtSpoilerWidget)
+    assert isinstance(worker_spoiler, ThoughtSpoilerWidget)
+
+    # Проверяем заголовки
+    assert arch_spoiler.title_lbl.text() == "Ход мыслей · Архитектор"
+    assert worker_spoiler.title_lbl.text() == "Ход мыслей · Инженер"
+
+    # Проверяем содержимое
+    assert "Проектирую структуру" in arch_spoiler.get_thought_text()
+    assert "Пишу игровой цикл" in worker_spoiler.get_thought_text()
+
+    # Проверяем метрики завершения
+    assert "45 токенов" in arch_spoiler.metrics_label.text()
+    assert "130 токенов" in worker_spoiler.metrics_label.text()
+
+    widget.deleteLater()
+

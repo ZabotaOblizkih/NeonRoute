@@ -417,7 +417,16 @@ class EngineerControllerMixin:
             try:
                 on_msg_cb = lambda *args: getattr(self, "_sig_engineer_plan_card", None) and self._sig_engineer_plan_card.emit(args[-1])
                 on_status_cb = lambda st, fn, ln, em: getattr(self, "_sig_inspector_status", None) and self._sig_inspector_status.emit(st, fn, ln, em)
-                on_thought_cb = lambda ev_type, ev_data: getattr(self, "_sig_engineer_thought", None) and self._sig_engineer_thought.emit(str(ev_type), str(ev_data))
+                def _emit_thought_signal(*args):
+                    sig = getattr(self, "_sig_engineer_thought", None)
+                    if not sig:
+                        return
+                    if len(args) >= 3:
+                        sig.emit(str(args[0]), str(args[1]), str(args[2]))
+                    elif len(args) == 2:
+                        sig.emit("architect", str(args[0]), str(args[1]))
+
+                on_thought_cb = _emit_thought_signal
                 with SandboxManager.session_scope(target_sid):
                     sm = SessionManager(lm_client=getattr(self, "lm_client", None))
                     return sm.run_ephemeral_engineer_worker(
@@ -610,10 +619,10 @@ class EngineerControllerMixin:
             if hasattr(self, "_force_reset_busy_state"):
                 self._force_reset_busy_state()
 
-    def _on_engineer_thought(self, ev_type: str, ev_data: str):
-        self._display_engineer_thought(ev_type, ev_data)
+    def _on_engineer_thought(self, phase: str, ev_type: str, ev_data: str):
+        self._display_engineer_thought(phase, ev_type, ev_data)
 
-    def _display_engineer_thought(self, ev_type: str, ev_data: str):
+    def _display_engineer_thought(self, phase: str, ev_type: str, ev_data: str):
         if getattr(self, "typing_loader", None) is not None:
             self._remove_typing_loader()
 
@@ -646,10 +655,16 @@ class EngineerControllerMixin:
         if existing_bubble is not None:
             if ev_type == "start":
                 if hasattr(existing_bubble, "get_or_create_thought_spoiler"):
-                    existing_bubble.get_or_create_thought_spoiler()
+                    try:
+                        existing_bubble.get_or_create_thought_spoiler(phase=phase)
+                    except TypeError:
+                        existing_bubble.get_or_create_thought_spoiler()
             elif ev_type == "chunk":
                 if hasattr(existing_bubble, "append_thought_chunk"):
-                    existing_bubble.append_thought_chunk(ev_data)
+                    try:
+                        existing_bubble.append_thought_chunk(ev_data, phase=phase)
+                    except TypeError:
+                        existing_bubble.append_thought_chunk(ev_data)
             elif ev_type == "end":
                 dur = 0.0
                 tc = 0
@@ -664,7 +679,10 @@ class EngineerControllerMixin:
                     except ValueError:
                         tc = 0
                 if hasattr(existing_bubble, "finalize_thought"):
-                    existing_bubble.finalize_thought(dur, tc)
+                    try:
+                        existing_bubble.finalize_thought(dur, tc, phase=phase)
+                    except TypeError:
+                        existing_bubble.finalize_thought(dur, tc)
             if hasattr(self, "_scroll_to_bottom"):
                 self._scroll_to_bottom()
 

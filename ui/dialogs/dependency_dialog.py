@@ -1,5 +1,5 @@
 """
-Dependency Dialog for NeonRoute (v0.9.8-beta).
+Dependency Dialog for NeonRoute.
 Provides diagnostics and automated background installation for optional Python dependencies
 and external tools required by the Engineer Mode.
 Refactored to Windows 11 Fluent Design (FramelessDialog, FluentTitleBar, Adaptive Palette).

@@ -663,3 +663,38 @@ class TestChatCompletion:
         assert input_messages == original_copy
         assert len(input_messages) == 1
 
+    def test_chat_completion_respect_master_cap_option(self, lms_client, monkeypatch):
+        """Проверяет снятие среза MASTER_MAX_RESPONSE_TOKENS при respect_master_cap=False."""
+        captured_payloads = []
+
+        def mock_post(url, *args, **kwargs):
+            captured_payloads.append(kwargs.get("json", {}))
+            mock_resp = MagicMock(status_code=200)
+            mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "ok"}}]}', b"data: [DONE]"]
+            return mock_resp
+
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        monkeypatch.setattr(lms_client, "ensure_model_loaded", lambda *a, **k: True)
+        lms_client._current_loaded_ctx = 28672
+        lms_client._last_loaded_model_id = "test-model"
+        self._patch_session_post(monkeypatch, lms_client, mock_post)
+
+        # 1. По умолчанию respect_master_cap=True: запрос 8192 усекается до 4096
+        lms_client.chat_completion(
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            max_tokens=8192,
+            respect_master_cap=True
+        )
+        assert captured_payloads[-1]["max_tokens"] == 4096
+
+        # 2. При respect_master_cap=False: запрос 8192 передается напрямую (не усекается до 4096)
+        lms_client.chat_completion(
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            max_tokens=8192,
+            respect_master_cap=False
+        )
+        assert captured_payloads[-1]["max_tokens"] == 8192
+
+

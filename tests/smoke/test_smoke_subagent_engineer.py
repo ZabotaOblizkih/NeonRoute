@@ -29,6 +29,44 @@ def test_code_stream_extractor():
     assert "return 42" in full_streamed
     assert "```" not in full_streamed
 
+
+def test_code_stream_extractor_with_tool_tags_fine_chunking():
+    """Проверка потокового парсера кода из тегов <<TOOL:write_file>> с чанками по 3-5 символов."""
+    received_chunks = []
+    def on_chunk(chunk: str):
+        received_chunks.append(chunk)
+
+    extractor = CodeStreamExtractor(on_code_chunk_callback=on_chunk)
+    raw_response = (
+        "Пояснение перед кодом.\n"
+        '<<TOOL:write_file filename="game.py">>\n'
+        "import pygame\n"
+        "def run_game():\n"
+        "    print('GAME_RUNNING')\n"
+        "<</TOOL:write_file>>\n"
+        "Пояснение после кода."
+    )
+
+    # Разбиваем на мелкие чанки по 4 символа для стресс-теста буфера безопасного хвоста
+    chunk_size = 4
+    for i in range(0, len(raw_response), chunk_size):
+        extractor.feed(raw_response[i:i + chunk_size])
+
+    clean_code = extractor.finalize()
+    full_streamed = "".join(received_chunks)
+
+    # Проверяем извлеченный код
+    assert "import pygame" in clean_code
+    assert "def run_game():" in clean_code
+    assert "GAME_RUNNING" in clean_code
+    assert "<<TOOL" not in clean_code
+    assert "<</TOOL" not in clean_code
+
+    # Проверяем стриминг в коллбэк (в правое окно редактора): закрывающий тег не должен утечь
+    assert "import pygame" in full_streamed
+    assert "<</TOOL" not in full_streamed
+    assert "write_file" not in full_streamed
+
 def test_extract_clean_code():
     """Проверка очистки markdown-оберток из сгенерированного ответа."""
     raw = "```python\nx = 10\ny = 20\n```"
@@ -140,8 +178,8 @@ def test_subagent_full_lifecycle_with_thinking_tags(clean_subagent_env):
     client = MockThinkingLMClient()
     thought_events = []
 
-    def on_thought(stage, chunk):
-        thought_events.append((stage, chunk))
+    def on_thought(*args):
+        thought_events.append(args)
 
     res = SubagentEngineer.run_worker(
         task_prompt="Создай консольный скрипт think_main.py",
@@ -156,8 +194,10 @@ def test_subagent_full_lifecycle_with_thinking_tags(clean_subagent_env):
     assert res.get("success") is True, f"Субагент с thinking завершился с ошибкой: {res}"
     assert "SUCCESS_THINKING_ENGINEER_RUN" in res.get("stdout", "")
 
-    # Проверяем, что коллбэк мыслей получил события
-    stages = [ev[0] for ev in thought_events]
+    # Проверяем, что коллбэк мыслей получил события (phase, stage, chunk)
+    phases = [ev[0] for ev in thought_events if len(ev) == 3]
+    stages = [ev[1] for ev in thought_events if len(ev) == 3]
     assert "start" in stages
     assert "chunk" in stages
+    assert "architect" in phases or "worker" in phases
 

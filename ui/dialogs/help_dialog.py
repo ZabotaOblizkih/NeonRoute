@@ -1,5 +1,5 @@
 """
-Help Dialog for NeonRoute (v0.9.8-beta).
+Help Dialog for NeonRoute.
 Provides user guide, interactive shortcuts directory, VRAM management, operational modes,
 workspace sandbox, art generation, reminders, and long-term memory.
 Refactored to Windows 11 Fluent Design (FramelessDialog, FluentTitleBar, Adaptive Palette).

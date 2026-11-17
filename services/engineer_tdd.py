@@ -157,6 +157,8 @@ class CodeFirstTDDPipeline:
             call_kwargs["chunk_callback"] = thought_chunk_callback
         if enable_thinking is not None:
             call_kwargs["enable_thinking"] = enable_thinking
+        if enable_thinking is True:
+            call_kwargs["respect_master_cap"] = False
         call_kwargs.update(extra_kwargs)
 
         try:
@@ -165,6 +167,7 @@ class CodeFirstTDDPipeline:
             except TypeError:
                 call_kwargs_fallback = dict(call_kwargs)
                 call_kwargs_fallback.pop("chunk_callback", None)
+                call_kwargs_fallback.pop("respect_master_cap", None)
                 call_kwargs_fallback["stream"] = False
                 try:
                     return client.chat_completion(**call_kwargs_fallback)

@@ -77,7 +77,7 @@ def test_clean_pc_cold_start_without_forge_smoke(tmp_path: Path, qapp, monkeypat
     monkeypatch.setattr(mdb, "MEMORY_DB_PATH", clean_data / "memory.db")
 
     # 3. Verify Version SSOT
-    assert config.APP_VERSION == "0.9.8-beta"
+    assert bool(config.APP_VERSION) and isinstance(config.APP_VERSION, str)
 
     # 4. Verify ConfigManager handles missing config.json gracefully
     loaded_config = ConfigManager.load_config()

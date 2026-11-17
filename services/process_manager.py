@@ -712,9 +712,17 @@ class ProcessManager(QObject):
                     "--host", str(host),
                 ]
 
+                cuda_dir = ServerConfigResolver.resolve_cuda_dir(server_exe)
+
                 is_hybrid = effective_ngl < audit_data.get("total_layers", 99)
-                if (ini_cfg.get("no_mmap", True) or is_hybrid) and "--no-mmap" not in cmd:
-                    cmd.append("--no-mmap")
+                if ini_cfg.get("no_mmap", True) or is_hybrid:
+                    has_mmap_flag = any(
+                        arg in ("--no-mmap", "--load-mode", "-lm") or
+                        arg.startswith(("--load-mode=", "-lm="))
+                        for arg in cmd
+                    )
+                    if not has_mmap_flag:
+                        cmd.extend(ServerConfigResolver.resolve_mmap_disable_args(server_exe, cuda_dir))
 
                 mmproj = ServerConfigResolver.resolve_mmproj_for_model(model_path)
                 if mmproj:
@@ -722,7 +730,6 @@ class ProcessManager(QObject):
 
                 # 7. Environment & CUDA PATH
                 env = os.environ.copy()
-                cuda_dir = ServerConfigResolver.resolve_cuda_dir(server_exe)
                 if cuda_dir:
                     env["PATH"] = f"{str(cuda_dir)}{os.pathsep}{env.get('PATH', '')}"
 

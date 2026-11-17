@@ -7,6 +7,7 @@ import configparser
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,8 @@ if str(_ROOT_DIR) not in sys.path:
 import config
 
 logger = logging.getLogger("NeonRoute.ServerConfig")
+
+_MMAP_ARGS_CACHE: Dict[str, List[str]] = {}
 
 
 def _sanitize_ini_value(raw: Optional[str]) -> str:
@@ -484,6 +487,71 @@ class ServerConfigResolver:
                     return cand
 
         return None
+
+    @staticmethod
+    def resolve_mmap_disable_args(
+        server_exe: Optional[Path | str] = None,
+        cuda_dir: Optional[Path | str] = None
+    ) -> List[str]:
+        """
+        Determines the appropriate CLI arguments to disable mmap for the resolved llama-server binary.
+        Modern llama.cpp (post-deprecation) removed --no-mmap and requires '--load-mode none'.
+        Legacy builds only support '--no-mmap'.
+        """
+        default_args = ["--load-mode", "none"]
+        if not server_exe:
+            return list(default_args)
+
+        exe_path = Path(server_exe)
+        try:
+            norm_key = str(exe_path.resolve()).lower()
+        except Exception:
+            norm_key = str(exe_path).lower()
+
+        if norm_key in _MMAP_ARGS_CACHE:
+            return list(_MMAP_ARGS_CACHE[norm_key])
+
+        if not exe_path.is_file():
+            return list(default_args)
+
+        try:
+            parent_dir = str(exe_path.parent.resolve())
+            env = os.environ.copy()
+            path_parts = [parent_dir]
+            if cuda_dir and Path(cuda_dir).is_dir():
+                path_parts.append(str(Path(cuda_dir).resolve()))
+            env["PATH"] = f"{os.pathsep.join(path_parts)}{os.pathsep}{env.get('PATH', '')}"
+
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
+            proc = subprocess.run(
+                [str(exe_path), "--help"],
+                env=env,
+                cwd=parent_dir,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5.0,
+                creationflags=flags,
+            )
+            help_text = (proc.stdout or "") + (proc.stderr or "")
+            if not help_text.strip():
+                return list(default_args)
+
+            if "--load-mode" in help_text:
+                result = ["--load-mode", "none"]
+            elif "--no-mmap" in help_text:
+                result = ["--no-mmap"]
+            else:
+                result = default_args
+
+            _MMAP_ARGS_CACHE[norm_key] = result
+            return list(result)
+
+        except Exception as e:
+            logger.debug(f"[ServerConfigResolver] Failed to probe llama-server --help: {e}")
+            return list(default_args)
 
 
 if __name__ == "__main__":

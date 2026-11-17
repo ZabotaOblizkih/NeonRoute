@@ -8,6 +8,7 @@ Stages:
 
 import argparse
 import ast
+from datetime import datetime
 import os
 import re
 import shutil
@@ -18,7 +19,15 @@ import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
+
+# Reconfigure stdout/stdin to UTF-8
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 # Project root resolution
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -328,6 +337,7 @@ def assemble_release(
         "README.md",
         "Agentrules.md",
         "ARCHITECTURE.md",
+        "hotfix.md",
         "pytest.ini"
     ]
     for rf in root_files:
@@ -438,12 +448,442 @@ def _copy_clean_tree(src: Path, dst: Path):
             continue
         if any(item.endswith(ext) for ext in (".pyc", ".pyo", ".log", ".bak", ".tmp")):
             continue
+        if item.startswith("hotfix_"):
+            continue
         s_item = src / item
         d_item = dst / item
         if s_item.is_dir():
             _copy_clean_tree(s_item, d_item)
         elif s_item.is_file():
             shutil.copy2(s_item, d_item)
+
+
+FORBIDDEN_WIN_CHARS: Set[str] = set('<>:"/\\|?*')
+
+
+def validate_version_string(ver: str) -> Tuple[bool, str]:
+    r"""
+    Validates version string. Allows arbitrary string format (e.g. 0.9.9-beta,
+    0.9.8.123.2321ABSJDLKAD, 1.0_rc2) without SemVer constraints.
+    Rejects empty/whitespace, Windows illegal filename characters (<>:"/\|?*)
+    and control characters.
+    """
+    if not ver or not ver.strip():
+        return False, "Версия не может быть пустой"
+    ver_clean = ver.strip()
+    for ch in ver_clean:
+        if ch in FORBIDDEN_WIN_CHARS:
+            return False, f"Символ '{ch}' запрещен в именах файлов Windows (< > : \" / \\ | ? *)"
+        if ord(ch) < 32 or ord(ch) == 127:
+            return False, "Управляющие символы запрещены в номере версии"
+    return True, ""
+
+
+RELEASE_COMMIT_MARKER = "[release-head]"
+
+NOISE_PREFIXES = (
+    "fixup!",
+    "squash!",
+    "wip",
+    "temp",
+    "bump",
+    "release v",
+    "ci:",
+    "ci ",
+    "ci(",
+    "style:",
+    "style ",
+    "style(",
+    "test:",
+    "test ",
+    "test(",
+    "chore(release)",
+)
+
+
+def is_noise_commit(subject: str) -> bool:
+    s = subject.strip().lower()
+    for prefix in NOISE_PREFIXES:
+        if s.startswith(prefix):
+            return True
+    return False
+
+
+def collect_git_commits(
+    repo_root: Path,
+    max_commits: int = 50
+) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Collects commits from HEAD down until RELEASE_COMMIT_MARKER is encountered in subject or body.
+    Filters noise (fixup!, squash!, wip, temp, bump, release v, ci:, style:, test:, chore(release)
+    and duplicate subjects).
+    Returns (relevant_formatted, ignored_formatted, all_formatted).
+    Never crashes if git is unavailable or not a git repo.
+    """
+    if not shutil.which("git"):
+        return [], [], []
+
+    try:
+        res = subprocess.run(
+            ["git", "log", "--no-merges", f"-n{max_commits}", "--format=%H%x1f%s%x1f%b%x1e"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5
+        )
+        if res.returncode != 0 or not res.stdout:
+            return [], [], []
+        raw_log = res.stdout
+    except Exception:
+        return [], [], []
+
+    relevant: List[str] = []
+    ignored: List[str] = []
+    all_commits: List[str] = []
+    seen_subjects: Set[str] = set()
+
+    records = raw_log.split("\x1e")
+    for rec in records:
+        rec_clean = rec.strip("\r\n")
+        if not rec_clean:
+            continue
+        fields = rec_clean.split("\x1f")
+        h = fields[0].strip() if len(fields) > 0 else ""
+        s = fields[1].strip() if len(fields) > 1 else ""
+        b = fields[2].strip() if len(fields) > 2 else ""
+
+        # Stop immediately when marker is encountered in subject or body
+        if RELEASE_COMMIT_MARKER in s or RELEASE_COMMIT_MARKER in b:
+            break
+
+        if not s:
+            continue
+
+        short_h = h[:7] if h else ""
+        formatted = f"* {s} ({short_h})" if short_h else f"* {s}"
+        all_commits.append(formatted)
+
+        norm_s = s.lower()
+        if is_noise_commit(s) or norm_s in seen_subjects:
+            ignored.append(formatted)
+        else:
+            seen_subjects.add(norm_s)
+            relevant.append(formatted)
+
+    return relevant, ignored, all_commits
+
+
+def get_git_recent_commits(repo_root: Path, max_commits: int = 20) -> List[str]:
+    """Backward-compatible helper returning relevant commits."""
+    relevant, _, all_commits = collect_git_commits(repo_root, max_commits=max_commits)
+    return relevant if relevant else all_commits
+
+
+def read_app_version(config_path: Path) -> str:
+    """Reads APP_VERSION from config.py safely."""
+    if not config_path.is_file():
+        try:
+            import config
+            return getattr(config, "APP_VERSION", "0.0.0")
+        except Exception:
+            return "0.0.0"
+
+    content = config_path.read_text(encoding="utf-8")
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("APP_VERSION") and "=" in stripped:
+            val_part = stripped.split("=", 1)[1].strip()
+            return val_part.strip("\"'")
+
+    try:
+        import config
+        return getattr(config, "APP_VERSION", "0.0.0")
+    except Exception:
+        return "0.0.0"
+
+
+def update_app_version_in_config(config_path: Path, new_version: str) -> None:
+    """Updates APP_VERSION in config.py safely without regex traps."""
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("APP_VERSION") and "=" in stripped:
+            prefix = line.split("=")[0]
+            lines[i] = f'{prefix}= "{new_version}"\n'
+            found = True
+            break
+    if not found:
+        raise ValueError(f"APP_VERSION definition not found in {config_path}")
+
+    config_path.write_text("".join(lines), encoding="utf-8")
+    try:
+        import config
+        config.APP_VERSION = new_version
+    except Exception:
+        pass
+
+
+def update_hotfix_md(
+    hotfix_path: Path,
+    new_version: str,
+    changes_text: str,
+    date_str: Optional[str] = None
+) -> None:
+    """
+    Inserts or replaces the entry for ## v<new_version> (YYYY-MM-DD) in hotfix.md.
+    Preserves all existing history. Creates file if missing.
+    """
+    today_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    clean_changes = changes_text.strip()
+    new_entry = f"## v{new_version} ({today_str})\n\n{clean_changes}\n\n"
+
+    if not hotfix_path.is_file():
+        title = "# История изменений и релизов NeonRoute\n\n"
+        hotfix_path.write_text(title + new_entry, encoding="utf-8")
+        return
+
+    content = hotfix_path.read_text(encoding="utf-8")
+    lines = content.splitlines(keepends=True)
+    target_header = f"## v{new_version}"
+
+    # Search for an existing section with this exact version
+    start_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == target_header or stripped.startswith(f"{target_header} ") or stripped.startswith(f"{target_header}("):
+            start_idx = i
+            break
+
+    if start_idx is not None:
+        # Section exists: replace until the next ## v section or EOF
+        end_idx = len(lines)
+        for j in range(start_idx + 1, len(lines)):
+            if lines[j].strip().startswith("## v") or lines[j].strip().startswith("##  v"):
+                end_idx = j
+                break
+        new_lines = lines[:start_idx] + [new_entry] + lines[end_idx:]
+    else:
+        # Section does not exist: insert right after top title (# ...)
+        insert_idx = 0
+        for i, line in enumerate(lines):
+            if line.strip().startswith("# "):
+                insert_idx = i + 1
+                while insert_idx < len(lines) and not lines[insert_idx].strip():
+                    insert_idx += 1
+                break
+        new_lines = lines[:insert_idx] + [new_entry] + lines[insert_idx:]
+
+    hotfix_path.write_text("".join(new_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def rollback_versioning(rollback_state: dict) -> None:
+    """Rolls back config.py and hotfix.md to their states before interactive versioning."""
+    print("\n  [ROLLBACK] Откат изменений версии и hotfix.md из-за сбоя проверок...")
+    config_path = rollback_state.get("config_path")
+    config_backup = rollback_state.get("config_backup")
+    if config_path and config_backup is not None:
+        Path(config_path).write_text(config_backup, encoding="utf-8")
+        try:
+            import config
+            old_version = rollback_state.get("old_version")
+            if old_version:
+                config.APP_VERSION = old_version
+        except Exception:
+            pass
+
+    hotfix_path = rollback_state.get("hotfix_path")
+    hotfix_existed = rollback_state.get("hotfix_existed")
+    hotfix_backup = rollback_state.get("hotfix_backup")
+    if hotfix_path:
+        hp = Path(hotfix_path)
+        if hotfix_existed and hotfix_backup is not None:
+            hp.write_text(hotfix_backup, encoding="utf-8")
+        elif not hotfix_existed and hp.exists():
+            hp.unlink(missing_ok=True)
+    print("  [ROLLBACK] Исходные файлы успешно восстановлены.")
+
+
+def prompt_interactive_versioning(
+    repo_root: Path,
+    non_interactive: bool = False
+) -> Tuple[str, Optional[dict]]:
+    """
+    Interactive versioning step before Stage A.
+    Skipped if non_interactive is True, in CI environment, or if stdin is not a TTY.
+    Returns (effective_version, rollback_state_or_None).
+    """
+    config_path = repo_root / "config.py"
+    hotfix_path = repo_root / "hotfix.md"
+    current_version = read_app_version(config_path)
+
+    is_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+    is_tty = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+    if non_interactive or is_ci or not is_tty:
+        return current_version, None
+
+    print("\n" + "=" * 65)
+    print(f"  [ИНТЕРАКТИВНОЕ УПРАВЛЕНИЕ ВЕРСИЕЙ]")
+    print(f"  Текущая версия: {current_version}")
+    print("=" * 65)
+
+    relevant, ignored, all_commits = collect_git_commits(repo_root)
+    if relevant:
+        print("\nПоследние изменения (коммиты git):")
+        for c in relevant[:15]:
+            print(f"  {c}")
+        if len(relevant) > 15:
+            print(f"  ... и еще {len(relevant) - 15} коммитов")
+    if ignored:
+        print(f"  Скрыто служебных: {len(ignored)} (введите 'all' на шаге описания, если нужно увидеть все)")
+    elif not relevant:
+        print("\n[INFO] Новых коммитов git после предыдущего релиза не найдено.")
+
+    while True:
+        try:
+            val = input(f"\nВведите новую версию (Enter = оставить {current_version}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[INFO] Ввод прерван, используется текущая версия.")
+            return current_version, None
+
+        if not val or val == current_version:
+            print(f"  [OK] Версия не изменилась: {current_version}")
+            return current_version, None
+
+        ok, err_msg = validate_version_string(val)
+        if ok:
+            new_version = val
+            break
+        print(f"  [!] Ошибка: {err_msg}. Попробуйте снова.")
+
+    while True:
+        print("\nВведите описание изменений (завершите строкой END или пустым вводом; 'all' = показать все коммиты):")
+        lines: List[str] = []
+        show_all = False
+        while True:
+            try:
+                line = input()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if line.strip() == "END":
+                break
+            if not line.strip() and lines:
+                break
+            if not line.strip() and not lines:
+                break
+            if not lines and line.strip().lower() == "all":
+                show_all = True
+                break
+            lines.append(line)
+
+        if show_all:
+            print("\nВсе коммиты до последнего релиза (включая служебные):")
+            for c in all_commits:
+                print(f"  {c}")
+            continue
+        break
+
+    changes_text = "\n".join(lines).strip()
+    if not changes_text:
+        fallback_commits = relevant if relevant else all_commits
+        if fallback_commits:
+            print("  [INFO] Ввод пуст. Используется список коммитов git.")
+            changes_text = "\n".join(fallback_commits[:20])
+        else:
+            changes_text = "- Технические оптимизации и исправления ошибок."
+
+    rollback_state = {
+        "config_path": config_path,
+        "config_backup": config_path.read_text(encoding="utf-8"),
+        "old_version": current_version,
+        "hotfix_path": hotfix_path,
+        "hotfix_existed": hotfix_path.is_file(),
+        "hotfix_backup": hotfix_path.read_text(encoding="utf-8") if hotfix_path.is_file() else None,
+        "changes_text": changes_text,
+    }
+
+    update_app_version_in_config(config_path, new_version)
+    print(f"  [SUCCESS] Версия в config.py обновлена: {current_version} -> {new_version}")
+
+    update_hotfix_md(hotfix_path, new_version, changes_text)
+    print(f"  [SUCCESS] Запись в {hotfix_path.name} добавлена/обновлена.")
+
+    return new_version, rollback_state
+
+
+def create_release_git_commit(
+    repo_root: Path,
+    new_version: str,
+    changes_text: str
+) -> bool:
+    """
+    Creates an automatic git release commit for config.py and hotfix.md.
+    Contains RELEASE_COMMIT_MARKER in the commit body (never in hotfix.md).
+    Uses git commit --only -- config.py hotfix.md to avoid committing unrelated files.
+    Does not raise exceptions if git fails (e.g., missing user.name/user.email).
+    """
+    if not shutil.which("git"):
+        print("  [WARNING] Git не найден в PATH, релизный коммит пропущен.")
+        return False
+
+    first_line = ""
+    for line in changes_text.strip().splitlines():
+        clean = line.strip().lstrip("-*• ").strip()
+        if clean:
+            first_line = clean
+            break
+
+    if first_line:
+        commit_subject = f"v{new_version}: {first_line}"
+    else:
+        commit_subject = f"Release v{new_version}"
+
+    if len(commit_subject) > 80:
+        commit_subject = commit_subject[:77] + "..."
+
+    commit_body = f"{changes_text.strip()}\n\n{RELEASE_COMMIT_MARKER}"
+
+    try:
+        subprocess.run(
+            ["git", "add", "config.py", "hotfix.md"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        res = subprocess.run(
+            [
+                "git",
+                "commit",
+                "--only",
+                "--",
+                "config.py",
+                "hotfix.md",
+                "-m",
+                commit_subject,
+                "-m",
+                commit_body
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False
+        )
+        if res.returncode == 0:
+            print(f"  [SUCCESS] Релизный git-коммит создан: {commit_subject}")
+            return True
+        else:
+            err = (res.stderr or res.stdout or "").strip()
+            print(f"  [WARNING] Не удалось создать релизный git-коммит: {err}")
+            return False
+    except Exception as e:
+        print(f"  [WARNING] Ошибка при создании git-коммита: {e}")
+        return False
 
 
 def main():
@@ -454,9 +894,16 @@ def main():
     parser.add_argument("--with-tests", action="store_true", help="Include tests/ folder in the release package (default: excluded)")
     parser.add_argument("--bundle-wheels", action="store_true", help="Download offline wheels package into release/wheels/")
     parser.add_argument("--no-embedded-python", action="store_true", help="Exclude bundled portable Python runtime from release package")
+    parser.add_argument("--non-interactive", action="store_true", help="Run without interactive prompts (for CI/CD)")
+    parser.add_argument("--no-git-commit", action="store_true", help="Do not create an automatic git release commit")
     args = parser.parse_args()
 
-    version = config.APP_VERSION
+    # Interactive Versioning Step (Before Stage A)
+    version, rollback_state = prompt_interactive_versioning(
+        REPO_ROOT,
+        non_interactive=args.non_interactive
+    )
+
     print("=" * 65)
     print(f"  NeonRoute Release Pipeline — Target Version: v{version}")
     print("=" * 65)
@@ -475,6 +922,8 @@ def main():
             for err in errors:
                 print(f"    ✖ {err}")
             print("\nPlease add the missing packages to requirements.txt or use --skip-dep-check.\n")
+            if rollback_state:
+                rollback_versioning(rollback_state)
             sys.exit(1)
         print("  [OK] AST Dependency Audit PASSED: all required runtime imports match requirements.txt.")
     else:
@@ -485,6 +934,8 @@ def main():
         test_passed = run_test_gate(REPO_ROOT, fast=args.fast)
         if not test_passed:
             print("\n  [ERROR] Test Quality Gate FAILED. Release build aborted.\n")
+            if rollback_state:
+                rollback_versioning(rollback_state)
             sys.exit(1)
         print("  [OK] Test Quality Gate PASSED.")
     else:
@@ -509,6 +960,17 @@ def main():
     print(f"  Files:     {file_count} files ({dir_size_mb:.2f} MB)")
     print(f"  Archive:   {zip_path.resolve()} ({zip_size_mb:.2f} MB)")
     print("=" * 65)
+
+    # Stage D: Automatic Git Release Commit
+    version_changed = (rollback_state is not None and version != rollback_state.get("old_version"))
+    if version_changed and not args.no_git_commit:
+        is_test_or_ci = bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+        if not is_test_or_ci:
+            create_release_git_commit(
+                repo_root=REPO_ROOT,
+                new_version=version,
+                changes_text=rollback_state.get("changes_text", "")
+            )
 
 
 if __name__ == "__main__":
