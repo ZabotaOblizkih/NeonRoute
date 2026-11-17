@@ -375,7 +375,12 @@ class EngineerResponseParser:
                             orig_cnt = orig_p.read_text(encoding="utf-8", errors="ignore")
                         except Exception:
                             orig_cnt = None
+                _before_extract_len = len(cnt_clean)
                 cnt_clean = EngineerContext.extract_pure_py(cnt_clean, orig_content=orig_cnt)
+                if _before_extract_len > 300 and len(cnt_clean) < 200:
+                    logger.warning(
+                        f"[EngineerParser] extract_pure_py сжал '{fn}' с {_before_extract_len} до {len(cnt_clean)} симв.: {cnt_clean!r}"
+                    )
                 cnt_clean = CodeValidator.apply_ast_linter_to_code(cnt_clean)
             if fn and cnt_clean:
                 clean_blocks.append((fn, cnt_clean))

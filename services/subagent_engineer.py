@@ -728,6 +728,10 @@ class SubagentEngineer:
                         syntax_error_detected = True
                         syntax_err = int_err or ""
                         logger.warning(f"SubagentEngineer: сработал Anti-Truncation Guard для {fn}: {syntax_err}")
+                        logger.warning(
+                            f"[Anti-Truncation RAW] fn={fn}, cnt_len={len(cnt)}, cnt={cnt!r}, "
+                            f"raw_len={len(response_text)}, raw_head={response_text[:450]!r}, raw_tail={response_text[-450:]!r}"
+                        )
                         last_error = syntax_err
                         break
 
