@@ -259,7 +259,7 @@ class CodeFirstTDDPipeline:
                 f"Спецификация интерфейса:\n```json\n{spec_str}\n```\n\n"
                 f"ПРОМПТ-ГАРД ТЕСТЕРА:\n"
                 f"1. СТРОГО функции pytest (def test_...()). Категорически ЗАПРЕЩЕН unittest.TestCase.\n"
-                f"2. ЗАПРЕЩЕНО указывать в аргументах функций внешние фикстуры (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
+                f"2. Разрешены стандартные встроенные фикстуры pytest (tmp_path, monkeypatch, capsys). ЗАПРЕЩЕНО указывать в аргументах функций внешние фикстуры бизнес-объектов (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
                 f"3. Импортируй модуль и классы через: from {clean_mod} import ...\n"
                 f"4. Покрой тестами все публичные методы, аргументы, проверки типов и исключения (pytest.raises(ValueError)).\n"
                 f"5. Оформи тестовый файл через <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
@@ -274,7 +274,7 @@ class CodeFirstTDDPipeline:
             test_code = files2.get(test_file) or (list(files2.values())[0] if files2 else "")
 
         if not test_code:
-            test_code = f"import pytest\nfrom {clean_mod} import *\n\ndef test_smoke():\n    assert True\n"
+            test_code = f"import pytest\nimport {clean_mod}\n\ndef test_smoke():\n    assert True\n"
 
         test_code = sanitize_code(test_code, test_file)
         ToolEngine.write_file(test_file, test_code)
@@ -392,7 +392,7 @@ class CodeFirstTDDPipeline:
                     f"Скорректируй сам файл тестов `{test_file}`.\n"
                     f"СТРОГИЙ ПРОМПТ-ГАРД:\n"
                     f"1. Строго функции pytest (def test_...()). Запрещен unittest.TestCase.\n"
-                    f"2. Запрещено указывать в аргументах функций внешние фикстуры (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
+                    f"2. Разрешены стандартные встроенные фикстуры pytest (tmp_path, monkeypatch, capsys). ЗАПРЕЩЕНО указывать в аргументах функций внешние фикстуры бизнес-объектов (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
                     f"Верни полный исправленный файл тестов через <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
                 )
                 fix_msgs = [
@@ -486,7 +486,7 @@ class CodeFirstTDDPipeline:
                 "Твоя задача — написать минимальный набор базовых тестов pytest для фиксации текущего поведения (Happy Path).\n"
                 "СТРОГИЕ ПРАВИЛА:\n"
                 "1. ТОЛЬКО pytest функции `def test_...()`. Запрещен unittest.TestCase.\n"
-                "2. Создавай объекты классов прямо внутри тестов. Фикстуры в аргументах ЗАПРЕЩЕНЫ.\n"
+                "2. Создавай объекты классов прямо внутри тестов. Фикстуры в аргументах ЗАПРЕЩЕНЫ (кроме стандартных pytest: tmp_path, monkeypatch, capsys).\n"
                 f"Верни ТОЛЬКО код тестов для файла {test_file}."
             )
             boot_user = (
@@ -638,7 +638,7 @@ class CodeFirstTDDPipeline:
                         f"Если сигнатура или параметры методов изменились согласно interface_spec, обнови тесты {test_file}.\n"
                         f"СТРОГИЙ ПРОМПТ-ГАРД:\n"
                         f"1. Строго функции pytest (def test_...()). Запрещен unittest.TestCase.\n"
-                        f"2. Запрещено указывать в аргументах функций внешние фикстуры.\n"
+                        f"2. Разрешены стандартные встроенные фикстуры pytest (tmp_path, monkeypatch, capsys). ЗАПРЕЩЕНО указывать в аргументах функций внешние фикстуры бизнес-объектов.\n"
                         f"Верни полный исправленный файл тестов через <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
                     )
                     reg_test_msgs = [
@@ -674,7 +674,7 @@ class CodeFirstTDDPipeline:
         _send("assistant", f"✍️ **Шаг 4 (Дописывание тестов)**: Генерация тестов для новых методов...")
         curr_mod_code = (ws_dir / mod_name).read_text(encoding="utf-8", errors="ignore")
         if not orig_test_code or not orig_test_code.strip():
-            orig_test_code = f"import pytest\nfrom {clean_mod} import *\n"
+            orig_test_code = f"import pytest\nimport {clean_mod}\n"
 
         step4_system = "Ты — инженер по тестированию pytest. Сгенерируй тестовые функции СТРОГО для новых методов."
         step4_user = (
@@ -683,9 +683,9 @@ class CodeFirstTDDPipeline:
             f"Существующий файл тестов {test_file}:\n```python\n{orig_test_code}\n```\n\n"
             f"ПРОМПТ-ГАРД ТЕСТЕРА:\n"
             f"1. Строго функции pytest (def test_...()). Запрещен unittest.TestCase.\n"
-            f"2. Запрещено указывать в аргументах функций внешние фикстуры (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
+            f"2. Разрешены стандартные встроенные фикстуры pytest (tmp_path, monkeypatch, capsys). ЗАПРЕЩЕНО указывать в аргументах функций внешние фикстуры бизнес-объектов (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
             f"3. Напиши тесты СТРОГО для НОВЫХ методов.\n"
-            f"4. НЕ дублируй существующие импорты и заголовки, верни только новые тестовые функции."
+            f"4. НЕ дублируй существующие импорты и заголовки, верни новые тестовые функции в блоке <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
         )
 
         resp4 = client.chat_completion(
@@ -816,8 +816,8 @@ class CodeFirstTDDPipeline:
                     f"Скорректируй сам файл тестов `{test_file}`.\n"
                     f"СТРОГИЙ ПРОМПТ-ГАРД:\n"
                     f"1. Строго функции pytest (def test_...()). Запрещен unittest.TestCase.\n"
-                    f"2. Запрещено указывать в аргументах функций внешние фикстуры (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
-                    f"Верни полный исправленный файл тестов {test_file}."
+                    f"2. Разрешены стандартные встроенные фикстуры pytest (tmp_path, monkeypatch, capsys). ЗАПРЕЩЕНО указывать в аргументах функций внешние фикстуры бизнес-объектов (def test_foo(task_manager) → ЗАПРЕЩЕНО). Объект класса создается прямо внутри тела теста (manager = TaskManager()).\n"
+                    f"Верни полный исправленный файл тестов через <<TOOL:write_file filename=\"{test_file}\">>код<</TOOL:write_file>>."
                 )
                 fix_msgs = [
                     {"role": "system", "content": "Ты — инженер по тестированию pytest. Скорректируй структуру и ассерты теста."},

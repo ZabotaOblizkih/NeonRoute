@@ -30,6 +30,7 @@ from services.engineer_diagnostics import (
     extract_error_fingerprint,
     diagnose_runtime_error,
     extract_crash_slice,
+    clean_traceback,
 )
 from services.engineer_context import (
     BINARY_EXTENSIONS,
@@ -270,9 +271,9 @@ class SubagentEngineer:
 
         def _build_goal_anchor(extra_instruction: str = "") -> str:
             anchor = (
-                f"\n\n🎯 ИСХОДНАЯ ЗАДАЧА ПОЛЬЗОВАТЕЛЯ:\n«{task_prompt}»\n"
-                f"СТРОГОЕ ТРЕБОВАНИЕ: Исправляя ошибку, обязательно сохрани требуемую бизнес-логику, "
-                f"новые поля и структуры данных из задачи. Не откатывай код к старой версии без изменений!"
+                f"\n\n### ЦЕЛЬ ЗАДАЧИ\n"
+                f"Исходный запрос: «{task_prompt}».\n"
+                f"Требование: обязательно сохрани требуемую бизнес-логику и новые поля из задачи, не откатывая код."
             )
             return f"{extra_instruction}\n{anchor}" if extra_instruction else anchor
 
@@ -602,7 +603,8 @@ class SubagentEngineer:
                             f"и запусти его через <<TOOL:run_script filename=\"{target_fn_hint}\">>."
                         )
                         if last_error:
-                            retry_msg += f"\n\nТекущая ошибка, которую нужно устранить:\n{last_error[:600]}"
+                            clean_err = clean_traceback(last_error)
+                            retry_msg += f"\n\nТекущая ошибка, которую нужно устранить:\n{clean_err[-1200:]}"
                     messages = [
                         messages[0],
                         messages[1],
@@ -809,16 +811,16 @@ class SubagentEngineer:
                         f"Исправь ошибку: обязательно добавь недостающий import либо инициализируй переменную перед использованием."
                     )
                 elif "SyntaxError" in syntax_err or "IndentationError" in syntax_err:
+                    patch_opt = f" либо через <<TOOL:patch_file filename=\"{target_name}\">>" if is_maintenance else ""
                     diag_msg = (
                         f"[СИНТАКСИЧЕСКАЯ ОШИБКА В КОДЕ]\n{last_error}{extra_hint}\n\n"
-                        f"Исправь синтаксис и верни корректный код через <<TOOL:write_file filename=\"{target_name}\">> "
-                        f"либо через <<TOOL:patch_file filename=\"{target_name}\">>."
+                        f"Исправь синтаксис и верни корректный код через <<TOOL:write_file filename=\"{target_name}\">>{patch_opt}."
                     )
                 else:
+                    patch_opt = f" либо через <<TOOL:patch_file filename=\"{target_name}\">>" if is_maintenance else ""
                     diag_msg = (
                         f"[ОШИБКА ВАЛИДАЦИИ КОДА]\n{last_error}{extra_hint}\n\n"
-                        f"Устрани указанную проблему и верни корректный код через <<TOOL:write_file filename=\"{target_name}\">> "
-                        f"либо через <<TOOL:patch_file filename=\"{target_name}\">>."
+                        f"Устрани указанную проблему и верни корректный код через <<TOOL:write_file filename=\"{target_name}\">>{patch_opt}."
                     )
 
                 if turn < max_turns:
@@ -1304,7 +1306,7 @@ class SubagentEngineer:
                                     messages=rca_messages,
                                     model=target_model,
                                     temperature=0.10,
-                                    max_tokens=400,
+                                    max_tokens=600,
                                     stream=False,
                                     emit_signal=False
                                 )
@@ -1313,7 +1315,7 @@ class SubagentEngineer:
                                     messages=rca_messages,
                                     model=target_model,
                                     temperature=0.10,
-                                    max_tokens=400,
+                                    max_tokens=600,
                                     stream=False,
                                     emit_signal=False
                                 )
