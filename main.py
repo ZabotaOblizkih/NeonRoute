@@ -125,10 +125,10 @@ def main():
     # --- Splash screen: visible immediately while MainWindow loads ---
     splash = None
     if SPLASH_PATH.exists():
-        from ui.widgets.splash_screen import SmoothSplashScreen
-        splash = SmoothSplashScreen(SPLASH_PATH)
-        splash.show()
-        splash.attach_import_pulse()   # keeps GIF animating during heavy import
+        from ui.widgets.splash_screen import launch_isolated_splash
+        splash = launch_isolated_splash(SPLASH_PATH)
+        if hasattr(splash, "attach_import_pulse"):
+            splash.attach_import_pulse()
         app.processEvents()
 
     def _boot_main_window() -> None:

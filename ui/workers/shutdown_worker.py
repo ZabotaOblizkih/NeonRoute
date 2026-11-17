@@ -56,6 +56,15 @@ class ShutdownWorker(QThread):
         except Exception as e:
             logger.debug(f"Error terminating background threads: {e}")
 
+        # 2.5. Отмена активной фоновой загрузки GGUF-модели (если скачивается)
+        try:
+            from ui.dialogs.gguf_catalog_dialog import get_active_download_worker
+            active_dl = get_active_download_worker()
+            if active_dl is not None:
+                active_dl.cancel()
+        except Exception as e:
+            logger.debug(f"Error cancelling active GGUF download on shutdown: {e}")
+
         # 3. Выгрузка VRAM и серверов
         try:
             import sys

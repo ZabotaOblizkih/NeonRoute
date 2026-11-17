@@ -183,6 +183,7 @@ def download_file(
     timeout: int = 60,
     max_retries: int = 3,
     retry_delay: float = 2.0,
+    cancel_event: Optional[Any] = None,
 ) -> None:
     """
     Скачивает файл по прямой ссылке с таймаутом 60 сек, поддержкой докачки (Range/206)
@@ -195,6 +196,8 @@ def download_file(
 
     for attempt in range(1, max_retries + 1):
         try:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise InterruptedError("Загрузка отменена пользователем.")
             existing_bytes = temp_path.stat().st_size if temp_path.exists() else 0
             headers = {"User-Agent": USER_AGENT}
             if existing_bytes > 0:
@@ -217,6 +220,8 @@ def download_file(
 
                 with open(temp_path, mode) as out_f:
                     while True:
+                        if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                            raise InterruptedError("Загрузка отменена пользователем.")
                         chunk = resp.read(65536)
                         if not chunk:
                             break
@@ -231,6 +236,8 @@ def download_file(
             return
 
         except Exception as e:
+            if isinstance(e, InterruptedError) or (cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)()):
+                raise InterruptedError("Загрузка отменена пользователем.")
             last_error = e
             logger.warning(
                 f"[LlamaDownloader] Ошибка скачивания {dest_path.name} (попытка {attempt}/{max_retries}): {e}"

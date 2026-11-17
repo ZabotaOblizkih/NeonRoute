@@ -330,7 +330,13 @@ class EngineerSettingsDialog(FramelessDialog):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        self.btn_refresh = PushButton(FIF.SYNC, "Обновить список", self.body_widget)
+        self.btn_open_catalog = PushButton(FIF.DOWNLOAD, "Скачать модели...", self.body_widget)
+        self.btn_open_catalog.setObjectName("btn_open_catalog")
+        self.btn_open_catalog.setToolTip("Открыть каталог моделей GGUF, подобранных под характеристики вашего ПК")
+        self.btn_open_catalog.clicked.connect(self._open_model_catalog_dialog)
+        btn_row.addWidget(self.btn_open_catalog)
+
+        self.btn_refresh = PushButton(FIF.SYNC, "Обновить", self.body_widget)
         self.btn_refresh.setObjectName("btn_refresh")
         self.btn_refresh.setToolTip("Обновить список доступных моделей из каталогов и сервера")
         self.btn_refresh.clicked.connect(self._on_refresh_clicked)
@@ -409,6 +415,13 @@ class EngineerSettingsDialog(FramelessDialog):
         self._populate_combo(self.combo_assistant, asst_model, models)
         self._populate_combo(self.combo_rp, rp_model, models)
         self._populate_combo(self.combo_engineer, eng_model, models)
+
+    def _open_model_catalog_dialog(self) -> None:
+        """Открывает стилизованное окно каталога и загрузки подходящих GGUF-моделей."""
+        from ui.dialogs.gguf_catalog_dialog import GGUFCatalogDialog
+        dlg = GGUFCatalogDialog(parent=self, on_models_changed=self._on_refresh_clicked)
+        dlg.exec()
+        self._on_refresh_clicked()
 
     def _on_refresh_clicked(self) -> None:
         """Обновляет список моделей при нажатии на кнопку обновления."""
