@@ -211,3 +211,85 @@ def test_catalog_card_layout_and_optimized_filter_label():
             break
     finally:
         dlg.close()
+
+
+def test_orphaned_search_worker_lifecycle_on_retrigger_and_close():
+    cat_mod._ORPHANED_SEARCH_WORKERS.clear()
+    hw_snap = {"vram_total_mb": 8151, "ram_total_mb": 16065.0, "vendor": "nvidia"}
+
+    class MockWorker(cat_mod._HFSearchWorker):
+        def __init__(self, query, hw):
+            super().__init__(query, hw, parent=None)
+            self.started_event = threading.Event()
+            self.block_event = threading.Event()
+
+        def run(self):
+            self.started_event.set()
+            self.block_event.wait(timeout=2.0)
+
+    dlg = GGUFCatalogDialog()
+    try:
+        w1 = MockWorker("query1", hw_snap)
+        dlg._search_worker = w1
+        w1.start()
+        assert w1.started_event.wait(timeout=1.0)
+
+        # 1. Повторный поиск при бегущем предыдущем воркере
+        w2 = MockWorker("query2", hw_snap)
+        with patch("ui.dialogs.gguf_catalog_dialog._HFSearchWorker", return_value=w2):
+            dlg.search_input.setText("query2")
+            dlg._trigger_search()
+
+        # w1 должен быть перенесён в _ORPHANED_SEARCH_WORKERS, и у него вызван abort()
+        assert w1 in cat_mod._ORPHANED_SEARCH_WORKERS
+        assert w1._aborted is True
+        assert dlg._search_worker is w2
+
+        # 2. Разблокируем w1 и ждём его завершения
+        w1.block_event.set()
+        w1.wait(2000)
+        _app.processEvents()
+
+        # w1 должен быть автоматически удалён из _ORPHANED_SEARCH_WORKERS по сигналу finished
+        assert w1 not in cat_mod._ORPHANED_SEARCH_WORKERS
+
+        # 3. Закрытие окна при бегущем w2
+        w2.start()
+        assert w2.started_event.wait(timeout=1.0)
+        dlg.reject()
+
+        assert w2 in cat_mod._ORPHANED_SEARCH_WORKERS
+        assert w2._aborted is True
+        assert dlg._search_worker is None
+
+        # Разблокируем w2
+        w2.block_event.set()
+        w2.wait(2000)
+        _app.processEvents()
+        assert w2 not in cat_mod._ORPHANED_SEARCH_WORKERS
+    finally:
+        dlg.close()
+        cat_mod._ORPHANED_SEARCH_WORKERS.clear()
+
+
+def test_active_download_worker_cleared_on_thread_finished(tmp_path):
+    class MockDownloadWorker(cat_mod._GGUFDownloadWorker):
+        def __init__(self):
+            super().__init__(url="http://fake", dest_path=tmp_path / "dummy.gguf", model_title="Dummy")
+            self.run_finished = threading.Event()
+
+        def run(self):
+            self.run_finished.wait(timeout=2.0)
+
+    w = MockDownloadWorker()
+    cat_mod._ACTIVE_DOWNLOAD_WORKER = w
+    w.finished.connect(lambda: cat_mod._on_global_download_worker_finished(w))
+    w.start()
+
+    assert cat_mod.get_active_download_worker() is w
+    w.run_finished.set()
+    w.wait(2000)
+    _app.processEvents()
+
+    assert cat_mod._ACTIVE_DOWNLOAD_WORKER is None
+    assert cat_mod.get_active_download_worker() is None

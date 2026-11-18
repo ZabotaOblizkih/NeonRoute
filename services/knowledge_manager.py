@@ -454,6 +454,31 @@ class KnowledgeManager:
         logger.info(f"[KnowledgeManager] Синхронизация завершена: {len(current_docs)} документов в реестре.")
 
         # 3. Синхронизация чанков и поискового индекса search_index.json
+        if not current_docs:
+            search_idx_path = cls.get_search_index_path(None, custom_dir)
+            empty_index = {
+                "version": 3,
+                "k1": 1.5,
+                "b": 0.75,
+                "alpha": 0.5,
+                "rrf_k": 60,
+                "total_chunks": 0,
+                "chunks": [],
+                "bm25_index": {
+                    "k1": 1.5,
+                    "b": 0.75,
+                    "corpus_size": 0,
+                    "avgdl": 0.0,
+                    "doc_lengths": [],
+                    "df": {},
+                    "idf": {},
+                    "inverted_index": {},
+                },
+            }
+            atomic_write_json(search_idx_path, empty_index)
+            logger.info("[KnowledgeManager] В реестре 0 документов. Записан пустой search_index.json без инициализации HybridSearchEngine и FastEmbed ONNX.")
+            return registry_data
+
         try:
             from services.hybrid_search import HybridSearchEngine
             search_idx_path = cls.get_search_index_path(None, custom_dir)

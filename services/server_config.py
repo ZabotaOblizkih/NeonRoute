@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Ensure project root is in sys.path
 _ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -18,10 +18,59 @@ if str(_ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR))
 
 import config
+from config import DEFAULT_LLAMA_UBATCH_SIZE
 
 logger = logging.getLogger("NeonRoute.ServerConfig")
 
 _MMAP_ARGS_CACHE: Dict[str, List[str]] = {}
+
+
+def _normalize_kv_type(val: Optional[str], default: str = "q8_0") -> str:
+    """Normalizes raw KV cache type strings to valid llama.cpp flags."""
+    if not val:
+        return default
+    v = str(val).strip().lower()
+    if v in ("fp16", "f16"):
+        return "f16"
+    if v in ("q4", "q4_0"):
+        return "q4_0"
+    if v in ("q8", "q8_0"):
+        return "q8_0"
+    return v
+
+
+def resolve_kv_cache_types(
+    raw_type: Optional[str],
+    cache_type_k: Optional[str] = None,
+    cache_type_v: Optional[str] = None
+) -> Tuple[str, str]:
+    """
+    SSOT resolver for llama.cpp KV cache quantization types (-ctk and -ctv).
+    Maps high-level presets ('q8_0_q4_0', 'q4_0', 'f16', 'q8_0') or explicit ctk/ctv
+    values to a valid (cache_type_k, cache_type_v) tuple.
+    """
+    raw_clean = str(raw_type).strip().lower() if raw_type else ""
+
+    if raw_clean in ("q8_0_q4_0", "q8_0/q4_0", "q8_0-q4_0"):
+        return ("q8_0", "q4_0")
+    if raw_clean in ("q4_0", "q4"):
+        return ("q4_0", "q4_0")
+    if raw_clean in ("f16", "fp16"):
+        return ("f16", "f16")
+
+    # If explicit cache_type_k and/or cache_type_v are provided (e.g. from server_config.ini)
+    if cache_type_k is not None or cache_type_v is not None:
+        norm_k = _normalize_kv_type(cache_type_k, "q8_0")
+        norm_v = _normalize_kv_type(cache_type_v, norm_k)
+        if raw_clean not in ("q8_0", "q8", ""):
+            return (_normalize_kv_type(raw_clean), _normalize_kv_type(raw_clean))
+        return (norm_k, norm_v)
+
+    if raw_clean in ("q8_0", "q8", ""):
+        return ("q8_0", "q8_0")
+
+    norm_val = _normalize_kv_type(raw_clean)
+    return (norm_val, norm_val)
 
 
 def _sanitize_ini_value(raw: Optional[str]) -> str:
@@ -60,6 +109,7 @@ class ServerConfigResolver:
         "cache_type_k": "q8_0",
         "cache_type_v": "q8_0",
         "parallel_slots": 1,
+        "ubatch_size": DEFAULT_LLAMA_UBATCH_SIZE,
         "no_mmap": True,
         "server_bin_path": "",
         "cuda_dll_dir": "",
@@ -125,6 +175,11 @@ class ServerConfigResolver:
             if "parallel_slots" in s:
                 try:
                     cfg["parallel_slots"] = int(_sanitize_ini_value(s.get("parallel_slots")))
+                except (ValueError, TypeError):
+                    pass
+            if "ubatch_size" in s:
+                try:
+                    cfg["ubatch_size"] = int(_sanitize_ini_value(s.get("ubatch_size")))
                 except (ValueError, TypeError):
                     pass
 

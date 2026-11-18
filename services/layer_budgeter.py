@@ -9,9 +9,10 @@ import sys
 import json
 import math
 import struct
+import io
 import logging
 from pathlib import Path
-from typing import Tuple, Dict, Any, Optional, Union
+from typing import Tuple, Dict, Any, Optional, Union, BinaryIO
 
 import psutil
 
@@ -25,9 +26,11 @@ from config import (
     HYSTERESIS_LAYER_DELTA,
     DEFAULT_LLAMA_UBATCH_SIZE,
 )
+from services.server_config import resolve_kv_cache_types
 
 logger = logging.getLogger("NeonRoute.LayerBudgeter")
 MODELS_CACHE_PATH = DATA_DIR / "models_cache.json"
+CURRENT_CACHE_SCHEMA_VERSION = 3
 
 
 class LayerBudgeter:
@@ -264,107 +267,121 @@ class LayerBudgeter:
             logger.warning(f"[LayerBudgeter] Ошибка сохранения models_cache.json: {e}")
 
     @classmethod
-    def _parse_gguf_header(cls, buffer: bytes) -> Dict[str, Any]:
-        """Парсинг бинарного заголовка GGUF v2/v3 из буфера (до 8 КБ)."""
-        if len(buffer) < 24:
-            raise ValueError("Buffer too small for GGUF header")
-        if buffer[:4] != b"GGUF":
-            raise ValueError(f"Invalid GGUF magic: {buffer[:4]!r}")
+    def _parse_gguf_header(cls, source: Union[bytes, bytearray, BinaryIO]) -> Dict[str, Any]:
+        """
+        Парсинг бинарного заголовка GGUF v2/v3 из байтового буфера или файлового потока.
+        Крупные массивы (> 256 элементов, например tokenizer.ggml.tokens/scores/merges)
+        пропускаются через f.seek для быстрого и полного чтения всех архитектурных ключей
+        независимо от их расположения в заголовке.
+        """
+        if isinstance(source, (bytes, bytearray)):
+            f = io.BytesIO(source)
+        else:
+            f = source
 
-        version = struct.unpack("<I", buffer[4:8])[0]
-        if version not in (2, 3):
-            # Version 1 is deprecated, but check if supported
-            if version != 1:
-                logger.debug(f"[LayerBudgeter] Нестандартная версия GGUF: {version}")
+        def _read_exact(n: int) -> bytes:
+            buf = f.read(n)
+            if len(buf) < n:
+                raise ValueError(f"Buffer underflow reading {n} bytes (got {len(buf)})")
+            return buf
+
+        magic = _read_exact(4)
+        if magic != b"GGUF":
+            raise ValueError(f"Invalid GGUF magic: {magic!r}")
+
+        version = struct.unpack("<I", _read_exact(4))[0]
+        if version not in (2, 3) and version != 1:
+            logger.debug(f"[LayerBudgeter] Нестандартная версия GGUF: {version}")
 
         # In v2/v3: tensor_count (uint64), metadata_kv_count (uint64)
         if version == 1:
-            tensor_count = struct.unpack("<I", buffer[8:12])[0]
-            kv_count = struct.unpack("<I", buffer[12:16])[0]
-            offset = 16
+            tensor_count = struct.unpack("<I", _read_exact(4))[0]
+            kv_count = struct.unpack("<I", _read_exact(4))[0]
         else:
-            tensor_count = struct.unpack("<Q", buffer[8:16])[0]
-            kv_count = struct.unpack("<Q", buffer[16:24])[0]
-            offset = 24
+            tensor_count = struct.unpack("<Q", _read_exact(8))[0]
+            kv_count = struct.unpack("<Q", _read_exact(8))[0]
 
         metadata: Dict[str, Any] = {}
 
-        def read_str(off: int) -> Tuple[str, int]:
-            if off + 8 > len(buffer):
-                raise ValueError("Buffer overflow reading str length")
-            length = struct.unpack("<Q", buffer[off:off + 8])[0]
-            off += 8
-            if off + length > len(buffer):
-                raise ValueError("Buffer overflow reading str bytes")
-            s = buffer[off:off + length].decode("utf-8", errors="replace")
-            return s, off + length
+        def read_str() -> str:
+            raw_len = _read_exact(8)
+            length = struct.unpack("<Q", raw_len)[0]
+            if length == 0:
+                return ""
+            raw_str = _read_exact(length)
+            return raw_str.decode("utf-8", errors="replace")
 
-        def read_val(off: int, vtype: int) -> Tuple[Any, int]:
+        TYPE_SIZES = {
+            0: 1, 1: 1, 7: 1,
+            2: 2, 3: 2,
+            4: 4, 5: 4, 6: 4,
+            10: 8, 11: 8, 12: 8,
+        }
+
+        def read_single_val(vtype: int) -> Any:
             if vtype == 0:  # UINT8
-                if off + 1 > len(buffer): raise ValueError("Overflow UINT8")
-                return struct.unpack("<B", buffer[off:off + 1])[0], off + 1
+                return struct.unpack("<B", _read_exact(1))[0]
             elif vtype == 1:  # INT8
-                if off + 1 > len(buffer): raise ValueError("Overflow INT8")
-                return struct.unpack("<b", buffer[off:off + 1])[0], off + 1
+                return struct.unpack("<b", _read_exact(1))[0]
             elif vtype == 2:  # UINT16
-                if off + 2 > len(buffer): raise ValueError("Overflow UINT16")
-                return struct.unpack("<H", buffer[off:off + 2])[0], off + 2
+                return struct.unpack("<H", _read_exact(2))[0]
             elif vtype == 3:  # INT16
-                if off + 2 > len(buffer): raise ValueError("Overflow INT16")
-                return struct.unpack("<h", buffer[off:off + 2])[0], off + 2
+                return struct.unpack("<h", _read_exact(2))[0]
             elif vtype == 4:  # UINT32
-                if off + 4 > len(buffer): raise ValueError("Overflow UINT32")
-                return struct.unpack("<I", buffer[off:off + 4])[0], off + 4
+                return struct.unpack("<I", _read_exact(4))[0]
             elif vtype == 5:  # INT32
-                if off + 4 > len(buffer): raise ValueError("Overflow INT32")
-                return struct.unpack("<i", buffer[off:off + 4])[0], off + 4
+                return struct.unpack("<i", _read_exact(4))[0]
             elif vtype == 6:  # FLOAT32
-                if off + 4 > len(buffer): raise ValueError("Overflow FLOAT32")
-                return struct.unpack("<f", buffer[off:off + 4])[0], off + 4
+                return struct.unpack("<f", _read_exact(4))[0]
             elif vtype == 7:  # BOOL
-                if off + 1 > len(buffer): raise ValueError("Overflow BOOL")
-                return bool(buffer[off]), off + 1
+                return bool(_read_exact(1)[0])
             elif vtype == 8:  # STRING
-                return read_str(off)
-            elif vtype == 9:  # ARRAY
-                if off + 12 > len(buffer): raise ValueError("Overflow ARRAY header")
-                item_type = struct.unpack("<I", buffer[off:off + 4])[0]
-                item_count = struct.unpack("<Q", buffer[off + 4:off + 12])[0]
-                off += 12
-                items = []
-                try:
-                    for _ in range(item_count):
-                        v, off = read_val(off, item_type)
-                        items.append(v)
-                    return items, off
-                except Exception:
-                    # Массив выходит за пределы буфера (например 262k токенов)
-                    return {"__array_len__": item_count, "__partial_items__": items}, len(buffer)
+                return read_str()
             elif vtype == 10:  # UINT64
-                if off + 8 > len(buffer): raise ValueError("Overflow UINT64")
-                return struct.unpack("<Q", buffer[off:off + 8])[0], off + 8
+                return struct.unpack("<Q", _read_exact(8))[0]
             elif vtype == 11:  # INT64
-                if off + 8 > len(buffer): raise ValueError("Overflow INT64")
-                return struct.unpack("<q", buffer[off:off + 8])[0], off + 8
+                return struct.unpack("<q", _read_exact(8))[0]
             elif vtype == 12:  # FLOAT64
-                if off + 8 > len(buffer): raise ValueError("Overflow FLOAT64")
-                return struct.unpack("<d", buffer[off:off + 8])[0], off + 8
+                return struct.unpack("<d", _read_exact(8))[0]
+            elif vtype == 9:  # ARRAY
+                arr_hdr = _read_exact(12)
+                item_t = struct.unpack("<I", arr_hdr[:4])[0]
+                item_c = struct.unpack("<Q", arr_hdr[4:12])[0]
+                return read_array_val(item_t, item_c)
             else:
                 raise ValueError(f"Unknown GGUF value type {vtype}")
 
+        def read_array_val(item_t: int, item_c: int) -> Any:
+            if item_c > 256:
+                if item_t in TYPE_SIZES:
+                    f.seek(item_c * TYPE_SIZES[item_t], io.SEEK_CUR)
+                elif item_t == 8:  # STRING
+                    for _ in range(item_c):
+                        slen = struct.unpack("<Q", _read_exact(8))[0]
+                        if slen > 0:
+                            f.seek(slen, io.SEEK_CUR)
+                else:
+                    for _ in range(item_c):
+                        read_single_val(item_t)
+                return {"__array_len__": item_c}
+            else:
+                items = []
+                for _ in range(item_c):
+                    items.append(read_single_val(item_t))
+                return items
+
         for _ in range(kv_count):
-            if offset >= len(buffer):
-                break
             try:
-                key, offset = read_str(offset)
-                if offset + 4 > len(buffer):
-                    break
-                vtype = struct.unpack("<I", buffer[offset:offset + 4])[0]
-                offset += 4
-                if vtype == 9 and offset + 12 <= len(buffer):
-                    arr_len = struct.unpack("<Q", buffer[offset + 4:offset + 12])[0]
+                key = read_str()
+                vtype = struct.unpack("<I", _read_exact(4))[0]
+                if vtype == 9:
+                    arr_hdr = _read_exact(12)
+                    arr_type = struct.unpack("<I", arr_hdr[:4])[0]
+                    arr_len = struct.unpack("<Q", arr_hdr[4:12])[0]
                     metadata[f"{key}.count"] = int(arr_len)
-                val, offset = read_val(offset, vtype)
+                    val = read_array_val(arr_type, arr_len)
+                else:
+                    val = read_single_val(vtype)
                 metadata[key] = val
             except Exception:
                 break
@@ -374,23 +391,34 @@ class LayerBudgeter:
     @classmethod
     def parse_gguf_metadata(cls, model_path: Union[str, Path]) -> Dict[str, Any]:
         """
-        Считывает первые 8 КБ файла модели:
+        Считывает заголовок GGUF файла модели:
         * Ищет заголовок GGUF (магическое число GGUF).
-        * Извлекает block_count (общее число слоев), architecture, context_length.
+        * Извлекает block_count (общее число слоев), architecture, context_length, SWA и параметры KV-голов.
         * Если файл нестандартный или парсинг выбросил исключение — использует эвристику по размеру:
           size <= 5GB -> 28 слоев; 5-9GB -> 40 слоев; > 9GB -> 48 слоев.
-        * Кэширует результаты в data/models_cache.json по связке (str(model_path), mtime, size).
-        * Возвращает dict с полями: total_layers, model_size_mb, architecture, is_moe.
+        * Кэширует результаты в data/models_cache.json по связке (str(model_path), mtime, size, schema_version).
+        * Возвращает dict с метаданными модели.
         """
         p = Path(model_path).resolve()
         if not p.exists() or not p.is_file():
             # Защита от несуществующего пути
             return {
+                "schema_version": CURRENT_CACHE_SCHEMA_VERSION,
                 "total_layers": 28,
                 "model_size_mb": 0.0,
                 "architecture": "unknown",
                 "is_moe": False,
                 "context_length": None,
+                "sliding_window": 0,
+                "sliding_window_pattern": None,
+                "head_count": None,
+                "head_count_kv": None,
+                "head_count_kv_layers": None,
+                "key_length": None,
+                "value_length": None,
+                "key_length_swa": None,
+                "value_length_swa": None,
+                "vocab_size": 0,
             }
 
         stat = p.stat()
@@ -406,13 +434,14 @@ class LayerBudgeter:
             cached_data = cache[cache_key]
             if (
                 isinstance(cached_data, dict)
+                and cached_data.get("schema_version") == CURRENT_CACHE_SCHEMA_VERSION
                 and "sliding_window" in cached_data
                 and "vocab_size" in cached_data
                 and cached_data.get("vocab_size") is not None
             ):
                 return dict(cached_data)
 
-        # 1. Попытка парсинга заголовка GGUF (до 64 КБ)
+        # 1. Попытка потокового парсинга заголовка GGUF
         parsed_layers: Optional[int] = None
         architecture: str = "unknown"
         is_moe: bool = False
@@ -420,16 +449,17 @@ class LayerBudgeter:
         sliding_window: int = 0
         sliding_window_pattern: Optional[list] = None
         head_count: Optional[int] = None
-        head_count_kv: Optional[Union[int, list]] = None
+        head_count_kv: Optional[Union[int, float]] = None
+        head_count_kv_layers: Optional[list] = None
         key_length: Optional[int] = None
         value_length: Optional[int] = None
+        key_length_swa: Optional[int] = None
+        value_length_swa: Optional[int] = None
         vocab_size: int = 0
 
         try:
             with open(p, "rb") as f:
-                head_buffer = f.read(65536)
-
-            kv = cls._parse_gguf_header(head_buffer)
+                kv = cls._parse_gguf_header(f)
             architecture = str(kv.get("general.architecture", "llama")).lower()
 
             # Ищем block_count: {arch}.block_count или любой *.block_count
@@ -454,18 +484,6 @@ class LayerBudgeter:
             if kv.get(f"{architecture}.expert_count", 0) > 0 or "moe" in architecture:
                 is_moe = True
 
-            # Sliding Window Attention (SWA)
-            if f"{architecture}.attention.sliding_window" in kv:
-                try:
-                    sliding_window = int(kv[f"{architecture}.attention.sliding_window"])
-                except Exception:
-                    sliding_window = 0
-            else:
-                for k, v in kv.items():
-                    if (k.endswith(".attention.sliding_window") or k.endswith(".sliding_window")) and isinstance(v, (int, float)):
-                        sliding_window = int(v)
-                        break
-
             # SWA pattern
             if f"{architecture}.attention.sliding_window_pattern" in kv:
                 raw_pat = kv[f"{architecture}.attention.sliding_window_pattern"]
@@ -476,6 +494,33 @@ class LayerBudgeter:
                     if k.endswith(".attention.sliding_window_pattern") and isinstance(v, (list, tuple)):
                         sliding_window_pattern = [bool(x) for x in v]
                         break
+
+            # Sliding Window Attention (SWA)
+            raw_sw = None
+            if f"{architecture}.attention.sliding_window" in kv:
+                raw_sw = kv[f"{architecture}.attention.sliding_window"]
+            elif f"{architecture}.attention.sliding_window_size" in kv:
+                raw_sw = kv[f"{architecture}.attention.sliding_window_size"]
+            else:
+                for k, v in kv.items():
+                    if (
+                        k.endswith(".attention.sliding_window")
+                        or k.endswith(".sliding_window")
+                        or k.endswith(".attention.sliding_window_size")
+                        or k.endswith(".sliding_window_size")
+                    ):
+                        raw_sw = v
+                        break
+
+            if isinstance(raw_sw, (list, tuple)):
+                val_list = [int(x) for x in raw_sw if isinstance(x, (int, float)) and int(x) > 0]
+                sliding_window = max(val_list) if val_list else 0
+                if sliding_window_pattern is None:
+                    sliding_window_pattern = [bool(isinstance(x, (int, float)) and int(x) > 0) for x in raw_sw]
+            elif isinstance(raw_sw, (int, float)):
+                sliding_window = int(raw_sw)
+            else:
+                sliding_window = 0
 
             # Head count
             if f"{architecture}.attention.head_count" in kv:
@@ -490,60 +535,97 @@ class LayerBudgeter:
                         break
 
             # Head count KV
+            raw_hkv = None
             if f"{architecture}.attention.head_count_kv" in kv:
                 raw_hkv = kv[f"{architecture}.attention.head_count_kv"]
-                if isinstance(raw_hkv, (list, tuple)) and raw_hkv:
-                    head_count_kv = float(sum(raw_hkv)) / len(raw_hkv)
-                elif isinstance(raw_hkv, (int, float)):
-                    head_count_kv = int(raw_hkv)
             else:
                 for k, v in kv.items():
                     if k.endswith(".attention.head_count_kv"):
-                        if isinstance(v, (list, tuple)) and v:
-                            head_count_kv = float(sum(v)) / len(v)
-                            break
-                        elif isinstance(v, (int, float)):
-                            head_count_kv = int(v)
-                            break
+                        raw_hkv = v
+                        break
 
-            # Key length / Value length
+            if isinstance(raw_hkv, (list, tuple)) and raw_hkv:
+                head_count_kv_layers = [float(x) for x in raw_hkv]
+                head_count_kv = float(sum(head_count_kv_layers)) / len(head_count_kv_layers)
+            elif isinstance(raw_hkv, (int, float)):
+                head_count_kv = float(raw_hkv)
+
+            # Key length & Key length SWA
+            raw_kl = None
             if f"{architecture}.attention.key_length" in kv:
                 raw_kl = kv[f"{architecture}.attention.key_length"]
-                if isinstance(raw_kl, (list, tuple)) and raw_kl:
-                    key_length = float(sum(raw_kl)) / len(raw_kl)
-                else:
-                    try:
-                        key_length = int(raw_kl)
-                    except Exception:
-                        key_length = None
             else:
                 for k, v in kv.items():
-                    if k.endswith(".attention.key_length"):
-                        if isinstance(v, (list, tuple)) and v:
-                            key_length = float(sum(v)) / len(v)
-                            break
-                        elif isinstance(v, (int, float)):
-                            key_length = int(v)
-                            break
+                    if k.endswith(".attention.key_length") and not k.endswith(".key_length_swa"):
+                        raw_kl = v
+                        break
 
+            if isinstance(raw_kl, (list, tuple)) and raw_kl:
+                key_length = float(sum(raw_kl)) / len(raw_kl)
+            elif isinstance(raw_kl, (int, float)):
+                key_length = int(raw_kl)
+
+            raw_kl_swa = None
+            if f"{architecture}.attention.key_length_swa" in kv:
+                raw_kl_swa = kv[f"{architecture}.attention.key_length_swa"]
+            else:
+                for k, v in kv.items():
+                    if k.endswith(".attention.key_length_swa") or k.endswith(".key_length_swa"):
+                        raw_kl_swa = v
+                        break
+
+            if isinstance(raw_kl_swa, (list, tuple)) and raw_kl_swa:
+                key_length_swa = float(sum(raw_kl_swa)) / len(raw_kl_swa)
+            elif isinstance(raw_kl_swa, (int, float)):
+                key_length_swa = int(raw_kl_swa)
+
+            if key_length is None and key_length_swa is not None:
+                key_length = key_length_swa
+            if key_length_swa is None and key_length is not None:
+                key_length_swa = key_length
+
+            # Value length & Value length SWA
+            raw_vl = None
             if f"{architecture}.attention.value_length" in kv:
                 raw_vl = kv[f"{architecture}.attention.value_length"]
-                if isinstance(raw_vl, (list, tuple)) and raw_vl:
-                    value_length = float(sum(raw_vl)) / len(raw_vl)
-                else:
-                    try:
-                        value_length = int(raw_vl)
-                    except Exception:
-                        value_length = None
             else:
                 for k, v in kv.items():
-                    if k.endswith(".attention.value_length"):
-                        if isinstance(v, (list, tuple)) and v:
-                            value_length = float(sum(v)) / len(v)
-                            break
-                        elif isinstance(v, (int, float)):
-                            value_length = int(v)
-                            break
+                    if k.endswith(".attention.value_length") and not k.endswith(".value_length_swa"):
+                        raw_vl = v
+                        break
+
+            if isinstance(raw_vl, (list, tuple)) and raw_vl:
+                value_length = float(sum(raw_vl)) / len(raw_vl)
+            elif isinstance(raw_vl, (int, float)):
+                value_length = int(raw_vl)
+
+            raw_vl_swa = None
+            if f"{architecture}.attention.value_length_swa" in kv:
+                raw_vl_swa = kv[f"{architecture}.attention.value_length_swa"]
+            else:
+                for k, v in kv.items():
+                    if k.endswith(".attention.value_length_swa") or k.endswith(".value_length_swa"):
+                        raw_vl_swa = v
+                        break
+
+            if isinstance(raw_vl_swa, (list, tuple)) and raw_vl_swa:
+                value_length_swa = float(sum(raw_vl_swa)) / len(raw_vl_swa)
+            elif isinstance(raw_vl_swa, (int, float)):
+                value_length_swa = int(raw_vl_swa)
+
+            if value_length is None and value_length_swa is not None:
+                value_length = value_length_swa
+            if value_length_swa is None and value_length is not None:
+                value_length_swa = value_length
+
+            if (key_length is None or key_length <= 0) and value_length:
+                key_length = value_length
+            if (value_length is None or value_length <= 0) and key_length:
+                value_length = key_length
+            if (key_length_swa is None or key_length_swa <= 0) and value_length_swa:
+                key_length_swa = value_length_swa
+            if (value_length_swa is None or value_length_swa <= 0) and key_length_swa:
+                value_length_swa = key_length_swa
 
             # Vocab size
             if f"{architecture}.vocab_size" in kv:
@@ -589,6 +671,7 @@ class LayerBudgeter:
             total_layers = parsed_layers
 
         result = {
+            "schema_version": CURRENT_CACHE_SCHEMA_VERSION,
             "total_layers": total_layers,
             "model_size_mb": model_size_mb,
             "architecture": architecture,
@@ -598,8 +681,11 @@ class LayerBudgeter:
             "sliding_window_pattern": sliding_window_pattern,
             "head_count": head_count,
             "head_count_kv": head_count_kv,
+            "head_count_kv_layers": head_count_kv_layers,
             "key_length": key_length,
             "value_length": value_length,
+            "key_length_swa": key_length_swa,
+            "value_length_swa": value_length_swa,
             "vocab_size": vocab_size,
         }
 
@@ -622,26 +708,32 @@ class LayerBudgeter:
         """
         Расчет объема буфера KV-кэша под Llama/Qwen/Gemma.
         Если в gguf_meta присутствуют положительные head_count_kv, total_layers и размерности
-        заголовков (key_length / value_length > 0), рассчитывается аналитический физический размер
+        заголовков (key_length / value_length > 0), рассчитывается послойный аналитический физический размер
         KV-кэша по формуле:
-            bytes_per_token_per_layer = head_count_kv * (k_len + v_len) * type_bytes
+            bytes_per_token_per_layer = head_count_kv_i * (k_len + v_len) * type_bytes
             (где type_bytes для q4 = 0.5625, f16/fp16 = 2.0, q8_0 = 1.0625)
-        с учетом SWA (sliding window) и 15% накладных расходов CUDA на выравнивание памяти.
+        с учетом послойного SWA (для SWA-слоев: k_len_swa/v_len_swa и min(ctx, sliding_window + 512),
+        для Global-слоев: k_len/v_len и полный ctx) и 15% накладных расходов CUDA на выравнивание памяти.
         При отсутствии подробных метаданных используется эталонная оценка Llama/Qwen
         (q8_0 ~64 КБ на токен + 15% накладных расходов CUDA).
         """
         ctx = max(0, int(context_length or 0))
-        c_lower = str(cache_type or "").lower()
+        ctk, ctv = resolve_kv_cache_types(cache_type)
 
-        if "q4" in c_lower:
-            type_bytes = 0.5625  # 18 / 32
-            kb_per_token = 36
-        elif "f16" in c_lower or "fp16" in c_lower:
-            type_bytes = 2.0
-            kb_per_token = 128
-        else:
-            type_bytes = 1.0625  # 34 / 32 (q8_0)
-            kb_per_token = 64
+        type_bytes_map = {
+            "f16": 2.0,
+            "q8_0": 1.0625,  # 34 / 32
+            "q4_0": 0.5625,  # 18 / 32
+        }
+        kb_per_token_map = {
+            "f16": 128.0,
+            "q8_0": 64.0,
+            "q4_0": 36.0,
+        }
+
+        type_bytes_k = type_bytes_map.get(ctk, 1.0625)
+        type_bytes_v = type_bytes_map.get(ctv, 1.0625)
+        kb_per_token = (kb_per_token_map.get(ctk, 64.0) + kb_per_token_map.get(ctv, 64.0)) / 2.0
 
         if not gguf_meta or not isinstance(gguf_meta, dict):
             raw_mb = (ctx * kb_per_token) / 1024.0
@@ -649,79 +741,109 @@ class LayerBudgeter:
 
         sliding_window = int(gguf_meta.get("sliding_window") or 0)
         total_layers = int(gguf_meta.get("total_layers") or 0)
+        pattern = gguf_meta.get("sliding_window_pattern")
 
-        # Проверяем наличие точной анатомии KV-голов
+        # Head count KV (scalar and layers)
+        raw_hkv_layers = gguf_meta.get("head_count_kv_layers")
         raw_hkv = gguf_meta.get("head_count_kv")
-        if isinstance(raw_hkv, (list, tuple)) and raw_hkv:
-            hkv = float(sum(raw_hkv)) / len(raw_hkv)
+        if isinstance(raw_hkv, (list, tuple)) and raw_hkv and not raw_hkv_layers:
+            raw_hkv_layers = raw_hkv
+
+        if raw_hkv_layers and isinstance(raw_hkv_layers, (list, tuple)):
+            hkv_layers = [float(x) for x in raw_hkv_layers]
+            hkv_scalar = float(sum(hkv_layers)) / len(hkv_layers) if hkv_layers else 0.0
         elif isinstance(raw_hkv, (int, float)):
-            hkv = float(raw_hkv)
+            hkv_layers = None
+            hkv_scalar = float(raw_hkv)
         else:
-            hkv = 0.0
+            hkv_layers = None
+            hkv_scalar = 0.0
 
-        raw_kl = gguf_meta.get("key_length")
-        if isinstance(raw_kl, (list, tuple)) and raw_kl:
-            k_len = float(sum(raw_kl)) / len(raw_kl)
-        elif isinstance(raw_kl, (int, float)):
-            k_len = float(raw_kl)
-        else:
-            k_len = 0.0
+        def _to_float(v) -> float:
+            if isinstance(v, (list, tuple)) and v:
+                return float(sum(v)) / len(v)
+            if isinstance(v, (int, float)):
+                return float(v)
+            return 0.0
 
-        raw_vl = gguf_meta.get("value_length")
-        if isinstance(raw_vl, (list, tuple)) and raw_vl:
-            v_len = float(sum(raw_vl)) / len(raw_vl)
-        elif isinstance(raw_vl, (int, float)):
-            v_len = float(raw_vl)
-        else:
-            v_len = 0.0
+        k_len = _to_float(gguf_meta.get("key_length"))
+        v_len = _to_float(gguf_meta.get("value_length"))
+        k_len_swa = _to_float(gguf_meta.get("key_length_swa"))
+        v_len_swa = _to_float(gguf_meta.get("value_length_swa"))
+
+        # Fallbacks
+        if k_len <= 0 and k_len_swa > 0:
+            k_len = k_len_swa
+        if k_len_swa <= 0 and k_len > 0:
+            k_len_swa = k_len
+        if v_len <= 0 and v_len_swa > 0:
+            v_len = v_len_swa
+        if v_len_swa <= 0 and v_len > 0:
+            v_len_swa = v_len
 
         if k_len <= 0 and v_len > 0:
             k_len = v_len
         elif v_len <= 0 and k_len > 0:
             v_len = k_len
 
-        # 1. Аналитический расчёт по точным размерностям GGUF
-        if hkv > 0 and total_layers > 0 and (k_len > 0 and v_len > 0):
-            bytes_per_token_per_layer = hkv * (k_len + v_len) * type_bytes
-            if sliding_window > 0:
-                pattern = gguf_meta.get("sliding_window_pattern")
-                if isinstance(pattern, (list, tuple)) and len(pattern) == total_layers:
-                    local_layers = sum(1 for is_swa in pattern if bool(is_swa))
-                    global_layers = total_layers - local_layers
+        if k_len_swa <= 0 and v_len_swa > 0:
+            k_len_swa = v_len_swa
+        elif v_len_swa <= 0 and k_len_swa > 0:
+            v_len_swa = k_len_swa
+
+        # 1. Послойный аналитический расчёт при наличии анатомии KV-голов
+        if (hkv_scalar > 0 or hkv_layers) and total_layers > 0 and (k_len > 0 and v_len > 0):
+            total_kv_bytes = 0.0
+            global_layers_cnt = max(1, total_layers // 6)
+            local_layers_cnt = total_layers - global_layers_cnt
+
+            for i in range(total_layers):
+                if sliding_window > 0:
+                    if isinstance(pattern, (list, tuple)) and i < len(pattern):
+                        is_swa = bool(pattern[i])
+                    else:
+                        is_swa = (i < local_layers_cnt)
                 else:
-                    global_layers = max(1, total_layers // 6)
-                    local_layers = total_layers - global_layers
+                    is_swa = False
 
-                local_ctx = min(ctx, sliding_window + 512)
-                effective_layer_tokens = (local_layers * local_ctx) + (global_layers * ctx)
-            else:
-                effective_layer_tokens = total_layers * ctx
+                if hkv_layers and i < len(hkv_layers):
+                    h_i = hkv_layers[i]
+                else:
+                    h_i = hkv_scalar
 
-            raw_mb = (effective_layer_tokens * bytes_per_token_per_layer) / (1024.0 * 1024.0)
+                if is_swa:
+                    layer_ctx = min(ctx, sliding_window + 512)
+                    k_dim = k_len_swa if k_len_swa > 0 else k_len
+                    v_dim = v_len_swa if v_len_swa > 0 else v_len
+                else:
+                    layer_ctx = ctx
+                    k_dim = k_len if k_len > 0 else k_len_swa
+                    v_dim = v_len if v_len > 0 else v_len_swa
+
+                total_kv_bytes += layer_ctx * h_i * (k_dim * type_bytes_k + v_dim * type_bytes_v)
+
+            raw_mb = total_kv_bytes / (1024.0 * 1024.0)
             return int(math.ceil(raw_mb * 1.15))
 
         # 2. Надёжный fallback через kb_per_token
+        if sliding_window > 0 and total_layers > 0:
+            if isinstance(pattern, (list, tuple)) and len(pattern) == total_layers:
+                local_layers = sum(1 for is_swa in pattern if bool(is_swa))
+                global_layers = total_layers - local_layers
+            else:
+                global_layers = max(1, total_layers // 6)
+                local_layers = total_layers - global_layers
+            local_ctx = min(ctx, sliding_window + 512)
+            effective_layer_tokens = (local_layers * local_ctx) + (global_layers * ctx)
+        else:
+            effective_layer_tokens = total_layers * ctx
+
         if sliding_window <= 0 or total_layers <= 0:
             raw_mb = (ctx * kb_per_token) / 1024.0
             return int(math.ceil(raw_mb * 1.15))
 
-        # Определение числа локальных (SWA) и глобальных слоев для fallback
-        pattern = gguf_meta.get("sliding_window_pattern")
-        if isinstance(pattern, (list, tuple)) and len(pattern) == total_layers:
-            local_layers = sum(1 for is_swa in pattern if bool(is_swa))
-            global_layers = total_layers - local_layers
-        else:
-            global_layers = max(1, total_layers // 6)
-            local_layers = total_layers - global_layers
-
-        # Окно локального слоя с учетом физического ubatch=512
-        local_ctx = min(ctx, sliding_window + 512)
-
-        # Базовый kb_per_token откалиброван под 32 слоя полного контекста ctx
         token_mb_per_layer = (kb_per_token / 32.0) / 1024.0
-        effective_layer_tokens = (local_layers * local_ctx) + (global_layers * ctx)
         raw_mb = effective_layer_tokens * token_mb_per_layer
-
         return int(math.ceil(raw_mb * 1.15))
 
     # -------------------------------------------------------------------------
@@ -805,6 +927,7 @@ class LayerBudgeter:
 
         # 3. Расчет Usable VRAM с учетом арбитража, занятости, буфера вычислений и SWA KV-кэша
         effective_cache_type = cache_type or "q8_0"
+        ctk, ctv = resolve_kv_cache_types(effective_cache_type)
         kv_cache_mb = cls.estimate_kv_cache_mb(target_context, cache_type=effective_cache_type, gguf_meta=meta)
 
         eff_ubatch = max(1, int(ubatch_size if ubatch_size is not None else DEFAULT_LLAMA_UBATCH_SIZE))
@@ -828,7 +951,7 @@ class LayerBudgeter:
             effective_os_reserve = max(os_reserve_mb, int(math.ceil(used_vram)))
             forge_res = 0
             frag_margin = int(max(0, fragmentation_margin_mb))
-            safety_res = int(SAFETY_MARGIN_VRAM_MB) + frag_margin  # Базовый буфер против WDDM paging (250 МБ) + фрагментационный запас
+            safety_res = int(SAFETY_MARGIN_VRAM_MB) + frag_margin  # Базовый буфер против WDDM paging (170 МБ) + фрагментационный запас
             compute_mb = base_graph_mb + logits_mb
             usable_vram_mb = total_vram - effective_os_reserve - forge_res - safety_res - kv_cache_mb - compute_mb
         else:
@@ -899,13 +1022,17 @@ class LayerBudgeter:
             else:
                 cpu_weights_mb = model_size_mb
 
-            # Пропорциональный буфер: 1024 МБ для 1-3 слоев (<= 500 МБ) или 1500 МБ для тяжелого оффлоада
-            headroom_mb = 1024.0 if cpu_weights_mb <= 500.0 else min_os_headroom_mb
+            # Пропорциональный буфер: при is_arbiter_managed=True headroom_mb = 1024 МБ для cpu_weights_mb <= 1024 МБ (4-6 слоев),
+            # иначе 1500 МБ для тяжелого оффлоада
+            if is_arbiter_managed:
+                headroom_mb = 1024.0 if cpu_weights_mb <= 1024.0 else min_os_headroom_mb
+            else:
+                headroom_mb = 1024.0 if cpu_weights_mb <= 500.0 else min_os_headroom_mb
             usable_ram_mb = max(0.0, available_ram_mb - headroom_mb)
 
             if available_ram_mb < (cpu_weights_mb + headroom_mb):
                 can_run = False
-                reason = "OOM Guard: недостаточно VRAM + RAM для безопасного запуска"
+                reason = f"OOM Guard: недостаточно VRAM + RAM для безопасного запуска (CPU слои={int(cpu_weights_mb)} MB | Свободно RAM={int(available_ram_mb)} MB)"
                 audit_data = {
                     "model_path": str(p),
                     "target_context": target_context,
@@ -935,6 +1062,7 @@ class LayerBudgeter:
                     "hysteresis_applied": hysteresis_applied,
                     "final_ngl": 0,
                     "cpu_weights_mb": round(cpu_weights_mb, 2),
+                    "available_ram_mb": round(available_ram_mb, 2),
                     "usable_ram_mb": round(usable_ram_mb, 2),
                     "can_run": False,
                     "reason": reason,
@@ -961,6 +1089,9 @@ class LayerBudgeter:
             "forge_reserve_mb": forge_res,
             "safety_margin_mb": safety_res,
             "fragmentation_margin_mb": frag_margin,
+            "cache_type": effective_cache_type,
+            "cache_type_k": ctk,
+            "cache_type_v": ctv,
             "kv_cache_mb": kv_cache_mb,
             "usable_vram_mb": usable_vram_mb,
             "model_size_mb": model_size_mb,
@@ -975,6 +1106,7 @@ class LayerBudgeter:
             "hysteresis_applied": hysteresis_applied,
             "final_ngl": calculated_ngl,
             "cpu_weights_mb": round(cpu_weights_mb, 2),
+            "available_ram_mb": round(available_ram_mb, 2),
             "usable_ram_mb": round(usable_ram_mb, 2),
             "can_run": True,
             "reason": "Безопасный CPU-режим: видеокарта не обнаружена или VRAM <= 512 МБ (ngl=0)" if total_vram <= 512 else reason,
@@ -994,6 +1126,14 @@ class LayerBudgeter:
         """
         topo_str = "PURE COMPUTE (iGPU Intel)" if audit_data.get("is_pure_compute") else "PRIMARY DISPLAY (dGPU display)"
         eff_os = audit_data.get("effective_os_reserve_mb", audit_data.get("os_reserve_mb"))
+        kv_mb = audit_data.get("kv_cache_mb")
+        ctk = audit_data.get("cache_type_k")
+        ctv = audit_data.get("cache_type_v")
+        if ctk and ctv and ctk != ctv:
+            kv_str = f"KV({kv_mb}, {ctk}/{ctv})"
+        else:
+            kv_str = f"KV({kv_mb})"
+
         report = (
             f"\n[LayerBudgeter Diagnostic Passport]\n"
             f"  ├── 1. Топология GPU: {topo_str} | Резерв ОС: {audit_data.get('os_reserve_mb')} MB "
@@ -1002,13 +1142,14 @@ class LayerBudgeter:
             f"- OS({eff_os}) "
             f"- Forge({audit_data.get('forge_reserve_mb')}) "
             f"- Safety({audit_data.get('safety_margin_mb')}) "
-            f"- KV({audit_data.get('kv_cache_mb')}) "
+            f"- {kv_str} "
             f"- Compute({audit_data.get('compute_buffer_mb', 0)}) "
             f"=> Usable VRAM = {audit_data.get('usable_vram_mb')} MB\n"
             f"  ├── 3. Анатомия модели: Размер={audit_data.get('model_size_mb')} MB | Всего слоев={audit_data.get('total_layers')} | "
             f"Base Overhead={audit_data.get('base_overhead_mb')} MB | Вес слоя={audit_data.get('layer_weight_mb')} MB | "
-            f"Vocab={audit_data.get('vocab_size', 0)} | ubatch={audit_data.get('ubatch_size', 512)} (Logits={audit_data.get('logits_buffer_mb', 0)} MB)\n"
-            f"  ├── 4. Доступно под блоки: {audit_data.get('available_for_blocks_mb')} MB\n"
+            f"Vocab={audit_data.get('vocab_size', 0)} | ubatch={audit_data.get('ubatch_size', DEFAULT_LLAMA_UBATCH_SIZE)} (Logits={audit_data.get('logits_buffer_mb', 0)} MB)\n"
+            f"  ├── 4. Доступно под блоки: {audit_data.get('available_for_blocks_mb')} MB | "
+            f"RAM: CPU слои={audit_data.get('cpu_weights_mb', 0.0)} MB | Свободно RAM={audit_data.get('available_ram_mb', 0.0)} MB\n"
             f"  └── 5. Вердикт оффлоада: NGL = {audit_data.get('final_ngl')} | "
             f"Can Run = {audit_data.get('can_run')} | "
             f"Гистерезис = {audit_data.get('hysteresis_applied')} | "

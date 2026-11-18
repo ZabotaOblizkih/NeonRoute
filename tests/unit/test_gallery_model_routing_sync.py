@@ -53,6 +53,7 @@ def test_auto_mode_preserves_routing_description_when_llm_guidance_present(monke
         user_query="Нарисуй аниме девушку",
         selected_forge_checkpoint="✨ Арт-директор (Авто)",
         include_memory=False,
+        static_core_only=False,
     )
 
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in built
@@ -95,11 +96,11 @@ def test_manual_header_selection_propagates_through_deferred_rag_to_llm(monkeypa
 
     call_kwargs = ctrl.lm_client.chat_completion.call_args[1]
     assert "selected_forge_checkpoint" not in call_kwargs
-    sys_msg = call_kwargs["messages"][0]["content"]
+    turn_msg = call_kwargs["messages"][-1]["content"]
 
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in sys_msg
-    assert "Prompt as cinematic dark fantasy art, tactile fabric textures." in sys_msg
-    assert "--model sdxl_fantasy" in sys_msg
+    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in turn_msg
+    assert "Prompt as cinematic dark fantasy art, tactile fabric textures." in turn_msg
+    assert "--model sdxl_fantasy" in turn_msg
 
 
 def test_enqueue_gallery_art_pass_respects_manual_and_auto_style_description(monkeypatch):

@@ -636,6 +636,13 @@ class LMStudioClient(QObject):
             "cache_prompt": bool(kwargs.get("cache_prompt", True))
         }
 
+        # Принудительная привязка к слоту 0 для встроенного llama-server
+        if has_pm_headless or "id_slot" in kwargs:
+            payload["id_slot"] = int(kwargs.get("id_slot", 0))
+
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
+
         if enable_thinking is not None:
             payload["chat_template_kwargs"] = {
                 "enable_thinking": bool(enable_thinking),
@@ -753,6 +760,12 @@ class LMStudioClient(QObject):
                 raise RuntimeError(err_text)
 
             content = ""
+            prompt_tokens = 0
+            completion_tokens = 0
+            cache_n = 0
+            prompt_n = 0
+            finish_reason = "unknown"
+
             if stream:
                 accumulated = []
                 first_token_time = None
@@ -776,10 +789,27 @@ class LMStudioClient(QObject):
                                 break
                             try:
                                 chunk = json.loads(data_str)
+
+                                # Извлекаем usage и timings до проверки choices (в финальном служебном чанке choices=[])
+                                usage_obj = chunk.get("usage")
+                                if isinstance(usage_obj, dict):
+                                    if "prompt_tokens" in usage_obj:
+                                        prompt_tokens = int(usage_obj.get("prompt_tokens") or 0)
+                                    if "completion_tokens" in usage_obj:
+                                        completion_tokens = int(usage_obj.get("completion_tokens") or 0)
+                                timings_obj = chunk.get("timings")
+                                if isinstance(timings_obj, dict):
+                                    if "cache_n" in timings_obj:
+                                        cache_n = int(timings_obj.get("cache_n") or 0)
+                                    if "prompt_n" in timings_obj:
+                                        prompt_n = int(timings_obj.get("prompt_n") or 0)
+
                                 choices = chunk.get("choices", [])
                                 if not choices:
                                     continue
                                 delta = choices[0].get("delta", {})
+                                if choices[0].get("finish_reason"):
+                                    finish_reason = choices[0].get("finish_reason")
                                 rc_piece = delta.get("reasoning_content") or delta.get("reasoning") or ""
                                 content_piece = delta.get("content") or ""
 
@@ -878,8 +908,6 @@ class LMStudioClient(QObject):
                 if not content and not self._is_aborted:
                     raise RuntimeError("LLM stream closed with 0 tokens (server disconnected/crashed)")
 
-            finish_reason = "unknown"
-            prompt_tokens = 0
             if not content:
                 try:
                     raw_text = resp.content.decode("utf-8", errors="replace")
@@ -891,15 +919,27 @@ class LMStudioClient(QObject):
                         reasoning = msg.get("reasoning_content", "") or msg.get("reasoning", "") or ""
                         if reasoning and "<think>" not in content:
                             content = f"<think>\n{reasoning}\n</think>\n{content}"
+                        if choices[0].get("finish_reason"):
+                            finish_reason = choices[0].get("finish_reason")
                     usage = data.get("usage", {})
-                    prompt_tokens = usage.get("prompt_tokens", 0)
-                    completion_tokens = usage.get("completion_tokens", 0)
-                    finish_reason = choices[0].get("finish_reason", "unknown") if choices else "unknown"
+                    if "prompt_tokens" in usage:
+                        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    if "completion_tokens" in usage:
+                        completion_tokens = int(usage.get("completion_tokens") or 0)
+                    timings = data.get("timings", {})
+                    if "cache_n" in timings:
+                        cache_n = int(timings.get("cache_n") or 0)
+                    if "prompt_n" in timings:
+                        prompt_n = int(timings.get("prompt_n") or 0)
                     if completion_tokens > 0:
                         tokens_count = completion_tokens
                 except Exception:
                     pass
 
+            if tokens_count == 0 and completion_tokens > 0:
+                tokens_count = completion_tokens
+            if prompt_n == 0 and prompt_tokens > 0 and cache_n == 0:
+                prompt_n = prompt_tokens
 
             content = str(content)
             t_total = time.time() - t_start
@@ -911,6 +951,7 @@ class LMStudioClient(QObject):
                 f"[LMS-TELEMETRY] Готово: {len(content)} симв, ~{tokens_count} токенов за {t_total:.2f} с "
                 f"(TTFT: {ttft_val:.2f} с, Генерация: {gen_duration:.2f} с | Скорость: {tok_per_sec:.1f} tok/s) "
                 f"finish_reason={finish_reason}, prompt_tokens={prompt_tokens} "
+                f"(KV hit: {cache_n} tok, eval: {prompt_n} tok) "
                 f"{_get_vram_telemetry_str()}"
             )
 

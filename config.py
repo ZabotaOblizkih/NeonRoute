@@ -40,10 +40,11 @@ LOCAL_MODELS_DIR = BASE_DIR / "models"
 LLAMA_SERVER_BAT_PATH = BASE_DIR / "run_llama_server.bat"
 ART_DIRECTOR_MODELS_PATH = DATA_DIR / "art_director_models.json"
 LORA_REGISTRY_PATH = DATA_DIR / "lora_registry.json"
+KV_SLOTS_DIR = DATA_DIR / "kv_slots"
 # ENTITIES_JSON_PATH = DATA_DIR / "entities.json"  # Deprecated and removed
 
 # Ensure all managed directories exist
-for folder in [BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR, CHARACTERS_DIR, HISTORY_DIR, BACKGROUNDS_DIR, DATA_DIR, CONFIG_DIR, WORKSPACE_DIR, ASSETS_DIR, AVATARS_DIR, LOCAL_BIN_DIR, LOCAL_MODELS_DIR, KNOWLEDGE_BASE_DIR]:
+for folder in [BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR, CHARACTERS_DIR, HISTORY_DIR, BACKGROUNDS_DIR, DATA_DIR, CONFIG_DIR, WORKSPACE_DIR, ASSETS_DIR, AVATARS_DIR, LOCAL_BIN_DIR, LOCAL_MODELS_DIR, KNOWLEDGE_BASE_DIR, KV_SLOTS_DIR]:
     folder.mkdir(parents=True, exist_ok=True)
 
 # Network Endpoints for Local AI Backends
@@ -127,11 +128,11 @@ EMERGENCY_VRAM_MB = 150            # Алиас для обратной совм
 
 # Константы аппаратного резервирования VRAM
 FORGE_VRAM_RESERVE_MB = 450          # Несгораемый слот под PyTorch CUDA context Forge
-SAFETY_MARGIN_VRAM_MB = 250          # Неприкосновенный запас от краша видеодрайвера (TDR)
+SAFETY_MARGIN_VRAM_MB = 170          # Неприкосновенный запас от краша видеодрайвера (TDR)
 OS_RESERVE_PURE_COMPUTE_MB = 150     # Резерв ОС при изолированном выводе на iGPU
 OS_RESERVE_PRIMARY_DISPLAY_MB = 700  # Резерв ОС при выводе экрана через dGPU
 HYSTERESIS_LAYER_DELTA = 3           # Зона нечувствительности рестартов по слоям
-DEFAULT_LLAMA_UBATCH_SIZE = 512      # Физический микробатч вычислений llama-server по умолчанию
+DEFAULT_LLAMA_UBATCH_SIZE = 256      # Физический микробатч вычислений llama-server по умолчанию
 
 # Пороги относительного коэффициента заполнения контекста (Контур 1)
 CONTEXT_RATIO_TIER_1 = 0.60        # ratio < 0.60 -> Ступень 1 (60 сообщ / 1024 токена)
@@ -166,7 +167,7 @@ DEFAULT_SD_SETTINGS = {
 
 # Application UI Strings & Metadata
 APP_NAME = "NeonRoute"
-APP_VERSION = "0.9.8.1A"
+APP_VERSION = "0.9.8.2 - beta"
 APP_TAGLINE = "Local AI Orchestrator • 8GB VRAM Optimized"
 
 # Базовый промпт ролевого режима (по умолчанию, если не задана карточка)

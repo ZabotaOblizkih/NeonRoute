@@ -74,6 +74,11 @@ class ShutdownWorker(QThread):
             logger.debug(f"Error stopping mobile server on shutdown: {e}")
 
         try:
+            if hasattr(self.main_window, "process_manager") and self.main_window.process_manager:
+                try:
+                    self.main_window.process_manager.clear_kv_slot_cache()
+                except Exception:
+                    pass
             self.main_window.process_manager.shutdown_all()
         except Exception as e:
             logger.error(f"Error in process_manager.shutdown_all: {e}")

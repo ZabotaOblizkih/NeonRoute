@@ -58,8 +58,7 @@ def test_forge_launch_cmd_adaptive_on_8gb(tmp_path):
         cmd = forge_calls[0].args[0]
         assert "--always-offload-from-vram" not in cmd
         assert "--pin-shared-memory" in cmd
-        assert "--no-half-vae" in cmd
-        assert "--vae-in-fp32" in cmd
+        assert ("--vae-in-bf16" in cmd) or ("--vae-in-fp32" in cmd)
         assert "--upcast-sampling" not in cmd
         assert "--api" in cmd
         assert "--port" in cmd
@@ -67,17 +66,28 @@ def test_forge_launch_cmd_adaptive_on_8gb(tmp_path):
 
 
 def test_pin_shared_memory_ram_guard():
-    """На <= 16 ГБ RAM с нехваткой свободной ОЗУ --pin-shared-memory отключается во избежание Host RAM OOM."""
-    ok_low, _ = should_enable_pin_shared_memory(
-        llm_active=True, sdxl_fp8_enabled=True, total_ram_gb=16.0, avail_ram_mb=5200
+    """На <= 16.5 ГБ RAM с активной LLM или нехваткой свободной ОЗУ --pin-shared-memory отключается во избежание Host RAM OOM."""
+    # 1. При активной LLM на 16 ГБ RAM (15.7 ГБ) - безусловное отключение pin-shared-memory
+    ok_llm_active, reason_llm = should_enable_pin_shared_memory(
+        llm_active=True, sdxl_fp8_enabled=True, total_ram_gb=15.7, avail_ram_mb=8500
     )
-    assert ok_low is False
+    assert ok_llm_active is False
+    assert "активной LLM" in reason_llm
 
-    ok_fp16, _ = should_enable_pin_shared_memory(
-        llm_active=False, sdxl_fp8_enabled=False, total_ram_gb=16.0, avail_ram_mb=7500
+    # 2. При неактивной LLM, но свободная RAM < 9000 MB - также отключение
+    ok_low_no_llm, reason_low = should_enable_pin_shared_memory(
+        llm_active=False, sdxl_fp8_enabled=True, total_ram_gb=15.7, avail_ram_mb=7500
     )
-    assert ok_fp16 is False
+    assert ok_low_no_llm is False
+    assert "< 9000MB" in reason_low
 
+    # 3. При неактивной LLM и достаточной RAM >= 9000 MB на 16 ГБ - включение разрешено
+    ok_avail_no_llm, _ = should_enable_pin_shared_memory(
+        llm_active=False, sdxl_fp8_enabled=True, total_ram_gb=16.0, avail_ram_mb=9500
+    )
+    assert ok_avail_no_llm is True
+
+    # 4. На системе 32 ГБ RAM при свободных 18 ГБ - включение разрешено даже с активной LLM
     ok_high, _ = should_enable_pin_shared_memory(
         llm_active=True, sdxl_fp8_enabled=True, total_ram_gb=32.0, avail_ram_mb=18000
     )
@@ -88,6 +98,49 @@ def test_pin_shared_memory_ram_guard():
         assert "--always-offload-from-vram" in flags_4gb
         assert "--pin-shared-memory" not in flags_4gb
         assert meta_4gb["pin_shared_memory"] is False
+
+
+def test_resolve_forge_startup_flags_vae_precision_by_compute_cap():
+    """Проверка динамического выбора VAE флагов в зависимости от Compute Capability GPU."""
+    # 1. Ada Lovelace (8, 9) -> --vae-in-bf16 без легаси --no-half-vae и --vae-in-fp32
+    hw_ada = {"vendor": "nvidia", "compute_cap": (8, 9), "vram_total_mb": 12288}
+    with patch("services.layer_budgeter.LayerBudgeter.detect_hardware_kv_profile", return_value=hw_ada), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(12.0, 700)):
+        flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=20000)
+        assert "--vae-in-bf16" in flags
+        assert "--no-half-vae" not in flags
+        assert "--vae-in-fp32" not in flags
+        assert meta["vae_precision"] == "bf16"
+
+    # 2. Blackwell (12, 0) -> --vae-in-bf16
+    hw_blackwell = {"vendor": "nvidia", "compute_cap": (12, 0), "vram_total_mb": 8192}
+    with patch("services.layer_budgeter.LayerBudgeter.detect_hardware_kv_profile", return_value=hw_blackwell), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)):
+        flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=20000)
+        assert "--vae-in-bf16" in flags
+        assert "--no-half-vae" not in flags
+        assert "--vae-in-fp32" not in flags
+        assert meta["vae_precision"] == "bf16"
+
+    # 3. Turing (7, 5) -> откат на безопасную пару [--no-half-vae, --vae-in-fp32]
+    hw_turing = {"vendor": "nvidia", "compute_cap": (7, 5), "vram_total_mb": 8192}
+    with patch("services.layer_budgeter.LayerBudgeter.detect_hardware_kv_profile", return_value=hw_turing), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)):
+        flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=20000)
+        assert "--vae-in-bf16" not in flags
+        assert "--no-half-vae" in flags
+        assert "--vae-in-fp32" in flags
+        assert meta["vae_precision"] == "fp32"
+
+    # 4. Не-NVIDIA / CPU -> безопасная пара [--no-half-vae, --vae-in-fp32]
+    hw_cpu = {"vendor": "cpu", "compute_cap": "N/A", "vram_total_mb": 0}
+    with patch("services.layer_budgeter.LayerBudgeter.detect_hardware_kv_profile", return_value=hw_cpu), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(0.0, 0)):
+        flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=20000)
+        assert "--vae-in-bf16" not in flags
+        assert "--no-half-vae" in flags
+        assert "--vae-in-fp32" in flags
+        assert meta["vae_precision"] == "fp32"
 
 
 def test_resolve_forge_offload_policy_calibrated_8gb():
@@ -356,9 +409,9 @@ def test_art_director_plan_adaptive_hires():
 
 
 def test_resolve_forge_startup_flags_includes_no_half_vae():
-    """Флаги запуска Forge содержат --no-half-vae для предотвращения NaN в VAE декодере."""
+    """Флаги запуска Forge содержат безопасный флаг VAE (--vae-in-bf16 для compute_cap >= 8.0 или --no-half-vae)."""
     flags, meta = resolve_forge_startup_flags()
-    assert "--no-half-vae" in flags
+    assert ("--vae-in-bf16" in flags) or ("--no-half-vae" in flags)
 
 
 def test_sd15_hires_no_forced_vae_tiling_below_threshold():
@@ -485,12 +538,14 @@ def test_art_director_plan_adaptive_hires_second_pass_steps():
 
 
 def test_resolve_forge_startup_flags_vae_fp32_and_no_duplicates():
-    """Флаги запуска включают --vae-in-fp32, --no-half-vae, исключают --upcast-sampling и не дублируются."""
-    flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=18000)
-    assert "--vae-in-fp32" in flags
-    assert "--no-half-vae" in flags
-    assert "--upcast-sampling" not in flags
-    assert len(flags) == len(set(flags))
+    """Флаги запуска на архитектуре < 8.0 (Turing 7.5) включают --vae-in-fp32, --no-half-vae, исключают --upcast-sampling и не дублируются."""
+    hw_turing = {"vendor": "nvidia", "compute_cap": (7, 5), "vram_total_mb": 8192}
+    with patch("services.layer_budgeter.LayerBudgeter.detect_hardware_kv_profile", return_value=hw_turing):
+        flags, meta = resolve_forge_startup_flags(total_ram_gb=32.0, avail_ram_mb=18000)
+        assert "--vae-in-fp32" in flags
+        assert "--no-half-vae" in flags
+        assert "--upcast-sampling" not in flags
+        assert len(flags) == len(set(flags))
 
 
 def test_resolve_forge_offload_policy_applies_fp32_overhead_and_early_tiling():

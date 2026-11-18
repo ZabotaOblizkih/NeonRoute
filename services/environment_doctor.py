@@ -5,7 +5,7 @@ import logging
 import subprocess
 import importlib.util
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 from utils.file_utils import get_python_cli_executable
 
@@ -88,11 +88,22 @@ class PipInstallWorker(QThread):
                 logger.error(f"[EnvironmentDoctor] {err_msg}")
                 self.finished.emit(False, err_msg)
                 return
+        EnvironmentDoctor.reset_cache()
         self.finished.emit(True, "Все выбранные компоненты успешно установлены!")
 
 class EnvironmentDoctor:
+    _cached_missing: Optional[List[Dict[str, Any]]] = None
+
     @classmethod
-    def check_missing(cls, verbose: bool = True) -> List[Dict[str, Any]]:
+    def reset_cache(cls) -> None:
+        """Сброс кэша аудита окружения."""
+        cls._cached_missing = None
+
+    @classmethod
+    def check_missing(cls, verbose: bool = True, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        if not force_refresh and cls._cached_missing is not None:
+            return list(cls._cached_missing)
+
         t_start = time.perf_counter()
         missing = []
 
@@ -116,10 +127,19 @@ class EnvironmentDoctor:
                     f"({len(DEPENDENCY_CATALOG)} проверено за {elapsed_ms:.2f} мс)."
                 )
             else:
-                names = [f"{m['name']} ({m['key']})" for m in missing]
-                logger.warning(
-                    f"[EnvironmentDoctor] ⚠️ Обнаружено отсутствие {len(missing)} компонентов "
-                    f"(сканирование заняло {elapsed_ms:.2f} мс): {', '.join(names)}"
-                )
+                git_missing = [m for m in missing if m.get("key") == "git"]
+                other_missing = [m for m in missing if m.get("key") != "git"]
 
+                if git_missing:
+                    logger.info(
+                        f"[EnvironmentDoctor] ℹ️ Git не обнаружен в системе (опциональный компонент для режима Инженера)."
+                    )
+                if other_missing:
+                    names = [f"{m['name']} ({m['key']})" for m in other_missing]
+                    logger.warning(
+                        f"[EnvironmentDoctor] ⚠️ Обнаружено отсутствие {len(other_missing)} компонентов "
+                        f"(сканирование заняло {elapsed_ms:.2f} мс): {', '.join(names)}"
+                    )
+
+        cls._cached_missing = list(missing)
         return missing

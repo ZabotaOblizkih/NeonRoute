@@ -18,16 +18,23 @@ import urllib.request
 import urllib.error
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple, List, Any
+from typing import Optional, Tuple, List, Any, Dict
 
 import psutil
 import requests
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR, LM_STUDIO_CLI_CMD, LOGS_DIR, DEFAULT_LLAMA_UBATCH_SIZE
+from config import (
+    FORGE_LAUNCHER_PATH,
+    FORGE_ROOT_DIR,
+    LM_STUDIO_CLI_CMD,
+    LOGS_DIR,
+    DEFAULT_LLAMA_UBATCH_SIZE,
+    KV_SLOTS_DIR,
+)
 from core.forge_locator import get_clean_forge_env
 from core.win32_job import Win32JobManager
-from services.server_config import ServerConfigResolver
+from services.server_config import ServerConfigResolver, resolve_kv_cache_types
 
 logger = logging.getLogger("NeonRoute.ProcessManager")
 
@@ -130,6 +137,15 @@ class ProcessManager(QObject):
         self._current_total_layers: Optional[int] = None
         self._evicted_for_forge_ngl: Optional[int] = None
         self._evicted_for_forge_model: Optional[str] = None
+        self._current_running_model_path: Optional[str] = None
+        self._current_running_ctx: Optional[int] = None
+        self._current_running_ctk: Optional[str] = None
+        self._current_running_ctv: Optional[str] = None
+        self._current_running_fa: Optional[str] = None
+        self._current_running_port: Optional[int] = None
+
+        # Зачистка остатков KV-слотов после аварийного закрытия
+        self.clear_kv_slot_cache()
 
     @property
     def lm_client(self) -> Optional[Any]:
@@ -311,10 +327,18 @@ class ProcessManager(QObject):
                 else:
                     self._evicted_for_forge_ngl = None
                     self._evicted_for_forge_model = None
+                    self.clear_kv_slot_cache()
 
                 self._llama_process = None
                 self._current_running_ngl = None
                 self._current_total_layers = None
+                if not for_forge_eviction:
+                    self._current_running_model_path = None
+                    self._current_running_ctx = None
+                    self._current_running_ctk = None
+                    self._current_running_ctv = None
+                    self._current_running_fa = None
+                    self._current_running_port = None
                 if hasattr(self, "lm_client") and self.lm_client:
                     self.lm_client._current_running_ngl = None
                     self.lm_client._current_total_layers = None
@@ -365,6 +389,188 @@ class ProcessManager(QObject):
             self._set_server_state(next_state, msg)
             if not for_forge_eviction:
                 self._safe_emit("lms_status_changed", False, msg)
+
+    # =========================================================================
+    # KV Slot Cache Management (Save / Restore across Forge eviction)
+    # =========================================================================
+
+    def clear_kv_slot_cache(self) -> None:
+        """
+        Публичный потокобезопасный метод безопасного удаления файлов дампов KV-слотов
+        (evicted_slot_0.bin, slot_metadata.json) из KV_SLOTS_DIR.
+        """
+        with self._process_lock:
+            for filename in ("evicted_slot_0.bin", "slot_metadata.json"):
+                file_path = KV_SLOTS_DIR / filename
+                try:
+                    if file_path.exists():
+                        file_path.unlink()
+                except OSError as e:
+                    logger.debug(f"[ProcessManager] clear_kv_slot_cache не удалось удалить {file_path}: {e}")
+
+    def _save_kv_slot_for_eviction(self) -> bool:
+        """
+        Сохраняет снимок KV-кэша слота 0 и метаданные перед выгрузкой llama-server в пользу SD Forge.
+        Вызывается внутри evict_llm_for_forge_sync() непосредственно перед остановкой процесса.
+        """
+        with self._process_lock:
+            # Если процесс не запущен и порт закрыт, сохранять нечего
+            if self._llama_process is None and not self.is_port_open(port=1234, timeout=0.1):
+                return False
+
+            port = getattr(self, "_current_running_port", None)
+            if not port:
+                try:
+                    port = ServerConfigResolver.load_ini().get("port", 1234)
+                except Exception:
+                    port = 1234
+
+            # Определяем параметры активной модели
+            model_path = getattr(self, "_current_running_model_path", None)
+            if not model_path and hasattr(self, "lm_client") and self.lm_client:
+                model_path = getattr(self.lm_client, "_last_loaded_model_id", None)
+            if not model_path:
+                model_path = getattr(self, "_evicted_for_forge_model", None)
+
+            if model_path:
+                resolved_p = ServerConfigResolver.resolve_model_path(model_path) or Path(model_path)
+            else:
+                resolved_p = None
+
+            norm_path = str(resolved_p.resolve()) if (resolved_p and resolved_p.exists()) else str(model_path or "")
+            try:
+                model_mtime = os.path.getmtime(resolved_p) if (resolved_p and resolved_p.exists()) else 0.0
+            except OSError:
+                model_mtime = 0.0
+
+            ctx = getattr(self, "_current_running_ctx", None)
+            if not ctx:
+                try:
+                    ctx = ServerConfigResolver.load_ini().get("default_context", 14336)
+                except Exception:
+                    ctx = 14336
+
+            ctk = getattr(self, "_current_running_ctk", None) or "q8_0"
+            ctv = getattr(self, "_current_running_ctv", None) or "q8_0"
+            fa = getattr(self, "_current_running_fa", None) or "on"
+
+            meta = {
+                "model_path": norm_path,
+                "model_mtime": model_mtime,
+                "context_length": int(ctx),
+                "kv_cache_type_k": str(ctk),
+                "kv_cache_type_v": str(ctv),
+                "flash_attn": str(fa),
+            }
+
+            # Перед сохранением зачищаем старые дампы
+            self.clear_kv_slot_cache()
+
+            t0 = time.time()
+            url = f"http://127.0.0.1:{port}/slots/0?action=save"
+            try:
+                logger.info(f"[ProcessManager] Сохранение KV-слота 0 в {KV_SLOTS_DIR / 'evicted_slot_0.bin'}...")
+                resp = requests.post(url, json={"filename": "evicted_slot_0.bin"}, timeout=5.0)
+                elapsed_ms = (time.time() - t0) * 1000.0
+                if resp.status_code == 200:
+                    meta_path = KV_SLOTS_DIR / "slot_metadata.json"
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(meta, f, indent=2, ensure_ascii=False)
+                    slot_file = KV_SLOTS_DIR / "evicted_slot_0.bin"
+                    size_mb = 0.0
+                    try:
+                        if slot_file.exists():
+                            size_mb = round(slot_file.stat().st_size / 1048576, 1)
+                    except OSError:
+                        pass
+                    logger.info(
+                        f"[ProcessManager] KV-слот 0 и метаданные сохранены перед выгрузкой под Forge ({size_mb} MB за {elapsed_ms:.1f} мс)."
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        f"[ProcessManager] Ошибка сервера при сохранении KV-слота 0 (HTTP {resp.status_code}): {resp.text[:100]}"
+                    )
+                    self.clear_kv_slot_cache()
+                    return False
+            except Exception as e:
+                logger.warning(f"[ProcessManager] Исключение при сохранении KV-слота 0: {e}")
+                self.clear_kv_slot_cache()
+                return False
+
+    def _restore_kv_slot_after_start(self, expected_meta: Dict[str, Any]) -> bool:
+        """
+        Восстанавливает снимок KV-слота 0 после перезапуска llama-server, если снимок совместим.
+        Всегда очищает дамп после попытки восстановления (одноразовый дамп).
+        """
+        slot_file = KV_SLOTS_DIR / "evicted_slot_0.bin"
+        meta_file = KV_SLOTS_DIR / "slot_metadata.json"
+
+        if not slot_file.exists() or not meta_file.exists():
+            return False
+
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                saved_meta = json.load(f)
+        except Exception as e:
+            logger.warning(f"[ProcessManager] Не удалось прочитать метаданные KV-слота {meta_file}: {e}")
+            self.clear_kv_slot_cache()
+            return False
+
+        # Сверка метаданных с актуальными expected_meta
+        mismatch_reasons = []
+        for key in ("model_path", "model_mtime", "context_length", "kv_cache_type_k", "kv_cache_type_v", "flash_attn"):
+            saved_val = saved_meta.get(key)
+            exp_val = expected_meta.get(key)
+            if key == "model_mtime":
+                try:
+                    if abs(float(saved_val or 0.0) - float(exp_val or 0.0)) > 0.01:
+                        mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
+                except (ValueError, TypeError):
+                    mismatch_reasons.append(f"{key}: parse error")
+            elif key == "model_path":
+                s_name = Path(str(saved_val)).name.lower() if saved_val else ""
+                e_name = Path(str(exp_val)).name.lower() if exp_val else ""
+                if s_name != e_name:
+                    mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
+            else:
+                if str(saved_val) != str(exp_val):
+                    mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
+
+        if mismatch_reasons:
+            logger.info(
+                f"[ProcessManager] Инвалидация KV-слота: параметры запуска не совпадают ({'; '.join(mismatch_reasons)}). "
+                f"Кэш очищен, выполняется стандартный холодный prefill."
+            )
+            self.clear_kv_slot_cache()
+            return False
+
+        port = getattr(self, "_current_running_port", None) or 1234
+        url = f"http://127.0.0.1:{port}/slots/0?action=restore"
+        size_mb = 0.0
+        try:
+            if slot_file.exists():
+                size_mb = round(slot_file.stat().st_size / 1048576, 1)
+        except OSError:
+            pass
+        t0 = time.time()
+        try:
+            logger.info(f"[ProcessManager] Восстановление KV-слота 0 из {slot_file}...")
+            resp = requests.post(url, json={"filename": "evicted_slot_0.bin"}, timeout=5.0)
+            elapsed_ms = (time.time() - t0) * 1000.0
+            if resp.status_code == 200:
+                logger.info(f"[ProcessManager] KV-слот 0 успешно восстановлен ({size_mb} MB за {elapsed_ms:.1f} мс).")
+                return True
+            else:
+                logger.warning(
+                    f"[ProcessManager] Ошибка восстановления KV-слота 0 (HTTP {resp.status_code}): {resp.text[:100]}"
+                )
+                return False
+        except Exception as e:
+            logger.warning(f"[ProcessManager] Исключение при восстановлении KV-слота 0: {e}")
+            return False
+        finally:
+            self.clear_kv_slot_cache()
 
     def _extract_llama_startup_error(self) -> Tuple[str, bool]:
         """
@@ -599,11 +805,25 @@ class ProcessManager(QObject):
                 except Exception:
                     pass
 
-                kv_cache_type = app_cfg.get("kv_cache_type") or ini_cfg.get("cache_type_k") or "q8_0"
+                raw_kv = app_cfg.get("kv_cache_type")
+                ini_k = ini_cfg.get("cache_type_k")
+                ini_v = ini_cfg.get("cache_type_v")
+                ctk, ctv = resolve_kv_cache_types(raw_type=raw_kv, cache_type_k=ini_k, cache_type_v=ini_v)
+
                 fa_enabled = app_cfg.get("flash_attention_enabled")
                 if fa_enabled is None:
                     fa_enabled = (ini_cfg.get("flash_attn", "on") == "on")
                 fa_str = "on" if fa_enabled else "off"
+
+                # Pre-flight Guard: квантованный KV-кэш требует включенного Flash Attention
+                if fa_str == "off" and (ctk != "f16" or ctv != "f16"):
+                    logger.warning(
+                        f"[ProcessManager] Pre-flight Guard: Квантованный KV-кэш ({ctk}/{ctv}) требует включенного Flash Attention. "
+                        f"При fa=off типы принудительно сброшены на f16 во избежание сбоя ядра llama.cpp."
+                    )
+                    ctk, ctv = "f16", "f16"
+
+                eff_kv_profile = f"{ctk}_{ctv}" if ctk != ctv else ctk
 
                 # Динамический расчет слоев через LayerBudgeter
                 audit_data: Dict[str, Any] = {}
@@ -682,7 +902,7 @@ class ProcessManager(QObject):
                         model_path=model_path,
                         target_context=effective_ctx,
                         current_running_ngl=current_running_ngl,
-                        cache_type=kv_cache_type,
+                        cache_type=eff_kv_profile,
                         is_arbiter_managed=True,
                         fragmentation_margin_mb=frag_margin,
                         ubatch_size=ubatch_size,
@@ -709,10 +929,11 @@ class ProcessManager(QObject):
                     "-c", str(effective_ctx),
                     "-ngl", str(effective_ngl),
                     "-fa", str(fa_str),
-                    "-ctk", str(kv_cache_type),
-                    "-ctv", str(kv_cache_type),
+                    "-ctk", str(ctk),
+                    "-ctv", str(ctv),
                     "-ub", str(ubatch_size),
                     "-np", str(ini_cfg.get("parallel_slots", 1)),
+                    "--slot-save-path", str(KV_SLOTS_DIR),
                     "--port", str(port),
                     "--host", str(host),
                 ]
@@ -754,6 +975,18 @@ class ProcessManager(QObject):
                 # 9. Popen with hidden flags
                 startupinfo, flags = _get_win32_hidden_process_flags(create_new_group=True)
                 try:
+                    logger.info(
+                        "[ProcessManager] Запуск llama-server: model=%s | NGL=%s/%s | CTX=%s | ubatch=%s | FA=%s | KV=%s/%s | slots=%s",
+                        Path(model_path).name,
+                        effective_ngl,
+                        total_model_layers or 99,
+                        effective_ctx,
+                        ubatch_size,
+                        fa_str,
+                        ctk,
+                        ctv,
+                        ini_cfg.get("parallel_slots", 1),
+                    )
                     self._llama_process = subprocess.Popen(
                         cmd,
                         cwd=str(server_exe.parent),
@@ -826,7 +1059,29 @@ class ProcessManager(QObject):
                     self._safe_emit("lms_status_changed", True, "Сервер LLM запущен.")
                     self._current_running_ngl = effective_ngl
                     self._current_total_layers = total_model_layers
+                    self._current_running_model_path = str(model_path)
+                    self._current_running_ctx = int(effective_ctx)
+                    self._current_running_ctk = str(ctk)
+                    self._current_running_ctv = str(ctv)
+                    self._current_running_fa = str(fa_str)
+                    self._current_running_port = int(port)
                     self.last_error = None
+
+                    # Попытка восстановления сохраненного KV-слота после выгрузки под Forge
+                    resolved_p = ServerConfigResolver.resolve_model_path(model_path) or Path(model_path)
+                    try:
+                        mtime = os.path.getmtime(resolved_p) if (resolved_p and resolved_p.exists()) else 0.0
+                    except OSError:
+                        mtime = 0.0
+                    expected_meta = {
+                        "model_path": str(resolved_p.resolve()) if (resolved_p and resolved_p.exists()) else str(model_path),
+                        "model_mtime": mtime,
+                        "context_length": int(effective_ctx),
+                        "kv_cache_type_k": str(ctk),
+                        "kv_cache_type_v": str(ctv),
+                        "flash_attn": str(fa_str),
+                    }
+                    self._restore_kv_slot_after_start(expected_meta)
                     if hasattr(self, "lm_client") and self.lm_client:
                         self.lm_client._is_model_unloaded = False
                         self.lm_client._last_loaded_model_id = model_path.stem
@@ -921,7 +1176,16 @@ class ProcessManager(QObject):
                 self.lms_status_changed.emit(True, "Запуск приложения LM Studio...")
                 self.action_completed.emit("lms_start", True, "Запущено приложение LM Studio.")
                 return
-            lms_bin = "lms"
+
+            err_msg = (
+                "Движок llama-server не найден в папке bin/. "
+                "Запустите install.bat или скачайте движок в меню «Параметры и настройки → Движок LLM»."
+            )
+            logger.warning(f"[ProcessManager] {err_msg}")
+            self._set_server_state(ServerState.ERROR, err_msg)
+            self.lms_status_changed.emit(False, err_msg)
+            self.action_completed.emit("lms_start", False, err_msg)
+            return
 
         logger.info(f"Starting LM Studio server via CLI: {lms_bin} server start")
         try:
@@ -963,7 +1227,18 @@ class ProcessManager(QObject):
             self.action_completed.emit("lms_stop", True, "LLM сервер остановлен.")
             return
 
-        lms_bin = self._lms_exe or "lms"
+        lms_bin = self._lms_exe
+        if not lms_bin and not self._locate_lm_studio_app():
+            logger.info("ProcessManager: llama-server/LM Studio не найдены, пропуск остановки CLI.")
+            if hasattr(self, "lm_client") and self.lm_client:
+                self.lm_client._is_model_unloaded = True
+                self.lm_client._last_loaded_model_id = None
+            self.lms_status_changed.emit(False, "Сервер LLM остановлен.")
+            self.action_completed.emit("lms_stop", True, "LLM сервер остановлен.")
+            return
+
+        if not lms_bin:
+            lms_bin = "lms"
         logger.info(f"Stopping LM Studio server: {lms_bin} server stop")
         try:
             self.unload_all_lms_models()
@@ -1255,7 +1530,18 @@ class ProcessManager(QObject):
                 return
 
             # Фоллбэк, если lm_client не инициализирован:
-            lms_bin = self._lms_exe or "lms"
+            lms_bin = self._lms_exe
+            if not lms_bin and not self._locate_lm_studio_app():
+                err_msg = (
+                    "Движок llama-server не найден в папке bin/. "
+                    "Запустите install.bat или скачайте движок в меню «Параметры и настройки → Движок LLM»."
+                )
+                logger.warning(f"[ProcessManager] {err_msg}")
+                self.action_completed.emit("lms_load", False, err_msg)
+                return
+
+            if not lms_bin:
+                lms_bin = "lms"
             gpu_param = "0" if device_mode == "CPU Only" else "1.0"
             from config import MODE_PROFILES
             target_context = str(MODE_PROFILES.get("assistant", {}).get("context_length", 14336))
@@ -1293,6 +1579,7 @@ class ProcessManager(QObject):
                     self.lm_client._is_model_unloaded = True
                 return True
             logger.info("ProcessManager: evicting LLM server for Forge diffusion generation...")
+            self._save_kv_slot_for_eviction()
             self._kill_llama_server_instance(for_forge_eviction=True)
             if hasattr(self, "lm_client") and self.lm_client:
                 self.lm_client._is_model_unloaded = True
@@ -1577,7 +1864,13 @@ class ProcessManager(QObject):
         except Exception:
             pass
 
-        lms_bin = self._lms_exe or "lms"
+        lms_bin = self._lms_exe
+        if not lms_bin and not self._locate_lm_studio_app():
+            logger.info("ProcessManager: llama-server/LM Studio не найдены, пропуск выгрузки моделей.")
+            return
+
+        if not lms_bin:
+            lms_bin = "lms"
         try:
             s_info, s_flags = _get_win32_hidden_process_flags()
             subprocess.run(

@@ -537,3 +537,103 @@ def test_session_model_switching_and_arbiter_idempotency_8gb(smoke_harness):
     arbiter.prepare_for_task("llm")
     assert arbiter._current_owner == GPUOwner.LLM
     assert len(smoke_harness.spy.unload_calls) == unload_count_before_llm
+
+
+def test_forge_startup_flags_blackwell_ada_16gb_ram():
+    """Сценарий 2: Профиль Forge на Blackwell/Ada compute_cap >= (8, 0) и 16 ГБ RAM.
+    resolve_forge_startup_flags(llm_active=True, ...) на compute_cap = (12, 0) (RTX 5050) и total_ram_gb = 15.7
+    формирует флаг --vae-in-bf16 и не включает --no-half-vae, --vae-in-fp32 и --pin-shared-memory.
+    """
+    hw_blackwell = {
+        "vendor": "nvidia",
+        "compute_cap": (12, 0),
+        "vram_total_mb": 8151,
+        "gpu_name": "NVIDIA GeForce RTX 5050 Laptop GPU"
+    }
+    with patch("services.layer_budgeter.LayerBudgeter.detect_hardware_kv_profile", return_value=hw_blackwell), \
+         patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 700)):
+
+        # 1. При llm_active=True на 15.7 ГБ RAM:
+        flags, meta = vram_policy.resolve_forge_startup_flags(
+            llm_active=True,
+            total_ram_gb=15.7,
+            avail_ram_mb=7868.0,
+        )
+
+        assert "--vae-in-bf16" in flags
+        assert "--no-half-vae" not in flags
+        assert "--vae-in-fp32" not in flags
+        assert "--pin-shared-memory" not in flags
+        assert meta["pin_shared_memory"] is False
+        assert meta["vae_precision"] == "bf16"
+        assert "активной LLM" in meta["pin_reason"]
+
+        # 2. При llm_active=False, но RAM < 9000 MB: pin-shared-memory также выключен
+        flags_idle, meta_idle = vram_policy.resolve_forge_startup_flags(
+            llm_active=False,
+            total_ram_gb=15.7,
+            avail_ram_mb=7868.0,
+        )
+        assert "--pin-shared-memory" not in flags_idle
+        assert meta_idle["pin_shared_memory"] is False
+        assert "< 9000MB" in meta_idle["pin_reason"]
+
+
+def test_session_sequential_sdxl_model_switching_with_ram_cache_guard_16gb():
+    """Сценарий 3: Последовательная смена двух SDXL-чекпоинтов в ForgeClient на 16 ГБ RAM.
+    set_model(ckpt_A) -> unload_checkpoint() -> set_model(ckpt_B) -> unload_checkpoint() при total_ram <= 16.5 GB:
+    при каждом переключении в /sdapi/v1/options передаются sd_checkpoint_cache == 0 и sd_checkpoints_limit == 1,
+    а при выгрузке вызывается принудительная очистка free_vram(force=True, unload_models=True).
+    """
+    fc = ForgeClient()
+    options_calls = []
+    free_vram_calls = []
+
+    def mock_post(url, *args, **kwargs):
+        resp = MagicMock(status_code=200)
+        if "options" in url:
+            options_calls.append(kwargs.get("json", {}))
+        elif "free-vram" in url:
+            free_vram_calls.append(kwargs.get("json", {}))
+        return resp
+
+    fake_vm = MagicMock(total=15.7 * (1024 ** 3), available=6000 * (1024 ** 2))
+
+    with patch("psutil.virtual_memory", return_value=fake_vm), \
+         patch("requests.post", side_effect=mock_post), \
+         patch.object(fc, "get_models", return_value=[
+             {"title": "sdxl_alpha.safetensors"},
+             {"title": "sdxl_beta.safetensors"}
+         ]), \
+         patch.object(fc, "get_current_model", side_effect=["old.safetensors", "sdxl_alpha.safetensors"]), \
+         patch.object(fc, "_wait_for_vram_clear"):
+
+        # 1. Загрузка первого SDXL чекпоинта
+        ok_a = fc.set_model("sdxl_alpha.safetensors")
+        assert ok_a is True
+        assert len(options_calls) == 1
+        assert options_calls[0]["sd_model_checkpoint"] == "sdxl_alpha.safetensors"
+        assert options_calls[0]["sd_checkpoint_cache"] == 0
+        assert options_calls[0]["sd_checkpoints_limit"] == 1
+        assert options_calls[0]["forge_unet_storage_dtype"] == "fp8e4"
+
+        # 2. Выгрузка первого чекпоинта
+        unloaded_a = fc.unload_checkpoint()
+        assert unloaded_a is True
+        assert len(free_vram_calls) == 1
+        assert free_vram_calls[0]["unload_models"] is True
+
+        # 3. Загрузка второго SDXL чекпоинта
+        ok_b = fc.set_model("sdxl_beta.safetensors")
+        assert ok_b is True
+        assert len(options_calls) == 2
+        assert options_calls[1]["sd_model_checkpoint"] == "sdxl_beta.safetensors"
+        assert options_calls[1]["sd_checkpoint_cache"] == 0
+        assert options_calls[1]["sd_checkpoints_limit"] == 1
+        assert options_calls[1]["forge_unet_storage_dtype"] == "fp8e4"
+
+        # 4. Выгрузка второго чекпоинта
+        unloaded_b = fc.unload_checkpoint()
+        assert unloaded_b is True
+        assert len(free_vram_calls) == 2
+        assert free_vram_calls[1]["unload_models"] is True

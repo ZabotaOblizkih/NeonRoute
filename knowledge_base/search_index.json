@@ -2,7 +2,7 @@
   "version": 3,
   "k1": 1.5,
   "b": 0.75,
-  "alpha": 0.6,
+  "alpha": 0.5,
   "rrf_k": 60,
   "total_chunks": 0,
   "chunks": [],

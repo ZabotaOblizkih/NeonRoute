@@ -124,6 +124,12 @@ if !ERRORLEVEL! NEQ 0 (
     echo [WARNING] Shortcut creation skipped or failed, continuing...
 )
 
+:: 8. Verify llama-server engine presence
+if not exist "bin\llama-server.exe" (
+    echo.
+    echo [WARNING] Движок llama-server не установлен в папку bin\. Скачайте его через меню "«Параметры и настройки -> Движок LLM»".
+)
+
 echo.
 echo =======================================================
 echo [SUCCESS] NeonRoute installation completed successfully!

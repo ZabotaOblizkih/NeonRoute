@@ -107,7 +107,8 @@ def test_smoke_assistant_6phases_pipeline(isolated_pipeline_env):
         attached_document="Параметр: 42 ГГц",
         attached_document_name="spec.txt",
         is_excel=True,
-        manual_skill="code_architect"
+        manual_skill="code_architect",
+        static_core_only=False
     )
     expected_hierarchy = [
         "[identity & persona]",
@@ -254,7 +255,8 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
         user_name="Тест",
         user_query=art_query,
         target_model_id="dreamshaper_8",
-        architecture="sd15"
+        architecture="sd15",
+        static_core_only=False
     )
     assert sys_prompt_sd15.startswith("[identity & persona]")
     assert "пиши теги на английском" in sys_prompt_sd15
@@ -265,7 +267,7 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
     assert "Language & Format" in sys_prompt_sd15
 
     # Проверка авто-определения модели
-    sys_prompt_auto = builder.build(user_name="Тест", user_query=art_query)
+    sys_prompt_auto = builder.build(user_name="Тест", user_query=art_query, static_core_only=False)
     assert "[SYSTEM DIRECTIVE:" in sys_prompt_auto
     assert "--model " in sys_prompt_auto
 
@@ -275,7 +277,8 @@ def test_smoke_assistant_gallery_single_pass_pipeline(isolated_pipeline_env):
         user_query=art_query,
         architecture="sdxl",
         target_model_id="pony_diffusion",
-        target_model_desc="Pony Diffusion V6"
+        target_model_desc="Pony Diffusion V6",
+        static_core_only=False
     )
     assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in sys_prompt_sdxl
     assert "Style & Syntax Rules" in sys_prompt_sdxl

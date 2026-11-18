@@ -1044,6 +1044,63 @@ class ContextWindowBuilder:
 
         messages.extend(recent_history)
 
+        # ── TurnContext Injection для режима Ассистента ──
+        # Прикрепляет служебный блок <TurnContext>...</TurnContext> исключительно к временной
+        # поверхностной копии последнего сообщения пользователя, сохраняя messages[0] и историю в БД статичными.
+        if not is_roleplay and not is_engineer and messages:
+            clean_kw = dict(kwargs)
+            for k in (
+                "user_name", "include_memory", "relevant_facts", "knowledge_block",
+                "matched_knowledge_docs", "attached_docs", "attached_document",
+                "attached_document_name", "user_query", "task_text",
+                "active_assistant_skill", "session_metadata", "session_id",
+                "selected_forge_checkpoint"
+            ):
+                clean_kw.pop(k, None)
+
+            turn_ctx = AssistantPromptBuilder.build_turn_context(
+                user_name=user_name,
+                include_memory=include_memory,
+                relevant_facts=relevant_facts,
+                knowledge_block=kwargs.get("knowledge_block") or kwargs.get("knowledge_context"),
+                matched_knowledge_docs=kwargs.get("matched_knowledge_docs"),
+                attached_docs=kwargs.get("attached_docs") or kwargs.get("attached_documents"),
+                attached_document=kwargs.get("attached_document"),
+                attached_document_name=kwargs.get("attached_document_name"),
+                user_query=kwargs.get("user_query") or last_query,
+                task_text=last_query,
+                active_assistant_skill=kwargs.get("active_assistant_skill"),
+                session_metadata=kwargs.get("session_metadata"),
+                session_id=session_id,
+                selected_forge_checkpoint=kwargs.get("selected_forge_checkpoint"),
+                **clean_kw
+            )
+            if turn_ctx:
+                for idx in range(len(messages) - 1, -1, -1):
+                    if messages[idx].get("role") == "user":
+                        final_messages = list(messages)
+                        last_u = dict(final_messages[idx])
+                        c = last_u.get("content", "")
+                        if isinstance(c, str):
+                            last_u["content"] = f"{turn_ctx}\n\n{c}".strip()
+                        elif isinstance(c, list):
+                            new_parts = []
+                            text_prepended = False
+                            for part in c:
+                                if isinstance(part, dict) and part.get("type") == "text" and not text_prepended:
+                                    p_copy = dict(part)
+                                    p_copy["text"] = f"{turn_ctx}\n\n{p_copy.get('text', '')}".strip()
+                                    new_parts.append(p_copy)
+                                    text_prepended = True
+                                else:
+                                    new_parts.append(part)
+                            if not text_prepended:
+                                new_parts.insert(0, {"type": "text", "text": f"{turn_ctx}\n\n"})
+                            last_u["content"] = new_parts
+                        final_messages[idx] = last_u
+                        messages = final_messages
+                        break
+
         return messages
 
 

@@ -321,6 +321,61 @@ class TestModelsAndCheckpoints:
         monkeypatch.setattr("requests.post", lambda *a, **k: MagicMock(status_code=500, text="Internal Error"))
         assert forge_client.set_model("model.safetensors") is False
 
+    def test_set_options_success_and_failure(self, forge_client, monkeypatch):
+        """Проверка отправки параметров через POST /sdapi/v1/options."""
+        # 1. HTTP 200 -> True
+        post_mock = MagicMock(return_value=MagicMock(status_code=200))
+        monkeypatch.setattr("requests.post", post_mock)
+        ok = forge_client.set_options({"sd_checkpoint_cache": 0})
+        assert ok is True
+        post_mock.assert_called_once()
+        assert post_mock.call_args[1]["json"] == {"sd_checkpoint_cache": 0}
+
+        # 2. HTTP 500 -> False
+        monkeypatch.setattr("requests.post", lambda *a, **k: MagicMock(status_code=500, text="Error"))
+        assert forge_client.set_options({"sd_checkpoint_cache": 0}) is False
+
+        # 3. ConnectionError -> False
+        def raise_conn(*a, **k):
+            raise requests.exceptions.ConnectionError("Connection refused")
+        monkeypatch.setattr("requests.post", raise_conn)
+        assert forge_client.set_options({"sd_checkpoint_cache": 0}) is False
+
+    def test_set_model_on_16gb_system_forces_sd_checkpoint_cache_zero(self, forge_client, monkeypatch):
+        """На системах <= 16.5 ГБ RAM set_model явно передает sd_checkpoint_cache=0 и sd_checkpoints_limit=1."""
+        fake_vm = MagicMock(total=15.8 * (1024 ** 3))
+        monkeypatch.setattr("psutil.virtual_memory", lambda: fake_vm)
+        monkeypatch.setattr(forge_client, "get_models", lambda: [{"title": "test_ckpt.safetensors"}])
+        monkeypatch.setattr(forge_client, "get_current_model", lambda: "other.safetensors")
+        post_mock = MagicMock(return_value=MagicMock(status_code=200))
+        monkeypatch.setattr("requests.post", post_mock)
+
+        res = forge_client.set_model("test_ckpt.safetensors")
+        assert res is True
+        call_json = post_mock.call_args[1]["json"]
+        assert call_json["sd_checkpoint_cache"] == 0
+        assert call_json["sd_checkpoints_limit"] == 1
+
+    def test_ensure_system_options_sets_cache_zero_on_16gb_and_skips_on_32gb(self, forge_client, monkeypatch):
+        """ensure_system_options отправляет настройки только при RAM <= 16.5 ГБ."""
+        # 1. 16 ГБ RAM -> вызов set_options
+        fake_vm_16 = MagicMock(total=16.0 * (1024 ** 3))
+        monkeypatch.setattr("psutil.virtual_memory", lambda: fake_vm_16)
+        mock_set_opts = MagicMock(return_value=True)
+        monkeypatch.setattr(forge_client, "set_options", mock_set_opts)
+        assert forge_client.ensure_system_options() is True
+        mock_set_opts.assert_called_once_with({
+            "sd_checkpoint_cache": 0,
+            "sd_checkpoints_limit": 1
+        })
+
+        # 2. 32 ГБ RAM -> пропуск вызова
+        fake_vm_32 = MagicMock(total=32.0 * (1024 ** 3))
+        monkeypatch.setattr("psutil.virtual_memory", lambda: fake_vm_32)
+        mock_set_opts.reset_mock()
+        assert forge_client.ensure_system_options() is True
+        mock_set_opts.assert_not_called()
+
 
 # =========================================================================
 # 4. VRAM Management & Silent Process Launch
@@ -365,6 +420,89 @@ class TestVRAMManagement:
         endpoints = [c[0][0] for c in post_mock.call_args_list]
         assert any("unload-checkpoint" in ep for ep in endpoints)
         assert any("free-vram" in ep for ep in endpoints)
+        unload_calls = [c for c in post_mock.call_args_list if "unload-checkpoint" in c[0][0]]
+        assert len(unload_calls) == 1
+        assert unload_calls[0][1]["timeout"] >= 15.0
+        free_calls = [c for c in post_mock.call_args_list if "free-vram" in c[0][0]]
+        assert len(free_calls) == 1
+        assert free_calls[0][1]["timeout"] >= 10.0
+
+    def test_unload_checkpoint_read_timeout_waits_and_serializes(self, forge_client, monkeypatch):
+        forge_client._checkpoint_unloaded = False
+        sleep_mock = MagicMock()
+        monkeypatch.setattr("time.sleep", sleep_mock)
+
+        def mock_post(url, *args, **kwargs):
+            if "unload-checkpoint" in url:
+                raise requests.exceptions.ReadTimeout("Timeout moving SDXL to RAM")
+            return MagicMock(status_code=200)
+
+        monkeypatch.setattr("requests.post", mock_post)
+        res = forge_client.unload_checkpoint()
+        assert res is False
+        assert forge_client._checkpoint_unloaded is False
+        sleep_mock.assert_called_once_with(1.0)
+
+    def test_unload_checkpoint_serialization_lock(self, forge_client, monkeypatch):
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        forge_client._checkpoint_unloaded = False
+        execution_order = []
+
+        def slow_post(url, *args, **kwargs):
+            if "unload-checkpoint" in url:
+                execution_order.append("start")
+                time.sleep(0.05)
+                execution_order.append("end")
+            return MagicMock(status_code=200)
+
+        monkeypatch.setattr("requests.post", slow_post)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f1 = executor.submit(forge_client.unload_checkpoint)
+            f2 = executor.submit(forge_client.unload_checkpoint)
+            f1.result()
+            f2.result()
+
+        # One thread runs, sets _checkpoint_unloaded = True, second thread sees it's already unloaded
+        assert execution_order == ["start", "end"]
+
+    def test_finalize_forge_generation_skips_duplicate_unload_when_already_unloaded(self, monkeypatch):
+        from services.vram_arbiter import VRAMArbiter
+        from ui.controllers.hardware_engine import HardwareEngineMixin
+
+        class DummyEngine(HardwareEngineMixin):
+            def __init__(self):
+                self.forge_client = MagicMock()
+                self.forge_client._checkpoint_unloaded = True
+                self._reload_active_lms_model_async = MagicMock()
+
+        engine = DummyEngine()
+        arbiter = VRAMArbiter.get_instance()
+        release_mock = MagicMock()
+        monkeypatch.setattr(arbiter, "release_diffusion_for_llm", release_mock)
+
+        engine._finalize_forge_generation()
+        release_mock.assert_called_once_with(force=False)
+
+    def test_finalize_forge_generation_forces_unload_when_not_unloaded(self, monkeypatch):
+        from services.vram_arbiter import VRAMArbiter
+        from ui.controllers.hardware_engine import HardwareEngineMixin
+
+        class DummyEngine(HardwareEngineMixin):
+            def __init__(self):
+                self.forge_client = MagicMock()
+                self.forge_client._checkpoint_unloaded = False
+                self._reload_active_lms_model_async = MagicMock()
+
+        engine = DummyEngine()
+        arbiter = VRAMArbiter.get_instance()
+        release_mock = MagicMock()
+        monkeypatch.setattr(arbiter, "release_diffusion_for_llm", release_mock)
+
+        engine._finalize_forge_generation()
+        release_mock.assert_called_once_with(force=True)
 
     def test_free_vram_payload_parameters(self, forge_client, monkeypatch):
         forge_client._checkpoint_unloaded = False

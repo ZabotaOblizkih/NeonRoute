@@ -719,7 +719,7 @@ def test_mobile_mode_override_does_not_clobber_assistant_skills_and_thinking_xtc
         active_model_name="DeepSeek-R1-0528-Qwen3-8B-abliterated",
     )
     assert target_mode == AppMode.ASSISTANT
-    assert "[SYSTEM DIRECTIVE:" in msgs[0]["content"]
+    assert "[SYSTEM DIRECTIVE:" in msgs[-1]["content"]
     assert params["xtc_probability"] == 0.0
     assert params["max_tokens"] == 4096
     assert params["enable_thinking"] is False

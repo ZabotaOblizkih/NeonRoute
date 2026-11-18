@@ -504,6 +504,26 @@ def resolve_hardware_vram_budget(system_monitor=None, use_cache: bool = True) ->
     return total_vram_gb, os_reserve_mb
 
 
+def _parse_compute_cap(cap: Any) -> Tuple[int, int]:
+    """Парсит compute capability из кортежа (8, 9), float 8.9 или строки '8.9' / '12.0'."""
+    if isinstance(cap, (tuple, list)) and len(cap) >= 2:
+        try:
+            return int(cap[0]), int(cap[1])
+        except (ValueError, TypeError):
+            return (0, 0)
+    if isinstance(cap, (int, float)):
+        major = int(cap)
+        minor = int(round((cap - major) * 10))
+        return major, minor
+    if isinstance(cap, str):
+        parts = cap.strip().split(".")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return int(parts[0]), int(parts[1])
+        elif len(parts) == 1 and parts[0].isdigit():
+            return int(parts[0]), 0
+    return (0, 0)
+
+
 def should_enable_pin_shared_memory(
     llm_active: bool = False,
     sdxl_fp8_enabled: Optional[bool] = None,
@@ -542,18 +562,24 @@ def should_enable_pin_shared_memory(
             return False, f"RAM {total_gb:.1f}GB, свободно только {int(avail_mb)}MB (<4096MB)"
         return True, f"RAM {total_gb:.1f}GB (>16GB), свободно {int(avail_mb)}MB"
 
-    # Профиль <= 16 ГБ системной ОЗУ
+    # Профиль <= 16.5 ГБ системной ОЗУ
+    if llm_active:
+        return (
+            False,
+            f"RAM {total_gb:.1f}GB <= 16GB с активной LLM: pin-shared-memory отключен во избежание Host RAM OOM",
+        )
+
     if not sdxl_fp8_enabled and avail_mb < 9000:
         return (
             False,
             f"RAM {total_gb:.1f}GB <= 16GB, SDXL FP8 выключен (риск 6.5ГБ STAGE_OFFLOAD pin) и свободно {int(avail_mb)}MB",
         )
 
-    min_avail_mb = 7500 if llm_active else 6000
+    min_avail_mb = 9000
     if avail_mb < min_avail_mb:
         return (
             False,
-            f"RAM {total_gb:.1f}GB <= 16GB, свободно {int(avail_mb)}MB < {min_avail_mb}MB (llm_active={llm_active})",
+            f"RAM {total_gb:.1f}GB <= 16GB, свободно {int(avail_mb)}MB < {min_avail_mb}MB",
         )
 
     return True, f"RAM {total_gb:.1f}GB <= 16GB, достаточно свободной ОЗУ ({int(avail_mb)}MB)"
@@ -578,14 +604,27 @@ def resolve_forge_startup_flags(
         "--listen",
         "--cuda-malloc",
         "--opt-sdp-attention",
-        "--no-half-vae",
-        "--vae-in-fp32",
         "--ad-no-huggingface",
         "--no-download-sd-model",
         "--skip-torch-cuda-test",
         "--no-hashing",
         "--disable-nan-check",
     ]
+
+    vae_precision = "fp32"
+    try:
+        from services.layer_budgeter import LayerBudgeter
+        hw_profile = LayerBudgeter.detect_hardware_kv_profile()
+        vendor = str(hw_profile.get("vendor", "")).lower()
+        cap = _parse_compute_cap(hw_profile.get("compute_cap"))
+        if vendor == "nvidia" and cap >= (8, 0):
+            flags.append("--vae-in-bf16")
+            vae_precision = "bf16"
+        else:
+            flags.extend(["--no-half-vae", "--vae-in-fp32"])
+    except Exception as e:
+        logger.debug(f"[VRAMPolicy] Ошибка детекции профиля VAE: {e}")
+        flags.extend(["--no-half-vae", "--vae-in-fp32"])
 
     pin_ok, pin_reason = should_enable_pin_shared_memory(
         llm_active=llm_active,
@@ -612,6 +651,7 @@ def resolve_forge_startup_flags(
         "pin_shared_memory": pin_ok,
         "pin_reason": pin_reason,
         "startup_always_offload": force_startup_offload,
+        "vae_precision": vae_precision,
     }
     return flags, meta
 

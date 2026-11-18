@@ -258,3 +258,52 @@ def test_download_and_extract_abort_on_second_archive_error(tmp_path):
         mock_verify.assert_not_called()
         # В целевой папке не должно появиться файлов
         assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_download_llama_server_if_missing_error_exits_code_1(tmp_path, monkeypatch):
+    """
+    Проверяет, что при сбое скачивания CLI download_llama_server.py
+    возвращает код 1 даже с флагом --if-missing (ADR-30 fix).
+    """
+    import sys
+    from scripts.download_llama_server import main
+
+    monkeypatch.setattr(
+        "scripts.download_llama_server.download_and_extract_llama_server",
+        lambda **kwargs: (False, "Network connection error")
+    )
+    monkeypatch.setattr(
+        "scripts.download_llama_server.is_llama_server_installed",
+        lambda path: False
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["download_llama_server.py", "--if-missing", "--target-dir", str(tmp_path)]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+
+
+def test_cli_download_llama_server_if_missing_already_installed_exits_0(tmp_path, monkeypatch):
+    """Проверяет, что если движок уже установлен, --if-missing завершается с кодом 0."""
+    import sys
+    from scripts.download_llama_server import main
+
+    monkeypatch.setattr(
+        "scripts.download_llama_server.is_llama_server_installed",
+        lambda path: True
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["download_llama_server.py", "--if-missing", "--target-dir", str(tmp_path)]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 0

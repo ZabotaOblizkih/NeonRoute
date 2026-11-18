@@ -336,11 +336,8 @@ def assemble_assistant_context(
         session_metadata=kwargs.get("session_metadata") or (curr_sess.get("metadata") if isinstance(curr_sess, dict) else None),
     )
 
-    if assembled_messages and assembled_messages[0].get("role") == "system":
-        sys_content = assembled_messages[0].get("content", "")
-        if knowledge_block and "<KnowledgeBase>" not in sys_content:
-            sys_content = f"{sys_content}\n\n{knowledge_block}"
-        assembled_messages[0]["content"] = sys_content
+    # messages[0] остается строго статичным префиксом (Static Prefix Anchoring).
+    # Динамический knowledge_block упаковывается в <TurnContext> внутри последнего сообщения пользователя.
 
     return assembled_messages, matched_knowledge_docs, knowledge_block
 

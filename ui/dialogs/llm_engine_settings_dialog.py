@@ -70,6 +70,7 @@ class LLMEngineSettingsDialog(FramelessDialog):
 
     KV_OPTIONS = [
         ("q8_0", "Q8_0 (Рекомендуется / Баланс)"),
+        ("q8_0_q4_0", "Q8_0 / Q4_0 (Асимметричный • Умный баланс)"),
         ("q4_0", "Q4_0 (Экстремальная экономия VRAM)"),
         ("f16", "FP16 (Без сжатия / Эталонная точность)"),
     ]
@@ -84,6 +85,16 @@ class LLMEngineSettingsDialog(FramelessDialog):
             "effect": "Сжимает контекст вдвое без потери качества (деградация <0.05%). Идеально для диалогов 24.5K на 8 ГБ VRAM.",
             "side_effect": "Побочные эффекты отсутствуют. Рекомендуется для всех видеокарт поколения Turing и новее.",
             "side_color": "#10B981",
+        },
+        "q8_0_q4_0": {
+            "title": "💎 Q8_0 / Q4_0 — Асимметричный баланс (Ключи Q8 / Значения Q4)",
+            "title_color": "#06B6D4",
+            "border_color": "rgba(6, 182, 212, 0.35)",
+            "bg_color": "rgba(6, 182, 212, 0.08)",
+            "budget": "~50 КБ на токен | Экономия VRAM: 62%",
+            "effect": "Ключи внимания сохраняются в высоком качестве (Q8), а значения сжимаются (Q4). Идеально высвобождает VRAM под контекст 24K–32K без деградации рассуждений.",
+            "side_effect": "Требует обязательного включения Flash Attention (поддерживается на GPU Turing и новее).",
+            "side_color": "#06B6D4",
         },
         "q4_0": {
             "title": "🟡 Q4_0 — Экстремальная экономия памяти",
@@ -329,12 +340,16 @@ class LLMEngineSettingsDialog(FramelessDialog):
         self.current_kv = self.app_cfg.get("kv_cache_type", "q8_0").lower()
         if self.current_kv in ("fp16", "f16"):
             self.current_kv = "f16"
+        elif self.current_kv in ("q8_0_q4_0", "q8_0/q4_0", "q8_0-q4_0"):
+            self.current_kv = "q8_0_q4_0"
         elif "q4" in self.current_kv:
             self.current_kv = "q4_0"
         else:
             self.current_kv = "q8_0"
 
         self.current_fa = bool(self.app_cfg.get("flash_attention_enabled", True))
+        self._initial_kv = self.current_kv
+        self._initial_fa = self.current_fa
         self.current_thinking = str(self.app_cfg.get("thinking_mode", "auto")).lower()
         if self.current_thinking not in ("auto", "on", "off"):
             self.current_thinking = "auto"
@@ -553,6 +568,7 @@ class LLMEngineSettingsDialog(FramelessDialog):
             "Выполняет расчет внимания через быстрые SRAM-тензорные ядра. "
             "Ускоряет генерацию длинных ответов в 2–3 раза. Требует GPU Turing+ (CC >= 7.5)."
         )
+        self.switch_fa.checkedChanged.connect(self._on_fa_checked_changed)
         fa_layout.addWidget(self.switch_fa)
         main_layout.addWidget(self.fa_frame)
 
@@ -606,21 +622,25 @@ class LLMEngineSettingsDialog(FramelessDialog):
 
     def _sync_with_current_config(self):
         """Устанавливает текущие значения из конфига в элементы управления."""
-        # KV Combo
-        matched_idx = 0
-        for i, (k, _) in enumerate(self.KV_OPTIONS):
-            if k == self.current_kv:
-                matched_idx = i
-                break
-        self.kv_combo.setCurrentIndex(matched_idx)
-        self._update_hint_card(self.current_kv)
+        self._is_syncing = True
+        try:
+            # KV Combo
+            matched_idx = 0
+            for i, (k, _) in enumerate(self.KV_OPTIONS):
+                if k == self.current_kv:
+                    matched_idx = i
+                    break
+            self.kv_combo.setCurrentIndex(matched_idx)
+            self._update_hint_card(self.current_kv)
 
-        # Flash Attention Switch
-        self.switch_fa.setChecked(self.current_fa)
+            # Flash Attention Switch
+            self.switch_fa.setChecked(self.current_fa)
 
-        # Thinking Mode Segmented
-        self.segmented_thinking.setCurrentItem(self.current_thinking)
-        self._on_thinking_selection_changed(self.current_thinking)
+            # Thinking Mode Segmented
+            self.segmented_thinking.setCurrentItem(self.current_thinking)
+            self._on_thinking_selection_changed(self.current_thinking)
+        finally:
+            self._is_syncing = False
 
     def _on_thinking_selection_changed(self, route_key: str):
         """Слот изменения выбранного режима размышлений."""
@@ -630,10 +650,35 @@ class LLMEngineSettingsDialog(FramelessDialog):
 
     def _on_kv_selection_changed(self, index: int):
         """Слот изменения выбранного типа KV-кэша."""
+        if getattr(self, "_is_syncing", False):
+            return
         if 0 <= index < len(self.KV_OPTIONS):
             kv_key = self.KV_OPTIONS[index][0]
             self.current_kv = kv_key
             self._update_hint_card(kv_key)
+            if kv_key in ("q8_0", "q8_0_q4_0", "q4_0"):
+                if not self.switch_fa.isChecked():
+                    self.switch_fa.setChecked(True)
+
+    def _on_fa_checked_changed(self, is_checked: bool):
+        """Слот переключения Flash Attention."""
+        if getattr(self, "_is_syncing", False):
+            return
+        if not is_checked:
+            selected_idx = self.kv_combo.currentIndex()
+            selected_kv = self.KV_OPTIONS[selected_idx][0] if 0 <= selected_idx < len(self.KV_OPTIONS) else "q8_0"
+            if selected_kv in ("q8_0", "q8_0_q4_0", "q4_0"):
+                f16_idx = next((i for i, (k, _) in enumerate(self.KV_OPTIONS) if k == "f16"), -1)
+                if f16_idx >= 0:
+                    self.kv_combo.setCurrentIndex(f16_idx)
+                    try:
+                        toast_info(
+                            self,
+                            "Flash Attention",
+                            "Квантованный KV-кэш требует включенного Flash Attention. Тип кэша автоматически переведен в FP16."
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to show toast_info: {e}")
 
     def _update_hint_card(self, kv_key: str):
         """Реактивное обновление текстов и цветов карточки-подсказки."""
@@ -665,8 +710,8 @@ class LLMEngineSettingsDialog(FramelessDialog):
         fa_enabled = self.switch_fa.isChecked()
         selected_thinking = self.segmented_thinking.currentRouteKey() or self.current_thinking
 
-        kv_changed = (selected_kv != self.current_kv)
-        fa_changed = (fa_enabled != self.current_fa)
+        kv_changed = (selected_kv != getattr(self, "_initial_kv", self.current_kv))
+        fa_changed = (fa_enabled != getattr(self, "_initial_fa", self.current_fa))
 
         try:
             cfg = ConfigManager.load_config()
@@ -677,6 +722,8 @@ class LLMEngineSettingsDialog(FramelessDialog):
             self.app_cfg = cfg
             self.current_kv = selected_kv
             self.current_fa = fa_enabled
+            self._initial_kv = selected_kv
+            self._initial_fa = fa_enabled
             self.current_thinking = selected_thinking
 
             parent_win = self._parent_ref or self.parent()

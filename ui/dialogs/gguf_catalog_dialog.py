@@ -402,6 +402,7 @@ class _GGUFDownloadWorker(QThread):
 
 
 _ACTIVE_DOWNLOAD_WORKER: Optional[_GGUFDownloadWorker] = None
+_ORPHANED_SEARCH_WORKERS: List["_HFSearchWorker"] = []
 _GLOBAL_REFRESH_CALLBACKS: List[Callable[[], None]] = []
 
 
@@ -412,10 +413,18 @@ def get_active_download_worker() -> Optional[_GGUFDownloadWorker]:
     return None
 
 
-def _on_global_download_finished(success: bool, filename: str, dest_path_str: str, message: str):
+def _on_global_download_worker_finished(worker: _GGUFDownloadWorker):
+    """Штатный сброс ссылки _ACTIVE_DOWNLOAD_WORKER только после полного завершения ОС-потока (QThread.finished)."""
     global _ACTIVE_DOWNLOAD_WORKER
-    _ACTIVE_DOWNLOAD_WORKER = None
+    if _ACTIVE_DOWNLOAD_WORKER is worker:
+        _ACTIVE_DOWNLOAD_WORKER = None
+    try:
+        worker.deleteLater()
+    except Exception:
+        pass
 
+
+def _on_global_download_finished(success: bool, filename: str, dest_path_str: str, message: str):
     for cb in list(_GLOBAL_REFRESH_CALLBACKS):
         try:
             cb()
@@ -552,6 +561,46 @@ class _HFSearchWorker(QThread):
         except Exception as e:
             if not self._aborted:
                 self.results_ready.emit(self.query, [], str(e))
+
+
+def _retire_search_worker(worker: Optional[_HFSearchWorker]):
+    """
+    Безопасная утилизация поискового потока HuggingFace без риска падения
+    'QThread: Destroyed while thread is still running'.
+    Поток отвязывается от сигналов UI, помещается в модульный список
+    _ORPHANED_SEARCH_WORKERS и удаляется строго по нативному сигналу
+    worker.finished с вызовом deleteLater().
+    """
+    if worker is None:
+        return
+    try:
+        worker.results_ready.disconnect()
+    except Exception:
+        pass
+
+    if worker.isRunning():
+        worker.abort()
+        _ORPHANED_SEARCH_WORKERS.append(worker)
+
+        def _cleanup(w=worker):
+            if w in _ORPHANED_SEARCH_WORKERS:
+                try:
+                    _ORPHANED_SEARCH_WORKERS.remove(w)
+                except ValueError:
+                    pass
+            try:
+                w.deleteLater()
+            except Exception:
+                pass
+
+        worker.finished.connect(_cleanup)
+        if not worker.isRunning() and worker in _ORPHANED_SEARCH_WORKERS:
+            _cleanup()
+    else:
+        try:
+            worker.deleteLater()
+        except Exception:
+            pass
 
 
 class _ModelCatalogCard(QFrame):
@@ -1250,6 +1299,9 @@ class GGUFCatalogDialog(FramelessDialog):
 
     def _reset_to_curated(self):
         self._search_debounce.stop()
+        if self._search_worker is not None:
+            _retire_search_worker(self._search_worker)
+            self._search_worker = None
         self.search_input.blockSignals(True)
         self.search_input.clear()
         self.search_input.blockSignals(False)
@@ -1264,12 +1316,8 @@ class GGUFCatalogDialog(FramelessDialog):
             return
 
         if self._search_worker is not None:
-            try:
-                self._search_worker.results_ready.disconnect(self._on_search_results_ready)
-            except Exception:
-                pass
-            if self._search_worker.isRunning():
-                self._search_worker.abort()
+            _retire_search_worker(self._search_worker)
+            self._search_worker = None
 
         self.btn_search.setEnabled(False)
         self.btn_search.setText("Поиск...")
@@ -1326,6 +1374,7 @@ class GGUFCatalogDialog(FramelessDialog):
         url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
         worker = _GGUFDownloadWorker(url=url, dest_path=dest_path, model_title=title)
         worker.finished_signal.connect(_on_global_download_finished)
+        worker.finished.connect(lambda w=worker: _on_global_download_worker_finished(w))
         _ACTIVE_DOWNLOAD_WORKER = worker
 
         self._connect_worker_signals(worker)
@@ -1404,12 +1453,8 @@ class GGUFCatalogDialog(FramelessDialog):
 
     def _cleanup_on_close(self):
         if self._search_worker is not None:
-            try:
-                self._search_worker.results_ready.disconnect(self._on_search_results_ready)
-            except Exception:
-                pass
-            if self._search_worker.isRunning():
-                self._search_worker.abort()
+            _retire_search_worker(self._search_worker)
+            self._search_worker = None
 
         if self._on_models_changed and self._on_models_changed in _GLOBAL_REFRESH_CALLBACKS:
             try:

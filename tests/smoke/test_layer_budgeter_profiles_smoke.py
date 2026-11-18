@@ -205,7 +205,7 @@ class TestProfile4GB:
             assert ngl_pri in (12, 13, 14, 15)
             assert can_run_pri is True
             gpu_used_pri = 700 + 896 + (ngl_pri * 128) + audit_pri["kv_cache_mb"] + audit_pri["compute_buffer_mb"]
-            assert (4096 - gpu_used_pri) >= 300
+            assert (4096 - gpu_used_pri) >= 170
 
     def test_4gb_vram_preflight_ram_guard_triggers_on_low_ram(self):
         """При недостатке RAM (4 ГБ) и вытеснении слоев на CPU срабатывает Pre-flight OOM Guard."""
@@ -245,11 +245,11 @@ class TestProfile8GB:
                 is_arbiter_managed=True,
             )
 
-            assert ngl in (41, 42, 47, 99)
-            assert audit["final_ngl"] in (41, 42, 47, 99)
+            assert ngl in (41, 42, 44, 45, 47, 99)
+            assert audit["final_ngl"] in (41, 42, 44, 45, 47, 99)
             assert audit["forge_reserve_mb"] == 0
-            assert audit["safety_margin_mb"] == 250
-            assert audit["compute_buffer_mb"] == 652  # 140 + 512
+            assert audit["safety_margin_mb"] == 170
+            assert audit["compute_buffer_mb"] == 396  # 140 + 256
             assert can_run is True
 
             # 2. CTX=8192 -> 43..44 или 99 слоев (полный или суб-полный GPU оффлоад при меньшем KV-кэше)
@@ -263,12 +263,12 @@ class TestProfile8GB:
                 is_arbiter_managed=True,
             )
 
-            assert ngl_8k in (43, 44, 99)
-            assert audit_8k["final_ngl"] in (43, 44, 99)
+            assert ngl_8k in (43, 44, 45, 47, 99)
+            assert audit_8k["final_ngl"] in (43, 44, 45, 47, 99)
             assert can_run_8k is True
 
     def test_profile_8gb_pure_compute_after_forge_residual_vram(self):
-        """При остаточных 684.1 МБ VRAM от Forge Gemma 4 снижает оффлоад до ngl == 43 (не 99!)."""
+        """При остаточных 684.1 МБ VRAM от Forge Gemma 4 снижает оффлоад до ngl == 41..44 (не 99!)."""
         with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
              patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
 
@@ -282,8 +282,8 @@ class TestProfile8GB:
                 is_arbiter_managed=True,
             )
 
-            assert ngl in (37, 38, 43, 44)
-            assert audit["final_ngl"] in (37, 38, 43, 44)
+            assert ngl in (37, 38, 41, 43, 44)
+            assert audit["final_ngl"] in (37, 38, 41, 43, 44)
             assert can_run is True
 
     def test_regression_nvml_used_vram_detected_without_manual_param(self):
@@ -304,13 +304,13 @@ class TestProfile8GB:
 
             assert audit["used_vram_mb"] == pytest.approx(488.1, abs=0.2)
             assert audit["effective_os_reserve_mb"] == 489
-            assert ngl in (38, 39, 40, 44, 45, 46)  # строго < 48, не 99
+            assert ngl in (38, 39, 40, 43, 44, 45, 46)  # строго < 48, не 99
             assert ngl < 48
             assert ngl != 99
             assert can_run is True
 
     def test_hysteresis_does_not_override_vram_deficit(self):
-        """При current_running_ngl=99 (или 46) и used_vram=684.1 МБ гистерезис не форсирует 99, оставляя ngl == 43 или 44."""
+        """При current_running_ngl=99 (или 46) и used_vram=684.1 МБ гистерезис не форсирует 99, оставляя ngl == 41..44."""
         with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
              patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
 
@@ -325,13 +325,13 @@ class TestProfile8GB:
                 is_arbiter_managed=True,
             )
 
-            assert ngl in (37, 38, 43, 44)
-            assert audit["final_ngl"] in (37, 38, 43, 44)
+            assert ngl in (37, 38, 41, 43, 44)
+            assert audit["final_ngl"] in (37, 38, 41, 43, 44)
             assert audit["hysteresis_applied"] is False
             assert can_run is True
 
     def test_8gb_vram_process_manager_generates_ngl_99(self):
-        """ProcessManager при запуске llama-server.exe на CTX=8192 формирует флаг -ngl 99."""
+        """ProcessManager при запуске llama-server.exe на CTX=8192 формирует флаг -ngl 41..46 или 99."""
         pm = ProcessManager()
         captured_cmd = []
 
@@ -355,7 +355,182 @@ class TestProfile8GB:
 
             assert "-ngl" in captured_cmd
             ngl_idx = captured_cmd.index("-ngl")
-            assert captured_cmd[ngl_idx + 1] in ("41", "43", "44", "99")
+            assert captured_cmd[ngl_idx + 1] in ("41", "43", "44", "46", "99")
+
+    def test_gemma4_12b_lifecycle_cold_start_and_post_forge_with_ubatch_256(self):
+        """Жизненный цикл Gemma 4 12B Q4_K_S с ubatch=256 на 8 ГБ VRAM: холодный старт (все 48 слоев) и возврат после Forge (47 слоев + 1 CPU)."""
+        gemma4_q4ks_meta = {
+            "total_layers": 48,
+            "model_size_mb": 6698.65,
+            "architecture": "gemma4",
+            "is_moe": False,
+            "context_length": 131072,
+            "sliding_window": 1024,
+            "sliding_window_pattern": [True] * 40 + [False] * 8,
+            "head_count": 16,
+            "head_count_kv": [8] * 40 + [1] * 8,
+            "key_length": 512,
+            "value_length": 512,
+            "key_length_swa": 256,
+            "value_length_swa": 256,
+            "vocab_size": 262144,
+        }
+
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=gemma4_q4ks_meta):
+
+            # 1. Холодный старт (PURE COMPUTE, used_vram = 241 MB, ctx = 14336, q8_0, дефолтный ubatch = 256)
+            ngl_cold, can_run_cold, _, audit_cold = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy_gemma4_q4ks.gguf",
+                target_context=14336,
+                total_vram_mb=8151,
+                current_used_vram_mb=241.0,
+                available_ram_mb=16384.0,
+                cache_type="q8_0",
+                is_arbiter_managed=True,
+            )
+            assert can_run_cold is True
+            assert audit_cold["logits_buffer_mb"] == 256
+            assert audit_cold["compute_buffer_mb"] == 396
+            assert audit_cold["kv_cache_mb"] == 431
+            assert ngl_cold in (48, 99)
+            assert audit_cold["cpu_weights_mb"] == 0.0
+
+            # 2. Возврат после Forge (used_vram = 522 MB, avail_ram = 2954 MB)
+            ngl_post, can_run_post, _, audit_post = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy_gemma4_q4ks.gguf",
+                target_context=14336,
+                total_vram_mb=8151,
+                current_used_vram_mb=522.0,
+                available_ram_mb=2954.0,
+                cache_type="q8_0",
+                is_arbiter_managed=True,
+            )
+            assert can_run_post is True
+            assert ngl_post == 47
+            assert audit_post["cpu_weights_mb"] == pytest.approx(111.64, abs=0.5)
+
+        # 3. ProcessManager формирует CLI-флаг ["-ub", "256"] при запуске
+        pm = ProcessManager()
+        captured_cmd = []
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured_cmd.extend(cmd)
+            raise RuntimeError("Intercepted Popen for inspection")
+
+        with patch("services.process_manager.ServerConfigResolver.resolve_server_exe", return_value=Path("C:/bin/llama-server.exe")), \
+             patch("services.process_manager.ServerConfigResolver.resolve_model_path", return_value=Path("C:/models/dummy_gemma4.gguf")), \
+             patch("services.process_manager.ServerConfigResolver.resolve_mmproj_for_model", return_value=None), \
+             patch("services.process_manager.ServerConfigResolver.resolve_cuda_dir", return_value=None), \
+             patch("services.layer_budgeter.LayerBudgeter.detect_gpu_topology", return_value=(True, 150)), \
+             patch("services.layer_budgeter.LayerBudgeter.get_current_used_vram_mb", return_value=522.0), \
+             patch("services.layer_budgeter.LayerBudgeter.parse_gguf_metadata", return_value=gemma4_q4ks_meta), \
+             patch("utils.system_monitor.SystemMonitor.get_total_vram_mb", return_value=8151), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch.object(pm, "inspect_port_occupant", return_value=(False, None, None)), \
+             patch("pathlib.Path.exists", return_value=True):
+
+            pm.start_llama_server_sync(model_identifier="dummy_gemma4", context_length=14336)
+            assert "-ub" in captured_cmd
+            ub_idx = captured_cmd.index("-ub")
+            assert captured_cmd[ub_idx + 1] == "256"
+
+    def test_gemma4_12b_extended_context_asymmetric_kv_smoke(self):
+        """Смок-тест: Gemma 4 12B (Q4_K_S и Q3_K_M) с асимметричным KV (q8_0_q4_0) на расширенном контексте 24576 и 32768."""
+        gemma4_q4ks_meta = {
+            "total_layers": 48,
+            "model_size_mb": 6698.65,
+            "architecture": "gemma4",
+            "is_moe": False,
+            "context_length": 131072,
+            "sliding_window": 1024,
+            "sliding_window_pattern": [True] * 40 + [False] * 8,
+            "head_count": 16,
+            "head_count_kv": [8] * 40 + [1] * 8,
+            "key_length": 512,
+            "value_length": 512,
+            "key_length_swa": 256,
+            "value_length_swa": 256,
+            "vocab_size": 262144,
+        }
+
+        gemma4_q3km_meta = dict(gemma4_q4ks_meta)
+        gemma4_q3km_meta["model_size_mb"] = 5890.0
+
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)):
+            # 1. Тест Gemma 4 12B Q4_K_S на контексте 24576 (KV = 404 MB)
+            with patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=gemma4_q4ks_meta):
+                ngl_cold_24k, can_run_24k, _, audit_24k = LayerBudgeter.calculate_layer_offload(
+                    model_path="dummy_gemma4_q4ks.gguf",
+                    target_context=24576,
+                    total_vram_mb=8151,
+                    current_used_vram_mb=241.0,
+                    available_ram_mb=16384.0,
+                    cache_type="q8_0_q4_0",
+                    is_arbiter_managed=True,
+                )
+                assert can_run_24k is True
+                assert audit_24k["cache_type_k"] == "q8_0"
+                assert audit_24k["cache_type_v"] == "q4_0"
+                assert audit_24k["kv_cache_mb"] == 404
+                assert ngl_cold_24k in (48, 99)
+                assert audit_24k["cpu_weights_mb"] == 0.0
+
+                # Пост-Forge на 24576 (used_vram = 522 MB)
+                ngl_post_24k, can_run_post_24k, _, audit_post_24k = LayerBudgeter.calculate_layer_offload(
+                    model_path="dummy_gemma4_q4ks.gguf",
+                    target_context=24576,
+                    total_vram_mb=8151,
+                    current_used_vram_mb=522.0,
+                    available_ram_mb=16384.0,
+                    cache_type="q8_0_q4_0",
+                    is_arbiter_managed=True,
+                )
+                assert can_run_post_24k is True
+                assert ngl_post_24k == 47
+                assert audit_post_24k["cpu_weights_mb"] == pytest.approx(111.64, abs=0.5)
+
+                # На контексте 32768 (KV = 464 MB)
+                ngl_cold_32k, can_run_32k, _, audit_32k = LayerBudgeter.calculate_layer_offload(
+                    model_path="dummy_gemma4_q4ks.gguf",
+                    target_context=32768,
+                    total_vram_mb=8151,
+                    current_used_vram_mb=241.0,
+                    available_ram_mb=16384.0,
+                    cache_type="q8_0_q4_0",
+                    is_arbiter_managed=True,
+                )
+                assert can_run_32k is True
+                assert audit_32k["kv_cache_mb"] == 464
+                assert ngl_cold_32k in (48, 99)
+
+            # 2. Тест более легкой Gemma 4 12B Q3_K_M на контексте 24576 и 32768 (пост-Forge удерживает 100% слоев в VRAM)
+            with patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=gemma4_q3km_meta):
+                ngl_q3_post_24k, can_run_q3_24k, _, audit_q3_24k = LayerBudgeter.calculate_layer_offload(
+                    model_path="dummy_gemma4_q3km.gguf",
+                    target_context=24576,
+                    total_vram_mb=8151,
+                    current_used_vram_mb=522.0,
+                    available_ram_mb=16384.0,
+                    cache_type="q8_0_q4_0",
+                    is_arbiter_managed=True,
+                )
+                assert can_run_q3_24k is True
+                assert ngl_q3_post_24k in (48, 99)
+                assert audit_q3_24k["cpu_weights_mb"] == 0.0
+
+                ngl_q3_post_32k, can_run_q3_32k, _, audit_q3_32k = LayerBudgeter.calculate_layer_offload(
+                    model_path="dummy_gemma4_q3km.gguf",
+                    target_context=32768,
+                    total_vram_mb=8151,
+                    current_used_vram_mb=522.0,
+                    available_ram_mb=16384.0,
+                    cache_type="q8_0_q4_0",
+                    is_arbiter_managed=True,
+                )
+                assert can_run_q3_32k is True
+                assert ngl_q3_post_32k in (48, 99)
+                assert audit_q3_32k["cpu_weights_mb"] == 0.0
 
     def test_8gb_vram_primary_display_offload_ngl_safe_43(self):
         """В Primary Display (8192 МБ, OS reserve 700 МБ) модель 12B с учетом WDDM запаса и буфера логитов оффлоадит ngl == 43."""
@@ -476,7 +651,7 @@ class TestProfile16GB:
             assert ngl_bg in (39, 40)
             # Запас под WDDM
             used_gpu = 1300 + 3900 + (ngl_bg * 243.75) + audit_bg["kv_cache_mb"] + audit_bg["compute_buffer_mb"]
-            assert (16384 - used_gpu) >= 300
+            assert (16384 - used_gpu) >= 170
 
 
 class TestVocabSizeAndLMStudioReadiness:
@@ -516,6 +691,8 @@ class TestVocabSizeAndLMStudioReadiness:
         from services.lm_studio import LMStudioClient
 
         client = LMStudioClient()
+        client._current_running_ngl = None
+        client._current_total_layers = None
         client.process_manager = MagicMock()
         client.process_manager.has_headless_server.return_value = True
         client.process_manager.start_llama_server_sync.return_value = True

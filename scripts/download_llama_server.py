@@ -75,7 +75,7 @@ def main():
         if args.if_missing:
             print(f"[WARNING] Не удалось автоматически загрузить llama-server: {info}")
             print("[INFO] Вы можете загрузить его позже в меню: Параметры и настройки -> Движок LLM.")
-            sys.exit(0)
+            sys.exit(1)
         else:
             print(f"[ERROR] Ошибка загрузки llama-server: {info}", file=sys.stderr)
             sys.exit(1)

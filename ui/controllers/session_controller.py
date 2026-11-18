@@ -238,6 +238,11 @@ class SessionControllerMixin:
         """Creates and activates a new chat session with locked/unlocked model tracking."""
         self._turn_bubble = None
         self._current_streaming_widget = None
+        if hasattr(self, "process_manager") and self.process_manager:
+            try:
+                self.process_manager.clear_kv_slot_cache()
+            except Exception:
+                pass
         if self.current_session and not is_initial:
             self._save_current_session()
 
@@ -581,6 +586,11 @@ class SessionControllerMixin:
             self._current_streaming_widget = None
             self.chat_history.clear()
             self._clear_chat_widgets()
+            if hasattr(self, "process_manager") and self.process_manager:
+                try:
+                    self.process_manager.clear_kv_slot_cache()
+                except Exception:
+                    pass
 
             session_data = SessionManager.load_session(session_id)
             if not session_data:

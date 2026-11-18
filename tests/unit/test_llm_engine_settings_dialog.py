@@ -86,7 +86,7 @@ def test_llm_engine_dialog_initialization(qapp, dummy_window):
     assert hasattr(dialog, "btn_save")
 
     # Проверка начальных значений
-    assert dialog.kv_combo.count() == 3
+    assert dialog.kv_combo.count() == 4
     assert dialog.switch_fa.onText == "ВКЛ"
     assert dialog.switch_fa.offText == "ВЫКЛ"
     assert dialog.current_thinking in ("auto", "on", "off")
@@ -146,14 +146,20 @@ def test_kv_selection_reactive_hints(qapp, dummy_window):
 
     dialog = LLMEngineSettingsDialog(parent=dummy_window)
 
-    # Выбираем Q4_0 (индекс 1)
+    # Выбираем Q8_0 / Q4_0 (индекс 1)
     dialog.kv_combo.setCurrentIndex(1)
+    assert dialog.current_kv == "q8_0_q4_0"
+    assert "Q8_0 / Q4_0" in dialog.hint_title_lbl.text()
+    assert "62%" in dialog.hint_budget_lbl.text()
+
+    # Выбираем Q4_0 (индекс 2)
+    dialog.kv_combo.setCurrentIndex(2)
     assert dialog.current_kv == "q4_0"
     assert "Q4_0" in dialog.hint_title_lbl.text()
     assert "75%" in dialog.hint_budget_lbl.text()
 
-    # Выбираем FP16 (индекс 2)
-    dialog.kv_combo.setCurrentIndex(2)
+    # Выбираем FP16 (индекс 3)
+    dialog.kv_combo.setCurrentIndex(3)
     assert dialog.current_kv == "f16"
     assert "FP16" in dialog.hint_title_lbl.text()
     assert "0%" in dialog.hint_budget_lbl.text()
@@ -167,15 +173,46 @@ def test_kv_selection_reactive_hints(qapp, dummy_window):
     dialog.deleteLater()
 
 
+def test_kv_selection_and_flash_attention_autosync(qapp, dummy_window):
+    """Проверяет двустороннюю автосинхронизацию квантованного KV-кэша и Flash Attention."""
+    from ui.dialogs.llm_engine_settings_dialog import LLMEngineSettingsDialog
+
+    dialog = LLMEngineSettingsDialog(parent=dummy_window)
+
+    # 1. При выборе FP16 выключаем FA
+    dialog.kv_combo.setCurrentIndex(3)  # f16
+    dialog.switch_fa.setChecked(False)
+    assert dialog.switch_fa.isChecked() is False
+    assert dialog.current_kv == "f16"
+
+    # 2. При выборе асимметричного Q8_0 / Q4_0 (индекс 1) FA должен автоматически включиться
+    dialog.kv_combo.setCurrentIndex(1)
+    assert dialog.current_kv == "q8_0_q4_0"
+    assert dialog.switch_fa.isChecked() is True
+
+    # 3. При выключении FA пользователем KV должен автоматически откатиться в FP16
+    dialog.switch_fa.setChecked(False)
+    assert dialog.switch_fa.isChecked() is False
+    assert dialog.current_kv == "f16"
+    assert dialog.kv_combo.currentIndex() == 3
+
+    # 4. При выборе Q4_0 FA снова включается автоматически
+    dialog.kv_combo.setCurrentIndex(2)  # q4_0
+    assert dialog.current_kv == "q4_0"
+    assert dialog.switch_fa.isChecked() is True
+
+    dialog.deleteLater()
+
+
 def test_save_clicked_persists_config_and_triggers_restart(qapp, dummy_window):
     """Проверяет сохранение настроек в config.json и мягкий перезапуск сервера."""
     from ui.dialogs.llm_engine_settings_dialog import LLMEngineSettingsDialog
 
     dialog = LLMEngineSettingsDialog(parent=dummy_window)
 
-    # Выбираем Q4_0 и отключаем Flash Attention
+    # Выбираем Q8_0 / Q4_0 (индекс 1)
     dialog.kv_combo.setCurrentIndex(1)
-    dialog.switch_fa.setChecked(False)
+    assert dialog.switch_fa.isChecked() is True
 
     saved_config = {}
 
@@ -193,8 +230,8 @@ def test_save_clicked_persists_config_and_triggers_restart(qapp, dummy_window):
         dialog.btn_save.click()
 
     assert len(accepted_called) == 1
-    assert saved_config.get("kv_cache_type") == "q4_0"
-    assert saved_config.get("flash_attention_enabled") is False
+    assert saved_config.get("kv_cache_type") == "q8_0_q4_0"
+    assert saved_config.get("flash_attention_enabled") is True
 
     # Проверка перезапуска llama-server через ProcessManager родительского окна
     assert dummy_window.process_manager.restart_llama_server_async.called

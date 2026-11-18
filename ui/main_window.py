@@ -248,7 +248,7 @@ class MainWindow(
         self._sig_inspector_status.connect(self._on_inspector_status)
 
         # Startup Readiness Barrier & Watchdog
-        self._pending_startup_milestones = {"knowledge_sync", "memory_warmup", "llm_server"}
+        self._pending_startup_milestones = {"knowledge_sync", "llm_server"}
         self._startup_barrier_released = False
         self._startup_milestone_done.connect(self._on_startup_milestone_done)
         self._startup_watchdog_timer = QTimer(self)

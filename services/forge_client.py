@@ -118,6 +118,7 @@ class ForgeClient(QObject):
         ForgeClient._instance = self
         self.base_url = base_url.rstrip("/")
         self.system_monitor = system_monitor
+        self._unload_lock = threading.Lock()
         self._last_vram_wait_ts: float = 0.0
         self._current_session: Optional[requests.Session] = None
         self._is_aborted = False
@@ -562,19 +563,26 @@ class ForgeClient(QObject):
             sdxl_fp8_enabled = config.get("forge_sdxl_fp8_enabled", True)
 
             target_dtype = "fp8e4" if (is_sdxl_checkpoint(target_title) and sdxl_fp8_enabled) else "Auto"
-            opt_payload = {
+            opt_payload: Dict[str, Any] = {
                 "sd_model_checkpoint": target_title,
                 "forge_unet_storage_dtype": target_dtype
             }
+
+            # На системах <= 16.5 ГБ RAM предотвращаем кэширование старых моделей в системной памяти
+            try:
+                import psutil
+                if (psutil.virtual_memory().total / (1024.0 ** 3)) <= 16.5:
+                    opt_payload["sd_checkpoint_cache"] = 0
+                    opt_payload["sd_checkpoints_limit"] = 1
+                    self._system_options_ensured = True
+            except Exception:
+                pass
+
             logger.info(f"[ForgeClient] Чекпоинт '{target_title}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
 
-            resp_opt = requests.post(
-                f"{self.base_url}/sdapi/v1/options",
-                json=opt_payload,
-                timeout=30.0
-            )
-            if resp_opt.status_code != 200:
-                logger.error(f"Failed to set model {target_title}: HTTP {resp_opt.status_code} - {resp_opt.text}")
+            ok = self.set_options(opt_payload, timeout=30.0)
+            if not ok:
+                logger.error(f"Failed to set model {target_title} via /sdapi/v1/options")
                 return False
 
             self._last_resolved_title = target_title
@@ -589,28 +597,83 @@ class ForgeClient(QObject):
 
     set_active_checkpoint = set_model
 
-    def unload_checkpoint(self) -> bool:
-        """Unloads checkpoint from VRAM to RAM (~3.2GB) and purges PyTorch CUDA cache."""
-        if getattr(self, "_checkpoint_unloaded", False):
+    def set_options(self, options: Dict[str, Any], timeout: float = 10.0) -> bool:
+        """Безопасная отправка настроек через POST /sdapi/v1/options."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/sdapi/v1/options",
+                json=options,
+                timeout=timeout
+            )
+            if resp.status_code == 200:
+                logger.info(f"[ForgeClient] Опции успешно применены: {list(options.keys())}")
+                return True
+            logger.warning(f"[ForgeClient] Не удалось применить опции {list(options.keys())}: HTTP {resp.status_code} - {resp.text[:100]}")
+            return False
+        except Exception as e:
+            logger.debug(f"[ForgeClient] Ошибка вызова set_options: {e}")
+            return False
+
+    def ensure_system_options(self, force: bool = False) -> bool:
+        """Гарантирует безопасные системные настройки Forge (кэш чекпоинтов в RAM) для систем с <= 16.5 ГБ RAM."""
+        if not force and getattr(self, "_system_options_ensured", False):
             return True
         try:
-            resp = requests.post(f"{self.base_url}/sdapi/v1/unload-checkpoint", timeout=5.0)
-            if resp.status_code == 200:
-                logger.info("Successfully unloaded Forge checkpoint to free VRAM (~3.2GB).")
-                self.free_vram()
-                self._checkpoint_unloaded = True
-                self._has_loaded_model_in_vram = False
+            import psutil
+            total_ram_gb = psutil.virtual_memory().total / (1024.0 ** 3)
+            if total_ram_gb <= 16.5:
+                ok = self.set_options({
+                    "sd_checkpoint_cache": 0,
+                    "sd_checkpoints_limit": 1
+                })
+                if ok:
+                    self._system_options_ensured = True
+                return ok
+        except Exception as e:
+            logger.debug(f"[ForgeClient] ensure_system_options error: {e}")
+        return True
+
+    def unload_checkpoint(self) -> bool:
+        """Unloads checkpoint from VRAM to RAM (~3.2GB) and purges PyTorch CUDA cache."""
+        with self._unload_lock:
+            if getattr(self, "_checkpoint_unloaded", False):
                 return True
-            else:
-                logger.warning(f"Forge unload-checkpoint status {resp.status_code}: {resp.text[:100]}")
+            try:
+                resp = requests.post(f"{self.base_url}/sdapi/v1/unload-checkpoint", timeout=18.0)
+                if resp.status_code == 200:
+                    self.free_vram(force=True, unload_models=True)
+                    self._checkpoint_unloaded = True
+                    self._has_loaded_model_in_vram = False
+                    used_vram_mb: Any = "?"
+                    avail_ram_mb: Any = "?"
+                    try:
+                        from services.layer_budgeter import LayerBudgeter
+                        import psutil
+                        used_vram_mb = round(LayerBudgeter.get_current_used_vram_mb(), 1)
+                        avail_ram_mb = round(psutil.virtual_memory().available / 1048576, 1)
+                    except Exception:
+                        pass
+                    logger.info(f"Successfully unloaded Forge checkpoint (VRAM used: {used_vram_mb} MB | RAM free: {avail_ram_mb} MB).")
+                    return True
+                else:
+                    logger.warning(f"Forge unload-checkpoint status {resp.status_code}: {resp.text[:100]}")
+                    self.free_vram(force=True, unload_models=True)
+                    self._checkpoint_unloaded = False
+                    return False
+            except requests.exceptions.ReadTimeout as e:
+                logger.warning(
+                    f"[ForgeClient] Таймаут (18.0с) ожидания /sdapi/v1/unload-checkpoint. "
+                    f"Сервер Forge переносит веса в RAM. Пауза 1.0с перед аварийной очисткой VRAM: {e}"
+                )
+                time.sleep(1.0)
                 self.free_vram(force=True, unload_models=True)
                 self._checkpoint_unloaded = False
                 return False
-        except Exception as e:
-            logger.debug(f"Failed to unload Forge checkpoint: {e}")
-            self.free_vram(force=True, unload_models=True)
-            self._checkpoint_unloaded = False
-            return False
+            except Exception as e:
+                logger.debug(f"Failed to unload Forge checkpoint: {e}")
+                self.free_vram(force=True, unload_models=True)
+                self._checkpoint_unloaded = False
+                return False
 
     def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True, force: bool = False) -> bool:
         """Принудительно очищает PyTorch CUDA кэш и синхронизирует режим выгрузки с vram_policy."""
@@ -625,7 +688,7 @@ class ForgeClient(QObject):
                 payload["always_offload"] = bool(always_offload)
             if inference_memory_mb is not None:
                 payload["inference_memory_mb"] = int(inference_memory_mb)
-            resp = requests.post(f"{self.base_url}/sdapi/v1/free-vram", json=payload, timeout=5.0)
+            resp = requests.post(f"{self.base_url}/sdapi/v1/free-vram", json=payload, timeout=10.0)
             if resp.status_code == 404:
                 self._free_vram_supported = False
                 if not getattr(self, "_free_vram_warned", False):
@@ -772,6 +835,9 @@ class ForgeClient(QObject):
         else:
             self._wait_for_vram_clear()
         self._checkpoint_unloaded = False
+
+        if not model_synced_via_set:
+            self.ensure_system_options()
 
         # Detect if model is MoP DMD SDXL
         target_model_name = (checkpoint or "").lower()
@@ -1372,7 +1438,7 @@ class ForgeClient(QObject):
         finally:
             stop_poller.set()
             if poller_thread.is_alive():
-                poller_thread.join(timeout=0.05)
+                poller_thread.join(timeout=1.5)
             if self._current_session:
                 self._current_session.close()
                 self._current_session = None

@@ -20,7 +20,7 @@ IMAGE_GENERATION_SKILLS = frozenset({"gallery", "cinematic"})
 SYSTEM_PERSONA_TEMPLATE = (
     "# Роль и контекст\n"
     "Ты — Элария, личный ассистент, и собеседник пользователя из блока <UserInfo>.\n"
-    "- Дата и время: {current_dt_str}.\n"
+    "- Служебный блок <TurnContext>...</TurnContext> в сообщении пользователя содержит системные метаданные текущего хода (время, память, активный режим). Учитывай их при ответе, но никогда не цитируй эти теги и не воспринимай их как слова самого пользователя.\n"
     "- Язык и форма: общайся на русском языке, только на «ты» к собеседнику. О себе всегда говори в женском роде (я готова, увидела, подумала).\n"
     "- Исключение: если активна директива генерации арта — пиши теги на английском.\n"
     "- Контекст: учитывай профиль <UserInfo> и факты из <PassiveMemory>, когда они органично помогают дать более точный и персональный ответ по теме вопроса (интересы, стек, железо), но не навязывай и не перечисляй их без повода.\n\n"
@@ -700,8 +700,21 @@ class AssistantPromptBuilder:
         attached_document: Optional[Any] = None,
         attached_document_name: Optional[str] = None,
         user_query: Optional[str] = None,
+        static_core_only: bool = True,
         **kwargs
     ) -> str:
+        """
+        Собирает исключительно статическое ядро системного промпта:
+        - [identity & persona] (на базе SYSTEM_PERSONA_TEMPLATE без даты/времени,
+          с защитной инструкцией ролей <TurnContext>)
+        - <UserInfo> (имя и неизменяемое био пользователя)
+        - Модификаторы формата (Excel/Word при наличии)
+        - ROUTING_TAIL_PROTOCOL
+        
+        Токены этого промпта остаются побитово идентичными на протяжении всей сессии диалога,
+        обеспечивая 100% стабильность префикса KV-кэша слота 0.
+        При static_core_only=False возвращает объединенный с build_turn_context промпт (legacy fallback).
+        """
         target_user = user_name.strip() if user_name and user_name.strip() else "Пользователь"
 
         # 1. <UserInfo>
@@ -710,33 +723,153 @@ class AssistantPromptBuilder:
             active_persona=active_persona
         )
 
-        # 2. <PassiveMemory>
-        passive_memory_block = ""
-        if include_memory:
-            memory_data = relevant_facts if relevant_facts is not None else kwargs.get("passive_memory")
-            passive_memory_block = AssistantPromptBuilder.build_passive_memory(memory_data)
-
-        # 3. SYSTEM_PERSONA_TEMPLATE
-        current_dt_str = AssistantPromptBuilder.get_current_datetime_str(kwargs.get("dt"))
+        # 2. SYSTEM_PERSONA_TEMPLATE (статическое ядро)
         base_template = (custom_prompt and custom_prompt.strip()) or AssistantPromptBuilder.SYSTEM_PERSONA_TEMPLATE
         if "{current_dt_str}" in base_template:
-            try:
-                persona_body = base_template.format(current_dt_str=current_dt_str)
-            except Exception:
-                persona_body = base_template.replace("{current_dt_str}", current_dt_str)
-        else:
-            persona_body = f"{base_template}\n\nТекущая дата и время: {current_dt_str}."
-
+            base_template = (
+                base_template.replace("{current_dt_str}", "")
+                .replace("- Дата и время: .\n", "")
+                .replace("- Дата и время: \n", "")
+            )
+        persona_body = base_template
         persona_block = f"[identity & persona]\n{persona_body.strip()}\n\n"
 
-        # 4. Модификаторы формата
+        # 3. Модификаторы формата
         format_modifiers = ""
         if is_excel:
             format_modifiers = "User requested an Excel spreadsheet. Present data as a clean Markdown table.\n\n"
         elif is_word:
             format_modifiers = "User requested a Word document. Format response with clean headers and bullet lists.\n\n"
 
-        # 5. <KnowledgeBase>
+        # 4. ROUTING_TAIL_PROTOCOL
+        tail_section = self.ROUTING_TAIL_PROTOCOL.format(user_name=target_user)
+
+        prompt_parts = [
+            persona_block,
+            user_info_block,
+            format_modifiers,
+            tail_section
+        ]
+
+        static_core = "".join(part for part in prompt_parts if part).strip()
+
+        if not static_core_only:
+            # 2. <PassiveMemory>
+            passive_memory_block = ""
+            if include_memory:
+                memory_data = relevant_facts if relevant_facts is not None else kwargs.get("passive_memory")
+                passive_memory_block = AssistantPromptBuilder.build_passive_memory(memory_data)
+
+            # 3. <KnowledgeBase>
+            knowledge_section = ""
+            if knowledge_block and knowledge_block.strip():
+                kb_str = knowledge_block.strip()
+                knowledge_section = f"{kb_str}\n\n"
+            elif matched_knowledge_docs:
+                knowledge_section = AssistantPromptBuilder.build_knowledge_context(matched_knowledge_docs)
+            elif kwargs.get("knowledge_context") and str(kwargs.get("knowledge_context")).strip():
+                kb_str = str(kwargs.get("knowledge_context")).strip()
+                knowledge_section = f"{kb_str}\n\n"
+
+            # 4. <AttachedDocument>
+            attached_docs_data = attached_docs or kwargs.get("attached_documents")
+            attached_section = AssistantPromptBuilder.build_attached_documents(
+                attached_docs=attached_docs_data,
+                attached_document=attached_document,
+                attached_document_name=attached_document_name
+            )
+
+            # 5. Семантическая маршрутизация скиллов
+            effective_query = user_query or kwargs.get("task_text") or kwargs.get("user_message_text")
+            skill_name = None
+            score = 0.0
+            reason = ""
+
+            session_metadata = kwargs.get("session_metadata")
+            if not session_metadata and kwargs.get("session_id"):
+                try:
+                    from services.session_manager import SessionManager
+                    sess = SessionManager._sessions_cache.get(str(kwargs.get("session_id"))) or SessionManager.load_session(str(kwargs.get("session_id")))
+                    if sess and isinstance(sess, dict):
+                        session_metadata = sess.get("metadata", {})
+                except Exception:
+                    pass
+
+            manual_skill = (
+                kwargs.get("active_assistant_skill")
+                or kwargs.get("manual_skill")
+                or (session_metadata.get("active_assistant_skill") if isinstance(session_metadata, dict) else None)
+            )
+
+            all_skills = self.router.get_all_skills() if (hasattr(self, "router") and self.router and hasattr(self.router, "get_all_skills")) else {}
+
+            if manual_skill and manual_skill != "auto":
+                skill_meta = all_skills.get(manual_skill)
+                if skill_meta:
+                    skill_name = manual_skill
+                else:
+                    logger.warning(f"[AssistantPrompt] Зафиксированный скилл '{manual_skill}' не найден в реестре.")
+            elif effective_query and hasattr(self, "router") and self.router:
+                skill_name, score, reason = self.router.route(effective_query)
+
+            skill_section = self._resolve_skill_section(
+                skill_name=skill_name,
+                target_user=target_user,
+                effective_query=effective_query or "",
+                all_skills=all_skills,
+                **kwargs
+            )
+
+            full_parts = [
+                persona_block,
+                user_info_block,
+                passive_memory_block,
+                knowledge_section,
+                attached_section,
+                format_modifiers,
+                skill_section,
+                tail_section
+            ]
+            return "".join(part for part in full_parts if part).strip()
+
+        return static_core
+
+    @_PromptBuilderMethod
+    def build_turn_context(
+        self,
+        user_name: str = "Пользователь",
+        include_memory: bool = True,
+        relevant_facts: Optional[List[str]] = None,
+        knowledge_block: Optional[str] = None,
+        matched_knowledge_docs: Optional[List[Any]] = None,
+        attached_docs: Optional[List[Any]] = None,
+        attached_document: Optional[Any] = None,
+        attached_document_name: Optional[str] = None,
+        user_query: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Формирует служебный контекст текущего хода <TurnContext>...</TurnContext>,
+        объединяющий только волатильные динамические данные:
+        - Текущая дата и время
+        - Память LanceDB (<PassiveMemory>)
+        - База знаний (<KnowledgeBase>)
+        - Прикрепленные документы (<AttachedDocument>)
+        - Активный скилл от SkillRouter (включая директивы gallery)
+        """
+        target_user = user_name.strip() if user_name and user_name.strip() else "Пользователь"
+
+        # 1. Дата и время
+        current_dt_str = AssistantPromptBuilder.get_current_datetime_str(kwargs.get("dt"))
+        dt_line = f"- Текущая дата и время: {current_dt_str}.\n\n"
+
+        # 2. <PassiveMemory>
+        passive_memory_block = ""
+        if include_memory:
+            memory_data = relevant_facts if relevant_facts is not None else kwargs.get("passive_memory")
+            passive_memory_block = AssistantPromptBuilder.build_passive_memory(memory_data)
+
+        # 3. <KnowledgeBase>
         knowledge_section = ""
         if knowledge_block and knowledge_block.strip():
             kb_str = knowledge_block.strip()
@@ -747,7 +880,7 @@ class AssistantPromptBuilder:
             kb_str = str(kwargs.get("knowledge_context")).strip()
             knowledge_section = f"{kb_str}\n\n"
 
-        # 6. <AttachedDocument>
+        # 4. <AttachedDocument>
         attached_docs_data = attached_docs or kwargs.get("attached_documents")
         attached_section = AssistantPromptBuilder.build_attached_documents(
             attached_docs=attached_docs_data,
@@ -755,13 +888,12 @@ class AssistantPromptBuilder:
             attached_document_name=attached_document_name
         )
 
-        # 7. Семантическая маршрутизация специализированных скиллов
+        # 5. Семантическая маршрутизация скиллов
         effective_query = user_query or kwargs.get("task_text") or kwargs.get("user_message_text")
         skill_name = None
         score = 0.0
         reason = ""
 
-        # Учет зафиксированного скилла (active_assistant_skill)
         session_metadata = kwargs.get("session_metadata")
         if not session_metadata and kwargs.get("session_id"):
             try:
@@ -808,21 +940,17 @@ class AssistantPromptBuilder:
             **kwargs
         )
 
-        # 8. ROUTING_TAIL_PROTOCOL
-        tail_section = self.ROUTING_TAIL_PROTOCOL.format(user_name=target_user)
-
-        prompt_parts = [
-            persona_block,
-            user_info_block,
+        turn_parts = [
+            dt_line,
             passive_memory_block,
             knowledge_section,
             attached_section,
-            format_modifiers,
-            skill_section,
-            tail_section
+            skill_section
         ]
-
-        return "".join(part for part in prompt_parts if part).strip()
+        body = "".join(part for part in turn_parts if part).strip()
+        if not body:
+            return ""
+        return f"<TurnContext>\n{body}\n</TurnContext>"
 
     @staticmethod
     def resolve_gallery_target_profile(

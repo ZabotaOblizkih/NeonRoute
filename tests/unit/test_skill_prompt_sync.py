@@ -24,7 +24,8 @@ def test_skill_router_syncs_builtin_prompts_with_assistant_prompt_builder():
             built_prompt = AssistantPromptBuilder.get_instance().build(
                 user_name="Виктор",
                 active_assistant_skill="gallery",
-                include_memory=False
+                include_memory=False,
+                static_core_only=False
             )
             primary_effective = synced_prompt.split("\n\n---")[0]
             assert primary_effective in built_prompt
@@ -33,7 +34,8 @@ def test_skill_router_syncs_builtin_prompts_with_assistant_prompt_builder():
             built_prompt = AssistantPromptBuilder.get_instance().build(
                 user_name="Виктор",
                 active_assistant_skill=skill_id,
-                include_memory=False
+                include_memory=False,
+                static_core_only=False
             )
             effective_prompt = AssistantPromptBuilder.get_effective_skill_prompt(skill_id, user_name="Виктор")
             assert effective_prompt in built_prompt

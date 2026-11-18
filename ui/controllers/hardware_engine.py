@@ -333,6 +333,43 @@ class HardwareEngineMixin:
             """)
             self.process_manager.start_forge_async()
 
+    def _can_start_llm_engine(self) -> bool:
+        """
+        Проверяет возможность запуска LLM сервера.
+        Возвращает False, если server_state == ServerState.ERROR и ни llama-server.exe,
+        ни LM Studio не обнаружены на диске.
+        """
+        if not hasattr(self, "process_manager") or not self.process_manager:
+            return False
+        from services.process_manager import ServerState
+        pm_state = getattr(self.process_manager, "server_state", None)
+        if pm_state == ServerState.ERROR:
+            has_headless = self.process_manager.has_headless_server()
+            has_lms = bool(getattr(self.process_manager, "_lms_exe", None) or self.process_manager._locate_lm_studio_app())
+            if not has_headless and not has_lms:
+                return False
+        return True
+
+    def _check_and_restart_lms_periodic(self):
+        """
+        Периодическая проверка и безопасный перезапуск LLM сервера (каждые 30 секунд).
+        Предотвращает запуск start_lm_studio_async(), если server_state == ServerState.ERROR
+        и ни llama-server.exe, ни LM Studio не появились на диске.
+        """
+        if not hasattr(self, "process_manager") or not self.process_manager:
+            return
+        if self.process_manager.is_lm_studio_running():
+            return
+        if not self._can_start_llm_engine():
+            logger.debug("[HardwareEngine] LLM сервер в состоянии ERROR и бинарники отсутствуют на диске. Перезапуск пропущен.")
+            return
+
+        has_headless = self.process_manager.has_headless_server()
+        has_lms = bool(getattr(self.process_manager, "_lms_exe", None) or self.process_manager._locate_lm_studio_app())
+        if has_headless or has_lms:
+            logger.info("[HardwareEngine] Обнаружен доступный рантайм LLM, попытка запуска start_lm_studio_async()...")
+            self.process_manager.start_lm_studio_async()
+
     def _toggle_lms_server(self):
         if self.process_manager.is_lm_studio_running() or self.pill_lm.is_online:
             self.statusBar().showMessage("Остановка LM Studio сервера...")
@@ -346,6 +383,16 @@ class HardwareEngineMixin:
                 self.lm_client.abort()
             self.process_manager.stop_lm_studio_async()
         else:
+            if not self._can_start_llm_engine():
+                err_msg = (
+                    "Движок llama-server не найден в папке bin/. "
+                    "Запустите install.bat или скачайте движок в меню «Параметры и настройки → Движок LLM»."
+                )
+                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                    self.statusBar().showMessage(err_msg, 6000)
+                from ui.common.toast_helper import toast_warning
+                toast_warning(self, "Движок LLM", err_msg)
+                return
             self.statusBar().showMessage("Запуск LM Studio сервера (lms server start)...")
             self.process_manager.start_lm_studio_async()
 
@@ -797,7 +844,8 @@ class HardwareEngineMixin:
     def _finalize_forge_generation(self):
         try:
             from services.vram_arbiter import VRAMArbiter
-            VRAMArbiter.get_instance().release_diffusion_for_llm(force=True)
+            need_force = not getattr(getattr(self, "forge_client", None), "_checkpoint_unloaded", False)
+            VRAMArbiter.get_instance().release_diffusion_for_llm(force=need_force)
         except Exception:
             try:
                 if hasattr(self, "forge_client") and self.forge_client:
@@ -1084,6 +1132,10 @@ class HardwareEngineMixin:
 
     def _execute_lms_reload(self):
         if getattr(self, "is_busy", False):
+            return
+
+        if hasattr(self, "_can_start_llm_engine") and not self._can_start_llm_engine():
+            logger.debug("[HardwareEngine] Пропуск отложенного возврата LLM: сервер в ERROR и бинарники отсутствуют.")
             return
 
         if hasattr(self, "task_queue") and self.task_queue:
