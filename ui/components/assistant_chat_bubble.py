@@ -8,7 +8,7 @@ Isolated from roleplay mechanics and widgets.
 import math
 import logging
 from pathlib import Path
-from typing import Optional, List, Union, Any
+from typing import Optional, List, Union, Any, Tuple
 
 from PyQt6.QtCore import (
     Qt, QTimer, QRectF,
@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
 from qfluentwidgets import ToolTipFilter, ToolTipPosition
 
 from ui.components.chat_bubble import ChatMessageWidget
+from services.art_director.geometry import detect_scene_archetype, ASPECT_RATIO_BUCKETS_SDXL
+from services.art_director.prompting import parse_image_prompt_flags
 
 logger = logging.getLogger("NeonRoute.AssistantChatBubble")
 
@@ -35,15 +37,111 @@ class CyberpunkArtPlaceholderWidget(QWidget):
     Мягкая пульсация неонового свечения и технологичных угловых меток.
     """
     TARGET_HEIGHT = 220
+    MAX_WIDTH = 480
+    MAX_HEIGHT = 420
+    MIN_WIDTH = 280
+    MIN_HEIGHT = 190
 
-    def __init__(self, parent=None):
+    @classmethod
+    def calculate_target_size(
+        cls,
+        aspect_ratio: Optional[str] = None,
+        prompt: Optional[str] = None
+    ) -> Tuple[int, int]:
+        """
+        Вычисляет целевые размеры (width, height) плейсхолдера с учетом пропорций кадра.
+        Поддерживает:
+        - Явное соотношение aspect_ratio ('portrait', '16:9', 'square', 'ultrawide' и др.)
+        - Флаги в prompt (например, '--ar 16:9', '--ar portrait')
+        - Детекцию архетипа через detect_scene_archetype(prompt)
+        - Защиту от обрезания HUD: min_w=280, max_w=480, min_h=190, max_h=420.
+        """
+        clean_ar = str(aspect_ratio).strip().lower() if aspect_ratio and str(aspect_ratio).strip().lower() not in ("none", "null", "") else None
+        clean_prompt = prompt.strip() if prompt else ""
+
+        if clean_prompt:
+            try:
+                parsed_flags = parse_image_prompt_flags(clean_prompt)
+                if not clean_ar and parsed_flags.aspect_ratio:
+                    clean_ar = parsed_flags.aspect_ratio.strip().lower()
+                if parsed_flags.prompt:
+                    clean_prompt = parsed_flags.prompt
+            except Exception as e:
+                logger.debug(f"Failed to parse prompt flags: {e}")
+
+        archetype = None
+        custom_ratio = None
+
+        if clean_ar:
+            if clean_ar in ("portrait", "vertical", "tall", "2:3"):
+                archetype = "solo"
+            elif clean_ar in ("wide", "landscape", "horizontal", "3:2"):
+                archetype = "pair"
+            elif clean_ar in ("square", "sq", "1:1", "closeup"):
+                archetype = "closeup"
+            elif clean_ar in ("fullbody", "9:16"):
+                archetype = "fullbody"
+            elif clean_ar in ("cinematic", "pano", "16:9"):
+                archetype = "cinematic"
+            elif clean_ar in ("ultrawide", "wide21:9", "21:9", "anamorphic"):
+                archetype = "ultrawide"
+            elif clean_ar == "scenery":
+                archetype = "scenery"
+            elif clean_ar in ASPECT_RATIO_BUCKETS_SDXL:
+                archetype = clean_ar
+            elif ":" in clean_ar:
+                parts = clean_ar.split(":")
+                if len(parts) == 2:
+                    try:
+                        num = float(parts[0])
+                        den = float(parts[1])
+                        if den > 0:
+                            custom_ratio = num / den
+                    except ValueError:
+                        pass
+
+        if archetype is None and custom_ratio is None:
+            if clean_prompt:
+                try:
+                    archetype = detect_scene_archetype(clean_prompt)
+                except Exception:
+                    archetype = "cinematic"
+            else:
+                archetype = "cinematic"
+
+        if custom_ratio is not None:
+            ratio = custom_ratio
+        else:
+            bucket = ASPECT_RATIO_BUCKETS_SDXL.get(archetype, ASPECT_RATIO_BUCKETS_SDXL.get("cinematic", {"width": 1344, "height": 768}))
+            ratio = bucket["width"] / bucket["height"]
+
+        if abs(ratio - 1.0) < 0.05:
+            return 340, 340
+        elif ratio > 1.0:
+            w = cls.MAX_WIDTH
+            h = max(cls.MIN_HEIGHT, min(cls.MAX_HEIGHT, round(w / ratio)))
+            return w, h
+        else:
+            h = cls.MAX_HEIGHT
+            w = max(cls.MIN_WIDTH, min(cls.MAX_WIDTH, round(h * ratio)))
+            return w, h
+
+    def __init__(
+        self,
+        parent=None,
+        aspect_ratio: Optional[str] = None,
+        prompt: Optional[str] = None
+    ):
         super().__init__(parent)
         self.setObjectName("CyberpunkArtPlaceholder")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.setMinimumWidth(360)
-        self.setMaximumWidth(480)
+        self.target_width, self.target_height = self.calculate_target_size(
+            aspect_ratio=aspect_ratio,
+            prompt=prompt
+        )
+        self.setFixedWidth(self.target_width)
         self.setMinimumHeight(0)
-        self.setMaximumHeight(self.TARGET_HEIGHT)
+        self.setMaximumHeight(self.target_height)
 
         self._phase = 0.0
         self._timer = QTimer(self)
@@ -258,7 +356,11 @@ class AssistantChatMessageWidget(ChatMessageWidget):
         self.art_placeholder: Optional[CyberpunkArtPlaceholderWidget] = None
         self._placeholder_anim_group: Optional[QParallelAnimationGroup] = None
 
-    def show_art_loading_placeholder(self):
+    def show_art_loading_placeholder(
+        self,
+        aspect_ratio: Optional[str] = None,
+        prompt: Optional[str] = None
+    ):
         """Отображает киберпанк-лоадер синтеза кадра в теле бабла с плавной анимацией разворачивания."""
         if getattr(self, "art_placeholder", None) is not None:
             return
@@ -276,10 +378,29 @@ class AssistantChatMessageWidget(ChatMessageWidget):
                 self.text_browser.setVisible(False)
                 self.text_browser.hide()
 
+        # Fallback к visual_intent бабла, если параметры не переданы явно
+        if aspect_ratio is None or prompt is None:
+            vi = getattr(self, "visual_intent", None)
+            if isinstance(vi, dict):
+                if aspect_ratio is None:
+                    aspect_ratio = vi.get("aspect_ratio") or vi.get("ar")
+                if prompt is None:
+                    prompt = vi.get("prompt")
+            elif vi is not None:
+                if aspect_ratio is None:
+                    aspect_ratio = getattr(vi, "aspect_ratio", None) or getattr(vi, "ar", None)
+                if prompt is None:
+                    prompt = getattr(vi, "prompt", None)
+
         # 2. Создание плейсхолдера с анимацией разворачивания по высоте и прозрачности
-        target_h = CyberpunkArtPlaceholderWidget.TARGET_HEIGHT
-        placeholder = CyberpunkArtPlaceholderWidget(self.bubble_container)
+        placeholder = CyberpunkArtPlaceholderWidget(
+            self.bubble_container,
+            aspect_ratio=aspect_ratio,
+            prompt=prompt
+        )
         self.art_placeholder = placeholder
+        target_w = placeholder.target_width
+        target_h = placeholder.target_height
         placeholder.setMinimumHeight(0)
         placeholder.setMaximumHeight(0)
 
@@ -292,7 +413,7 @@ class AssistantChatMessageWidget(ChatMessageWidget):
             layout.addWidget(placeholder)
 
         if self.bubble_container:
-            self.bubble_container.setMinimumWidth(max(self.bubble_container.minimumWidth(), 380))
+            self.bubble_container.setMinimumWidth(max(self.bubble_container.minimumWidth(), target_w))
 
         anim_group = QParallelAnimationGroup(self)
 
@@ -415,11 +536,13 @@ class AssistantChatMessageWidget(ChatMessageWidget):
         def _safe_generate():
             chip_btn.setEnabled(False)
             chip_btn.setText("⏳ Запуск генерации...")
+            self.show_art_loading_placeholder(prompt=prompt)
             if on_generate:
                 try:
                     on_generate()
                 except Exception as ex:
                     logger.error(f"Art generation invocation failed: {ex}")
+                    self.hide_art_loading_placeholder()
                     chip_btn.setEnabled(True)
                     chip_btn.setText("🎨 Сгенерировать иллюстрацию")
 
@@ -458,7 +581,16 @@ class AssistantChatMessageWidget(ChatMessageWidget):
             except RuntimeError:
                 pass
         if busy:
-            self.show_art_loading_placeholder()
+            aspect_ratio = None
+            prompt_val = None
+            vi = getattr(self, "visual_intent", None)
+            if isinstance(vi, dict):
+                aspect_ratio = vi.get("aspect_ratio") or vi.get("ar")
+                prompt_val = vi.get("prompt")
+            elif vi is not None:
+                aspect_ratio = getattr(vi, "aspect_ratio", None) or getattr(vi, "ar", None)
+                prompt_val = getattr(vi, "prompt", None)
+            self.show_art_loading_placeholder(aspect_ratio=aspect_ratio, prompt=prompt_val)
         else:
             self.hide_art_loading_placeholder()
         self._update_bubble_geometry()

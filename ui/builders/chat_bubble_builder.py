@@ -210,6 +210,10 @@ class ChatBubbleBuilderMixin:
         if msg.get("knowledge_sources") and hasattr(widget, "set_knowledge_sources"):
             widget.set_knowledge_sources(msg.get("knowledge_sources"))
         if msg.get("thought") and hasattr(widget, "set_thought_data"):
+            if is_rp and hasattr(widget, "apply_thought_style"):
+                from services.thought_styles import resolve_thought_style
+                active_card = getattr(self, "active_character", None)
+                widget.apply_thought_style(resolve_thought_style(active_card))
             t = msg["thought"]
             if isinstance(t, dict):
                 widget.set_thought_data(
@@ -581,6 +585,11 @@ class ChatBubbleBuilderMixin:
             parent=getattr(self, "chat_scroll_content", getattr(self, "chat_container", None)),
             **kwargs
         )
+        if (eff_mode == "roleplay" or is_roleplay or getattr(self, "current_mode", "") == "roleplay") and hasattr(msg, "apply_thought_style"):
+            from services.thought_styles import resolve_thought_style
+            active_card = getattr(self, "active_character", None)
+            msg.apply_thought_style(resolve_thought_style(active_card))
+
         k_sources = kwargs.get("knowledge_sources") or (getattr(self, "_pending_knowledge_sources", None) if not is_user else None)
         if k_sources and hasattr(msg, "set_knowledge_sources"):
             msg.set_knowledge_sources(k_sources)

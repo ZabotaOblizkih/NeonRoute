@@ -252,10 +252,24 @@ def _run_standalone_splash_entry() -> None:
     ready_flag = Path(sys.argv[3])
     parent_pid = int(sys.argv[4]) if sys.argv[4].isdigit() else 0
 
+    project_root = str(Path(__file__).resolve().parents[2])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from config import APP_USER_MODEL_ID, APP_ICON_PATH
+
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication([sys.argv[0]])
+
+    if APP_ICON_PATH.exists():
+        from PyQt6.QtGui import QIcon
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
 
     splash = SmoothSplashScreen(asset_path)
     splash.show()

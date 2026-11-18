@@ -132,8 +132,8 @@ class VRAMArbiter:
                 break
 
             delta = abs(curr_used - prev_used) if prev_used is not None else 0.0
-            is_low = (curr_used < 750.0)
-            is_stable = (prev_used is not None and delta < 15.0)
+            is_low = (curr_used < 1500.0 and prev_used is not None and abs(curr_used - prev_used) < 15.0)
+            is_stable = is_low
 
             if is_low and is_stable:
                 if stable_start is None:
@@ -141,7 +141,7 @@ class VRAMArbiter:
                 elif (time.monotonic() - stable_start) >= dwell_s:
                     logger.debug(
                         f"[VRAMArbiter] VRAM стабилизирована в окне {dwell_s}с: "
-                        f"{curr_used:.1f} MB (< 750 MB, delta={delta:.1f} MB)."
+                        f"{curr_used:.1f} MB (плато < 1500 MB, delta={delta:.1f} MB)."
                     )
                     break
             else:

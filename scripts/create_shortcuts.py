@@ -16,7 +16,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from config import BASE_DIR, APP_ICON_PATH, APP_NAME
+from config import BASE_DIR, APP_ICON_PATH, APP_NAME, APP_USER_MODEL_ID
+
+
+def _set_shortcut_app_id(link_path: Path, app_id: str) -> None:
+    try:
+        import pythoncom
+        from win32com.propsys import propsys, pscon
+
+        # 2 = GPS_READWRITE
+        store = propsys.SHGetPropertyStoreFromParsingName(
+            str(link_path.resolve()), None, 2, propsys.IID_IPropertyStore
+        )
+        prop_var = propsys.PROPVARIANTType(app_id, pythoncom.VT_LPWSTR)
+        store.SetValue(pscon.PKEY_AppUserModel_ID, prop_var)
+        store.Commit()
+    except Exception as e:
+        print(f"[WARNING] Could not set AppUserModelID on {link_path.name}: {e}")
 
 
 def get_desktop_dir() -> Path:
@@ -78,10 +94,16 @@ $s.Description = '{description}'
             text=True,
             check=True
         )
-        return link_path.exists()
+        if link_path.exists():
+            _set_shortcut_app_id(link_path, APP_USER_MODEL_ID)
+            return True
+        return False
     except subprocess.CalledProcessError as e:
         print(f"[create_shortcuts] Error creating {link_path}: {e.stderr}", file=sys.stderr)
         return False
+
+
+create_shortcut = create_shortcut_powershell
 
 
 def main() -> int:

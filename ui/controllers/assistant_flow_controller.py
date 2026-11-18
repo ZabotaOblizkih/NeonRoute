@@ -1017,7 +1017,7 @@ class AssistantFlowControllerMixin:
 
         # Активация киберпанк-лоадера ожидания кадра в бабле (для [GALLERY] и [IMAGE_PROMPT])
         if (has_gallery or extracted_image_prompt) and hasattr(msg_widget, "show_art_loading_placeholder"):
-            msg_widget.show_art_loading_placeholder()
+            msg_widget.show_art_loading_placeholder(prompt=extracted_image_prompt)
 
         # Формируем контент для памяти модели: сохраняем [IMAGE_PROMPT: ...]
         memory_content = text

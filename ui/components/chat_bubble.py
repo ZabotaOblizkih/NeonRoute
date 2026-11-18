@@ -187,6 +187,7 @@ class ChatMessageWidget(QWidget):
         self.knowledge_hud_container = None
         self.thought_spoiler = None
         self.thought_data = kwargs.get("thought", kwargs.get("thought_data", None))
+        self._thought_style: Optional[Any] = kwargs.get("thought_style", None)
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._setup_ui()
@@ -339,6 +340,8 @@ class ChatMessageWidget(QWidget):
 
         from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
         self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+        if self._thought_style is not None:
+            self.thought_spoiler.apply_style(self._thought_style)
         self.thought_spoiler.toggled.connect(self._on_thought_spoiler_toggled)
         bubble_layout.addWidget(self.thought_spoiler)
         self.thought_spoiler.setVisible(False)
@@ -800,11 +803,19 @@ class ChatMessageWidget(QWidget):
         self._refresh_layout()
         QTimer.singleShot(0, self._refresh_layout)
 
+    def apply_thought_style(self, style: Any) -> None:
+        """Сохраняет стиль блока рассуждений и применяет его к виджету спойлера."""
+        self._thought_style = style
+        if getattr(self, "thought_spoiler", None) is not None and hasattr(self.thought_spoiler, "apply_style"):
+            self.thought_spoiler.apply_style(style)
+
     def get_or_create_thought_spoiler(self):
         """Возвращает существующий или создает ThoughtSpoilerWidget над текстовым блоком."""
         if getattr(self, "thought_spoiler", None) is None:
             from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
             self.thought_spoiler = ThoughtSpoilerWidget(self.bubble_container)
+            if self._thought_style is not None and hasattr(self.thought_spoiler, "apply_style"):
+                self.thought_spoiler.apply_style(self._thought_style)
             self.thought_spoiler.toggled.connect(self._on_thought_spoiler_toggled)
             if hasattr(self, "bubble_layout"):
                 if getattr(self, "knowledge_hud", None):
@@ -986,7 +997,11 @@ class ChatMessageWidget(QWidget):
         except RuntimeError:
             pass
 
-    def show_art_loading_placeholder(self):
+    def show_art_loading_placeholder(
+        self,
+        aspect_ratio: Optional[str] = None,
+        prompt: Optional[str] = None
+    ):
         """Интерфейсный метод для специализированных баблов (переопределяется в AssistantChatMessageWidget)."""
         pass
 

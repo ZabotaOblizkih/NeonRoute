@@ -18,7 +18,6 @@ from ui.components.rpg_elements import (
     RPGBundle,
     RPGContentParser,
     RPGStatusWidget,
-    RPGThoughtWidget,
     RPGChoicesWidget
 )
 
@@ -63,7 +62,6 @@ class RPChatMessageWidget(ChatMessageWidget):
         self.btn_scene_art: Optional[QPushButton] = None
         self._pending_art_trigger = False
         self.rpg_status_widget: Optional[RPGStatusWidget] = None
-        self.rpg_thought_widget: Optional[RPGThoughtWidget] = None
         self.rpg_choices_widget: Optional[RPGChoicesWidget] = None
 
         kwargs.pop("is_roleplay", None)
@@ -90,6 +88,12 @@ class RPChatMessageWidget(ChatMessageWidget):
         )
         if visual_intent is not None:
             self.visual_intent = visual_intent
+
+        if self._thought_style is None:
+            from services.thought_styles import resolve_thought_style
+            card = kwargs.get("character_card")
+            self.apply_thought_style(resolve_thought_style(card))
+
         self._setup_rp_widgets()
 
     def _markdown_to_html(self, text: str) -> str:
@@ -139,11 +143,6 @@ class RPChatMessageWidget(ChatMessageWidget):
         bubble_layout = self.bubble_container.layout()
         if not bubble_layout:
             return
-
-        # 1. Thought Spoiler
-        if bundle.thought and not self.rpg_thought_widget:
-            self.rpg_thought_widget = RPGThoughtWidget(bundle.thought, self.bubble_container)
-            bubble_layout.insertWidget(1, self.rpg_thought_widget)
 
         # Обновляем основной текст чистым текстом без тегов
         if self.text_browser and bundle.clean_text != initial_text:
@@ -213,16 +212,6 @@ class RPChatMessageWidget(ChatMessageWidget):
             self._adjust_text_height()
 
         layout = self.bubble_container.layout() if self.bubble_container else None
-
-        # Manage Thoughts
-        if bundle.thought:
-            if not self.rpg_thought_widget:
-                self.rpg_thought_widget = RPGThoughtWidget(bundle.thought, self.bubble_container)
-                if layout:
-                    layout.insertWidget(1, self.rpg_thought_widget)
-        elif self.rpg_thought_widget:
-            self.rpg_thought_widget.deleteLater()
-            self.rpg_thought_widget = None
 
         # Manage Status & Meters
         if bundle.stats or bundle.meters:

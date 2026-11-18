@@ -28,6 +28,7 @@ DEFAULT_ROLEPLAY_AVATAR = AVATARS_DIR / "RP_chat.jpg"
 DEFAULT_BACKGROUND_PATH = ASSETS_DIR / "default_background.jpg"
 SPLASH_PATH = ASSETS_DIR / "splash.gif"
 APP_ICON_PATH = ASSETS_DIR / "neonroute.ico"
+APP_USER_MODEL_ID = "NeonRoute.Desktop.App.1"
 CANONICAL_BACKGROUND_NAME = "bg_bg_Gemini_Generated_Image_y0d0cmy0d0cmy0d0.jpg"
 KNOWLEDGE_BASE_DIR = BASE_DIR / "knowledge_base"
 KNOWLEDGE_REGISTRY_PATH = KNOWLEDGE_BASE_DIR / "registry.json"
@@ -126,10 +127,11 @@ EMERGENCY_VRAM_MB = 150            # Алиас для обратной совм
 
 # Константы аппаратного резервирования VRAM
 FORGE_VRAM_RESERVE_MB = 450          # Несгораемый слот под PyTorch CUDA context Forge
-SAFETY_MARGIN_VRAM_MB = 150          # Неприкосновенный запас от краша видеодрайвера (TDR)
+SAFETY_MARGIN_VRAM_MB = 250          # Неприкосновенный запас от краша видеодрайвера (TDR)
 OS_RESERVE_PURE_COMPUTE_MB = 150     # Резерв ОС при изолированном выводе на iGPU
 OS_RESERVE_PRIMARY_DISPLAY_MB = 700  # Резерв ОС при выводе экрана через dGPU
 HYSTERESIS_LAYER_DELTA = 3           # Зона нечувствительности рестартов по слоям
+DEFAULT_LLAMA_UBATCH_SIZE = 512      # Физический микробатч вычислений llama-server по умолчанию
 
 # Пороги относительного коэффициента заполнения контекста (Контур 1)
 CONTEXT_RATIO_TIER_1 = 0.60        # ratio < 0.60 -> Ступень 1 (60 сообщ / 1024 токена)

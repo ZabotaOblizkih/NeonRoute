@@ -23,6 +23,7 @@ from config import (
     OS_RESERVE_PURE_COMPUTE_MB,
     OS_RESERVE_PRIMARY_DISPLAY_MB,
     HYSTERESIS_LAYER_DELTA,
+    DEFAULT_LLAMA_UBATCH_SIZE,
 )
 
 logger = logging.getLogger("NeonRoute.LayerBudgeter")
@@ -491,16 +492,15 @@ class LayerBudgeter:
             # Head count KV
             if f"{architecture}.attention.head_count_kv" in kv:
                 raw_hkv = kv[f"{architecture}.attention.head_count_kv"]
-                if isinstance(raw_hkv, (list, tuple)):
-                    sliding_window_pattern_hkv = [int(x) for x in raw_hkv]
-                    head_count_kv = sliding_window_pattern_hkv
+                if isinstance(raw_hkv, (list, tuple)) and raw_hkv:
+                    head_count_kv = float(sum(raw_hkv)) / len(raw_hkv)
                 elif isinstance(raw_hkv, (int, float)):
                     head_count_kv = int(raw_hkv)
             else:
                 for k, v in kv.items():
                     if k.endswith(".attention.head_count_kv"):
-                        if isinstance(v, (list, tuple)):
-                            head_count_kv = [int(x) for x in v]
+                        if isinstance(v, (list, tuple)) and v:
+                            head_count_kv = float(sum(v)) / len(v)
                             break
                         elif isinstance(v, (int, float)):
                             head_count_kv = int(v)
@@ -508,26 +508,42 @@ class LayerBudgeter:
 
             # Key length / Value length
             if f"{architecture}.attention.key_length" in kv:
-                try:
-                    key_length = int(kv[f"{architecture}.attention.key_length"])
-                except Exception:
-                    key_length = None
+                raw_kl = kv[f"{architecture}.attention.key_length"]
+                if isinstance(raw_kl, (list, tuple)) and raw_kl:
+                    key_length = float(sum(raw_kl)) / len(raw_kl)
+                else:
+                    try:
+                        key_length = int(raw_kl)
+                    except Exception:
+                        key_length = None
             else:
                 for k, v in kv.items():
-                    if k.endswith(".attention.key_length") and isinstance(v, (int, float)):
-                        key_length = int(v)
-                        break
+                    if k.endswith(".attention.key_length"):
+                        if isinstance(v, (list, tuple)) and v:
+                            key_length = float(sum(v)) / len(v)
+                            break
+                        elif isinstance(v, (int, float)):
+                            key_length = int(v)
+                            break
 
             if f"{architecture}.attention.value_length" in kv:
-                try:
-                    value_length = int(kv[f"{architecture}.attention.value_length"])
-                except Exception:
-                    value_length = None
+                raw_vl = kv[f"{architecture}.attention.value_length"]
+                if isinstance(raw_vl, (list, tuple)) and raw_vl:
+                    value_length = float(sum(raw_vl)) / len(raw_vl)
+                else:
+                    try:
+                        value_length = int(raw_vl)
+                    except Exception:
+                        value_length = None
             else:
                 for k, v in kv.items():
-                    if k.endswith(".attention.value_length") and isinstance(v, (int, float)):
-                        value_length = int(v)
-                        break
+                    if k.endswith(".attention.value_length"):
+                        if isinstance(v, (list, tuple)) and v:
+                            value_length = float(sum(v)) / len(v)
+                            break
+                        elif isinstance(v, (int, float)):
+                            value_length = int(v)
+                            break
 
             # Vocab size
             if f"{architecture}.vocab_size" in kv:
@@ -605,17 +621,27 @@ class LayerBudgeter:
     ) -> int:
         """
         Расчет объема буфера KV-кэша под Llama/Qwen/Gemma.
-        При отсутствии gguf_meta используется эталонная оценка Llama/Qwen (q8_0 ~64 КБ на токен + 15% накладных расходов CUDA).
-        При наличии gguf_meta с sliding_window > 0 учитывается архитектура Sliding Window Attention (SWA),
-        где локальные слои ограничены окном min(ctx, sliding_window + 512), а глобальные слои хранят полный контекст.
+        Если в gguf_meta присутствуют положительные head_count_kv, total_layers и размерности
+        заголовков (key_length / value_length > 0), рассчитывается аналитический физический размер
+        KV-кэша по формуле:
+            bytes_per_token_per_layer = head_count_kv * (k_len + v_len) * type_bytes
+            (где type_bytes для q4 = 0.5625, f16/fp16 = 2.0, q8_0 = 1.0625)
+        с учетом SWA (sliding window) и 15% накладных расходов CUDA на выравнивание памяти.
+        При отсутствии подробных метаданных используется эталонная оценка Llama/Qwen
+        (q8_0 ~64 КБ на токен + 15% накладных расходов CUDA).
         """
         ctx = max(0, int(context_length or 0))
-        kb_per_token = 64
         c_lower = str(cache_type or "").lower()
+
         if "q4" in c_lower:
+            type_bytes = 0.5625  # 18 / 32
             kb_per_token = 36
         elif "f16" in c_lower or "fp16" in c_lower:
+            type_bytes = 2.0
             kb_per_token = 128
+        else:
+            type_bytes = 1.0625  # 34 / 32 (q8_0)
+            kb_per_token = 64
 
         if not gguf_meta or not isinstance(gguf_meta, dict):
             raw_mb = (ctx * kb_per_token) / 1024.0
@@ -624,11 +650,62 @@ class LayerBudgeter:
         sliding_window = int(gguf_meta.get("sliding_window") or 0)
         total_layers = int(gguf_meta.get("total_layers") or 0)
 
+        # Проверяем наличие точной анатомии KV-голов
+        raw_hkv = gguf_meta.get("head_count_kv")
+        if isinstance(raw_hkv, (list, tuple)) and raw_hkv:
+            hkv = float(sum(raw_hkv)) / len(raw_hkv)
+        elif isinstance(raw_hkv, (int, float)):
+            hkv = float(raw_hkv)
+        else:
+            hkv = 0.0
+
+        raw_kl = gguf_meta.get("key_length")
+        if isinstance(raw_kl, (list, tuple)) and raw_kl:
+            k_len = float(sum(raw_kl)) / len(raw_kl)
+        elif isinstance(raw_kl, (int, float)):
+            k_len = float(raw_kl)
+        else:
+            k_len = 0.0
+
+        raw_vl = gguf_meta.get("value_length")
+        if isinstance(raw_vl, (list, tuple)) and raw_vl:
+            v_len = float(sum(raw_vl)) / len(raw_vl)
+        elif isinstance(raw_vl, (int, float)):
+            v_len = float(raw_vl)
+        else:
+            v_len = 0.0
+
+        if k_len <= 0 and v_len > 0:
+            k_len = v_len
+        elif v_len <= 0 and k_len > 0:
+            v_len = k_len
+
+        # 1. Аналитический расчёт по точным размерностям GGUF
+        if hkv > 0 and total_layers > 0 and (k_len > 0 and v_len > 0):
+            bytes_per_token_per_layer = hkv * (k_len + v_len) * type_bytes
+            if sliding_window > 0:
+                pattern = gguf_meta.get("sliding_window_pattern")
+                if isinstance(pattern, (list, tuple)) and len(pattern) == total_layers:
+                    local_layers = sum(1 for is_swa in pattern if bool(is_swa))
+                    global_layers = total_layers - local_layers
+                else:
+                    global_layers = max(1, total_layers // 6)
+                    local_layers = total_layers - global_layers
+
+                local_ctx = min(ctx, sliding_window + 512)
+                effective_layer_tokens = (local_layers * local_ctx) + (global_layers * ctx)
+            else:
+                effective_layer_tokens = total_layers * ctx
+
+            raw_mb = (effective_layer_tokens * bytes_per_token_per_layer) / (1024.0 * 1024.0)
+            return int(math.ceil(raw_mb * 1.15))
+
+        # 2. Надёжный fallback через kb_per_token
         if sliding_window <= 0 or total_layers <= 0:
             raw_mb = (ctx * kb_per_token) / 1024.0
             return int(math.ceil(raw_mb * 1.15))
 
-        # Определение числа локальных (SWA) и глобальных слоев
+        # Определение числа локальных (SWA) и глобальных слоев для fallback
         pattern = gguf_meta.get("sliding_window_pattern")
         if isinstance(pattern, (list, tuple)) and len(pattern) == total_layers:
             local_layers = sum(1 for is_swa in pattern if bool(is_swa))
@@ -662,6 +739,7 @@ class LayerBudgeter:
         is_arbiter_managed: bool = False,
         current_used_vram_mb: Optional[float] = None,
         fragmentation_margin_mb: int = 0,
+        ubatch_size: int = DEFAULT_LLAMA_UBATCH_SIZE,
     ) -> Tuple[int, bool, str, Dict[str, Any]]:
         """
         1) Опрашивает detect_gpu_topology() и берет Total_VRAM из system_monitor (или NVML).
@@ -669,11 +747,12 @@ class LayerBudgeter:
            - При is_arbiter_managed=True:
              effective_os_reserve = max(os_reserve_mb, ceil(used_vram))
              forge_res = 0 (VRAMArbiter управляет выгрузкой)
-             safety_res = 280 (150 МБ TDR + 130 МБ буфер против WDDM Shared Memory paging)
-             compute_mb = (150 if model_size_mb < 5000 else 220) + (60 if vocab_size >= 200000 else 0)
+             safety_res = SAFETY_MARGIN_VRAM_MB (250) + fragmentation_margin_mb
+             compute_mb = base_graph_mb + logits_mb
+               (где logits_mb = ceil(ubatch_size * vocab_size * 4 / 1024^2), base_graph_mb = 100 if size < 5000 else 140)
              Usable_VRAM = Total_VRAM - effective_os_reserve - safety_res - kv_cache_mb - compute_mb
            - При is_arbiter_managed=False:
-             Usable_VRAM = Total_VRAM - os_reserve_mb - FORGE_VRAM_RESERVE_MB (450) - SAFETY_MARGIN_VRAM_MB (150) - kv_cache_mb
+             Usable_VRAM = Total_VRAM - os_reserve_mb - FORGE_VRAM_RESERVE_MB (450) - SAFETY_MARGIN_VRAM_MB (250) - kv_cache_mb
         3) Анатомия весов:
            Base_Overhead = Model_Size_MB * 0.20 (неделимый каркас token_embd, output.weight, RMSNorm).
            Blocks_Weight = Model_Size_MB * 0.80.
@@ -728,6 +807,10 @@ class LayerBudgeter:
         effective_cache_type = cache_type or "q8_0"
         kv_cache_mb = cls.estimate_kv_cache_mb(target_context, cache_type=effective_cache_type, gguf_meta=meta)
 
+        eff_ubatch = max(1, int(ubatch_size if ubatch_size is not None else DEFAULT_LLAMA_UBATCH_SIZE))
+        logits_mb = int(math.ceil((eff_ubatch * vocab_size * 4) / (1024.0 * 1024.0))) if vocab_size > 0 else 0
+        base_graph_mb = 100 if model_size_mb < 5000 else 140
+
         if total_vram <= 512:
             # Безопасный CPU-режим: дискретный GPU отсутствует или VRAM <= 512 МБ
             effective_os_reserve = 0
@@ -745,8 +828,8 @@ class LayerBudgeter:
             effective_os_reserve = max(os_reserve_mb, int(math.ceil(used_vram)))
             forge_res = 0
             frag_margin = int(max(0, fragmentation_margin_mb))
-            safety_res = 170 + frag_margin  # Базовый буфер против WDDM paging (170 МБ) + фрагментационный запас
-            compute_mb = (150 if model_size_mb < 5000 else 220) + (60 if vocab_size >= 200000 else 0)
+            safety_res = int(SAFETY_MARGIN_VRAM_MB) + frag_margin  # Базовый буфер против WDDM paging (250 МБ) + фрагментационный запас
+            compute_mb = base_graph_mb + logits_mb
             usable_vram_mb = total_vram - effective_os_reserve - forge_res - safety_res - kv_cache_mb - compute_mb
         else:
             frag_margin = 0
@@ -831,6 +914,8 @@ class LayerBudgeter:
                     "effective_os_reserve_mb": effective_os_reserve,
                     "used_vram_mb": round(used_vram, 2),
                     "compute_buffer_mb": compute_mb,
+                    "logits_buffer_mb": logits_mb,
+                    "ubatch_size": eff_ubatch,
                     "vocab_size": vocab_size,
                     "is_pure_compute": is_pure_compute,
                     "is_arbiter_managed": is_arbiter_managed,
@@ -868,6 +953,8 @@ class LayerBudgeter:
             "effective_os_reserve_mb": effective_os_reserve,
             "used_vram_mb": round(used_vram, 2),
             "compute_buffer_mb": compute_mb,
+            "logits_buffer_mb": logits_mb,
+            "ubatch_size": eff_ubatch,
             "vocab_size": vocab_size,
             "is_pure_compute": is_pure_compute,
             "is_arbiter_managed": is_arbiter_managed,
@@ -919,7 +1006,8 @@ class LayerBudgeter:
             f"- Compute({audit_data.get('compute_buffer_mb', 0)}) "
             f"=> Usable VRAM = {audit_data.get('usable_vram_mb')} MB\n"
             f"  ├── 3. Анатомия модели: Размер={audit_data.get('model_size_mb')} MB | Всего слоев={audit_data.get('total_layers')} | "
-            f"Base Overhead={audit_data.get('base_overhead_mb')} MB | Вес слоя={audit_data.get('layer_weight_mb')} MB | Vocab={audit_data.get('vocab_size', 0)}\n"
+            f"Base Overhead={audit_data.get('base_overhead_mb')} MB | Вес слоя={audit_data.get('layer_weight_mb')} MB | "
+            f"Vocab={audit_data.get('vocab_size', 0)} | ubatch={audit_data.get('ubatch_size', 512)} (Logits={audit_data.get('logits_buffer_mb', 0)} MB)\n"
             f"  ├── 4. Доступно под блоки: {audit_data.get('available_for_blocks_mb')} MB\n"
             f"  └── 5. Вердикт оффлоада: NGL = {audit_data.get('final_ngl')} | "
             f"Can Run = {audit_data.get('can_run')} | "

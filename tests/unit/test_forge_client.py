@@ -1062,11 +1062,11 @@ class TestTextToImageGeneration:
         # unload_checkpoint status_code != 200 and exception
         forge_client._checkpoint_unloaded = False
         monkeypatch.setattr("requests.post", lambda *a, **k: MagicMock(status_code=500, text="fail"))
-        assert forge_client.unload_checkpoint() is True
+        assert forge_client.unload_checkpoint() is False
 
         forge_client._checkpoint_unloaded = False
         monkeypatch.setattr("requests.post", MagicMock(side_effect=Exception("unload fail")))
-        assert forge_client.unload_checkpoint() is True
+        assert forge_client.unload_checkpoint() is False
 
         # free_vram short-circuit
         forge_client._checkpoint_unloaded = True

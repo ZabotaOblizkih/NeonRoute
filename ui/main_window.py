@@ -342,6 +342,10 @@ class MainWindow(
             self._legacy_turn_bubble = val
 
     def _setup_ui(self):
+        from config import APP_ICON_PATH
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+
         # 0. Custom Fluent TitleBar with Windows 11 Snap Layouts
         title_bar = FluentTitleBar(self)
         title_bar.setFixedHeight(48)

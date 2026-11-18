@@ -77,3 +77,71 @@ def test_cyberpunk_placeholder_cleanup(qapp):
 
     ph.cleanup()
     assert not ph._timer.isActive()
+
+
+def test_cyberpunk_placeholder_calculate_target_size():
+    """
+    Проверяет динамический расчет геометрии плейсхолдера:
+    портрет (solo), ultrawide, квадрат (closeup), 16:9, 9:16 и дефолтное соотношение.
+    """
+    # 1. Портрет через флаг --ar
+    w_p, h_p = CyberpunkArtPlaceholderWidget.calculate_target_size(prompt="girl --ar portrait")
+    assert h_p > w_p
+    assert w_p >= 280
+    assert (w_p, h_p) == (327, 420)
+
+    # 2. Ultrawide через флаг --ar
+    w_uw, h_uw = CyberpunkArtPlaceholderWidget.calculate_target_size(prompt="landscape --ar ultrawide")
+    assert w_uw == 480
+    assert h_uw <= 210
+    assert (w_uw, h_uw) == (480, 200)
+
+    # 3. Квадрат через флаг --ar
+    w_sq, h_sq = CyberpunkArtPlaceholderWidget.calculate_target_size(prompt="icon --ar square")
+    assert w_sq == h_sq == 340
+
+    # 4. Явный aspect_ratio = 16:9 (cinematic)
+    w_cin, h_cin = CyberpunkArtPlaceholderWidget.calculate_target_size(aspect_ratio="16:9")
+    assert (w_cin, h_cin) == (480, 274)
+
+    # 5. Явный aspect_ratio = 9:16 (fullbody)
+    w_fb, h_fb = CyberpunkArtPlaceholderWidget.calculate_target_size(aspect_ratio="9:16")
+    assert w_fb >= 280
+    assert (w_fb, h_fb) == (287, 420)
+
+    # 6. Без аргументов (обратная совместимость, cinematic)
+    w_def, h_def = CyberpunkArtPlaceholderWidget.calculate_target_size()
+    assert (w_def, h_def) == (480, 274)
+
+
+def test_assistant_bubble_dynamic_placeholder_sizing(qapp):
+    """
+    Проверяет адаптацию размеров AssistantChatMessageWidget под переданный prompt и visual_intent.
+    """
+    # 1. Вызов с промптом portrait
+    widget_p = AssistantChatMessageWidget(sender="Assistant", text="Генерирую...", is_user=False)
+    widget_p.show_art_loading_placeholder(prompt="cyberpunk girl --ar portrait")
+    assert widget_p.art_placeholder is not None
+    assert widget_p.art_placeholder.target_width == 327
+    assert widget_p.art_placeholder.target_height == 420
+    assert widget_p.bubble_container.minimumWidth() >= 327
+    widget_p.cleanup()
+    assert widget_p.art_placeholder is None
+
+    # 2. Вызов с fallback на visual_intent (ultrawide)
+    widget_vi = AssistantChatMessageWidget(
+        sender="Assistant",
+        text="Генерирую...",
+        is_user=False,
+        visual_intent={"aspect_ratio": "ultrawide", "prompt": "city night skyline"}
+    )
+    widget_vi.show_art_loading_placeholder()
+    assert widget_vi.art_placeholder is not None
+    assert widget_vi.art_placeholder.target_width == 480
+    assert widget_vi.art_placeholder.target_height == 200
+    widget_vi.cleanup()
+    assert widget_vi.art_placeholder is None
+
+    # 3. Базовый класс ChatMessageWidget: сигнатура с aspect_ratio и prompt без ошибок
+    base_msg = ChatMessageWidget(sender="User", text="test", is_user=True)
+    base_msg.show_art_loading_placeholder(aspect_ratio="16:9", prompt="test prompt")

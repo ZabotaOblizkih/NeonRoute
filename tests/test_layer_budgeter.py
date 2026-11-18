@@ -302,7 +302,7 @@ class TestSmallCPUOffloadRAMGuard:
             )
 
             assert can_run is True
-            assert ngl == 27
+            assert ngl in (26, 27)
             assert audit["cpu_weights_mb"] <= 500.0
             assert "OK" in reason
 

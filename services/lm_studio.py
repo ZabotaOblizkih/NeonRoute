@@ -128,6 +128,10 @@ class LMStudioClient(QObject):
         if getattr(self, "_is_model_unloaded", False):
             return False
 
+        if self.process_manager is not None and not self.process_manager.is_lm_studio_running():
+            self._last_loaded_model_id = None
+            return False
+
         target = model_name or getattr(self, "_last_loaded_model_id", None)
         last_id = getattr(self, "_last_loaded_model_id", None)
 
@@ -871,6 +875,8 @@ class LMStudioClient(QObject):
                         pass
 
                 content = "".join(accumulated)
+                if not content and not self._is_aborted:
+                    raise RuntimeError("LLM stream closed with 0 tokens (server disconnected/crashed)")
 
             finish_reason = "unknown"
             prompt_tokens = 0
@@ -920,6 +926,13 @@ class LMStudioClient(QObject):
                 raise ModelNotFoundError(model or "активная модель")
             raise RuntimeError(f"Ошибка LM Studio [HTTP {http_err.response.status_code}]: {resp_text}")
         except requests.exceptions.ConnectionError:
+            self._is_model_unloaded = True
+            self._last_loaded_model_id = None
+            if self.process_manager is not None:
+                try:
+                    self.process_manager.is_lm_studio_running()
+                except Exception:
+                    pass
             err_msg = (
                 f"Не удалось подключиться к LM Studio на {self.base_url}.\n"
                 f"Убедитесь, что сервер запущен в LM Studio на порту 1234."

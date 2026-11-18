@@ -597,15 +597,20 @@ class ForgeClient(QObject):
             resp = requests.post(f"{self.base_url}/sdapi/v1/unload-checkpoint", timeout=5.0)
             if resp.status_code == 200:
                 logger.info("Successfully unloaded Forge checkpoint to free VRAM (~3.2GB).")
+                self.free_vram()
+                self._checkpoint_unloaded = True
+                self._has_loaded_model_in_vram = False
+                return True
             else:
                 logger.warning(f"Forge unload-checkpoint status {resp.status_code}: {resp.text[:100]}")
+                self.free_vram(force=True, unload_models=True)
+                self._checkpoint_unloaded = False
+                return False
         except Exception as e:
             logger.debug(f"Failed to unload Forge checkpoint: {e}")
-
-        self.free_vram()
-        self._checkpoint_unloaded = True
-        self._has_loaded_model_in_vram = False
-        return True
+            self.free_vram(force=True, unload_models=True)
+            self._checkpoint_unloaded = False
+            return False
 
     def free_vram(self, always_offload: Optional[bool] = None, inference_memory_mb: Optional[int] = None, unload_models: bool = True, force: bool = False) -> bool:
         """Принудительно очищает PyTorch CUDA кэш и синхронизирует режим выгрузки с vram_policy."""
@@ -1374,8 +1379,11 @@ class ForgeClient(QObject):
 
             # Гарантированная выгрузка чекпоинта в системную RAM и очистка CUDA-кэша под LLM
             try:
-                self.unload_checkpoint()
-                logger.info("[ForgeClient] VRAM успешно зачищена: чекпоинт сброшен в RAM, память свободна под LLM.")
+                unloaded = self.unload_checkpoint()
+                if unloaded:
+                    logger.info("[ForgeClient] VRAM успешно зачищена: чекпоинт сброшен в RAM, память свободна под LLM.")
+                else:
+                    logger.warning("[ForgeClient] Выгрузка чекпоинта Forge завершилась с ошибкой, выполнена аварийная очистка кэша.")
             except Exception as _e_clean:
                 logger.debug(f"[ForgeClient] Не удалось выполнить автозачистку VRAM: {_e_clean}")
 

@@ -22,6 +22,27 @@ from qfluentwidgets import (
     ToolTipFilter,
     ToolTipPosition
 )
+from services.thought_styles import ThoughtStyleConfig, resolve_thought_style
+
+
+def _color_to_border_rgba(color_str: str, alpha: float = 0.25) -> str:
+    """Конвертирует hex или rgb строку цвета в rgba с заданной прозрачностью."""
+    s = str(color_str or "").strip()
+    if s.startswith("#"):
+        c = s.lstrip("#")
+        if len(c) == 6:
+            r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+            return f"rgba({r}, {g}, {b}, {alpha})"
+        elif len(c) == 3:
+            r, g, b = int(c[0]*2, 16), int(c[1]*2, 16), int(c[2]*2, 16)
+            return f"rgba({r}, {g}, {b}, {alpha})"
+    elif s.startswith("rgba"):
+        return s
+    elif s.startswith("rgb"):
+        nums = re.findall(r'\d+', s)
+        if len(nums) >= 3:
+            return f"rgba({nums[0]}, {nums[1]}, {nums[2]}, {alpha})"
+    return f"rgba(56, 189, 248, {alpha})"
 
 
 def clean_thought_chunk(chunk: str) -> str:
@@ -69,9 +90,10 @@ class ThoughtSpoilerWidget(QFrame):
         self._is_streaming: bool = True
         self._duration: float = 0.0
         self._token_count: int = 0
+        self._style: ThoughtStyleConfig = resolve_thought_style(None)
 
         self._setup_ui()
-        self._apply_styles()
+        self.apply_style(self._style)
         self.set_collapsed(True)
 
     def _setup_ui(self):
@@ -85,19 +107,19 @@ class ThoughtSpoilerWidget(QFrame):
         self.header_layout.setContentsMargins(10, 6, 8, 6)
         self.header_layout.setSpacing(8)
 
-        # Иконка 🧠
-        self.icon_lbl = QLabel("🧠", self.header_widget)
+        # Иконка
+        self.icon_lbl = QLabel(self._style.icon, self.header_widget)
         self.icon_lbl.setStyleSheet("font-size: 13px; background: transparent;")
         self.header_layout.addWidget(self.icon_lbl)
 
         # Заголовок
-        self.title_lbl = StrongBodyLabel("Ход мыслей", self.header_widget)
+        self.title_lbl = StrongBodyLabel(self._style.collapsed_label, self.header_widget)
         self.title_lbl.setStyleSheet("color: #E2E8F0; font-size: 12px; font-weight: 600; background: transparent;")
         self.header_layout.addWidget(self.title_lbl)
 
         # Метрики генерации / бейдж статуса
-        self.metrics_label = CaptionLabel("Анализ данных...", self.header_widget)
-        self.metrics_label.setStyleSheet("color: #38BDF8; font-size: 11px; background: transparent;")
+        self.metrics_label = CaptionLabel(self._style.active_label, self.header_widget)
+        self.metrics_label.setStyleSheet(f"color: {self._style.accent_color}; font-size: 11px; background: transparent;")
         self.header_layout.addWidget(self.metrics_label)
 
         self.header_layout.addStretch()
@@ -133,26 +155,83 @@ class ThoughtSpoilerWidget(QFrame):
         self.content_layout.addWidget(self.text_browser)
         self.main_layout.addWidget(self.content_area)
 
+    def apply_style(self, style: ThoughtStyleConfig) -> None:
+        """Применяет визуальный стиль блока рассуждений (Ассистент vs РП-архетипы)."""
+        self._style = style
+        if hasattr(self, "icon_lbl"):
+            self.icon_lbl.setText(style.icon)
+        if hasattr(self, "title_lbl"):
+            self.title_lbl.setText(style.collapsed_label)
+
+        if hasattr(self, "metrics_label"):
+            if self._is_streaming:
+                self.metrics_label.setText(style.active_label)
+                self.metrics_label.setStyleSheet(f"color: {style.accent_color}; font-size: 11px; background: transparent;")
+                self.metrics_label.setVisible(True)
+            else:
+                if style.is_rp:
+                    self.metrics_label.setText("")
+                    self.metrics_label.setVisible(False)
+                    dur_text = f"{self._duration:.1f}".replace(",", ".")
+                    self.setToolTip(f"{self._token_count} токенов • {dur_text} сек")
+                else:
+                    dur_text = f"{self._duration:.1f}".replace(",", ".")
+                    self.metrics_label.setText(f"{self._token_count} токенов • {dur_text} сек")
+                    self.metrics_label.setStyleSheet("color: #94A3B8; font-size: 11px; background: transparent;")
+                    self.metrics_label.setVisible(True)
+                    self.setToolTip("")
+
+        self._apply_styles()
+
     def _apply_styles(self):
-        self.setStyleSheet("""
-            #ThoughtSpoilerWidget {
+        style = getattr(self, "_style", None)
+        if style is None:
+            accent_color = "#38BDF8"
+            border_rgba = "rgba(56, 189, 248, 0.25)"
+            is_rp = False
+        else:
+            accent_color = style.accent_color
+            border_rgba = _color_to_border_rgba(style.accent_color, 0.25)
+            is_rp = style.is_rp
+
+        if is_rp:
+            text_browser_style = """
+                #ThoughtTextBrowser {
+                    background: transparent;
+                    border: none;
+                    color: #CBD5E1;
+                    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                    font-style: italic;
+                    font-size: 11px;
+                    line-height: 1.45;
+                    padding: 4px;
+                }
+            """
+        else:
+            text_browser_style = """
+                #ThoughtTextBrowser {
+                    background: transparent;
+                    border: none;
+                    color: #94A3B8;
+                    font-family: 'Consolas', 'Fira Code', 'Cascadia Code', 'Segoe UI', monospace;
+                    font-style: normal;
+                    font-size: 11px;
+                    line-height: 1.45;
+                    padding: 4px;
+                }
+            """
+
+        self.setStyleSheet(f"""
+            #ThoughtSpoilerWidget {{
                 background-color: rgba(15, 23, 42, 0.65);
-                border: 1px solid rgba(56, 189, 248, 0.25);
+                border: 1px solid {border_rgba};
                 border-radius: 8px;
-            }
-            #ThoughtContentArea {
+            }}
+            #ThoughtContentArea {{
                 background: transparent;
                 border: none;
-            }
-            #ThoughtTextBrowser {
-                background: transparent;
-                border: none;
-                color: #94A3B8;
-                font-family: 'Consolas', 'Fira Code', 'Cascadia Code', 'Segoe UI', monospace;
-                font-size: 11px;
-                line-height: 1.45;
-                padding: 4px;
-            }
+            }}
+            {text_browser_style}
         """)
 
     @property
@@ -165,7 +244,9 @@ class ThoughtSpoilerWidget(QFrame):
     def append_thought_chunk(self, chunk: str):
         """
         Дописывание входящего потока токенов рассуждений.
-        Во время стриминга спойлер открыт, отображается статус «Анализ данных...».
+        Во время стриминга отображается активный статус.
+        В режиме Ассистента спойлер разворачивается автоматически,
+        в режиме РП остаётся аккуратно свёрнутым.
         """
         if not chunk:
             return
@@ -183,14 +264,16 @@ class ThoughtSpoilerWidget(QFrame):
             sb.setValue(sb.maximum())
 
         if self._is_streaming:
-            self.metrics_label.setText("Анализ данных...")
-            self.metrics_label.setStyleSheet("color: #38BDF8; font-size: 11px; background: transparent;")
-            if self._is_collapsed:
-                self.set_collapsed(False)
+            self.metrics_label.setText(self._style.active_label)
+            self.metrics_label.setStyleSheet(f"color: {self._style.accent_color}; font-size: 11px; background: transparent;")
+            self.metrics_label.setVisible(True)
+            if not self._style.is_rp:
+                if self._is_collapsed:
+                    self.set_collapsed(False)
 
     def finalize_thought(self, duration_sec: float = 0.0, token_count: Union[int, str] = 0):
         """
-        Фиксация таймера мыслей, смена бейджа на «{N} токенов • {X.X} сек»
+        Фиксация таймера мыслей, смена бейджа на результат
         и автоматическое аккуратное сворачивание спойлера по умолчанию.
         """
         self._is_streaming = False
@@ -205,8 +288,19 @@ class ThoughtSpoilerWidget(QFrame):
                 self._token_count = max(1, len(self._thought_text.strip()) // 4)
 
         dur_text = f"{self._duration:.1f}".replace(",", ".")
-        self.metrics_label.setText(f"{self._token_count} токенов • {dur_text} сек")
-        self.metrics_label.setStyleSheet("color: #94A3B8; font-size: 11px; background: transparent;")
+
+        if self._style.is_rp:
+            self.metrics_label.setText("")
+            self.metrics_label.setVisible(False)
+            if "·" not in self.title_lbl.text():
+                self.title_lbl.setText(self._style.collapsed_label)
+            self.setToolTip(f"{self._token_count} токенов • {dur_text} сек")
+        else:
+            self.metrics_label.setText(f"{self._token_count} токенов • {dur_text} сек")
+            self.metrics_label.setStyleSheet("color: #94A3B8; font-size: 11px; background: transparent;")
+            self.metrics_label.setVisible(True)
+            if "·" not in self.title_lbl.text():
+                self.title_lbl.setText(self._style.collapsed_label)
 
         # Автоматическое сворачивание после завершения
         self.set_collapsed(True)
@@ -228,8 +322,19 @@ class ThoughtSpoilerWidget(QFrame):
 
         self.text_browser.setPlainText(clean_text)
         dur_text = f"{self._duration:.1f}".replace(",", ".")
-        self.metrics_label.setText(f"{self._token_count} токенов • {dur_text} сек")
-        self.metrics_label.setStyleSheet("color: #94A3B8; font-size: 11px; background: transparent;")
+
+        if self._style.is_rp:
+            self.metrics_label.setText("")
+            self.metrics_label.setVisible(False)
+            if "·" not in self.title_lbl.text():
+                self.title_lbl.setText(self._style.collapsed_label)
+            self.setToolTip(f"{self._token_count} токенов • {dur_text} сек")
+        else:
+            self.metrics_label.setText(f"{self._token_count} токенов • {dur_text} сек")
+            self.metrics_label.setStyleSheet("color: #94A3B8; font-size: 11px; background: transparent;")
+            self.metrics_label.setVisible(True)
+            if "·" not in self.title_lbl.text():
+                self.title_lbl.setText(self._style.collapsed_label)
 
         self.set_collapsed(True)
         self.setVisible(True)

@@ -1019,7 +1019,16 @@ class ChatFlowControllerMixin:
         self._stream_token_buffer = art_filter.buffer
 
         if has_art_trigger and bubble is not None and hasattr(bubble, "show_art_loading_placeholder"):
-            bubble.show_art_loading_placeholder()
+            extracted_prompt = None
+            cast_ar = None
+            full_text = (prior_text or "") + (buf or "")
+            img_match = art_filter.RE_IMAGE_FULL.search(full_text)
+            if img_match:
+                tag_content = img_match.group(0)
+                m_prompt = re.search(r'\[IMAGE[\s_-]PROMPT:\s*([^\]]+)\]', tag_content, re.IGNORECASE)
+                if m_prompt:
+                    extracted_prompt = m_prompt.group(1).strip()
+            bubble.show_art_loading_placeholder(aspect_ratio=cast_ar, prompt=extracted_prompt)
 
         if not chunk_to_render:
             return

@@ -24,7 +24,7 @@ import psutil
 import requests
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR, LM_STUDIO_CLI_CMD, LOGS_DIR
+from config import FORGE_LAUNCHER_PATH, FORGE_ROOT_DIR, LM_STUDIO_CLI_CMD, LOGS_DIR, DEFAULT_LLAMA_UBATCH_SIZE
 from core.forge_locator import get_clean_forge_env
 from core.win32_job import Win32JobManager
 from services.server_config import ServerConfigResolver
@@ -676,6 +676,7 @@ class ProcessManager(QObject):
                     except Exception:
                         frag_margin = 0
 
+                    ubatch_size = int(ini_cfg.get("ubatch_size", DEFAULT_LLAMA_UBATCH_SIZE))
                     from services.layer_budgeter import LayerBudgeter
                     ngl, can_run, reason, audit_data = LayerBudgeter.calculate_layer_offload(
                         model_path=model_path,
@@ -684,6 +685,7 @@ class ProcessManager(QObject):
                         cache_type=kv_cache_type,
                         is_arbiter_managed=True,
                         fragmentation_margin_mb=frag_margin,
+                        ubatch_size=ubatch_size,
                     )
 
                     if not can_run:
@@ -698,6 +700,8 @@ class ProcessManager(QObject):
 
                 self._last_attempted_ngl = effective_ngl
 
+                ubatch_size = int(ini_cfg.get("ubatch_size", DEFAULT_LLAMA_UBATCH_SIZE))
+
                 # 6. Assemble CLI arguments (strict list, no shell=True)
                 cmd = [
                     str(server_exe),
@@ -707,6 +711,7 @@ class ProcessManager(QObject):
                     "-fa", str(fa_str),
                     "-ctk", str(kv_cache_type),
                     "-ctv", str(kv_cache_type),
+                    "-ub", str(ubatch_size),
                     "-np", str(ini_cfg.get("parallel_slots", 1)),
                     "--port", str(port),
                     "--host", str(host),
@@ -796,6 +801,11 @@ class ProcessManager(QObject):
                             file_handle.close()
                         except Exception:
                             pass
+                        rc = proc.poll()
+                        if rc is not None and self._server_state in (ServerState.READY, ServerState.STARTING):
+                            if self._llama_process is proc:
+                                self._llama_process = None
+                            self._set_server_state(ServerState.STOPPED, f"llama-server завершился неожиданно (код {rc})")
 
                 threading.Thread(
                     target=_stream_llama_stdout,

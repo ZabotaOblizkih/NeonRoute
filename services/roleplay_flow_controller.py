@@ -17,6 +17,8 @@ from services.regex_filter import TextRegexFilter
 from services.task_queue import InferenceTask
 from services.assistant_flow import prepare_roleplay_inline_art_intent
 from services.art_director import VisualIntent, TargetSubject
+from services.thought_stream_parser import ThoughtStreamParser
+from services.thought_styles import resolve_thought_style
 from ui.components.chat_bubble import ChatMessageWidget
 
 logger = logging.getLogger("NeonRoute.RoleplayFlow")
@@ -293,10 +295,74 @@ class RoleplayFlowControllerMixin:
 
         logger.info(f"[RoleplayFlow] Задача инференса поставлена в очередь (Deferred RAG) [ID: {task.id}]")
         self._active_tasks[task.id] = task
+        # Инициализация потокового парсера мыслей <think>...</think>
+        self._thought_stream_parser = ThoughtStreamParser()
+        active_card = getattr(self, "active_character", getattr(self, "active_card", None))
+        if hasattr(self, "_turn_bubble") and self._turn_bubble and hasattr(self._turn_bubble, "apply_thought_style"):
+            self._turn_bubble.apply_thought_style(resolve_thought_style(active_card))
+        self.is_busy = True
+        if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer and not self._stream_flush_timer.isActive():
+            self._stream_flush_timer.start()
         self.task_queue.enqueue(task)
 
     def _handle_roleplay_llm_response(self, text: str):
         """Обрабатывает сгенерированный ответ ролевой модели, статус и извлечение сцены."""
+        active_card = getattr(self, "active_character", getattr(self, "active_card", None))
+        thought_style = resolve_thought_style(active_card)
+
+        # 1. Финализация потокового парсера мыслей <think>...</think>
+        thought_data = None
+        if getattr(self, "_thought_stream_parser", None) is not None:
+            rem_events = self._thought_stream_parser.finalize()
+            if hasattr(self, "_turn_bubble") and self._turn_bubble:
+                for ev_type, ev_data in rem_events:
+                    if ev_type == "thought_chunk" and hasattr(self._turn_bubble, "append_thought_chunk"):
+                        self._turn_bubble.append_thought_chunk(ev_data)
+                    elif ev_type == "end_think" and hasattr(self._turn_bubble, "finalize_thought"):
+                        self._turn_bubble.finalize_thought(
+                            self._thought_stream_parser.duration,
+                            self._thought_stream_parser.token_count
+                        )
+            thought_data = self._thought_stream_parser.get_thought_data()
+            self._thought_stream_parser = None
+
+        # Fallback спасения мыслей из текста (если ответ пришел не через стрим или теги остались в text)
+        if thought_data is None and text:
+            re_thought_body = r"<(think|analyze|thought|reasoning)>([\s\S]*?)(?:</\1>|$)"
+            re_implicit_close = r"^([\s\S]*?)</(think|analyze|thought|reasoning)>"
+            matches = list(re.finditer(re_thought_body, text, flags=re.IGNORECASE))
+            if matches:
+                th_parts = [m.group(2).strip() for m in matches if m.group(2).strip()]
+                th_body = "\n\n".join(th_parts)
+                if th_body:
+                    thought_data = {
+                        "content": th_body,
+                        "duration": 0.0,
+                        "token_count": max(1, len(th_body) // 4)
+                    }
+            else:
+                imp_match = re.search(re_implicit_close, text, flags=re.IGNORECASE)
+                if imp_match:
+                    th_body = imp_match.group(1).strip()
+                    if th_body:
+                        thought_data = {
+                            "content": th_body,
+                            "duration": 0.0,
+                            "token_count": max(1, len(th_body) // 4)
+                        }
+
+        # Применяем стиль мыслей и передаем thought_data текущему баблу, если он уже существует
+        curr_bubble = getattr(self, "_turn_bubble", None)
+        if curr_bubble is not None:
+            if hasattr(curr_bubble, "apply_thought_style"):
+                curr_bubble.apply_thought_style(thought_style)
+            if thought_data and hasattr(curr_bubble, "set_thought_data"):
+                curr_bubble.set_thought_data(
+                    thought_data.get("content", ""),
+                    thought_data.get("duration", 0.0),
+                    thought_data.get("token_count", 0)
+                )
+
         # Предохранитель парсера стрима: защита от незакрытых тегов (Задача 4)
         final_reply = text
         for tag in ["stats", "meters", "choices"]:
@@ -345,7 +411,17 @@ class RoleplayFlowControllerMixin:
                 logger.warning(f"[RPFlow] Ошибка отображения бабла: {e}")
                 return
 
-        self._sync_turn(role="assistant", content=text, replace_last=True, mode="roleplay")
+        if thought_data and msg_widget is not None:
+            if hasattr(msg_widget, "apply_thought_style"):
+                msg_widget.apply_thought_style(thought_style)
+            if hasattr(msg_widget, "set_thought_data"):
+                msg_widget.set_thought_data(
+                    thought_data.get("content", ""),
+                    thought_data.get("duration", 0.0),
+                    thought_data.get("token_count", 0)
+                )
+
+        self._sync_turn(role="assistant", content=text, replace_last=True, mode="roleplay", thought=thought_data)
         if hasattr(self, "_check_mode_lock"):
             self._check_mode_lock()
 

@@ -106,6 +106,11 @@ def setup_environment_and_logging():
 def main():
     setup_environment_and_logging()
 
+    if sys.platform == "win32":
+        import ctypes
+        from config import APP_USER_MODEL_ID
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+
     # Qt High DPI & Rendering configuration
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
