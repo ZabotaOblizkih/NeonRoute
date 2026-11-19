@@ -401,7 +401,12 @@ class ChatMessageWidget(QWidget):
                     "Клик — полноразмерный просмотр"
                 ]
                 self.image_preview_lbl.setToolTip("\n".join(filter(None, tooltip_lines)))
-                self.image_preview_lbl.mousePressEvent = lambda e: self._open_image_preview(self.image_path) if (not hasattr(e, "button") or e.button() == Qt.MouseButton.LeftButton) else None
+
+                def _on_preview_mouse_press(e):
+                    if not hasattr(e, "button") or e.button() == Qt.MouseButton.LeftButton:
+                        self._open_image_preview(self.image_path)
+
+                self.image_preview_lbl.mousePressEvent = _on_preview_mouse_press
                 self.image_preview_lbl.setVisible(True)
                 self.art_layout.addWidget(self.image_preview_lbl)
 
@@ -1214,15 +1219,22 @@ class ChatMessageWidget(QWidget):
         img_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
 
         eff_params = generation_params or self.generation_params
-        img_btn.clicked.connect(lambda: ImagePreviewDialog(image_path, self, generation_params=eff_params).exec())
+        img_btn.clicked.connect(
+            lambda _checked=False, p=image_path, gp=eff_params: self._open_image_preview(p, generation_params=gp)
+        )
         c_layout.addWidget(img_btn)
 
         return container
 
-    def _open_image_preview(self, image_path: Path):
+    def _open_image_preview(self, image_path: Path, generation_params: Optional[dict] = None):
         if image_path and image_path.exists():
-            dlg = ImagePreviewDialog(image_path, self, generation_params=self.generation_params)
-            dlg.exec()
+            eff_params = generation_params if generation_params is not None else self.generation_params
+            parent_win = self.window() if hasattr(self, "window") else None
+            dlg = ImagePreviewDialog(image_path, parent=parent_win, generation_params=eff_params)
+            try:
+                dlg.exec()
+            finally:
+                dlg.deleteLater()
 
     def _copy_text(self):
         if hasattr(self, "text_browser") and self.text_browser:
