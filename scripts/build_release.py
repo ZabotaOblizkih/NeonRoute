@@ -286,10 +286,26 @@ def ensure_embedded_python(repo_root: Path, target_runtime_dir: Path) -> bool:
             for member in tar.getmembers():
                 if member.name.startswith("python/"):
                     member.name = member.name[len("python/"):]
-                    if member.name:
-                        tar.extract(member, target_python_dir)
+                    if not member.name:
+                        continue
+                    clean_lower = member.name.replace("\\", "/").lower()
+                    if clean_lower.endswith(".pdb"):
+                        continue
+                    if clean_lower == "lib/ensurepip" or clean_lower.startswith("lib/ensurepip/"):
+                        continue
+                    tar.extract(member, target_python_dir)
         if not (target_python_dir / "python.exe").is_file():
             print(f"  [ERROR] Unpacked runtime is missing python.exe in {target_python_dir}")
+            return False
+        base_dlls = [
+            target_python_dir / "python310.dll",
+            target_python_dir / "DLLs" / "sqlite3.dll",
+            target_python_dir / "DLLs" / "libcrypto-1_1-x64.dll",
+            target_python_dir / "DLLs" / "libssl-1_1-x64.dll",
+        ]
+        missing_dlls = [f.name for f in base_dlls if not f.is_file()]
+        if missing_dlls:
+            print(f"  [ERROR] Unpacked runtime is missing base DLLs in {target_python_dir}: {', '.join(missing_dlls)}")
             return False
         print("  [OK] Portable Python runtime unpacked successfully.")
         return True
@@ -345,7 +361,7 @@ def assemble_release(
             shutil.copy2(src, release_dir / rf)
 
     # 2. Source directories
-    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "docs", "scripts", "audio", "lorebooks", "exports", "assets"]
+    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "scripts", "audio", "lorebooks", "exports", "assets"]
     for sd in source_dirs:
         src = repo_root / sd
         dst = release_dir / sd
@@ -451,6 +467,8 @@ def _copy_clean_tree(src: Path, dst: Path):
             continue
         s_item = src / item
         d_item = dst / item
+        if s_item.is_file() and s_item.as_posix().lower().endswith("docs/assets/splash.gif"):
+            continue
         if s_item.is_dir():
             _copy_clean_tree(s_item, d_item)
         elif s_item.is_file():
