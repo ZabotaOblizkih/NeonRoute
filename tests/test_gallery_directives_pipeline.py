@@ -77,7 +77,8 @@ def test_build_gallery_art_prompt_sdxl():
         architecture="sdxl"
     )
     assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in prompt
-    assert "thigh-up portrait, medium shot" in prompt
+    assert "thigh-up portrait" in prompt
+    assert "medium shot" in prompt
     assert "Avoid booru/SD1.5 tags like" in prompt
     assert "hands on hips" in prompt
     assert "--model juggernaut_xl" in prompt

@@ -337,7 +337,6 @@ def assemble_release(
         "README.md",
         "Agentrules.md",
         "ARCHITECTURE.md",
-        "hotfix.md",
         "pytest.ini"
     ]
     for rf in root_files:
@@ -870,7 +869,7 @@ def create_release_git_commit(
 
     try:
         subprocess.run(
-            ["git", "add", "config.py", "hotfix.md"],
+            ["git", "add", "--", "config.py", "hotfix.md"],
             cwd=str(repo_root),
             capture_output=True,
             text=True,
@@ -881,14 +880,13 @@ def create_release_git_commit(
             [
                 "git",
                 "commit",
-                "--only",
-                "--",
-                "config.py",
-                "hotfix.md",
                 "-m",
                 commit_subject,
                 "-m",
-                commit_body
+                commit_body,
+                "--",
+                "config.py",
+                "hotfix.md"
             ],
             cwd=str(repo_root),
             capture_output=True,
