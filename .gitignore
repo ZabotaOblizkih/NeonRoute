@@ -59,3 +59,5 @@ contacts.db
 dummy.json
 collect_codeMINI.py
 sync_gdrive.ps1
+
+data/art_director_models.json
