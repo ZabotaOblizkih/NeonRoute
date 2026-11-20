@@ -11,6 +11,7 @@ import math
 import struct
 import io
 import logging
+import ctypes
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional, Union, BinaryIO
 
@@ -127,6 +128,20 @@ class LayerBudgeter:
             fallback_reserve = int(OS_RESERVE_PRIMARY_DISPLAY_MB) if OS_RESERVE_PRIMARY_DISPLAY_MB else 700
             return (False, fallback_reserve)
 
+    @staticmethod
+    def has_cpu_avx2() -> bool:
+        """
+        Проверяет поддержку инструкций AVX2 процессором.
+        На Windows вызывает IsProcessorFeaturePresent(40) (PF_AVX2_INSTRUCTIONS_AVAILABLE = 40).
+        При исключении или на других ОС возвращает True.
+        """
+        if os.name == "nt":
+            try:
+                return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))
+            except Exception:
+                return True
+        return True
+
     @classmethod
     def detect_hardware_kv_profile(cls) -> Dict[str, Any]:
         """
@@ -172,6 +187,7 @@ class LayerBudgeter:
                     "compute_cap": cap_str,
                     "recommended_kv": "q8_0",
                     "recommended_fa": True,
+                    "cpu_avx2": cls.has_cpu_avx2(),
                 }
             else:
                 return {
@@ -182,6 +198,7 @@ class LayerBudgeter:
                     "compute_cap": cap_str if major else "N/A",
                     "recommended_kv": "f16",
                     "recommended_fa": False,
+                    "cpu_avx2": cls.has_cpu_avx2(),
                 }
         except Exception as e:
             logger.debug(f"[LayerBudgeter] detect_hardware_kv_profile fallback error: {e}")
@@ -195,6 +212,7 @@ class LayerBudgeter:
                 "compute_cap": "N/A",
                 "recommended_kv": "f16",
                 "recommended_fa": False,
+                "cpu_avx2": cls.has_cpu_avx2(),
             }
 
     @classmethod

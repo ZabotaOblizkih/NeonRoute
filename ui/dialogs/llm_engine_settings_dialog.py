@@ -347,7 +347,8 @@ class LLMEngineSettingsDialog(FramelessDialog):
         else:
             self.current_kv = "q8_0"
 
-        self.current_fa = bool(self.app_cfg.get("flash_attention_enabled", True))
+        default_fa = bool(self.hw_profile.get("recommended_fa", False))
+        self.current_fa = bool(self.app_cfg.get("flash_attention_enabled", default_fa))
         self._initial_kv = self.current_kv
         self._initial_fa = self.current_fa
         self.current_thinking = str(self.app_cfg.get("thinking_mode", "auto")).lower()
@@ -434,6 +435,10 @@ class LLMEngineSettingsDialog(FramelessDialog):
             hw_title = BodyLabel("Видеокарта: Дискретный GPU не обнаружен (CPU-режим)", self.hw_card)
             status_text = "Вычисления выполняются на центральном процессоре (AVX2 / CPU)"
             status_color = "#94A3B8"
+
+        if vendor != "nvidia":
+            if not self.hw_profile.get("cpu_avx2", True):
+                status_text += " • CPU без AVX2 (режим совместимости)"
 
         hw_title.setStyleSheet("font-weight: bold; color: #E2E8F0;")
         hw_text_layout.addWidget(hw_title)

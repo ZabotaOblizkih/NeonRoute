@@ -307,3 +307,117 @@ def test_cli_download_llama_server_if_missing_already_installed_exits_0(tmp_path
         main()
 
     assert exc_info.value.code == 0
+
+
+def test_select_download_urls_cpu_no_avx2_priority():
+    """
+    Проверка выбора ассетов для CPU при cpu_avx2=False:
+    строгое исключение avx2/avx512 и приоритет noavx -> avx -> cpu.
+    """
+    mixed_assets = [
+        {"name": "llama-bin-win-avx2-x64.zip", "browser_download_url": "https://example.com/avx2.zip"},
+        {"name": "llama-bin-win-avx512-x64.zip", "browser_download_url": "https://example.com/avx512.zip"},
+        {"name": "llama-bin-win-noavx-x64.zip", "browser_download_url": "https://example.com/noavx.zip"},
+        {"name": "llama-bin-win-avx-x64.zip", "browser_download_url": "https://example.com/avx.zip"},
+        {"name": "llama-bin-win-cpu-x64.zip", "browser_download_url": "https://example.com/cpu.zip"},
+    ]
+
+    # 1. При наличии noavx выбирается noavx
+    urls = select_download_urls(mixed_assets, "cpu", cpu_avx2=False)
+    assert len(urls) == 1
+    assert urls[0][0] == "llama-bin-win-noavx-x64.zip"
+
+    # 2. Без noavx выбирается avx (без avx2/avx512)
+    no_noavx = [a for a in mixed_assets if "noavx" not in a["name"]]
+    urls_avx = select_download_urls(no_noavx, "cpu", cpu_avx2=False)
+    assert len(urls_avx) == 1
+    assert urls_avx[0][0] == "llama-bin-win-avx-x64.zip"
+
+    # 3. Без noavx и avx выбирается нейтральный cpu
+    cpu_only = [a for a in mixed_assets if "noavx" not in a["name"] and "win-avx-" not in a["name"]]
+    urls_cpu = select_download_urls(cpu_only, "cpu", cpu_avx2=False)
+    assert len(urls_cpu) == 1
+    assert urls_cpu[0][0] == "llama-bin-win-cpu-x64.zip"
+
+    # 4. Если остались только avx2 и avx512, они строго исключаются
+    avx2_only = [
+        {"name": "llama-bin-win-avx2-x64.zip", "browser_download_url": "https://example.com/avx2.zip"},
+        {"name": "llama-bin-win-avx512-x64.zip", "browser_download_url": "https://example.com/avx512.zip"},
+    ]
+    urls_empty = select_download_urls(avx2_only, "cpu", cpu_avx2=False)
+    assert len(urls_empty) == 0
+
+
+def test_verify_llama_server_binary_illegal_instruction(tmp_path):
+    """
+    Проверка отлова ошибки 0xC000001D / STATUS_ILLEGAL_INSTRUCTION (-1073741795)
+    в verify_llama_server_binary при вызове --list-devices.
+    """
+    from services.llama_downloader import verify_llama_server_binary
+
+    exe = tmp_path / "llama-server.exe"
+    exe.write_bytes(b"MZ" + b"\x00" * 2048)
+
+    def fake_run(cmd, *args, **kwargs):
+        mock_res = MagicMock()
+        if "--version" in cmd:
+            mock_res.returncode = 0
+            mock_res.stdout = "llama-server version 0.9.0"
+        elif "--list-devices" in cmd:
+            mock_res.returncode = -1073741795  # 0xC000001D
+            mock_res.stdout = ""
+            mock_res.stderr = "Illegal instruction"
+        return mock_res
+
+    with patch("subprocess.run", side_effect=fake_run):
+        ok, err = verify_llama_server_binary(tmp_path)
+        assert ok is False
+        assert "0xC000001D" in err
+        assert "AVX2" in err
+
+
+def test_download_and_extract_vulkan_fallback_to_cpu_on_illegal_instruction(tmp_path):
+    """
+    Проверка автоматического отката с Vulkan на CPU-сборку без AVX2
+    при ошибке 0xC000001D во время верификации бинарника.
+    """
+    assets = [
+        {"name": "llama-b1000-bin-win-vulkan-x64.zip", "browser_download_url": "https://example.com/vulkan.zip"},
+        {"name": "llama-b1000-bin-win-avx2-x64.zip", "browser_download_url": "https://example.com/avx2.zip"},
+        {"name": "llama-b1000-bin-win-noavx-x64.zip", "browser_download_url": "https://example.com/noavx.zip"},
+    ]
+
+    # Создадим фиктивную старую dll в tmp_path
+    old_dll = tmp_path / "vulkan-1.dll"
+    old_dll.write_bytes(b"OLD_DLL")
+
+    fake_zip_bytes = io.BytesIO()
+    with zipfile.ZipFile(fake_zip_bytes, "w") as zf:
+        zf.writestr("llama-server.exe", b"MZ" + b"\x00" * 2048)
+        zf.writestr("cpu_backend.dll", b"CPU_DLL")
+
+    def mock_download_file(url, dest_path, progress=None):
+        dest_path.write_bytes(fake_zip_bytes.getvalue())
+
+    verify_calls = [0]
+
+    def mock_verify(target_dir):
+        verify_calls[0] += 1
+        if verify_calls[0] == 1:
+            # Первый вызов (для Vulkan) падает с 0xC000001D
+            return False, "Сборка llama-server требует инструкции CPU AVX2 (ошибка 0xC000001D), которые не поддерживаются вашим процессором."
+        # Второй вызов (после fallback на noavx) успешен
+        return True, "llama-server version 1.2.3"
+
+    with patch("services.llama_downloader.fetch_release_assets", return_value=("b1000", assets)), \
+         patch("services.llama_downloader.download_file", side_effect=mock_download_file), \
+         patch("services.llama_downloader.verify_llama_server_binary", side_effect=mock_verify):
+
+        ok, msg = download_and_extract_llama_server(target_dir=tmp_path, vendor="amd")
+        assert ok is True
+        assert "успешно установлен" in msg
+        assert verify_calls[0] == 2
+        # Старая dll должна быть очищена, а новая CPU DLL распакована
+        assert not old_dll.exists()
+        assert (tmp_path / "cpu_backend.dll").is_file()
+        assert (tmp_path / "llama-server.exe").is_file()

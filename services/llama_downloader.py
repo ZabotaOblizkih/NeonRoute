@@ -125,11 +125,22 @@ def fetch_release_assets(timeout: int = 10) -> Tuple[str, List[Dict[str, Any]]]:
     raise RuntimeError("Не удалось найти подходящий релиз llama.cpp с Windows x64 ассетами.")
 
 
-def select_download_urls(assets: List[Dict[str, Any]], build_type: str) -> List[Tuple[str, str]]:
+def select_download_urls(
+    assets: List[Dict[str, Any]],
+    build_type: str,
+    cpu_avx2: Optional[bool] = None,
+) -> List[Tuple[str, str]]:
     """
     Выбирает URL ассетов для скачивания в зависимости от типа сборки (cuda / vulkan / cpu).
     Возвращает список кортежей [(имя_файла, url_скачивания), ...].
     """
+    if cpu_avx2 is None:
+        try:
+            from services.layer_budgeter import LayerBudgeter
+            cpu_avx2 = LayerBudgeter.has_cpu_avx2()
+        except Exception:
+            cpu_avx2 = True
+
     x64_assets = [
         a for a in assets
         if "win" in a.get("name", "").lower()
@@ -167,11 +178,35 @@ def select_download_urls(assets: List[Dict[str, Any]], build_type: str) -> List[
             build_type = "cpu"
 
     if build_type == "cpu" or not selected:
-        cpu_assets = [a for a in x64_assets if ("avx2" in a["name"].lower() or "cpu" in a["name"].lower()) and "cuda" not in a["name"].lower()]
-        if cpu_assets:
-            selected.append((cpu_assets[0]["name"], cpu_assets[0]["browser_download_url"]))
-        elif x64_assets:
-            selected.append((x64_assets[0]["name"], x64_assets[0]["browser_download_url"]))
+        if cpu_avx2 is False:
+            candidates = [
+                a for a in x64_assets
+                if "cuda" not in a["name"].lower()
+                and "avx2" not in a["name"].lower()
+                and "avx512" not in a["name"].lower()
+            ]
+            chosen = None
+            noavx = [a for a in candidates if "noavx" in a["name"].lower() or "no-avx" in a["name"].lower()]
+            if noavx:
+                chosen = noavx[0]
+            else:
+                avx = [a for a in candidates if "avx" in a["name"].lower()]
+                if avx:
+                    chosen = avx[0]
+                else:
+                    cpu_neutral = [a for a in candidates if "cpu" in a["name"].lower()]
+                    if cpu_neutral:
+                        chosen = cpu_neutral[0]
+                    elif candidates:
+                        chosen = candidates[0]
+            if chosen:
+                selected.append((chosen["name"], chosen["browser_download_url"]))
+        else:
+            cpu_assets = [a for a in x64_assets if ("avx2" in a["name"].lower() or "cpu" in a["name"].lower()) and "cuda" not in a["name"].lower()]
+            if cpu_assets:
+                selected.append((cpu_assets[0]["name"], cpu_assets[0]["browser_download_url"]))
+            elif x64_assets:
+                selected.append((x64_assets[0]["name"], x64_assets[0]["browser_download_url"]))
 
     return selected
 
@@ -304,6 +339,8 @@ def verify_llama_server_binary(target_dir: Path) -> Tuple[bool, str]:
             env=env,
             creationflags=flags,
         )
+        if res.returncode in (3221225501, -1073741795):
+            return False, "Сборка llama-server требует инструкции CPU AVX2 (ошибка 0xC000001D), которые не поддерживаются вашим процессором."
         output = (res.stdout or res.stderr or "").strip()
         if not (res.returncode == 0 or "version:" in output.lower() or "llama" in output.lower()):
             return False, f"Ошибка выполнения llama-server.exe --version: {output[:80]}"
@@ -312,32 +349,36 @@ def verify_llama_server_binary(target_dir: Path) -> Tuple[bool, str]:
         logger.warning(f"[LlamaDownloader] Ошибка валидации llama-server.exe: {e}")
         return False, str(e)
 
-    if cuda_backend.is_file():
-        is_nvidia = False
-        try:
-            from services.layer_budgeter import LayerBudgeter
-            profile = LayerBudgeter.detect_hardware_kv_profile()
-            is_nvidia = profile.get("vendor", "").lower() == "nvidia"
-        except Exception:
-            pass
+    # Пробный вызов --list-devices для всех типов сборок (не только CUDA)
+    try:
+        dev_res = subprocess.run(
+            [str(exe_path), "--list-devices"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            cwd=str(target_dir),
+            env=env,
+            creationflags=flags,
+        )
+        if dev_res.returncode in (3221225501, -1073741795):
+            return False, "Сборка llama-server требует инструкции CPU AVX2 (ошибка 0xC000001D), которые не поддерживаются вашим процессором."
 
-        if is_nvidia:
+        dev_out = (dev_res.stdout or dev_res.stderr or "").strip()
+        if cuda_backend.is_file():
+            is_nvidia = False
             try:
-                dev_res = subprocess.run(
-                    [str(exe_path), "--list-devices"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=5,
-                    cwd=str(target_dir),
-                    env=env,
-                    creationflags=flags,
-                )
-                dev_out = (dev_res.stdout or dev_res.stderr or "").strip()
+                from services.layer_budgeter import LayerBudgeter
+                profile = LayerBudgeter.detect_hardware_kv_profile()
+                is_nvidia = profile.get("vendor", "").lower() == "nvidia"
+            except Exception:
+                pass
+
+            if is_nvidia:
                 if "(none)" in dev_out.lower() or "available devices: (none)" in dev_out.lower():
                     return False, "CUDA сборка не видит GPU устройств: Available devices: (none)"
-            except Exception as e:
-                logger.debug(f"[LlamaDownloader] Проверка --list-devices пропущена: {e}")
+    except Exception as e:
+        logger.debug(f"[LlamaDownloader] Проверка --list-devices пропущена: {e}")
 
     return True, ver_info
 
@@ -369,37 +410,63 @@ def download_and_extract_llama_server(
     cache_dir = Path(tempfile.gettempdir()) / "neonroute_llama_download"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    downloaded_archives: List[Tuple[str, Path]] = []
-
-    # Фаза 1: Скачивание всех архивов в cache_dir
-    for asset_name, url in urls:
-        local_archive = cache_dir / asset_name
-        logger.info(f"[LlamaDownloader] Загрузка {asset_name} ...")
-        if progress_callback:
-            progress_callback(f"Загрузка {asset_name}...", 0, 100)
-
-        def _prog(cur, tot, aname=asset_name):
+    def _download_and_extract_archives(target_urls: List[Tuple[str, str]], status_suffix: str = "") -> Tuple[bool, str]:
+        downloaded_archives: List[Tuple[str, Path]] = []
+        for asset_name, url in target_urls:
+            local_archive = cache_dir / asset_name
+            logger.info(f"[LlamaDownloader] Загрузка {asset_name}{status_suffix} ...")
             if progress_callback:
-                progress_callback(f"Загрузка {aname}...", cur, tot)
+                progress_callback(f"Загрузка {asset_name}{status_suffix}...", 0, 100)
 
-        try:
-            download_file(url, local_archive, _prog)
-            downloaded_archives.append((asset_name, local_archive))
-        except Exception as e:
-            return False, f"Ошибка при скачивании {asset_name}: {e}"
+            def _prog(cur, tot, aname=asset_name):
+                if progress_callback:
+                    progress_callback(f"Загрузка {aname}{status_suffix}...", cur, tot)
 
-    # Фаза 2: Распаковка только после успешного скачивания всех архивов
-    for asset_name, local_archive in downloaded_archives:
-        logger.info(f"[LlamaDownloader] Распаковка {asset_name} ...")
-        if progress_callback:
-            progress_callback(f"Распаковка {asset_name}...", 0, 100)
-        try:
-            extract_binaries(local_archive, dest_dir)
-        except Exception as e:
-            return False, f"Ошибка при распаковке {asset_name}: {e}"
+            try:
+                download_file(url, local_archive, _prog)
+                downloaded_archives.append((asset_name, local_archive))
+            except Exception as e:
+                return False, f"Ошибка при скачивании {asset_name}: {e}"
+
+        for asset_name, local_archive in downloaded_archives:
+            logger.info(f"[LlamaDownloader] Распаковка {asset_name}{status_suffix} ...")
+            if progress_callback:
+                progress_callback(f"Распаковка {asset_name}{status_suffix}...", 0, 100)
+            try:
+                extract_binaries(local_archive, dest_dir)
+            except Exception as e:
+                return False, f"Ошибка при распаковке {asset_name}: {e}"
+        return True, ""
+
+    ok_dl, err_dl = _download_and_extract_archives(urls)
+    if not ok_dl:
+        return False, err_dl
 
     # Проверка бинарника
     ok, ver_info = verify_llama_server_binary(dest_dir)
+
+    # Автоматический откат с vulkan на cpu без AVX2 при ошибке 0xC000001D
+    if not ok and build_type == "vulkan" and "0xC000001D" in ver_info:
+        logger.warning(
+            f"[LlamaDownloader] Vulkan сборка вызвала ошибку 0xC000001D (отсутствует AVX2). "
+            f"Выполняется автоматический откат на CPU сборку без AVX2..."
+        )
+        for dll_file in dest_dir.glob("*.dll"):
+            try:
+                dll_file.unlink()
+            except Exception as e:
+                logger.debug(f"[LlamaDownloader] Ошибка очистки DLL {dll_file.name}: {e}")
+
+        fallback_urls = select_download_urls(assets, "cpu", cpu_avx2=False)
+        if not fallback_urls:
+            return False, f"llama-server не поддерживает AVX2 (0xC000001D), но подходящая CPU-сборка без AVX2 не найдена в релизе {tag}"
+
+        ok_fb, err_fb = _download_and_extract_archives(fallback_urls, " (CPU без AVX2)")
+        if not ok_fb:
+            return False, err_fb
+
+        ok, ver_info = verify_llama_server_binary(dest_dir)
+
     if ok:
         return True, f"llama-server успешно установлен ({ver_info})"
     else:
