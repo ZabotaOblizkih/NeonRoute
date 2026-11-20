@@ -290,6 +290,9 @@ class DummyWindow(QWidget, HardwareEngineMixin):
         return self.current_mode
 
 
+builtins.DummyWindow = DummyWindow
+
+
 @pytest.fixture
 def dummy_window_factory():
     """Фабрика для создания DummyWindow."""
