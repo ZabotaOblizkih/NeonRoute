@@ -4,7 +4,7 @@
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
 > **Метрики кодовой базы**: 324 файла Python, ~112 500 строк кода  
-> **Статус верификации**: 839 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
+> **Статус верификации**: 821 тест собран и пройден (100% Pass Rate на полном прогоне `pytest -q`)
 
 ---
 
@@ -62,6 +62,7 @@
 | **ADR-46** | `HEAD` | `services/assistant_prompt_builder.py`, `services/context_window_builder.py`, `services/assistant_flow.py`, `services/lm_studio.py`, `tests/unit/test_static_prefix_anchoring.py` | 1) Наличие динамического штампа текущей даты и времени (`{current_dt_str}`) в системном промпте меняло первый токен `system`-сообщения каждую минуту, приводя к инвалидации префикса KV-кэша и полному пересчету промпта (Prompt Re-eval).<br>2) Мутация `assembled_messages[0]` блоками RAG и скиллами разрушала кэшированный префикс.<br>3) Отсутствовала детальная телеметрия использования KV-кэша (`cache_n`, `prompt_n`). | 1) **Static Prefix Anchoring**: системный промпт Ассистента (`AssistantPromptBuilder.build()`) заморожен в побитово идентичное статическое ядро (персона, стиль, скиллы, `<UserInfo>`), гарантируя 100% KV-кэш хит системного префикса.<br>2) **Инкапсуляция контекста хода (`<TurnContext>`)**: динамические метаданные (время хода, факты `<PassiveMemory>`, фрагменты `<KnowledgeBase>`, документы `<AttachedDocument>`, скилл-директивы) упаковываются методом `build_turn_context()` и инжектируются исключительно в эфемерную копию последнего пользовательского сообщения (`messages[-1]["content"]`) без сохранения в сессию `SessionManager`.<br>3) **Ролевая защита (Role Guard)**: в системный промпт добавлено правило, запрещающее модели цитировать теги `<TurnContext>` или путать их с репликами пользователя.<br>4) В `LMStudioClient`: передача `"id_slot": 0`, активация `"stream_options": {"include_usage": True}` и разбор блоков `"usage"` и `"timings"` (`cache_n`, `prompt_n`) в SSE-потоке с информативным логом попаданий в KV-кэш.<br>5) Создан тестовый сьют `test_static_prefix_anchoring.py` (4 теста). |
 | **ADR-47** | `HEAD` | `services/forge_client.py`, `ui/controllers/hardware_engine.py`, `services/vram_arbiter.py`, `tests/unit/test_forge_client.py` | 1) Инцидент: падение ядра Forge с `IndexError: list index out of range` в `backend/memory_management.py:466` и зависание ~908 МБ VRAM вместо ~490 МБ при выгрузке чекпоинта после ADetailer.<br>2) Причина: агрессивный клиентский таймаут 5.0 с на `POST /sdapi/v1/unload-checkpoint` (перемещение 6.7 ГБ SDXL весов по PCIe в RAM на 16 ГБ ПК физически занимает 5–8 с); при таймауте клиент немедленно слал `POST /sdapi/v1/free-vram`, вызывая гонку двух параллельных потоков Uvicorn на незащищенном глобальном списке `current_loaded_models`.<br>3) Дублирующий вызов выгрузки из `_finalize_forge_generation` (`force=True`). | 1) **Сериализация выгрузки**: на экземпляр `ForgeClient` добавлен мьютекс `self._unload_lock = threading.Lock()`, исключающий параллельные вызовы выгрузки.<br>2) **Адаптивный таймаут и защита от конкуренции**: таймаут `/unload-checkpoint` увеличен до 18.0 с; при `ReadTimeout` конкурирующий `free-vram` не отправляется немедленно — выдерживается пауза 1.0 с перед аварийной очисткой; таймаут `free-vram` поднят до 10.0 с.<br>3) **Остановка поллера**: ожидание фонового потока прогресса увеличено с 0.05 до 1.5 с (`poller_thread.join(timeout=1.5)`), гарантируя закрытие сокета `/progress` до старта выгрузки.<br>4) **Устранение дублирующей выгрузки**: в `_finalize_forge_generation` передается `force=not getattr(self.forge_client, "_checkpoint_unloaded", False)`; при уже выгруженном чекпоинте повторные HTTP-запросы пропускаются.<br>5) Созданы 4 unit-теста в `tests/unit/test_forge_client.py` (96 тестов в сьюте, 843 теста суммарно). |
 | **ADR-48** | `HEAD` | `services/lm_studio.py`, `services/rp_cast_extractor.py`, `services/roleplay_flow_controller.py`, `services/roleplay_prompt_builder.py`, `services/assistant_prompt_builder.py`, `services/regex_filter.py`, `ui/controllers/hardware_engine.py`, `ui/controllers/chat_flow_controller.py`, `ui/builders/chat_bubble_builder.py`, `services/assistant_flow.py`, `services/context_window_builder.py`, `services/roleplay_state_manager.py`, `tests/smoke/test_roleplay_e2e_smoke.py` | 1) В ролевом режиме (РП-чат) при нажатии кнопки «Арт сцены» позитивный промпт не доходил до Forge при использовании думающих моделей (Qwen 2.5/3, DeepSeek-R1): служебные запросы экстракции сцены и персонажей активировали reasoning-токены, prefill роли `assistant` ломал JSON-грамматику, а фоновый запрос затирал KV-кэш слота 0 диалога.<br>2) При пустом промпте происходила преждевременная выгрузка LLM из VRAM перед падением рендера.<br>3) Разрозненные регулярные выражения перехвата арт-тегов не учитывали опечатки модели (`IMAGE_PROP`, `IMAGE_PROMT`, `IMG_PROMPT`) и регистронезависимость.<br>4) Выбор формата промпта («Danbooru tags» vs «SDXL descriptive phrases») зависел от хрупких проверок имен моделей; дефолтный аргумент `target_model_id="realistic"` ломал авто-подбор профиля в режиме Арт-директора.<br>5) Тестовое покрытие РП-чата было фрагментировано по 5 разрозненным файлам с дублированием моков. | 1) **Подавление Thinking в служебных вызовах**: в `services/lm_studio.py` добавлена поддержка `enable_thinking=False`, отключение role prefill при наличии `response_format` (защита JSON-грамматики) и изоляция слота через `id_slot=None` (предотвращение вытеснения KV-кэша слота 0); в `RPCastExtractor` и `_generate_ephemeral_rp_art_prompt` служебные вызовы изолированы (`enable_thinking=False`, `id_slot=None`, `cache_prompt=False`).<br>2) **Fail-Fast Guard VRAM**: в `ui/controllers/hardware_engine.py` добавлена предварительная проверка непустого промпта до вызова `VRAMArbiter.release_llm_for_diffusion()`.<br>3) **Единый SSOT-перехватчик арт-тегов**: в `services/regex_filter.py` внедрены константа `IMAGE_TAG_LABEL_PATTERN`, обновленный `_RE_IMAGE_TAG` (re.IGNORECASE, поддержка опечаток) и метод `strip_image_tags(cls, text)`; стриминговые и UI-фильтры синхронизированы.<br>4) **Data-Driven резолвинг диалектов промпта**: в `services/assistant_prompt_builder.py` реализована функция `resolve_prompt_dialect(architecture, routing_description)` без хардкода моделей, с нарезкой по знакам препинания и фильтрацией запретов (`avoid`, `never use`, `do not use`, `не используй`); в `services/roleplay_prompt_builder.py` внедрена динамическая секция `STYLE GUIDANCE`; в `RoleplayFlowControllerMixin` устранена ловушка `"realistic"` (`ckpt_for_resolver = None`, `effective_query=clean_ctx`) и добавлен фоллбэк `- Subject:` на имя персонажа.<br>5) **Консолидация E2E-тестов РП-чата**: 5 разрозненных смоук-файлов объединены в единый сьют `tests/smoke/test_roleplay_e2e_smoke.py` (7 исчерпывающих сценариев) с унифицированной диагностикой `assert_diag`. |
+| **ADR-49** | `HEAD` | `services/art_director/contracts.py`, `services/art_director/plan.py`, `services/art_director/director.py`, `services/assistant_prompt_builder.py`, `services/assistant_flow.py`, `ui/controllers/assistant_flow_controller.py`, `services/forge_client.py`, `mobile_server/services/chat_service.py`, `services/rp_cast_extractor.py`, `services/roleplay_flow_controller.py`, `ui/controllers/hardware_engine.py`, `tests/unit/test_adetailer_dialog.py` | 1) Общий промпт сцены (`shared_ad_prompt`) дублировался в оба слота ADetailer (лицо и руки), размывая анатомические детали кистей описанием глаз/причёски, а лица — деталями пальцев/оружия.<br>2) Отсутствовал механизм пропуска слота при отсутствии лица/рук в кадре (`[SKIP]`), из-за чего ADetailer пытался инпейнтить несуществующие анатомические зоны пейзажей или персонажей со спины.<br>3) Вывод арт-инструкций в формате одной строки `[IMAGE_PROMPT: ...]` ограничивал передачу многослойных визуальных намерений и приводил к задержкам ответа в UI до полного завершения генерации.<br>4) Отсутствовало диагностическое разделение источников промптов (`json`, `override`, `fallback`) и статусов слотов в логах Forge/ArtDirector. | 1) **Контракт `VisualIntent` и раздельные слоты**: расширение `VisualIntent` полями `face_prompt` и `hands_prompt` (с поддержкой `[SKIP]` для пустых строк и строковыми методами совместимости). В `GenerationPlan.to_forge_kwargs()` разделены `face_slot` и `hand_slot`, а маркер `[SKIP]` транслируется в `ad_model = "None"`.<br>2) **Изоляция и разрешение слотов в `ArtDirector`**: слот лица изолирует `ELARIA_VISUAL_DNA`, companion DNA, guidance и LoRA; слот рук строго приоритизирует ручной override модели (`adetailer_hands_prompt`), изолирует кисти от DNA лица/фона и автоматически дополняет негативный стек анатомической защитой (`bad hands, extra fingers...`).<br>3) **Схемы Structured JSON Output**: в `services/assistant_prompt_builder.py` добавлены строгие JSON-схемы `ART_DIRECTOR_ASSISTANT_JSON_SCHEMA` и `ART_DIRECTOR_RP_SCENE_JSON_SCHEMA` с изоляцией `scene_prompt`, `face_prompt`, `hands_prompt`, `negative_prompt`, `aspect_ratio`, `reply_ru`, а директивы `gallery` и `cinematic` переведены на генерацию структурированного JSON.<br>4) **Потоковое извлечение `reply_ru` в `StreamArtTagFilter`**: инкрементальное декодирование реплики ассистента в реальном времени с поддержкой escape-последовательностей и полной изоляцией служебных ключей до `flush()`.<br>5) **Отказоустойчивый парсинг и диагностическое логирование**: парсер `parse_structured_art_response` с автоматическим исправлением оборванного JSON, логированием флагов (`ar`, `face`, `hands`, `self`), ворнингом при fallback на `[IMAGE_PROMPT]`, тегами источников `[src=json|override|fallback]` и статусом `SlotN(SKIPPED)`.<br>6) **Тестовое покрытие**: 821 тест собран и успешно пройден (100% Pass Rate). |
 
 ---
 
@@ -1408,21 +1409,92 @@ flowchart TD
 3. Оставшийся фрагмент проверяется на наличие маркеров тегов (`danbooru`, `e621`, `booru`, `1girl`, `1boy`). При их обнаружении выбирается диалект `"tags"`, в остальных случаях — `"phrases"`.
 4. В генераторе промптов устранена ловушка технического плейсхолдера `"realistic"`: при значении `"realistic"` параметр чекпоинта сбрасывается в `None`, обеспечивая честный выбор модели через `ModelRouter` по контексту текущей сцены.
 
+### 6.7. Архитектура 3-слойного раздельного промптинга ADetailer через Structured JSON Output (ADR-49)
+
+В режимах Ассистента и РП-чата («Арт сцены») генерация визуальных образов переведена на 3-слойную архитектуру раздельного инпейнта ADetailer (Scene, Face, Hands) через строгий структурированный вывод JSON (`response_format`). Это устранило взаимное загрязнение кропов лица и рук токенами общего описания кадра и обеспечило физическую изоляцию визуальной ДНК персонажа.
+
+```mermaid
+flowchart TD
+    subgraph LLM_JSON["1. Генерация Structured JSON Output"]
+        Directive["Директива Арт-директора<br>(GALLERY / CINEMATIC / RP)"] --> LLMReq["LMStudioClient.chat_completion()<br>• response_format: ART_DIRECTOR_ASSISTANT_JSON_SCHEMA<br>• enable_thinking=False, temp=0.4"]
+        LLMReq --> JSONStream["SSE-стриминг JSON"]
+    end
+
+    subgraph StreamingFilter["2. Инкрементальное потоковое извлечение"]
+        JSONStream --> StreamFilter["StreamArtTagFilter<br>• Извлечение reply_ru на лету<br>• Декодирование escape-символов<br>• Изоляция служебных JSON-ключей"]
+        StreamFilter -->|chunk_to_render| Bubble["Чат-бабл (append_stream_chunk)<br>Мгновенный рендер реплики Эларии"]
+        StreamFilter -->|flush| Sanitizer["sanitize_assistant_art_and_markdown()<br>parse_structured_art_response()"]
+    end
+
+    subgraph VisualIntentLayer["3. Контракт VisualIntent и диспетчеризация"]
+        Sanitizer --> VIntent["VisualIntent<br>• prompt (общая сцена)<br>• face_prompt (7-14 тегов лица)<br>• hands_prompt (6-12 тегов кистей)<br>• aspect_ratio, suggested_model, user_neg"]
+    end
+
+    subgraph DirectorResolution["4. Изоляция слотов в ArtDirector"]
+        VIntent --> ResolveFace["Слот Лица (resolved_face_prompt)<br>• [SKIP] -> ad_model='None'<br>• ELARIA_VISUAL_DNA / Comp DNA<br>• LoRA strictly at #1<br>• llm_guidance (до 6 тегов)"]
+        VIntent --> ResolveHands["Слот Рук (resolved_hands_prompt)<br>• Override модели (adetailer_hands_prompt)<br>• [SKIP] -> ad_model='None'<br>• Изоляция от DNA лица/фона<br>• Анатомический негатив (bad hands...)"]
+    end
+
+    subgraph Plan_Forge["5. GenerationPlan и payload Forge"]
+        ResolveFace --> GenPlan["GenerationPlan<br>• ad_prompt = resolved_face_prompt<br>• adetailer_hands_prompt = resolved_hands_prompt<br>• ad_source, adetailer_hands_source"]
+        ResolveHands --> GenPlan
+        GenPlan --> ForgePayload["GenerationPlan.to_forge_kwargs()<br>• face_slot: [ad_model, prompt, neg]<br>• hand_slot: [ad_model, prompt, neg]<br>• [SKIP] -> ad_model='None'"]
+        ForgePayload --> ForgeExec["ForgeClient.text_to_image()<br>Лог: slots_summary -> SlotN(SKIPPED)"]
+    end
+```
+
+#### 6.7.1. Схема Structured JSON Output
+Для языковой модели определены две строгие JSON-схемы:
+1. `ART_DIRECTOR_ASSISTANT_JSON_SCHEMA` (`strict: True`):
+   - `reply_ru` (string) — 1 живая фраза Эларии на русском языке для чата («Секунду, перевожу образ в кадр...»).
+   - `scene_prompt` (string) — 12–26 английских тегов всей композиции (освещение, окружение, план, ракурс, стиль).
+   - `face_prompt` (string) — 7–14 английских тегов строго для кропа лица (глаза, взгляд, причёска, эмоция, кожа, свет; без одежды, рук и фона; `""` если лица нет).
+   - `hands_prompt` (string) — 6–12 английских тегов строго для кистей рук (пальцы, хват, предмет, свет; без лица и фона; `""` если руки скрыты).
+   - `negative_prompt` (string) — исключения пользователя («без X») или `""`.
+   - `aspect_ratio` (string, enum: `portrait`, `square`, `wide`, `cinematic`, `ultrawide`).
+   - `suggested_model` (string) — идентификатор стиля/чекпоинта.
+   - `is_self_portrait` (boolean) — флаг селфи/автопортрета Эларии.
+2. `ART_DIRECTOR_RP_SCENE_JSON_SCHEMA` — специализированная схема без поля `reply_ru` для фонового инференса арт-сцен в ролевом режиме.
+
+#### 6.7.2. Раздельное разрешение и анатомическая изоляция слотов
+В `ArtDirector.plan_from_visual_intent()` реализована независимая сборка промптов:
+- **Слот лица (`face_slot`)**:
+  - При `face_prompt == ""` выставляется маркер `[SKIP]` (лицо не детектируется и не инпейнтится).
+  - При наличии тегов добавляется `ELARIA_VISUAL_DNA` (для селфи) или companion DNA (в RP), подмешивается `llm_guidance` (до 6 тегов), а все LoRA выставляются строго на 1-ю позицию промпта.
+  - При отсутствии `face_prompt` — безопасный fallback на общий `final_positive`.
+- **Слот рук (`hand_slot`)**:
+  - Наивысший приоритет имеет ручной override из профиля модели (`adetailer_hands_prompt`), сохраняющий совместимость с кастомными моделями.
+  - При `intent.hands_prompt == ""` выставляется `[SKIP]`.
+  - При наличии тегов из JSON: промпт очищается от кириллицы, добавляется `llm_guidance` и LoRA на 1-ю позицию **без** визуальной ДНК лица и без описания фона.
+  - Негативный промпт рук (`adetailer_hands_negative_prompt`) автоматически дополняется анатомической защитой кистей (`bad hands, mutated hands, extra fingers, fused fingers, missing fingers, poorly drawn hands, malformed hands, deformed fingers`), исключая деформации при инпейнте.
+
+#### 6.7.3. Потоковое извлечение `reply_ru` в `StreamArtTagFilter`
+Чтобы исключить задержку диалога во время генерации JSON, в `StreamArtTagFilter` внедрен потоковый декодер:
+- При обнаружении ведущей `{` фильтр переходит в `_json_mode = True`, удерживая исходный JSON-буфер от попадания в чат.
+- До закрытия строки `reply_ru` парсер инкрементально считывает и декодирует символы (включая escape-последовательности `\"`, `\n`, `\t`, `\\`, `\uXXXX`), немедленно отправляя дельту `new_piece` в UI-виджет бабла.
+- При обнаружении закрывающей кавычки `_json_reply_closed = True` парсер полностью подавляет все служебные ключи (`scene_prompt`, `face_prompt` и т.д.).
+- При завершении потока (`flush()`) буфер очищается, а в случае непредвиденного сбоя генерации JSON срабатывает безопасный фоллбэк на `parse_structured_art_response` или дефолтную фразу.
+
+#### 6.7.4. Диагностическое логирование и паспорт слотов
+- **Парсер JSON (`services/assistant_flow.py`)**: `logger.info` фиксирует успешный разбор с флагами (`ar`, `face=bool`, `hands=bool`, `self=bool`), а при обнаружении устаревшего тега выводится `logger.warning` о fallback на `[IMAGE_PROMPT]`.
+- **Паспорт ArtDirector (`services/art_director/director.py`)**: метод `_format_adetailer_log_blocks()` выводит тег источника `[src=json|override|fallback]` для каждого слота, а при значении `[SKIP]` — явный статус `SKIPPED [src=json] | Model=None`.
+- **Пайплайн Forge (`services/forge_client.py`)**: в строке активных слотов `slots_summary` отключенный слот логируется как `SlotN(SKIPPED)`.
+
 ---
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (839 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (821 тест, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 839 автоматических тестов в 84 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 821 автоматического теста в 84 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
 | **`tests/smoke/`** | 18 | 121 | Быстрые сквозные смоук-тесты: единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`, 7 сценариев: диалог, кэш слота 0, подавление thinking в касте, генерация арт-сцены, data-driven диалекты, Fail-Fast Guard VRAM, карточки и сессии), гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`, включая интеграцию автозагрузчика llama-server в `install.bat` и исключение `hotfix_v098/`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (17 тестов), Layer Budgeter (28 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
-| **`tests/unit/`** | 53 | 532 | Изолированное модульное тестирование: сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
+| **`tests/unit/`** | 53 | 514 | Изолированное модульное тестирование: 3-слойный ADetailer и потоковый Structured JSON (`test_adetailer_dialog.py`, 12 тестов), сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
 | **`tests/integration/`** | 2 | 9 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
 | **`tests/` (root)** | 11 | 177 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer |
-| **ИТОГО** | **84** | **839** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **ИТОГО** | **84** | **821** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 
