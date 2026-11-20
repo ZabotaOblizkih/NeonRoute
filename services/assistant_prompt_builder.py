@@ -18,6 +18,115 @@ TRUNCATION_MARKER = "\n...[часть фрагмента скрыта для б�
 
 IMAGE_GENERATION_SKILLS = frozenset({"gallery", "cinematic"})
 
+ART_DIRECTOR_ASSISTANT_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "art_director_assistant_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "reply_ru": {
+                    "type": "string",
+                    "description": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например, 'Секунду, перевожу образ в кадр...')."
+                },
+                "scene_prompt": {
+                    "type": "string",
+                    "description": "12–26 английских тегов/фраз всей сцены (без флагов --ar, --model, --neg, --self)."
+                },
+                "face_prompt": {
+                    "type": "string",
+                    "description": "7–14 английских тегов/фраз СТРОГО для кропа лица (глаза, взгляд, причёска, выражение лица, кожа, свет; БЕЗ одежды, позы тела, рук и фона; \"\" если лица нет в кадре)."
+                },
+                "hands_prompt": {
+                    "type": "string",
+                    "description": "6–12 английских тегов/фраз СТРОГО для кропа кистей рук (пальцы, хват, предмет в руке, текстура кожи, свет; БЕЗ лица, глаз, причёски и фона; \"\" если руки скрыты или людей нет)."
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "description": "исключения пользователя ('без X' -> английские теги) или \"\"."
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "enum": ["portrait", "square", "wide", "cinematic", "ultrawide"],
+                    "description": "Формат кадра."
+                },
+                "suggested_model": {
+                    "type": "string",
+                    "description": "ID модели."
+                },
+                "is_self_portrait": {
+                    "type": "boolean",
+                    "description": "true только при запросе нарисовать саму Эларию ('нарисуй себя', 'сделай селфи')."
+                }
+            },
+            "required": [
+                "reply_ru",
+                "scene_prompt",
+                "face_prompt",
+                "hands_prompt",
+                "negative_prompt",
+                "aspect_ratio",
+                "suggested_model",
+                "is_self_portrait"
+            ],
+            "additionalProperties": False
+        }
+    }
+}
+
+ART_DIRECTOR_RP_SCENE_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "art_director_rp_scene_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "scene_prompt": {
+                    "type": "string",
+                    "description": "12–26 английских тегов/фраз всей сцены (без флагов --ar, --model, --neg, --self)."
+                },
+                "face_prompt": {
+                    "type": "string",
+                    "description": "7–14 английских тегов/фраз СТРОГО для кропа лица (глаза, взгляд, причёска, выражение лица, кожа, свет; БЕЗ одежды, позы тела, рук и фона; \"\" если лица нет в кадре)."
+                },
+                "hands_prompt": {
+                    "type": "string",
+                    "description": "6–12 английских тегов/фраз СТРОГО для кропа кистей рук (пальцы, хват, предмет в руке, текстура кожи, свет; БЕЗ лица, глаз, причёски и фона; \"\" если руки скрыты или людей нет)."
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "description": "исключения пользователя ('без X' -> английские теги) или \"\"."
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "enum": ["portrait", "square", "wide", "cinematic", "ultrawide"],
+                    "description": "Формат кадра."
+                },
+                "suggested_model": {
+                    "type": "string",
+                    "description": "ID модели."
+                },
+                "is_self_portrait": {
+                    "type": "boolean",
+                    "description": "true только при запросе нарисовать саму Эларию ('нарисуй себя', 'сделай селфи')."
+                }
+            },
+            "required": [
+                "scene_prompt",
+                "face_prompt",
+                "hands_prompt",
+                "negative_prompt",
+                "aspect_ratio",
+                "suggested_model",
+                "is_self_portrait"
+            ],
+            "additionalProperties": False
+        }
+    }
+}
+
 SYSTEM_PERSONA_TEMPLATE = (
     "# Роль и контекст\n"
     "Ты — Элария, личный ассистент, и собеседник пользователя из блока <UserInfo>.\n"
@@ -200,10 +309,21 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "[IMAGE_PROMPT: <count>, <closer framing>, <angle>, <gaze if requested>, <subject>, <pose & hand anchor>, <upper outfit>, <location & directional light>, <2-3 quality tags> --ar portrait --model {target_model_id}]\n\n"
     "User: <any wide scene, battle, vehicle, or landscape>\n"
     "[IMAGE_PROMPT: <no humans, scenery or subject count>, <wide framing>, <angle>, <scene or action>, <environment & directional light>, <2-3 quality tags> --ar wide --model {target_model_id}]\n\n"
+    "### Structured JSON Output & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
+    '  "scene_prompt": "12 to 26 comma-separated English visual tags for the full scene (NO flags like --ar, --model, --neg, --self inside the string)",\n'
+    '  "face_prompt": "7 to 14 English tags STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothing, body pose, hands, or background; \'\' if face is not visible or seen from behind)",\n'
+    '  "hands_prompt": "6 to 12 English tags STRICTLY for hands crop enhancement (fingers, grip, held item, skin texture, lighting; NO face, eyes, hair, or background; \'\' if hands are hidden or no humans)",\n'
+    '  "negative_prompt": "exclusions requested by user (\'без X\' -> English tags) or \'\'",\n'
+    '  "aspect_ratio": "portrait" | "square" | "wide" | "cinematic" | "ultrawide",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": true or false\n'
+    "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly ONE single line in this exact format (omit `--neg` and `--self` flags when not needed):\n"
-    "[IMAGE_PROMPT: <tags> --neg <tags> --self --ar <portrait|square|wide|cinematic|ultrawide> --model {target_model_id}]\n"
-    "Output ONLY this line. No greetings, no explanations, no markdown code blocks.\n"
+    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
 GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
@@ -252,10 +372,21 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "[IMAGE_PROMPT: <framing & angle phrases>, <pose & hand anchor>, <clothing>, <environment & directional light>, <lens/atmosphere> --self --ar portrait --model {target_model_id}]\n\n"
     "User: <any wide scene, battle, vehicle, or landscape>\n"
     "[IMAGE_PROMPT: <wide framing & angle phrases>, <scene/action or no people, scenery>, <environment & directional light>, <lens/atmosphere> --ar wide --model {target_model_id}]\n\n"
+    "### Structured JSON Output & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
+    '  "scene_prompt": "12 to 24 expressive, comma-separated English visual phrases for the full scene (NO flags like --ar, --model, --neg, --self inside the string)",\n'
+    '  "face_prompt": "7 to 14 English phrases STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothing, body pose, hands, or background; \'\' if face is not visible or seen from behind)",\n'
+    '  "hands_prompt": "6 to 12 English phrases STRICTLY for hands crop enhancement (fingers, grip, held item, skin texture, lighting; NO face, eyes, hair, or background; \'\' if hands are hidden or no humans)",\n'
+    '  "negative_prompt": "exclusions requested by user (\'без X\' -> English phrases) or \'\'",\n'
+    '  "aspect_ratio": "portrait" | "square" | "wide" | "cinematic" | "ultrawide",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": true or false\n'
+    "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly ONE single line in this exact format (omit `--neg` and `--self` flags when not needed):\n"
-    "[IMAGE_PROMPT: <english tags> --neg <items> --self --ar <portrait|square|wide|cinematic|ultrawide> --model {target_model_id}]\n"
-    "Output ONLY this line. No greetings, no explanations, no markdown code blocks.\n"
+    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
 CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
@@ -294,10 +425,21 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "[IMAGE_PROMPT: <count>, <framing>, <angle>, <gaze tag>, <subject>, <pose & hand anchor>, <outfit>, <location & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags> --ar cinematic --model {target_model_id}]\n\n"
     "User: <any ultrawide 21:9 or wide panoramic scene>\n"
     "[IMAGE_PROMPT: <count or no humans, scenery>, <wide framing>, <angle>, <scene or action>, <environment & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags> --ar ultrawide --model {target_model_id}]\n\n"
+    "### Structured JSON Output & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
+    '  "scene_prompt": "14 to 26 comma-separated English keyword tags for the widescreen movie still (NO flags like --ar, --model, --neg, --self inside the string)",\n'
+    '  "face_prompt": "7 to 14 English tags STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothing, body pose, hands, or background; \'\' if face is not visible or seen from behind)",\n'
+    '  "hands_prompt": "6 to 12 English tags STRICTLY for hands crop enhancement (fingers, grip, held item, skin texture, lighting; NO face, eyes, hair, or background; \'\' if hands are hidden or no humans)",\n'
+    '  "negative_prompt": "exclusions requested by user (\'без X\' -> English tags) or \'\'",\n'
+    '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",  // mapping to --ar <cinematic|ultrawide|portrait|square|wide>\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": true or false\n'
+    "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly ONE single line in this exact format (omit `--neg` and `--self` flags when not needed):\n"
-    "[IMAGE_PROMPT: <tags> --neg <tags> --self --ar <cinematic|ultrawide|portrait|square|wide> --model {target_model_id}]\n"
-    "Output ONLY this line. No greetings, no explanations, no markdown code blocks.\n"
+    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
 CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
@@ -336,10 +478,21 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "[IMAGE_PROMPT: <closer framing & angle phrases>, <gaze if requested>, <subject & appearance>, <pose & hand anchor>, <upper clothing>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field --ar cinematic --model {target_model_id}]\n\n"
     "User: <any ultrawide 21:9 or wide panoramic scene>\n"
     "[IMAGE_PROMPT: <wide framing & angle phrases>, <scene/action or no people, scenery>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field --ar ultrawide --model {target_model_id}]\n\n"
+    "### Structured JSON Output & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
+    '  "scene_prompt": "14 to 24 expressive, comma-separated English visual phrases for the widescreen movie still (NO flags like --ar, --model, --neg, --self inside the string)",\n'
+    '  "face_prompt": "7 to 14 English phrases STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothing, body pose, hands, or background; \'\' if face is not visible or seen from behind)",\n'
+    '  "hands_prompt": "6 to 12 English phrases STRICTLY for hands crop enhancement (fingers, grip, held item, skin texture, lighting; NO face, eyes, hair, or background; \'\' if hands are hidden or no humans)",\n'
+    '  "negative_prompt": "exclusions requested by user (\'без X\' -> English phrases) or \'\'",\n'
+    '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",  // mapping to --ar <cinematic|ultrawide|portrait|square|wide>\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": true or false\n'
+    "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly ONE single line in this exact format (omit `--neg` and `--self` flags when not needed):\n"
-    "[IMAGE_PROMPT: <english tags> --neg <items> --self --ar <cinematic|ultrawide|portrait|square|wide> --model {target_model_id}]\n"
-    "Output ONLY this line. No greetings, no explanations, no markdown code blocks.\n"
+    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
 GALLERY_DIRECTIVES_BY_ARCH = {

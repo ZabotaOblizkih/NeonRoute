@@ -1069,6 +1069,7 @@ class ArtDirector:
                     unique_loras.append(l_tag)
             final_positive = f"{', '.join(unique_loras)}, {assembled_body}".strip(' ,')
         else:
+            unique_loras = []
             final_positive = assembled_body
 
         # 3. СТРОГОЕ применение настроек из art_director_models.json
@@ -1241,6 +1242,63 @@ class ArtDirector:
             final_positive = MinorSafetyDetector.sanitize_positive_prompt(final_positive, context_hint=location_dna)
             final_negative = f"{MinorSafetyDetector.HARD_NEGATIVE_STACK}, {final_negative}".strip(", ")
 
+        # Разрешение раздельных слотов ADetailer (Face и Hands)
+        # 1. Слот лица
+        if intent.face_prompt is not None:
+            if intent.face_prompt.strip() == "":
+                resolved_face_prompt = "[SKIP]"
+            else:
+                face_clean = sanitize_prompt(intent.face_prompt)
+                if is_elaria:
+                    face_clean = f"{ELARIA_VISUAL_DNA}, {face_clean}".strip(" ,")
+                elif not is_assistant:
+                    active_comp_dna = companion_dna or getattr(intent, "companion_dna", None)
+                    if active_comp_dna:
+                        face_clean = f"{active_comp_dna}, {face_clean}".strip(" ,")
+                if llm_guidance:
+                    face_clean = _mix_guidance_tags(face_clean, llm_guidance, max_tags=6)
+                if unique_loras:
+                    resolved_face_prompt = f"{', '.join(unique_loras)}, {face_clean}".strip(" ,")
+                else:
+                    resolved_face_prompt = face_clean
+        else:
+            resolved_face_prompt = final_positive
+
+        # 2. Слот рук
+        manual_hand_override = model_pipeline.get("adetailer_hands_prompt") if isinstance(model_pipeline, dict) else None
+        if manual_hand_override and str(manual_hand_override).strip() and "legacy" not in str(manual_hand_override).lower():
+            resolved_hands_prompt = str(manual_hand_override).strip()
+        elif intent.hands_prompt is not None:
+            if intent.hands_prompt.strip() == "":
+                resolved_hands_prompt = "[SKIP]"
+            else:
+                hands_clean = sanitize_prompt(intent.hands_prompt)
+                if llm_guidance:
+                    hands_clean = _mix_guidance_tags(hands_clean, llm_guidance, max_tags=6)
+                if unique_loras:
+                    resolved_hands_prompt = f"{', '.join(unique_loras)}, {hands_clean}".strip(" ,")
+                else:
+                    resolved_hands_prompt = hands_clean
+        else:
+            resolved_hands_prompt = final_positive
+
+        manual_hand_neg_override = model_pipeline.get("adetailer_hands_negative_prompt") if isinstance(model_pipeline, dict) else None
+        if manual_hand_neg_override and str(manual_hand_neg_override).strip() and "legacy" not in str(manual_hand_neg_override).lower():
+            resolved_hands_neg = str(manual_hand_neg_override).strip()
+        elif intent.hands_prompt is not None and resolved_hands_prompt != "[SKIP]":
+            hand_safety_tokens = [
+                "bad hands", "mutated hands", "extra fingers", "fused fingers",
+                "missing fingers", "poorly drawn hands", "malformed hands", "deformed fingers"
+            ]
+            fn_lower = final_negative.lower()
+            missing_tokens = [tok for tok in hand_safety_tokens if tok not in fn_lower]
+            if missing_tokens:
+                resolved_hands_neg = f"{final_negative}, {', '.join(missing_tokens)}".strip(" ,")
+            else:
+                resolved_hands_neg = final_negative
+        else:
+            resolved_hands_neg = final_negative
+
         plan_model_id = router_profile.get("id", selected_profile.id) if router_profile else selected_profile.id
         plan_model_title = router_profile.get("name", selected_profile.title) if router_profile else selected_profile.title
 
@@ -1266,7 +1324,7 @@ class ArtDirector:
             enable_adetailer=enable_ad,
             enable_hand_adetailer=hands_enabled,
             ad_denoising_strength=ad_cfg["face_denoise"],
-            ad_prompt=final_positive,
+            ad_prompt=resolved_face_prompt,
             ad_negative_prompt=final_negative,
             ad_mask_blur=4,
             seed=effective_seed,
@@ -1286,8 +1344,8 @@ class ArtDirector:
             adetailer_hands_inpaint_size=ad_cfg["hands_inpaint_size"],
             adetailer_hands_mask_blur=ad_cfg["hands_mask_blur"],
             adetailer_hands=hands_enabled,
-            adetailer_hands_prompt=final_positive,
-            adetailer_hands_negative_prompt=final_negative,
+            adetailer_hands_prompt=resolved_hands_prompt,
+            adetailer_hands_negative_prompt=resolved_hands_neg,
             archetype=archetype,
         )
 
@@ -1614,6 +1672,7 @@ class ArtDirector:
                     unique_loras.append(l_tag)
             final_positive = f"{', '.join(unique_loras)}, {assembled_body}".strip(' ,')
         else:
+            unique_loras = []
             final_positive = assembled_body
 
         # 5. Разрешение геометрии: прямое подчинение флагу --ar

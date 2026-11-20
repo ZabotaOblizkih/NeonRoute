@@ -390,9 +390,12 @@ class AssistantFlowControllerMixin:
         )
 
         # Точечный override строго на время генерации SDXL (gallery / cinematic) в Фазе 1
+        art_response_format = None
         if active_skill in IMAGE_GENERATION_SKILLS:
             temp = 0.4
             enable_thinking = False
+            from services.assistant_prompt_builder import ART_DIRECTOR_ASSISTANT_JSON_SCHEMA
+            art_response_format = ART_DIRECTOR_ASSISTANT_JSON_SCHEMA
 
         if _should_art:
             target_max_tokens = 512
@@ -443,6 +446,8 @@ class AssistantFlowControllerMixin:
             "controller": self,
             "lm_client": self.lm_client
         }
+        if art_response_format:
+            llm_kwargs["response_format"] = art_response_format
 
         task = InferenceTask(
             name="LLM Ответ",
@@ -642,6 +647,9 @@ class AssistantFlowControllerMixin:
                             pos = gen_params.get("positive_prompt") or gen_params.get("prompt")
                             if pos:
                                 m["image_prompt"] = pos
+                        v_int = getattr(widget_to_update, "visual_intent", None) or (task.metadata.get("visual_intent") if (task and getattr(task, "metadata", None)) else None)
+                        if v_int is not None:
+                            m["visual_intent"] = v_int.to_dict() if hasattr(v_int, "to_dict") else dict(v_int)
                         if m.get("content") == "Связь с моделью обновлена. Я готова, о чём поговорим?":
                             m["content"] = ""
                         break
@@ -1015,15 +1023,50 @@ class AssistantFlowControllerMixin:
             if hasattr(self, "chat_stream") and hasattr(self.chat_stream, "set_knowledge_sources"):
                 self.chat_stream.set_knowledge_sources(sources)
 
+        # Подготовка VisualIntent для структурированного JSON или текстового арт-протокола
+        v_intent = None
+        if extracted_image_prompt:
+            from services.assistant_flow import prepare_assistant_art_dispatch
+            v_intent, _, _, _ = prepare_assistant_art_dispatch(
+                extracted_image_prompt=extracted_image_prompt,
+                user_query=getattr(self, "_current_user_request", ""),
+                selected_forge_checkpoint=getattr(self, "selected_forge_checkpoint", None),
+                session=self.current_session,
+                session_id=curr_sess_id,
+            )
+
+        if msg_widget is not None and v_intent is not None:
+            msg_widget.visual_intent = v_intent
+
         # Активация киберпанк-лоадера ожидания кадра в бабле (для [GALLERY] и [IMAGE_PROMPT])
         if (has_gallery or extracted_image_prompt) and hasattr(msg_widget, "show_art_loading_placeholder"):
-            msg_widget.show_art_loading_placeholder(prompt=extracted_image_prompt)
+            if v_intent is not None:
+                msg_widget.show_art_loading_placeholder(
+                    aspect_ratio=v_intent.aspect_ratio,
+                    prompt=v_intent.prompt,
+                )
+            else:
+                msg_widget.show_art_loading_placeholder(prompt=extracted_image_prompt)
 
-        # Формируем контент для памяти модели: сохраняем [IMAGE_PROMPT: ...]
+        # Формируем контент для памяти модели: сохраняем компактный [IMAGE_PROMPT: ...]
         memory_content = text
-        if extracted_image_prompt and "[IMAGE_PROMPT:" not in memory_content:
+        if v_intent is not None:
+            prompt_anchor = v_intent.prompt
+            if v_intent.aspect_ratio:
+                prompt_anchor = f"{prompt_anchor} --ar {v_intent.aspect_ratio}"
+            if "[IMAGE_PROMPT:" not in memory_content:
+                memory_content = f"{text}\n\n[IMAGE_PROMPT: {prompt_anchor}]".strip()
+        elif extracted_image_prompt and "[IMAGE_PROMPT:" not in memory_content:
             memory_content = text + "\n\n[IMAGE_PROMPT: " + extracted_image_prompt + "]"
             memory_content = memory_content.strip()
+
+        if getattr(self, "current_session", None) and isinstance(self.current_session, dict) and v_intent is not None:
+            messages = self.current_session.get("messages", [])
+            if isinstance(messages, list) and messages:
+                for m in reversed(messages):
+                    if not m.get("is_user") and m.get("role") in ("assistant", None):
+                        m["visual_intent"] = v_intent.to_dict()
+                        break
 
         print(f"[DIAG_THINK][3. FINALIZE] thought_data is None: {thought_data is None}")
         if thought_data:

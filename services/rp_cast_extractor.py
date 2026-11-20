@@ -53,6 +53,8 @@ def build_cast_extraction_spec(
         "6. new_rule / resolved_rule: новая опасность/закон мира или снятая угроза на русском языке (до 10 слов), иначе null.",
         "7. visual_prompt: STRICTLY English Danbooru/SD tags for the key scene frame (up to 25 tags), including duo/2girls if multiple characters are present, or null.",
         "7a. aspect_ratio: frame framing ('wide' for landscapes/rooms/action, 'portrait' for standing characters/outfits/embrace, 'square' for face close-ups/busts/items, or 'none').",
+        "7b. face_prompt: STRICTLY English Danbooru/SD tags for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothes, body, hands, or background), or null if face is not visible.",
+        "7c. hands_prompt: STRICTLY English Danbooru/SD tags for hands crop enhancement (fingers, grip, held object, skin texture, lighting; NO face, eyes, hair, or background), or null if hands are hidden or no humans.",
         "8. scene_type: кинематографический архетип сцены (СТРОГО одно из: 'intimate' — уединение, спальня, купальня, романтика, нагота; 'action' — бой, магия, прямая угроза; 'dialogue' — разговор, быт, таверна, костер; 'exploration' — путешествие, руины, дорога).",
         "8a. suggested_model: id подходящего стиля арт-роутера или null.",
         "9. event_nudge: фоновая деталь для следующего хода СТРОГО на русском языке (до 10 слов) или null.",
@@ -85,6 +87,8 @@ def build_cast_extraction_spec(
         "new_rule": {"type": ["string", "null"]},
         "resolved_rule": {"type": ["string", "null"]},
         "visual_prompt": {"type": ["string", "null"]},
+        "face_prompt": {"type": ["string", "null"]},
+        "hands_prompt": {"type": ["string", "null"]},
         "aspect_ratio": {
             "type": "string",
             "enum": ["wide", "portrait", "square", "none"]
@@ -520,10 +524,18 @@ class RPCastExtractor:
                     comp_dna = updated_cast.get("companion_state", {}).get("visual_dna", "")
                     comp_outfit = updated_cast.get("companion_state", {}).get("current_outfit", "")
 
+                    raw_fp = data.get("face_prompt")
+                    parsed_fp = raw_fp.strip() if (raw_fp and isinstance(raw_fp, str) and raw_fp.strip().lower() != "null") else (None if raw_fp is None else "")
+
+                    raw_hp = data.get("hands_prompt")
+                    parsed_hp = raw_hp.strip() if (raw_hp and isinstance(raw_hp, str) and raw_hp.strip().lower() != "null") else (None if raw_hp is None else "")
+
                     visual_intent = {
                         "session_id": session_id,
                         "message_id": recent_history[-1].get("id") if recent_history else None,
                         "prompt": clean_v,
+                        "face_prompt": parsed_fp,
+                        "hands_prompt": parsed_hp,
                         "suggested_model": suggested_model,
                         "aspect_ratio": parsed_ar,
                         "scene_type": scene_type,

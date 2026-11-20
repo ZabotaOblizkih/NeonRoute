@@ -7,12 +7,17 @@ Headless service layer for Assistant Flow operations:
 - Cascading sampling parameter resolution and Gallery Art Pass planning
 """
 import re
+import json
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 
 from services.session_manager import SessionManager
 from services.regex_filter import TextRegexFilter
-from services.assistant_prompt_builder import AssistantPromptBuilder, IMAGE_GENERATION_SKILLS
+from services.assistant_prompt_builder import (
+    AssistantPromptBuilder,
+    IMAGE_GENERATION_SKILLS,
+    ART_DIRECTOR_ASSISTANT_JSON_SCHEMA,
+)
 from services.art_director import (
     ArtDirector,
     VisualIntent,
@@ -30,16 +35,108 @@ RE_GALLERY_TRIGGER = re.compile(
 )
 
 
+def parse_structured_art_response(raw_text: str) -> Optional[Dict[str, Any]]:
+    """
+    Безопасно парсит структурированный JSON-ответ арт-директора.
+    Использует json.loads с очисткой от Markdown-блоков кода и автоматическое
+    восстановление оборванного JSON по балансу кавычек и фигурных скобок.
+    """
+    if not raw_text or not isinstance(raw_text, str):
+        return None
+
+    clean = raw_text.strip()
+    if not clean:
+        return None
+
+    # Очистка от блоков ```json ... ``` или ``` ... ```
+    if "```" in clean:
+        clean = re.sub(r'^```(?:json)?\s*', '', clean, flags=re.IGNORECASE)
+        clean = re.sub(r'\s*```$', '', clean, flags=re.IGNORECASE).strip()
+
+    if "{" not in clean:
+        return None
+
+    data = None
+    # Попытка 1: Прямой json.loads
+    try:
+        candidate = json.loads(clean)
+        if isinstance(candidate, dict):
+            data = candidate
+    except Exception:
+        pass
+
+    # Попытка 2: Библиотека json_repair (если установлена)
+    if not data:
+        try:
+            import json_repair
+            repaired = json_repair.loads(clean)
+            if isinstance(repaired, dict):
+                data = repaired
+        except Exception:
+            pass
+
+    # Попытка 3: Восстановление оборванного JSON (висячие кавычки и фигурные скобки)
+    if not data:
+        try:
+            fixed_text = clean.rstrip()
+            if fixed_text.count('"') % 2 != 0:
+                fixed_text += '"'
+            open_braces = fixed_text.count('{') - fixed_text.count('}')
+            if open_braces > 0:
+                fixed_text += '}' * open_braces
+            candidate = json.loads(fixed_text)
+            if isinstance(candidate, dict):
+                data = candidate
+        except Exception:
+            pass
+
+    # Попытка 4: Поиск первого валидного под-объекта через баланс скобок
+    if not data:
+        start_idx = clean.find("{")
+        while start_idx != -1:
+            depth = 0
+            for idx in range(start_idx, len(clean)):
+                if clean[idx] == "{":
+                    depth += 1
+                elif clean[idx] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate_str = clean[start_idx:idx + 1]
+                        try:
+                            candidate = json.loads(candidate_str)
+                            if isinstance(candidate, dict) and "scene_prompt" in candidate:
+                                data = candidate
+                                break
+                        except Exception:
+                            pass
+            if data:
+                break
+            start_idx = clean.find("{", start_idx + 1)
+
+    if data and isinstance(data, dict):
+        if "scene_prompt" in data:
+            return data
+    return None
+
+
 def sanitize_assistant_art_and_markdown(
     text: str,
     user_requested_art: bool = False,
 ) -> Tuple[str, bool, Optional[str]]:
     """
-    Извлекает реальные арт-триггеры ([GALLERY], [IMAGE_PROMPT: ...]) и очищает ответ Эларии,
+    Извлекает реальные арт-триггеры ([GALLERY], [IMAGE_PROMPT: ...], Structured JSON) и очищает ответ Эларии,
     не повреждая примеры тегов, CLI-флагов (--ar/--model) и списков (- ) внутри Markdown-кода.
     """
     if not text:
         return "", False, None
+
+    # Проверка на структурированный JSON арт-плана
+    parsed_json = parse_structured_art_response(text)
+    if parsed_json is not None:
+        reply_ru = str(parsed_json.get("reply_ru") or "Секунду, перевожу образ в кадр...").strip()
+        if not reply_ru:
+            reply_ru = "Секунду, перевожу образ в кадр..."
+        return reply_ru, True, json.dumps(parsed_json, ensure_ascii=False)
 
     masked_text, code_placeholders = TextRegexFilter.mask_markdown_code(text)
     masked_text = TextRegexFilter.strip_thought_blocks(masked_text, mask_code=False)
@@ -614,29 +711,61 @@ def build_gallery_art_plan(
         is_roleplay=False,
         is_engineer=False,
         enable_thinking=False,
+        response_format=ART_DIRECTOR_ASSISTANT_JSON_SCHEMA,
     )
 
     clean_tags = TextRegexFilter.strip_thought_blocks(raw_tags or "", mask_code=True).strip()
-    extracted_tags, _ = TextRegexFilter.extract_image_prompt(
-        clean_tags,
-        strip_thoughts=False,
-        allow_markdown_fallback=True,
-    )
-    if not extracted_tags:
-        extracted_tags = clean_tags
 
-    parsed_flags = parse_image_prompt_flags(extracted_tags)
-    llm_style = parsed_flags.model_style or best_model_id
-    target_seed = resolve_seed_lock(user_query, session=session)
-    v_intent, is_self_portrait, _ = build_assistant_visual_intent(
-        raw_prompt=extracted_tags,
-        user_query=user_query,
-        effective_style=llm_style,
-        seed=target_seed,
-        session_id=session_id,
-        mode=mode,
-        fallback_prompt=extracted_tags,
-    )
+    parsed_json = parse_structured_art_response(clean_tags)
+    if parsed_json is not None:
+        sp = str(parsed_json.get("scene_prompt") or "").strip()
+        fp = parsed_json.get("face_prompt")
+        hp = parsed_json.get("hands_prompt")
+        neg = str(parsed_json.get("negative_prompt") or "").strip()
+        ar = parsed_json.get("aspect_ratio") or "portrait"
+        sug_model = parsed_json.get("suggested_model")
+        is_self_portrait = bool(parsed_json.get("is_self_portrait"))
+        if not is_self_portrait and user_query:
+            is_self_portrait = detect_elaria_self_portrait_intent(user_query=user_query, raw_prompt=sp, has_self_flag=False)
+
+        llm_style = resolve_effective_art_style(
+            parsed_model_style=sug_model,
+            selected_forge_checkpoint=selected_forge_checkpoint,
+        ) or sug_model or best_model_id
+        target_seed = resolve_seed_lock(user_query, session=session)
+        v_intent = VisualIntent(
+            prompt=sp,
+            face_prompt=fp,
+            hands_prompt=hp,
+            target_subject=TargetSubject.ELARIA if is_self_portrait else TargetSubject.SCENE_OBJECT,
+            user_neg=neg,
+            suggested_model=llm_style,
+            seed=target_seed,
+            aspect_ratio=ar,
+            session_id=session_id,
+            mode=mode,
+        )
+    else:
+        extracted_tags, _ = TextRegexFilter.extract_image_prompt(
+            clean_tags,
+            strip_thoughts=False,
+            allow_markdown_fallback=True,
+        )
+        if not extracted_tags:
+            extracted_tags = clean_tags
+
+        parsed_flags = parse_image_prompt_flags(extracted_tags)
+        llm_style = parsed_flags.model_style or best_model_id
+        target_seed = resolve_seed_lock(user_query, session=session)
+        v_intent, is_self_portrait, _ = build_assistant_visual_intent(
+            raw_prompt=extracted_tags,
+            user_query=user_query,
+            effective_style=llm_style,
+            seed=target_seed,
+            session_id=session_id,
+            mode=mode,
+            fallback_prompt=extracted_tags,
+        )
 
     ad = art_director or ArtDirector()
     return ad.plan_from_visual_intent(
@@ -679,7 +808,7 @@ def should_trigger_assistant_art(user_query: str) -> bool:
 
 class StreamArtTagFilter:
     """
-    Потоковый фильтр арт-тегов ([GALLERY], [IMAGE_PROMPT: ...]) с удержанием неполного префикса
+    Потоковый фильтр арт-тегов ([GALLERY], [IMAGE_PROMPT: ...], Structured JSON) с удержанием неполного префикса
     в скользящем окне и защитой примеров внутри открытого Markdown-кода.
     """
 
@@ -693,14 +822,31 @@ class StreamArtTagFilter:
 
     def __init__(self):
         self.buffer: str = ""
+        self.is_json_stream: bool = False
 
     def reset(self) -> None:
         self.buffer = ""
+        self.is_json_stream = False
 
     def process_buffer(self, buf: str, prior_text: str = "", force: bool = False) -> Tuple[str, bool]:
         """Фильтрует переданный буфер токенов, обновляя внутренний остаток self.buffer."""
         if not buf:
             return "", False
+
+        # Проверка на JSON-стрим арт-плана (удерживаем сырой JSON от бабла чата)
+        combined = (prior_text + buf).lstrip()
+        if combined.startswith("{") or self.is_json_stream:
+            self.is_json_stream = True
+            self.buffer = buf
+            if not force:
+                return "", True
+            else:
+                # Финализация (flush): извлекаем reply_ru из накопленного JSON
+                parsed = parse_structured_art_response(buf)
+                self.buffer = ""
+                if parsed and parsed.get("reply_ru"):
+                    return str(parsed["reply_ru"]).strip(), True
+                return "Секунду, перевожу образ в кадр...", True
 
         prior_in_fenced = (prior_text.count("```") % 2) == 1
         prior_last_line = prior_text.rsplit("\n", 1)[-1].replace("```", "")
@@ -822,9 +968,47 @@ def prepare_assistant_art_dispatch(
 ) -> Tuple[VisualIntent, Optional[str], bool, Optional[str]]:
     """
     Готовит VisualIntent, effective_style, is_self_portrait и target_char для однопроходного
-    режима Ассистента (Seed Lock + ModelRouter + --self Эларии).
+    режима Ассистента (Seed Lock + ModelRouter + --self Эларии + Structured JSON).
     """
     raw_prompt = (extracted_image_prompt or "").strip()
+
+    parsed_json = parse_structured_art_response(raw_prompt)
+    if parsed_json is not None:
+        sp = str(parsed_json.get("scene_prompt") or "").strip()
+        fp = parsed_json.get("face_prompt")
+        hp = parsed_json.get("hands_prompt")
+        neg = str(parsed_json.get("negative_prompt") or "").strip()
+        ar = parsed_json.get("aspect_ratio") or "portrait"
+        sug_model = parsed_json.get("suggested_model")
+        is_self = bool(parsed_json.get("is_self_portrait"))
+        if not is_self and user_query:
+            is_self = detect_elaria_self_portrait_intent(user_query=user_query, raw_prompt=sp, has_self_flag=False)
+
+        effective_style = resolve_effective_art_style(
+            parsed_model_style=sug_model,
+            selected_forge_checkpoint=selected_forge_checkpoint,
+        )
+        target_seed = resolve_seed_lock(
+            user_query=user_query,
+            last_art_meta=last_art_meta,
+            session=session,
+        )
+        resolved_sid = session_id or (session.get("id") if isinstance(session, dict) else None)
+        v_intent = VisualIntent(
+            prompt=sp,
+            face_prompt=fp,
+            hands_prompt=hp,
+            target_subject=TargetSubject.ELARIA if is_self else TargetSubject.SCENE_OBJECT,
+            user_neg=neg,
+            suggested_model=effective_style or sug_model,
+            seed=target_seed,
+            aspect_ratio=ar,
+            session_id=resolved_sid,
+            mode="assistant",
+        )
+        target_char = "Элария" if is_self else None
+        return v_intent, effective_style or sug_model, is_self, target_char
+
     parsed_flags = parse_image_prompt_flags(raw_prompt)
     effective_style = resolve_effective_art_style(
         parsed_model_style=parsed_flags.model_style,

@@ -164,6 +164,8 @@ def build_chat_context_and_params(
     if target_mode == AppMode.ASSISTANT and routed_skill in IMAGE_GENERATION_SKILLS:
         sampling_params["temperature"] = 0.4
         sampling_params["enable_thinking"] = False
+        from services.assistant_prompt_builder import ART_DIRECTOR_ASSISTANT_JSON_SCHEMA
+        sampling_params["response_format"] = ART_DIRECTOR_ASSISTANT_JSON_SCHEMA
 
     sampling_params["context_length"] = profile.get("context_length", 14336)
     sampling_params["is_roleplay"] = is_roleplay

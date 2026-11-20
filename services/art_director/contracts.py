@@ -48,6 +48,8 @@ class VisualIntent:
     scene_ambience: Optional[str] = None
     character_card: Optional[Any] = None
     status: str = "ready"
+    face_prompt: Optional[str] = None
+    hands_prompt: Optional[str] = None
 
     @property
     def is_self_portrait(self) -> bool:
@@ -61,6 +63,18 @@ class VisualIntent:
         if cc is not None and not isinstance(cc, dict):
             d["character_card"] = cc.to_dict() if hasattr(cc, "to_dict") else None
         return d
+
+    def __str__(self) -> str:
+        return self.prompt
+
+    def lower(self) -> str:
+        return self.prompt.lower()
+
+    def startswith(self, prefix: Union[str, tuple], *args) -> bool:
+        return self.prompt.startswith(prefix, *args)
+
+    def __contains__(self, item: str) -> bool:
+        return item in self.prompt
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
@@ -94,6 +108,13 @@ class VisualIntent:
         if raw_scene_type not in ("intimate", "action", "dialogue", "exploration"):
             raw_scene_type = "dialogue"
 
+        # Извлечение раздельных промптов слотов ADetailer
+        raw_face = data.get("face_prompt")
+        face_prompt = str(raw_face).strip() if raw_face is not None else None
+
+        raw_hands = data.get("hands_prompt")
+        hands_prompt = str(raw_hands).strip() if raw_hands is not None else None
+
         return cls(
             prompt=str(data.get("prompt") or "").strip(),
             target_subject=subject,
@@ -112,5 +133,7 @@ class VisualIntent:
             is_scene_background=bool(data.get("is_scene_background", False)),
             location_dna=data.get("location_dna"),
             scene_ambience=data.get("scene_ambience"),
-            status=str(data.get("status", "ready"))
+            status=str(data.get("status", "ready")),
+            face_prompt=face_prompt,
+            hands_prompt=hands_prompt,
         )

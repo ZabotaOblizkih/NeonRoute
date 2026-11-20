@@ -293,3 +293,145 @@ def test_adetailer_dialog_no_prompt_fields_and_passthrough(qapp, isolated_storag
     assert "detailed hand, realistic fingers" not in hand_slot["ad_prompt"]
     assert "woman, girl, body" not in hand_slot["ad_negative_prompt"]
 
+
+def test_generation_plan_separate_slots_and_skip():
+    """Проверка GenerationPlan.to_forge_kwargs() с раздельными ad_prompt и adetailer_hands_prompt (включая [SKIP])."""
+    # 1. Обычные раздельные промпты лица и рук
+    plan = GenerationPlan(
+        prompt="beautiful girl sitting in cafe",
+        positive_prompt="beautiful girl sitting in cafe",
+        negative_prompt="ugly, bad anatomy",
+        enable_adetailer=True,
+        adetailer_hands_enabled=True,
+        ad_prompt="face closeup, green eyes, smiling",
+        ad_negative_prompt="bad face, ugly eyes",
+        adetailer_hands_prompt="delicate fingers, holding cup",
+        adetailer_hands_negative_prompt="bad hands, extra fingers",
+    )
+    kwargs = plan.to_forge_kwargs()
+    ad_args = kwargs["alwayson_scripts"]["ADetailer"]["args"]
+    assert len(ad_args) == 4
+    face_slot = ad_args[2]
+    hand_slot = ad_args[3]
+
+    assert face_slot["ad_prompt"] == "face closeup, green eyes, smiling"
+    assert face_slot["ad_negative_prompt"] == "bad face, ugly eyes"
+    assert face_slot["ad_model"] != "None"
+
+    assert hand_slot["ad_prompt"] == "delicate fingers, holding cup"
+    assert hand_slot["ad_negative_prompt"] == "bad hands, extra fingers"
+    assert hand_slot["ad_model"] != "None"
+
+    # 2. Проверка режима [SKIP] (отключение инпейнта конкретного слота)
+    plan_skip = GenerationPlan(
+        prompt="landscape with robot back view",
+        enable_adetailer=True,
+        adetailer_hands_enabled=True,
+        ad_prompt="[SKIP]",
+        adetailer_hands_prompt="[SKIP]",
+    )
+    kwargs_skip = plan_skip.to_forge_kwargs()
+    args_skip = kwargs_skip["alwayson_scripts"]["ADetailer"]["args"]
+    face_skip = args_skip[2]
+    hand_skip = args_skip[3]
+
+    assert face_skip["ad_prompt"] == "[SKIP]"
+    assert face_skip["ad_model"] == "None"
+    assert hand_skip["ad_prompt"] == "[SKIP]"
+    assert hand_skip["ad_model"] == "None"
+
+
+def test_art_director_plan_from_visual_intent_face_and_hands_isolation(isolated_storage):
+    """
+    Проверка ArtDirector.plan_from_visual_intent() с VisualIntent(prompt=..., face_prompt=..., hands_prompt=...):
+    убедиться, что ELARIA_VISUAL_DNA попадает в plan.ad_prompt, но НЕ попадает в plan.adetailer_hands_prompt,
+    а ручной override из профиля модели имеет наивысший приоритет.
+    """
+    from services.art_director.contracts import VisualIntent, TargetSubject
+    from services.art_director import ELARIA_VISUAL_DNA
+
+    ad = ArtDirector()
+    profiles = load_art_director_models()
+    model_id = profiles[0]["id"]
+
+    # 1. Проверка изоляции: ELARIA_VISUAL_DNA в лице, но не в руках
+    intent = VisualIntent(
+        prompt="1girl, walking in neon street",
+        face_prompt="gentle smile, bright violet eyes, soft pale skin",
+        hands_prompt="hands in leather gloves, holding umbrella",
+        target_subject=TargetSubject.ELARIA,
+        aspect_ratio="portrait",
+        suggested_model=model_id,
+        mode="assistant",
+    )
+
+    plan = ad.plan_from_visual_intent(visual_intent=intent, preferred_style=model_id, mode="assistant")
+
+    assert ELARIA_VISUAL_DNA in plan.ad_prompt
+    assert "gentle smile" in plan.ad_prompt
+    assert ELARIA_VISUAL_DNA not in plan.adetailer_hands_prompt
+    assert "leather gloves" in plan.adetailer_hands_prompt
+    assert "gentle smile" not in plan.adetailer_hands_prompt
+
+    # 2. Проверка ручного override из профиля модели
+    profiles[0]["pipeline"]["adetailer_hands_prompt"] = "tactical gloves, cybernetic fingers"
+    profiles[0]["pipeline"]["adetailer_hands_negative_prompt"] = "bare hands, organic fingers"
+    save_art_director_models(profiles)
+    ad.reload_models()
+
+    plan_override = ad.plan_from_visual_intent(visual_intent=intent, preferred_style=model_id, mode="assistant")
+    assert plan_override.adetailer_hands_prompt == "tactical gloves, cybernetic fingers"
+    assert plan_override.adetailer_hands_negative_prompt == "tactical gloves, cybernetic fingers" or "organic fingers" in plan_override.adetailer_hands_negative_prompt
+
+
+def test_stream_filter_and_sanitize_structured_art_response():
+    """
+    Проверка StreamArtTagFilter и sanitize_assistant_art_and_markdown() на JSON-ответе арт-директора:
+    в UI уходит reply_ru, а VisualIntent получает все 3 слоя и правильный aspect_ratio.
+    """
+    from services.assistant_flow import StreamArtTagFilter, sanitize_assistant_art_and_markdown, prepare_assistant_art_dispatch
+
+    json_payload = {
+        "reply_ru": "Секунду, перевожу образ в кадр...",
+        "scene_prompt": "1girl, cyberpunk hacker, glowing wires, dark server room, neon cyan rim light",
+        "face_prompt": "focused expression, glowing neon eyes, pale skin, wet hair strands",
+        "hands_prompt": "typing fingers, cybernetic fingertips, glowing keyboard reflection",
+        "negative_prompt": "blurry, low quality",
+        "aspect_ratio": "cinematic",
+        "suggested_model": "realistic",
+        "is_self_portrait": True
+    }
+    raw_json_str = json.dumps(json_payload, ensure_ascii=False)
+
+    # 1. StreamArtTagFilter: во время стриминга сырой JSON удерживается
+    stream_filter = StreamArtTagFilter()
+    chunk1, has_trigger1 = stream_filter.feed('{\n  "reply_ru": "Секунду, ')
+    assert chunk1 == ""
+    assert has_trigger1 is True
+
+    chunk2, has_trigger2 = stream_filter.feed('перевожу образ в кадр..."\n}')
+    assert chunk2 == ""
+    assert has_trigger2 is True
+
+    # При flush извлекается reply_ru
+    flushed_text, has_trigger_flush = stream_filter.flush()
+    assert flushed_text == "Секунду, перевожу образ в кадр..."
+    assert has_trigger_flush is True
+
+    # 2. sanitize_assistant_art_and_markdown
+    clean_text, has_gallery, extracted_prompt = sanitize_assistant_art_and_markdown(raw_json_str, user_requested_art=True)
+    assert clean_text == "Секунду, перевожу образ в кадр..."
+    assert has_gallery is True
+    assert extracted_prompt is not None
+    assert "cyberpunk hacker" in extracted_prompt
+
+    # 3. prepare_assistant_art_dispatch -> VisualIntent
+    v_intent, style, is_self, target_char = prepare_assistant_art_dispatch(extracted_prompt)
+    assert v_intent.prompt == "1girl, cyberpunk hacker, glowing wires, dark server room, neon cyan rim light"
+    assert v_intent.face_prompt == "focused expression, glowing neon eyes, pale skin, wet hair strands"
+    assert v_intent.hands_prompt == "typing fingers, cybernetic fingertips, glowing keyboard reflection"
+    assert v_intent.aspect_ratio == "cinematic"
+    assert is_self is True
+    assert target_char == "Элария"
+
+

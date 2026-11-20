@@ -151,8 +151,10 @@ class GenerationPlan:
             "enable_adetailer": self.enable_adetailer,
             "enable_hand_adetailer": getattr(self, "adetailer_hands_enabled", False),
             "ad_denoising_strength": getattr(self, "adetailer_face_denoise", 0.32),
-            "ad_prompt": self.prompt or self.positive_prompt or "",
-            "ad_negative_prompt": self.negative_prompt or "",
+            "ad_prompt": self.ad_prompt if self.ad_prompt is not None else (self.prompt or self.positive_prompt or ""),
+            "ad_negative_prompt": self.ad_negative_prompt if self.ad_negative_prompt is not None else (self.negative_prompt or ""),
+            "adetailer_hands_prompt": self.adetailer_hands_prompt,
+            "adetailer_hands_negative_prompt": self.adetailer_hands_negative_prompt,
             "ad_mask_blur": self.ad_mask_blur,
             "output_dir": output_dir,
             "session_id": session_id
@@ -172,8 +174,11 @@ class GenerationPlan:
             ad_face_steps = max(12, math.ceil(target_eff_steps / max(0.15, face_denoise)))
             ad_hand_steps = max(14, math.ceil(target_eff_steps / max(0.15, hand_denoise)))
 
-            shared_ad_prompt = self.prompt or self.positive_prompt or ""
-            shared_ad_negative = self.negative_prompt or ""
+            face_ad_prompt = self.ad_prompt if self.ad_prompt is not None else (self.prompt or self.positive_prompt or "")
+            face_ad_negative = self.ad_negative_prompt if self.ad_negative_prompt is not None else (self.negative_prompt or "")
+
+            hand_ad_prompt = self.adetailer_hands_prompt if self.adetailer_hands_prompt is not None else face_ad_prompt
+            hand_ad_negative = self.adetailer_hands_negative_prompt if self.adetailer_hands_negative_prompt is not None else face_ad_negative
 
             face_model_name = getattr(self, "adetailer_face_model", "face_yolov8m.pt")
             face_inpaint_sz = int(
@@ -181,9 +186,9 @@ class GenerationPlan:
                 or getattr(self, "adetailer_inpaint_size", 512)
             )
             face_slot = {
-                "ad_model": face_model_name,
-                "ad_prompt": shared_ad_prompt,
-                "ad_negative_prompt": shared_ad_negative,
+                "ad_model": "None" if face_ad_prompt == "[SKIP]" else face_model_name,
+                "ad_prompt": face_ad_prompt,
+                "ad_negative_prompt": face_ad_negative,
                 "ad_confidence": getattr(self, "adetailer_face_confidence", 0.44),
                 "ad_denoising_strength": face_denoise,
                 "ad_use_steps": True,
@@ -202,9 +207,9 @@ class GenerationPlan:
             hand_model_name = getattr(self, "adetailer_hands_model", "hand_yolov9c.pt")
             hand_sz = getattr(self, "adetailer_hands_inpaint_size", 512)
             hand_slot = {
-                "ad_model": hand_model_name,
-                "ad_prompt": shared_ad_prompt,
-                "ad_negative_prompt": shared_ad_negative,
+                "ad_model": "None" if hand_ad_prompt == "[SKIP]" else hand_model_name,
+                "ad_prompt": hand_ad_prompt,
+                "ad_negative_prompt": hand_ad_negative,
                 "ad_confidence": getattr(self, "adetailer_hands_confidence", 0.38),
                 "ad_denoising_strength": hand_denoise,
                 "ad_use_steps": True,

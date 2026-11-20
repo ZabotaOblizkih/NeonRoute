@@ -600,7 +600,7 @@ class RoleplayFlowControllerMixin:
         )
         self._on_scene_visual_intent_ready(session_id, v_intent)
 
-    def _generate_ephemeral_rp_art_prompt(self, sess_id: Optional[str], last_assistant_message: str, target_model_id: Optional[str] = None) -> str:
+    def _generate_ephemeral_rp_art_prompt(self, sess_id: Optional[str], last_assistant_message: str, target_model_id: Optional[str] = None) -> Any:
         """
         Формирует изолированный английский промпт для SD через кинематографические архетипы сцены.
         Исключает передачу оружия и подставляет nude в интимных сценах.
@@ -747,6 +747,10 @@ class RoleplayFlowControllerMixin:
             explicit_override=False
         )
 
+        from services.assistant_prompt_builder import ART_DIRECTOR_RP_SCENE_JSON_SCHEMA
+        from services.assistant_flow import parse_structured_art_response
+        from services.art_director import VisualIntent, TargetSubject
+
         try:
             raw_response = self.lm_client.chat_completion(
                 messages=temp_messages,
@@ -760,6 +764,7 @@ class RoleplayFlowControllerMixin:
                 enable_thinking=eff_thinking,
                 cache_prompt=False,
                 id_slot=None,
+                response_format=ART_DIRECTOR_RP_SCENE_JSON_SCHEMA,
             )
             raw_text = raw_response if isinstance(raw_response, str) else str(raw_response or "")
         except Exception as e:
@@ -769,6 +774,27 @@ class RoleplayFlowControllerMixin:
         logger.info(f"\n[RoleplayFlow.CinemaPrompt] <<< СЫРОЙ ВЫХОД LLM:\n{raw_text}\n")
 
         raw_text_clean = TextRegexFilter.strip_thought_blocks(raw_text, mask_code=True).strip()
+        parsed_json = parse_structured_art_response(raw_text_clean)
+        if parsed_json is not None:
+            sp = str(parsed_json.get("scene_prompt") or "").strip()
+            fp = parsed_json.get("face_prompt")
+            hp = parsed_json.get("hands_prompt")
+            ar = parsed_json.get("aspect_ratio") or "portrait"
+            sug_model = parsed_json.get("suggested_model") or clean_target_style
+            v_intent = VisualIntent(
+                prompt=sp,
+                face_prompt=fp,
+                hands_prompt=hp,
+                aspect_ratio=ar,
+                scene_type=scene_type,
+                suggested_model=sug_model,
+                target_subject=TargetSubject.COMPANION,
+                session_id=sess_id,
+                mode="roleplay",
+            )
+            logger.info(f"[RoleplayFlow.CinemaPrompt] Сформирован VisualIntent: prompt='{sp[:60]}', ar='{ar}'")
+            return v_intent
+
         extracted_prompt, _ = TextRegexFilter.extract_image_prompt(
             raw_text_clean,
             strip_thoughts=False,

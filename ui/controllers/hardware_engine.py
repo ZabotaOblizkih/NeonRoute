@@ -867,9 +867,10 @@ class HardwareEngineMixin:
 
     def _scene_art_pipeline(
         self,
-        v_payload: Optional[Dict[str, Any]] = None,
+        v_payload: Optional[Any] = None,
         scene_text: Optional[str] = None,
-        ckpt: Optional[str] = None
+        ckpt: Optional[str] = None,
+        widget: Optional[Any] = None,
     ) -> Dict[str, Any]:
         if not self._is_forge_available():
             self._notify_forge_offline("генерации арта сцены")
@@ -882,16 +883,26 @@ class HardwareEngineMixin:
         sess_id = self.current_session.get("id") if getattr(self, "current_session", None) else None
 
         from services.assistant_flow import run_forge_art_generation
+        from services.art_director.contracts import VisualIntent
 
         raw_prompt = scene_text or ""
         lm_for_plan = self.lm_client if hasattr(self, "lm_client") else None
         if captured_mode in ("roleplay", "rp") and not v_payload:
-            raw_prompt = self._generate_ephemeral_rp_art_prompt(
+            rp_res = self._generate_ephemeral_rp_art_prompt(
                 sess_id=sess_id,
                 last_assistant_message=scene_text or "",
                 target_model_id=ckpt or "realistic",
             )
             lm_for_plan = None
+            if isinstance(rp_res, VisualIntent):
+                v_payload = rp_res
+                raw_prompt = rp_res.prompt
+                if widget is not None:
+                    widget.visual_intent = rp_res
+                    if hasattr(widget, "show_art_loading_placeholder"):
+                        widget.show_art_loading_placeholder(aspect_ratio=rp_res.aspect_ratio, prompt=rp_res.prompt)
+            else:
+                raw_prompt = rp_res
 
         if not v_payload and not (raw_prompt or "").strip():
             logger.warning("[SceneArt] Генерация отменена: не удалось сформировать визуальный промпт сцены (пустой результат LLM).")
@@ -961,6 +972,12 @@ class HardwareEngineMixin:
         if widget and hasattr(widget, "set_scene_art_busy"):
             widget.set_scene_art_busy(True, "⏳ Генерация...")
 
+        from services.art_director.contracts import VisualIntent
+        if isinstance(v_intent, VisualIntent) and widget is not None:
+            widget.visual_intent = v_intent
+            if hasattr(widget, "show_art_loading_placeholder"):
+                widget.show_art_loading_placeholder(aspect_ratio=v_intent.aspect_ratio, prompt=v_intent.prompt)
+
         task = InferenceTask(
             name="🎨 Иллюстрация сцены",
             task_type="scene_art",
@@ -968,7 +985,8 @@ class HardwareEngineMixin:
             kwargs={
                 "v_payload": v_intent,
                 "scene_text": raw_scene_text,
-                "ckpt": active_pref_style
+                "ckpt": active_pref_style,
+                "widget": widget,
             },
             abort_fn=self.forge_client.interrupt if hasattr(self, "forge_client") and self.forge_client else None,
             metadata={
