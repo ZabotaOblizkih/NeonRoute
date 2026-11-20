@@ -831,34 +831,127 @@ class StreamArtTagFilter:
         r'\[(?:i(?:m(?:g|a(?:g(?:e)?)?)?)?|(?:image|img)[\s_-]?[^\]]*)$',
         re.IGNORECASE,
     )
+    RE_REPLY_RU_KEY = re.compile(r'["\']reply_ru["\']\s*:\s*["\']')
 
     def __init__(self):
         self.buffer: str = ""
-        self.is_json_stream: bool = False
+        self._json_mode: bool = False
+        self._json_reply_emitted: int = 0
+        self._json_reply_closed: bool = False
+
+    @property
+    def is_json_stream(self) -> bool:
+        return self._json_mode
+
+    @is_json_stream.setter
+    def is_json_stream(self, val: bool) -> None:
+        self._json_mode = bool(val)
 
     def reset(self) -> None:
         self.buffer = ""
-        self.is_json_stream = False
+        self._json_mode = False
+        self._json_reply_emitted = 0
+        self._json_reply_closed = False
 
     def process_buffer(self, buf: str, prior_text: str = "", force: bool = False) -> Tuple[str, bool]:
         """Фильтрует переданный буфер токенов, обновляя внутренний остаток self.buffer."""
         if not buf:
             return "", False
 
-        # Проверка на JSON-стрим арт-плана (удерживаем сырой JSON от бабла чата)
-        combined = (prior_text + buf).lstrip()
-        if combined.startswith("{") or self.is_json_stream:
-            self.is_json_stream = True
-            self.buffer = buf
-            if not force:
+        # Проверка на JSON-стрим арт-плана (потоковое инкрементальное извлечение reply_ru)
+        buf_lstrip = buf.lstrip()
+        stripped_comb = (prior_text + buf).lstrip()
+        for prefix in ("```json", "```"):
+            if buf_lstrip.startswith(prefix):
+                buf_lstrip = buf_lstrip[len(prefix):].lstrip()
+            if stripped_comb.startswith(prefix):
+                stripped_comb = stripped_comb[len(prefix):].lstrip()
+
+        if buf_lstrip.startswith("{") or stripped_comb.startswith("{") or self._json_mode:
+            self._json_mode = True
+            self.buffer = buf if not force else ""
+
+            if self._json_reply_closed:
                 return "", True
+
+            decoded = ""
+            match = self.RE_REPLY_RU_KEY.search(buf)
+            if match:
+                quote_char = match.group(0)[-1]
+                val_start = match.end()
+                raw_chars = []
+                i = val_start
+                closed = False
+                while i < len(buf):
+                    ch = buf[i]
+                    if ch == '\\':
+                        if i + 1 < len(buf):
+                            next_ch = buf[i + 1]
+                            if next_ch == quote_char:
+                                raw_chars.append(quote_char)
+                                i += 2
+                            elif next_ch == '\\':
+                                raw_chars.append('\\')
+                                i += 2
+                            elif next_ch == '/':
+                                raw_chars.append('/')
+                                i += 2
+                            elif next_ch == 'b':
+                                raw_chars.append('\b')
+                                i += 2
+                            elif next_ch == 'f':
+                                raw_chars.append('\f')
+                                i += 2
+                            elif next_ch == 'n':
+                                raw_chars.append('\n')
+                                i += 2
+                            elif next_ch == 'r':
+                                raw_chars.append('\r')
+                                i += 2
+                            elif next_ch == 't':
+                                raw_chars.append('\t')
+                                i += 2
+                            elif next_ch == 'u':
+                                if i + 5 < len(buf):
+                                    hex_str = buf[i + 2:i + 6]
+                                    try:
+                                        raw_chars.append(chr(int(hex_str, 16)))
+                                        i += 6
+                                    except ValueError:
+                                        break
+                                else:
+                                    break
+                            else:
+                                raw_chars.append(next_ch)
+                                i += 2
+                        else:
+                            break
+                    elif ch == quote_char:
+                        closed = True
+                        break
+                    else:
+                        raw_chars.append(ch)
+                        i += 1
+
+                if closed:
+                    self._json_reply_closed = True
+                decoded = "".join(raw_chars)
+
+            new_piece = ""
+            if len(decoded) > self._json_reply_emitted:
+                new_piece = decoded[self._json_reply_emitted:]
+                self._json_reply_emitted = len(decoded)
+
+            if not force:
+                return new_piece, True
             else:
-                # Финализация (flush): извлекаем reply_ru из накопленного JSON
-                parsed = parse_structured_art_response(buf)
-                self.buffer = ""
-                if parsed and parsed.get("reply_ru"):
-                    return str(parsed["reply_ru"]).strip(), True
-                return "Секунду, перевожу образ в кадр...", True
+                if self._json_reply_emitted == 0 and not new_piece:
+                    parsed = parse_structured_art_response(buf)
+                    if parsed and parsed.get("reply_ru"):
+                        new_piece = str(parsed["reply_ru"]).strip()
+                    else:
+                        new_piece = "Секунду, перевожу образ в кадр..."
+                return new_piece, True
 
         prior_in_fenced = (prior_text.count("```") % 2) == 1
         prior_last_line = prior_text.rsplit("\n", 1)[-1].replace("```", "")

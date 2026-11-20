@@ -1027,11 +1027,13 @@ class AssistantFlowControllerMixin:
         v_intent = None
         if extracted_image_prompt:
             from services.assistant_flow import prepare_assistant_art_dispatch
+            curr_sess = getattr(self, "current_session", None)
+            curr_sess_id = curr_sess.get("id") if isinstance(curr_sess, dict) else None
             v_intent, _, _, _ = prepare_assistant_art_dispatch(
                 extracted_image_prompt=extracted_image_prompt,
                 user_query=getattr(self, "_current_user_request", ""),
                 selected_forge_checkpoint=getattr(self, "selected_forge_checkpoint", None),
-                session=self.current_session,
+                session=curr_sess,
                 session_id=curr_sess_id,
             )
 

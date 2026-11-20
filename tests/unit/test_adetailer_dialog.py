@@ -403,20 +403,21 @@ def test_stream_filter_and_sanitize_structured_art_response():
     }
     raw_json_str = json.dumps(json_payload, ensure_ascii=False)
 
-    # 1. StreamArtTagFilter: во время стриминга сырой JSON удерживается
+    # 1. StreamArtTagFilter: во время стриминга reply_ru извлекается инкрементально
     stream_filter = StreamArtTagFilter()
     chunk1, has_trigger1 = stream_filter.feed('{\n  "reply_ru": "Секунду, ')
-    assert chunk1 == ""
+    assert chunk1 == "Секунду, "
     assert has_trigger1 is True
 
     chunk2, has_trigger2 = stream_filter.feed('перевожу образ в кадр..."\n}')
-    assert chunk2 == ""
+    assert chunk2 == "перевожу образ в кадр..."
     assert has_trigger2 is True
 
-    # При flush извлекается reply_ru
+    # При flush остаток пуст, так как фраза уже полностью передана потоком
     flushed_text, has_trigger_flush = stream_filter.flush()
-    assert flushed_text == "Секунду, перевожу образ в кадр..."
+    assert flushed_text == ""
     assert has_trigger_flush is True
+    assert (chunk1 + chunk2 + flushed_text) == "Секунду, перевожу образ в кадр..."
 
     # 2. sanitize_assistant_art_and_markdown
     clean_text, has_gallery, extracted_prompt = sanitize_assistant_art_and_markdown(raw_json_str, user_requested_art=True)
@@ -433,6 +434,38 @@ def test_stream_filter_and_sanitize_structured_art_response():
     assert v_intent.aspect_ratio == "cinematic"
     assert is_self is True
     assert target_char == "Элария"
+
+
+def test_stream_filter_incremental_json_reply():
+    """
+    Эмулирует посимвольную подачу JSON {"reply_ru": "Привет, рисую!", "scene_prompt": "1girl"}
+    в StreamArtTagFilter.feed() и проверяет, что "Привет, рисую!" отдается по частям до вызова flush(),
+    а "scene_prompt" никогда не попадает в выходной поток.
+    """
+    from services.assistant_flow import StreamArtTagFilter
+
+    full_json = '{\n  "reply_ru": "Привет, рисую!",\n  "scene_prompt": "1girl, cyberpunk"\n}'
+    flt = StreamArtTagFilter()
+
+    emitted_chunks = []
+
+    for char in full_json:
+        chunk, trig = flt.feed(char)
+        if chunk:
+            emitted_chunks.append(chunk)
+
+    # Проверяем, что ответ собран во время feed() еще до вызова flush()
+    streamed_reply = "".join(emitted_chunks)
+    assert streamed_reply == "Привет, рисую!"
+    assert len(emitted_chunks) > 1  # Отдавалось инкрементально по частям
+    assert "scene_prompt" not in streamed_reply
+    assert "1girl" not in streamed_reply
+
+    # При flush() буфер сброшен и больше ничего не отдается
+    flush_chunk, flush_trig = flt.flush()
+    assert flush_chunk == ""
+    assert flush_trig is True
+    assert flt.buffer == ""
 
 
 def test_adetailer_diagnostic_logging(caplog):
