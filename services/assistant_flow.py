@@ -685,9 +685,9 @@ class StreamArtTagFilter:
 
     RE_GALLERY_FULL = RE_GALLERY_TRIGGER
     RE_GALLERY_PREFIX = re.compile(r'\[(?:[gGгГ][a-zA-Zа-яА-ЯёЁ]{0,9})?$', re.IGNORECASE)
-    RE_IMAGE_FULL = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*[^\s\]][^\]]*\]', re.IGNORECASE)
+    RE_IMAGE_FULL = re.compile(rf'\[{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN}:\s*[^\s\]][^\]]*\]', re.IGNORECASE)
     RE_IMAGE_PREFIX = re.compile(
-        r'\[(?:i(?:m(?:g|a(?:g(?:e)?)?)?)?|(?:image|img)[\s_-][^\]]*)$',
+        r'\[(?:i(?:m(?:g|a(?:g(?:e)?)?)?)?|(?:image|img)[\s_-]?[^\]]*)$',
         re.IGNORECASE,
     )
 

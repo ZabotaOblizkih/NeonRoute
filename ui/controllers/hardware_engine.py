@@ -893,6 +893,10 @@ class HardwareEngineMixin:
             )
             lm_for_plan = None
 
+        if not v_payload and not (raw_prompt or "").strip():
+            logger.warning("[SceneArt] Генерация отменена: не удалось сформировать визуальный промпт сцены (пустой результат LLM).")
+            return {"image_path": None, "plan": None, "checkpoint": None, "error": "Не удалось сформировать описание сцены"}
+
         try:
             gen_res = run_forge_art_generation(
                 forge_client=self.forge_client,

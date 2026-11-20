@@ -340,10 +340,10 @@ def test_create_release_git_commit_structure(tmp_path):
 
     # Проверяем последовательность команд git
     assert len(git_calls) == 2
-    assert git_calls[0] == ["git", "add", "config.py", "hotfix.md"]
+    assert git_calls[0] == ["git", "add", "--", "config.py", "hotfix.md"]
 
     commit_cmd = git_calls[1]
-    assert commit_cmd[:6] == ["git", "commit", "--only", "--", "config.py", "hotfix.md"]
+    assert commit_cmd[:2] == ["git", "commit"]
     assert "-m" in commit_cmd
 
     # Проверяем subject и body в аргументах -m

@@ -20,6 +20,7 @@ from services.rp_cast_manager import RPCastManager
 from services.user_profile_manager import UserProfileManager
 from services.engineer_prompts import get_engineer_system_prompt
 from services.macro_engine import MacroEngine
+from services.regex_filter import TextRegexFilter
 
 logger = logging.getLogger("NeonRoute.ContextWindowBuilder")
 
@@ -71,7 +72,7 @@ class ContextWindowBuilder:
         for m in history:
             raw_c = m.get("content") if m.get("content") is not None else m.get("text", "")
             text = str(raw_c or "")
-            if text.startswith("[Системный") or re.match(r'^\[IMAGE[\s_-]PROMPT:', text, re.IGNORECASE):
+            if text.startswith("[Системный") or re.match(rf'^\[{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN}:', text, re.IGNORECASE):
                 continue
             sentences = re.split(r'[.!?\n]+', text)
             for s in sentences:
@@ -628,7 +629,7 @@ class ContextWindowBuilder:
             if m.get("role") == "user":
                 c = m.get("content")
                 if isinstance(c, str):
-                    clean_c = re.sub(r'\[IMAGE[\s_-]PROMPT:[^\]]+\]', '', c, flags=re.IGNORECASE).strip()
+                    clean_c = TextRegexFilter.strip_image_tags(c)
                     if clean_c.startswith("[Системный") or clean_c.startswith("[Tool"):
                         break
                     if clean_c.lower().startswith(("нарисуй", "покажи", "сгенерируй", "!art", "!арт")):

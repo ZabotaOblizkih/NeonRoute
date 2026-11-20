@@ -560,18 +560,28 @@ class RoleplayPromptBuilder:
         return MacroEngine.process(assembled_prompt, user_name=u_name, char_name=companion_name)
 
     @staticmethod
-    def get_cinematic_scene_directive(scene_type: str = "dialogue", target_model_id: str = "realistic", architecture: str = "sd15") -> str:
+    def get_cinematic_scene_directive(
+        scene_type: str = "dialogue",
+        target_model_id: str = "realistic",
+        architecture: str = "sd15",
+        model_hint: str = ""
+    ) -> str:
         """Возвращает кинематографическую инструкцию для генератора SD по 4 архетипам."""
         st = (scene_type or "dialogue").lower().strip()
         if st not in CINEMATIC_DIRECTIVE_HEADERS:
             st = "dialogue"
 
-        is_xl = "xl" in (architecture or "sd15").lower()
-        arch_key = "sdxl" if is_xl else "sd15"
-        format_rules = SDXL_FORMAT_RULES if is_xl else SD15_FORMAT_RULES
+        from services.assistant_prompt_builder import resolve_prompt_dialect
+        dialect = resolve_prompt_dialect(architecture, model_hint)
+        arch_key = "sd15" if dialect == "tags" else "sdxl"
+        format_rules = SD15_FORMAT_RULES if dialect == "tags" else SDXL_FORMAT_RULES
 
         ex_prompt = CINEMA_EXAMPLES[arch_key].get(st, CINEMA_EXAMPLES[arch_key]["dialogue"])
         scene_ar = "--ar wide" if st in ("action", "exploration") else "--ar portrait"
+
+        style_block = ""
+        if model_hint and str(model_hint).strip():
+            style_block = f"\nSTYLE GUIDANCE (adapt your tags/descriptors to match this aesthetic; DO NOT copy verbatim): {str(model_hint).strip()}\n"
 
         footer = (
             f"\n\nOutput Format:\n"
@@ -582,4 +592,4 @@ class RoleplayPromptBuilder:
             f"[IMAGE_PROMPT: {ex_prompt} {scene_ar} --model {target_model_id}]"
         )
 
-        return CINEMATIC_DIRECTIVE_HEADERS[st] + format_rules + footer
+        return CINEMATIC_DIRECTIVE_HEADERS[st] + style_block + format_rules + footer

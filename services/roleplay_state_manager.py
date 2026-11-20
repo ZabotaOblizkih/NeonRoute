@@ -7,6 +7,7 @@ import re
 import ast
 from typing import Dict, Any, List, Optional
 from services.rp_cast_manager import RPCastManager
+from services.regex_filter import TextRegexFilter
 
 
 class RoleplayStateManager:
@@ -123,7 +124,7 @@ class RoleplayStateManager:
         # ВАЖНО: теги <stats>, <thought>, <meters>, <choices>, <check>, <terminal> НЕ УДАЛЯЮТСЯ!
         # Их парсит и превращает в красивые виджеты ui/components/rp/rp_chat_bubble.py (RPGContentParser).
         cleaned = re.sub(
-            r'\[(?:СЦЕНА|SCENE|СТАТУС|STATUS|ШРАМ|SCAR|КВЕСТ|QUEST|ВЕХА|MILESTONE|IMAGE_PROMPT)[:\s]+[^\]\n]+\]',
+            rf'\[(?:СЦЕНА|SCENE|СТАТУС|STATUS|ШРАМ|SCAR|КВЕСТ|QUEST|ВЕХА|MILESTONE|{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN})[:\s]+[^\]\n]+\]',
             '',
             response_text,
             flags=re.IGNORECASE

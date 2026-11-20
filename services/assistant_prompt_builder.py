@@ -5,6 +5,7 @@ LanceDB passive memory, dynamic micro-skills, and document specifications.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Union
 
@@ -372,6 +373,36 @@ def resolve_model_architecture(model_identifier: str = "", profile: Optional[Dic
         return "sdxl"
     return "sd15"
 
+def resolve_prompt_dialect(architecture: str, routing_description: str = "") -> str:
+    r"""
+    Определяет диалект арт-промпта ('tags' vs 'phrases') по архитектуре и описанию модели.
+    - Возвращает 'tags', если architecture == 'sd15'.
+    - Для остальных архитектур разбивает routing_description на фрагменты по [.;!\n]+,
+      отфильтровывает фрагменты, содержащие запреты (\b(?:avoid|never\s+use|do\s+not\s+use|don't\s+use)\b или \bне\s+использ\w*\b),
+      и ищет маркеры \b(?:danbooru|e621|booru|1girl|1boy)\b только в оставшихся позитивных фрагментах.
+      При совпадении возвращает 'tags', иначе — 'phrases'.
+    """
+    arch_norm = (architecture or "").lower().strip()
+    if arch_norm == "sd15" or arch_norm == "1.5":
+        return "tags"
+
+    raw_desc = str(routing_description or "")
+    fragments = re.split(r'[.;!\n]+', raw_desc)
+    prohibition_pattern = re.compile(
+        r'\b(?:avoid|never\s+use|do\s+not\s+use|don\'t\s+use)\b|\bне\s+использ\w*\b',
+        re.IGNORECASE
+    )
+    marker_pattern = re.compile(
+        r'\b(?:danbooru|e621|booru|1girl|1boy)\b',
+        re.IGNORECASE
+    )
+
+    positive_fragments = [frag for frag in fragments if not prohibition_pattern.search(frag)]
+    for frag in positive_fragments:
+        if marker_pattern.search(frag):
+            return "tags"
+    return "phrases"
+
 def get_art_directive(
     skill_name: str = "gallery",
     architecture: str = "sd15",
@@ -380,7 +411,9 @@ def get_art_directive(
 ) -> str:
     """Возвращает директиву генерации (gallery или cinematic) под целевую архитектуру модели."""
     table = CINEMATIC_DIRECTIVES_BY_ARCH if skill_name == "cinematic" else GALLERY_DIRECTIVES_BY_ARCH
-    template = table.get(architecture, table["sd15"])
+    dialect = resolve_prompt_dialect(architecture, model_hint)
+    arch_key = "sd15" if dialect == "tags" else "sdxl"
+    template = table.get(arch_key, table["sd15"])
     return template.format(model_hint=model_hint, target_model_id=target_model_id)
 
 def get_gallery_directive(architecture: str = "sd15", model_hint: str = "", target_model_id: str = "") -> str:

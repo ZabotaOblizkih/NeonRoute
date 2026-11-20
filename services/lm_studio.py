@@ -637,8 +637,11 @@ class LMStudioClient(QObject):
         }
 
         # Принудительная привязка к слоту 0 для встроенного llama-server
-        if has_pm_headless or "id_slot" in kwargs:
-            payload["id_slot"] = int(kwargs.get("id_slot", 0))
+        if "id_slot" in kwargs:
+            if kwargs["id_slot"] is not None:
+                payload["id_slot"] = int(kwargs["id_slot"])
+        elif has_pm_headless:
+            payload["id_slot"] = 0
 
         if stream:
             payload["stream_options"] = {"include_usage": True}
@@ -648,9 +651,10 @@ class LMStudioClient(QObject):
                 "enable_thinking": bool(enable_thinking),
                 "thinking": bool(enable_thinking),
             }
-            if enable_thinking is False:
+            if enable_thinking is False and not kwargs.get("response_format"):
+                from config import THINKING_MODEL_KEYWORDS
                 _target_lower = str(active_model_id or "").lower()
-                if any(k in _target_lower for k in ("qwen3", "r1", "qwq")):
+                if any(k in _target_lower for k in THINKING_MODEL_KEYWORDS):
                     has_last_assistant = bool(req_messages and req_messages[-1].get("role") == "assistant")
                     if not has_last_assistant:
                         req_messages.append({"role": "assistant", "content": "<think>\n\n</think>\n\n"})

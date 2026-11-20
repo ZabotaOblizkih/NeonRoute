@@ -316,12 +316,15 @@ class RPCastExtractor:
                 context_msgs = []
                 last_turn_msgs = recent_history
 
+            from services.regex_filter import TextRegexFilter
+            _re_art_tag_start = re.compile(rf'^\[{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN}', re.IGNORECASE)
+
             dialogue_lines = []
             if context_msgs:
                 dialogue_lines.append("Контекст прошлых реплик (для справки):")
                 for m in context_msgs:
                     txt = str(m.get("text") or m.get("content") or "").strip()
-                    if txt and not txt.startswith("[IMAGE_PROMPT"):
+                    if txt and not _re_art_tag_start.match(txt):
                         role = "ИГРОК" if (m.get("is_user") or m.get("role") == "user") else ("СПУТНИЦА" if not is_environment else "СРЕДА")
                         dialogue_lines.append(f"{role}: {txt}")
                 dialogue_lines.append("")
@@ -329,7 +332,7 @@ class RPCastExtractor:
             dialogue_lines.append("ПОСЛЕДНИЙ ХОД (анализируй только эти новые действия):")
             for m in last_turn_msgs:
                 txt = str(m.get("text") or m.get("content") or "").strip()
-                if txt and not txt.startswith("[IMAGE_PROMPT"):
+                if txt and not _re_art_tag_start.match(txt):
                     role = "ИГРОК" if (m.get("is_user") or m.get("role") == "user") else ("СПУТНИЦА" if not is_environment else "СРЕДА")
                     dialogue_lines.append(f"{role}: {txt}")
 
@@ -393,6 +396,9 @@ class RPCastExtractor:
             active_loaded_ctx = getattr(client, "_current_loaded_ctx", 24576) or 24576
             active_loaded_model = getattr(client, "_last_loaded_model_id", None)
 
+            from services.assistant_flow import resolve_effective_thinking
+            eff_thinking = resolve_effective_thinking("roleplay", active_loaded_model, active_skill="gallery", explicit_override=False)
+
             raw_resp = client.chat_completion(
                 messages=req_messages,
                 model=active_loaded_model,
@@ -402,11 +408,15 @@ class RPCastExtractor:
                 is_roleplay=True,
                 stream=False,
                 emit_signal=False,
+                enable_thinking=eff_thinking,
+                cache_prompt=False,
+                id_slot=None,
                 response_format=schema_payload
             )
 
             from services.regex_filter import TextRegexFilter
-            clean_resp = TextRegexFilter.process_output(str(raw_resp or "")).strip()
+            raw_stripped = TextRegexFilter.strip_thought_blocks(str(raw_resp or ""), mask_code=True)
+            clean_resp = TextRegexFilter.process_output(raw_stripped).strip()
             if "```" in clean_resp:
                 clean_resp = re.sub(r'^```(?:json)?\s*|\s*```$', '', clean_resp, flags=re.IGNORECASE).strip()
 

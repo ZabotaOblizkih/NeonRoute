@@ -124,19 +124,34 @@ def tagify_prompt_with_lm(text: str, lm_client: Optional[Any] = None) -> str:
     ]
 
     try:
+        from services.regex_filter import TextRegexFilter
         raw = lm_client.chat_completion(
             messages=messages,
             temperature=0.1,
             max_tokens=60,
             stream=False,
-            emit_signal=False
+            emit_signal=False,
+            enable_thinking=False,
+            cache_prompt=False,
+            id_slot=None,
         )
-        tagified = re.sub(r'^(?:Tags|Prompt|Positive Prompt)[:\s]*', '', str(raw or '').strip(), flags=re.I)
+        raw_clean = TextRegexFilter.strip_thought_blocks(str(raw or "")).strip()
+        if not raw_clean:
+            clean_no_cyr = re.sub(r'[\u0400-\u04ff]+', '', clean_text).strip(' ,')
+            clean_no_cyr = re.sub(r'\s{2,}', ' ', clean_no_cyr).strip(' ,')
+            return f"{clean_no_cyr}, {' '.join(flags)}".strip(' ,') if flags else clean_no_cyr
+
+        tagified = re.sub(r'^(?:Tags|Prompt|Positive Prompt)[:\s]*', '', raw_clean, flags=re.I)
         tagified = tagified.replace('`', '').replace('"', '').strip(' ,')
 
         # 2. Если кириллица осталась (сбой модели) — аварийно отсекаем русские токены
         if re.search(r'[\u0400-\u04ff]', tagified):
             tagified = re.sub(r'[^a-zA-Z0-9_, -]', '', tagified).strip(' ,')
+
+        if not tagified:
+            clean_no_cyr = re.sub(r'[\u0400-\u04ff]+', '', clean_text).strip(' ,')
+            clean_no_cyr = re.sub(r'\s{2,}', ' ', clean_no_cyr).strip(' ,')
+            return f"{clean_no_cyr}, {' '.join(flags)}".strip(' ,') if flags else clean_no_cyr
 
         result = f"{tagified}, {' '.join(flags)}".strip(' ,') if flags else tagified
         return result

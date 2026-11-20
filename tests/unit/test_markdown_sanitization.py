@@ -246,3 +246,97 @@ def test_gallery_art_pass_ignores_draft_inside_think():
         "[IMAGE_PROMPT: final serene river, mountains --ar wide]"
     )
     assert dispatched == [("final serene river, mountains --ar wide", "река и горы")]
+
+
+def test_text_regex_filter_typos_and_casing():
+    """Проверяет извлечение и очистку тегов с опечатками и разным регистром (SSOT)."""
+    samples = [
+        ("[IMAGE_PROP: 1girl, cyberpunk samurai]", "1girl, cyberpunk samurai"),
+        ("[image_prop: 1girl, neon city]", "1girl, neon city"),
+        ("[Image-Prompt: 1girl, castle courtyard]", "1girl, castle courtyard"),
+        ("[IMAGE_PROMT: 1girl, space station]", "1girl, space station"),
+        ("[IMG_PROMPT: 1girl, snowy forest]", "1girl, snowy forest"),
+        ("[img_prop: 1girl, sunny beach]", "1girl, sunny beach"),
+    ]
+    for tag_str, expected_prompt in samples:
+        full_text = f"Вот описание сцены:\n{tag_str}\nПриятного просмотра!"
+        prompt, clean = TextRegexFilter.extract_image_prompt(full_text)
+        assert prompt == expected_prompt, f"Failed extracting prompt from: {tag_str}"
+        assert tag_str not in clean
+        assert "Вот описание сцены:" in clean
+        assert "Приятного просмотра!" in clean
+
+        # Проверка strip_image_tags
+        stripped = TextRegexFilter.strip_image_tags(full_text)
+        assert tag_str not in stripped
+        assert "Вот описание сцены:" in stripped
+        assert "Приятного просмотра!" in stripped
+
+
+def test_stream_art_tag_filter_handles_typos_and_case():
+    """Проверяет, что StreamArtTagFilter перехватывает опечатки [IMAGE_PROP: ...] в потоке."""
+    from services.assistant_flow import StreamArtTagFilter
+
+    for tag in ["[IMAGE_PROP: 1girl, samurai]", "[image_prop: 1girl, samurai]", "[IMAGE_PROMT: 1girl, samurai]"]:
+        flt = StreamArtTagFilter()
+        rendered, triggered = flt.process_buffer(f"Ответ {tag} конец", prior_text="", force=True)
+        assert triggered is True
+        assert tag not in rendered
+        assert "Ответ" in rendered
+        assert "конец" in rendered
+
+
+def test_sanitize_assistant_art_with_typo_tags():
+    """Проверяет sanitize_assistant_art_and_markdown с тегами [IMAGE_PROP: ...] и [image_prop: ...]."""
+    raw_1 = "Конечно, вот арт:\n[IMAGE_PROP: 1girl, solo, portrait --ar portrait]\nНадеюсь, тебе понравится!"
+    clean_1, has_gal_1, prompt_1 = sanitize_assistant_art_and_markdown(raw_1, user_requested_art=True)
+    assert prompt_1 == "1girl, solo, portrait --ar portrait"
+    assert "[IMAGE_PROP:" not in clean_1
+    assert "Конечно, вот арт:" in clean_1
+
+    raw_2 = "Держи изображение:\n[image_prop: 1girl, gothic dress --ar portrait]"
+    clean_2, has_gal_2, prompt_2 = sanitize_assistant_art_and_markdown(raw_2, user_requested_art=True)
+    assert prompt_2 == "1girl, gothic dress --ar portrait"
+    assert "[image_prop:" not in clean_2
+
+
+def test_roleplay_ephemeral_prompt_clean_typo_prefix(monkeypatch):
+    """
+    Проверяет, что в РП-пайплайне _generate_ephemeral_rp_art_prompt
+    корректно очищает теги и префиксы IMAGE_PROP / image_prop без оставления префикса.
+    """
+    from services.roleplay_flow_controller import RoleplayFlowControllerMixin
+    from services.tavern_models import CharacterCard
+    from services.rp_cast_manager import RPCastManager
+
+    controller = RoleplayFlowControllerMixin.__new__(RoleplayFlowControllerMixin)
+    controller.lm_client = MagicMock()
+    controller.active_character = CharacterCard(name="Лия", description="Маг", visual_dna="blue hair")
+
+    structured_cast = {
+        "scene_type": "dialogue",
+        "environment": {"location_dna": "library"},
+        "companion_state": {"visual_dna": "blue hair"},
+        "inventory": []
+    }
+    monkeypatch.setattr(RPCastManager, "load_cast", MagicMock(return_value=structured_cast))
+
+    # 1. Вариант в квадратных скобках с опечаткой [IMAGE_PROP: ...]
+    controller.lm_client.chat_completion.return_value = "[IMAGE_PROP: 1girl, blue hair, reading book, library --model realistic]"
+    prompt = controller._generate_ephemeral_rp_art_prompt("sess_1", "реплика")
+    assert not prompt.lower().startswith("image")
+    assert not prompt.lower().startswith("prop")
+    assert "1girl, blue hair, reading book, library" in prompt
+
+    # 2. Вариант без квадратных скобок (fallback по строкам): IMAGE_PROP: ...
+    controller.lm_client.chat_completion.return_value = "IMAGE_PROP: 1girl, blue hair, casting spell, library --model realistic"
+    prompt_fallback = controller._generate_ephemeral_rp_art_prompt("sess_1", "реплика")
+    assert not prompt_fallback.lower().startswith("image")
+    assert not prompt_fallback.lower().startswith("prop")
+    assert "1girl, blue hair, casting spell, library" in prompt_fallback
+
+    # 3. Вариант в нижнем регистре: [image_prop: ...]
+    controller.lm_client.chat_completion.return_value = "[image_prop: 1girl, blue hair, resting, library]"
+    prompt_lower = controller._generate_ephemeral_rp_art_prompt("sess_1", "реплика")
+    assert not prompt_lower.lower().startswith("image")
+    assert "1girl, blue hair, resting, library" in prompt_lower

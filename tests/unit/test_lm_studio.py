@@ -701,6 +701,64 @@ class TestChatCompletion:
         assert input_messages == original_copy
         assert len(input_messages) == 1
 
+    def test_chat_completion_no_prefill_when_response_format_present(self, lms_client, monkeypatch):
+        """Проверяет, что при enable_thinking=False и response_format prefill НЕ добавляется."""
+        captured_payloads = []
+
+        def mock_post(url, *args, **kwargs):
+            captured_payloads.append(kwargs.get("json", {}))
+            mock_resp = MagicMock(status_code=200)
+            mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "ok"}}]}', b"data: [DONE]"]
+            return mock_resp
+
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        self._patch_session_post(monkeypatch, lms_client, mock_post)
+
+        input_messages = [{"role": "user", "content": "дай json"}]
+
+        lms_client.chat_completion(
+            messages=input_messages,
+            model="Qwen3.5-35B-A3B-Instruct-GGUF",
+            enable_thinking=False,
+            response_format={"type": "json_object"}
+        )
+
+        assert len(captured_payloads) == 1
+        sent_messages = captured_payloads[0]["messages"]
+        assert not any(m.get("content") == "<think>\n\n</think>\n\n" for m in sent_messages)
+
+    def test_chat_completion_id_slot_override(self, lms_client, monkeypatch):
+        """Проверяет явную передачу id_slot и отключение при id_slot=None."""
+        captured_payloads = []
+
+        def mock_post(url, *args, **kwargs):
+            captured_payloads.append(kwargs.get("json", {}))
+            mock_resp = MagicMock(status_code=200)
+            mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "ok"}}]}', b"data: [DONE]"]
+            return mock_resp
+
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: True)
+        self._patch_session_post(monkeypatch, lms_client, mock_post)
+
+        # 1. Явная передача id_slot=None не должна создавать id_slot в payload
+        lms_client.chat_completion(
+            messages=[{"role": "user", "content": "ping"}],
+            model="test-model",
+            id_slot=None
+        )
+        assert len(captured_payloads) == 1
+        assert "id_slot" not in captured_payloads[0]
+
+        # 2. Явная передача id_slot=2
+        captured_payloads.clear()
+        lms_client.chat_completion(
+            messages=[{"role": "user", "content": "ping"}],
+            model="test-model",
+            id_slot=2
+        )
+        assert len(captured_payloads) == 1
+        assert captured_payloads[0]["id_slot"] == 2
+
     def test_chat_completion_respect_master_cap_option(self, lms_client, monkeypatch):
         """Проверяет снятие среза MASTER_MAX_RESPONSE_TOKENS при respect_master_cap=False."""
         captured_payloads = []

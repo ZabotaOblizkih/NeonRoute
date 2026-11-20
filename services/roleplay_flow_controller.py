@@ -600,7 +600,7 @@ class RoleplayFlowControllerMixin:
         )
         self._on_scene_visual_intent_ready(session_id, v_intent)
 
-    def _generate_ephemeral_rp_art_prompt(self, sess_id: Optional[str], last_assistant_message: str, target_model_id: str = "realistic") -> str:
+    def _generate_ephemeral_rp_art_prompt(self, sess_id: Optional[str], last_assistant_message: str, target_model_id: Optional[str] = None) -> str:
         """
         Формирует изолированный английский промпт для SD через кинематографические архетипы сцены.
         Исключает передачу оружия и подставляет nude в интимных сценах.
@@ -639,16 +639,37 @@ class RoleplayFlowControllerMixin:
         raw_ctx = last_assistant_message or ""
         clean_ctx = re.sub(r'<stats>.*?</stats>', '', raw_ctx, flags=re.DOTALL | re.IGNORECASE)
         clean_ctx = re.sub(r'<thought>.*?</thought>', '', clean_ctx, flags=re.DOTALL | re.IGNORECASE)
-        clean_ctx = re.sub(r'\[(?:СЦЕНА|SCENE|СТАТУС|STATUS|ШРАМ|SCAR|КВЕСТ|QUEST|IMAGE_PROMPT)[^\]]*\]', '', clean_ctx, flags=re.IGNORECASE)
+        clean_ctx = re.sub(rf'\[(?:СЦЕНА|SCENE|СТАТУС|STATUS|ШРАМ|SCAR|КВЕСТ|QUEST|{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN})[^\]]*\]', '', clean_ctx, flags=re.IGNORECASE)
         clean_ctx = re.sub(r'</?(?:stats|thought|meters|choices|check|terminal|sms|phone)>', '', clean_ctx, flags=re.IGNORECASE).strip()
 
         # 4. Формирование контекста под мизансцену
-        from services.assistant_prompt_builder import resolve_model_architecture
-        arch = resolve_model_architecture(target_model_id)
+        from services.assistant_prompt_builder import (
+            AssistantPromptBuilder,
+            resolve_prompt_dialect,
+            resolve_model_architecture
+        )
+        ckpt_for_resolver = None if (not target_model_id or str(target_model_id).lower().strip() == "realistic") else target_model_id
+        resolved_prof = AssistantPromptBuilder.resolve_gallery_target_profile(
+            effective_query=clean_ctx,
+            selected_forge_checkpoint=ckpt_for_resolver,
+            check_config_fallback=True
+        )
+        if isinstance(resolved_prof, dict):
+            target_profile = resolved_prof
+            style_desc = target_profile.get("routing_description", "") if target_profile else ""
+            target_model_id = target_profile.get("id") or target_model_id
+            arch = target_profile.get("architecture") or resolve_model_architecture(target_model_id, target_profile)
+        elif isinstance(resolved_prof, (tuple, list)) and len(resolved_prof) >= 3:
+            target_model_id = resolved_prof[0] or target_model_id
+            arch = resolved_prof[1] or resolve_model_architecture(target_model_id)
+            style_desc = resolved_prof[2] or ""
+        else:
+            arch = resolve_model_architecture(target_model_id)
+            style_desc = ""
 
         prompt_task_header = (
             "Generate a concise descriptive visual prompt (2-3 sentences) for this RP scene:"
-            if "xl" in arch.lower()
+            if resolve_prompt_dialect(arch, style_desc) == "phrases"
             else "Generate concise, comma-separated Danbooru tags for this RP scene:"
         )
 
@@ -658,7 +679,7 @@ class RoleplayFlowControllerMixin:
                 prompt_task_header,
                 f"- Location: {cur_loc or 'Private quarters'}",
                 "- State: strictly alone in private intimate sanctuary (characters undressed, bare skin)",
-                f"- Subject: {clean_visual_summary or 'Unspecified'}",
+                f"- Subject: {clean_visual_summary or char_name}",
                 f"- Scene context: {clean_ctx or 'Intimate moment'}"
             ]
         else:
@@ -671,13 +692,13 @@ class RoleplayFlowControllerMixin:
                 prompt_task_header,
                 f"- Location: {cur_loc or 'Unspecified'}",
                 f"- Outfit: {comp_outfit}",
-                f"- Subject: {clean_visual_summary or 'Unspecified'}",
+                f"- Subject: {clean_visual_summary or char_name}",
                 f"- Scene context: {clean_ctx or 'Dialogue scene'}"
             ]
             if inventory_str and scene_type in ("action", "exploration"):
                 payload_lines.insert(2, f"- Equipment: {inventory_str}")
 
-        if "xl" in arch.lower():
+        if resolve_prompt_dialect(arch, style_desc) == "phrases":
             payload_lines.append(
                 "CRITICAL: Output ONLY the descriptive prompt inside [IMAGE_PROMPT: ...]. "
                 "Do NOT write conversational filler or prose outside the brackets."
@@ -698,7 +719,8 @@ class RoleplayFlowControllerMixin:
         system_prompt = RoleplayPromptBuilder.get_cinematic_scene_directive(
             scene_type,
             clean_target_style,
-            architecture=arch
+            architecture=arch,
+            model_hint=style_desc
         )
 
         user_payload = "\n".join(payload_lines)
@@ -717,6 +739,14 @@ class RoleplayFlowControllerMixin:
             f"[USER CONTEXT]:\n{user_payload}"
         )
 
+        from services.assistant_flow import resolve_effective_thinking
+        eff_thinking = resolve_effective_thinking(
+            mode="roleplay",
+            model_name=active_model,
+            active_skill="gallery",
+            explicit_override=False
+        )
+
         try:
             raw_response = self.lm_client.chat_completion(
                 messages=temp_messages,
@@ -726,7 +756,10 @@ class RoleplayFlowControllerMixin:
                 max_tokens=350,
                 stream=False,
                 emit_signal=False,
-                is_roleplay=False
+                is_roleplay=False,
+                enable_thinking=eff_thinking,
+                cache_prompt=False,
+                id_slot=None,
             )
             raw_text = raw_response if isinstance(raw_response, str) else str(raw_response or "")
         except Exception as e:
@@ -744,12 +777,12 @@ class RoleplayFlowControllerMixin:
         if extracted_prompt is not None:
             prompt_content = extracted_prompt
         else:
-            line_matches = list(re.finditer(r'(?:^|\n)[\s*#_-]*IMAGE[\s_-]PROMPT:\s*([^\n\r]+)', raw_text_clean, re.IGNORECASE))
+            line_matches = list(re.finditer(rf'(?:^|\n)[\s*#_-]*{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN}:\s*([^\n\r]+)', raw_text_clean, re.IGNORECASE))
             prompt_content = line_matches[-1].group(1).strip() if line_matches else raw_text_clean
 
         # Отсекаем описательные блоки Description и пустые переносы
         prompt_content = re.split(r'\[(?:Description|Narrative|Scene)\]|(?:\n\s*\n)', prompt_content, flags=re.IGNORECASE)[0]
-        prompt_content = re.sub(r'^[\s\[]*IMAGE[\s_-]PROMPT:\s*', '', prompt_content, flags=re.IGNORECASE)
+        prompt_content = re.sub(rf'^[\s\[]*{TextRegexFilter.IMAGE_TAG_LABEL_PATTERN}:\s*', '', prompt_content, flags=re.IGNORECASE)
 
         # Срезаем флаг --model со всеми последующими словами до флага или конца строки (включая хвосты v5, v0.9 и т.д.)
         clean_prompt = re.sub(r'--model\s+[^-\n\r]+', '', prompt_content, flags=re.IGNORECASE).strip(' ,[]')

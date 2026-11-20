@@ -455,3 +455,22 @@ def test_art_generation_pipeline_auto_routing_smoke(isolated_storage):
     assert actual_ckpt_default == "cyberrealistic_v5.safetensors", (
         f"Forge kwargs checkpoint mismatch: expected 'cyberrealistic_v5.safetensors', got '{actual_ckpt_default}'"
     )
+
+
+def test_tagify_prompt_with_lm_thinking_and_fallback():
+    """Проверяет tagify_prompt_with_lm на подавление мыслей и безопасный fallback при <think>."""
+    from services.art_director.director import tagify_prompt_with_lm
+
+    mock_lm = MagicMock()
+    mock_lm.chat_completion.return_value = "<think>\nрассуждения о переводе на Danbooru...\n</think>"
+
+    res = tagify_prompt_with_lm("девушка в саду 1girl, castle --ar portrait", lm_client=mock_lm)
+    assert mock_lm.chat_completion.called
+    call_kwargs = mock_lm.chat_completion.call_args[1]
+    assert call_kwargs.get("enable_thinking") is False
+    assert call_kwargs.get("id_slot") is None
+    assert call_kwargs.get("cache_prompt") is False
+
+    # Так как полезный текст был пуст после strip_thought_blocks, должен сработать fallback без кириллицы
+    assert "1girl, castle" in res
+    assert "--ar portrait" in res

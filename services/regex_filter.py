@@ -18,7 +18,8 @@ class TextRegexFilter:
     _RE_MODEL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext)\|>', re.IGNORECASE)
     _RE_REMINDER = re.compile(r'(?:\n|\s)*🔔\s*Напоминаю:[^\n]*', re.IGNORECASE)
     _RE_MODEL_FLAG = re.compile(r'(?:\s*--model\s+[a-zA-Z0-9_\-]+)+\s*$', re.IGNORECASE)
-    _RE_IMAGE_TAG = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', re.IGNORECASE)
+    IMAGE_TAG_LABEL_PATTERN = r'(?:IMAGE|IMG)[\s_-]?(?:PROMPT|PROMT|PROP)'
+    _RE_IMAGE_TAG = re.compile(rf'\[{IMAGE_TAG_LABEL_PATTERN}:\s*([\s\S]*?)\]', re.IGNORECASE)
     _RE_FENCED_CODE = re.compile(r'```[\s\S]*?```')
     _RE_INLINE_CODE = re.compile(r'`[^`\r\n]+`')
     _RE_CLOSING_THINK_TAG = re.compile(r'</(?:think|analyze|thought|reasoning)>', re.IGNORECASE)
@@ -129,7 +130,7 @@ class TextRegexFilter:
                 last_match = raw_matches[-1]
                 extracted_prompt = re.sub(r'^[\s\*_\-\#]+', '', last_match.group(1)).strip()
                 unwrapped = re.sub(
-                    r'`{1,3}(?:[a-zA-Z0-9_-]+\s*\n)?\s*\[IMAGE[\s_-]PROMPT:\s*[\s\S]*?\]\s*`{1,3}',
+                    rf'`{{1,3}}(?:[a-zA-Z0-9_-]+\s*\n)?\s*\[{cls.IMAGE_TAG_LABEL_PATTERN}:\s*[\s\S]*?\]\s*`{{1,3}}',
                     '',
                     restored_text,
                     flags=re.IGNORECASE,
@@ -140,6 +141,24 @@ class TextRegexFilter:
                 return extracted_prompt, unwrapped
 
         return None, restored_text.strip()
+
+    @classmethod
+    def strip_image_tags(cls, text: Optional[str]) -> str:
+        """
+        Безопасно удаляет любые вариации арт-тегов ([IMAGE_PROMPT: ...], [IMAGE_PROP: ...] и т.д.)
+        из текста с сохранением форматирования.
+        """
+        if not text:
+            return ""
+        cleaned = re.sub(
+            rf'`{{1,3}}(?:[a-zA-Z0-9_-]+\s*\n)?\s*\[{cls.IMAGE_TAG_LABEL_PATTERN}:\s*[\s\S]*?\]\s*`{{1,3}}',
+            '',
+            str(text),
+            flags=re.IGNORECASE,
+        )
+        cleaned = cls._RE_IMAGE_TAG.sub('', cleaned)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
 
     @classmethod
     def process_output(

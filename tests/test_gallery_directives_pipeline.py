@@ -16,6 +16,7 @@ from services.model_router import ModelRouter, normalize_model_choice
 from services.assistant_prompt_builder import (
     AssistantPromptBuilder,
     resolve_model_architecture,
+    resolve_prompt_dialect,
     get_gallery_directive,
     get_cinematic_directive,
     get_art_directive,
@@ -558,4 +559,80 @@ def test_build_gallery_art_plan_prepends_previous_image_prompt():
     assert sent_messages[1]["role"] == "user"
     assert "то же самое, но ночью" in sent_messages[1]["content"]
     assert plan.positive_prompt == "1girl, night, street lights"
+
+
+def test_prompt_dialect_sd15_always_tags():
+    """Любая модель с архитектурой sd15 возвращает 'tags' независимо от routing_description."""
+    assert resolve_prompt_dialect("sd15") == "tags"
+    assert resolve_prompt_dialect("sd15", "") == "tags"
+    assert resolve_prompt_dialect("sd15", "Realistic photo, 35mm lens, natural lighting") == "tags"
+    assert resolve_prompt_dialect("1.5", "Photorealistic cinematic frame") == "tags"
+    assert resolve_prompt_dialect("SD15", "Avoid all booru tags") == "tags"
+
+
+def test_prompt_dialect_sdxl_danbooru_tags():
+    """SDXL-модели с позитивным указанием booru/danbooru тегов (например WAI-Nsfw-Illustrious-17) возвращают 'tags'."""
+    illustrious_desc = (
+        "### Prompt using dense Danbooru tags (1girl, character/series tags, pose, angle, lighting) "
+        "with quality boosters: masterpiece, best quality, very aesthetic, absurdres. "
+        "Strictly avoid photo, realistic, 3d, 35mm, sketch."
+    )
+    assert resolve_prompt_dialect("sdxl", illustrious_desc) == "tags"
+
+    # Варианты с booru, e621, 1boy
+    assert resolve_prompt_dialect("sdxl", "Anime art based on e621 tags and clean lineart") == "tags"
+    assert resolve_prompt_dialect("sdxl", "Stylized anime 1boy solo booru tags") == "tags"
+
+
+def test_prompt_dialect_sdxl_avoid_booru_tags_returns_phrases():
+    """SDXL-модели с фразами 'Avoid booru tags' (например Juggernaut_XI) не должны ложно определяться как tags."""
+    juggernaut_desc = (
+        "### Prompt as cinematic editorial photograph using concise comma-separated descriptive phrases, "
+        "explicit shot framing, detailed environment background, natural directional lighting, "
+        "authentic skin and material textures, shallow depth of field. "
+        "Avoid anime, 3d render, painting, booru tags, numeric weights, and buzzwords like masterpiece or 8k."
+    )
+    assert resolve_prompt_dialect("sdxl", juggernaut_desc) == "phrases"
+
+    # Вариант со strictly avoid
+    strictly_avoid_desc = "Photorealistic 8k portrait. Strictly avoid booru tags, 1girl, anime."
+    assert resolve_prompt_dialect("sdxl", strictly_avoid_desc) == "phrases"
+
+    # Вариант с never use
+    never_use_desc = "Never use booru tags or 1girl. Use natural descriptive sentences."
+    assert resolve_prompt_dialect("sdxl", never_use_desc) == "phrases"
+
+    # Варианты с 'Do not use' и русскими запретами 'не используй'
+    assert resolve_prompt_dialect("sdxl", "Do not use booru tags. High quality portrait.") == "phrases"
+    assert resolve_prompt_dialect("sdxl", "Don't use booru tags, write natural phrases.") == "phrases"
+    assert resolve_prompt_dialect("sdxl", "Не используй danbooru. Красивое фото природы.") == "phrases"
+    assert resolve_prompt_dialect("sdxl", "Реалистичный стиль; не использовать danbooru теги!") == "phrases"
+
+    # Чистое описание фотореализма без упоминания booru
+    photo_desc = "35mm film photograph, raw authentic skin texture, natural daylight."
+    assert resolve_prompt_dialect("sdxl", photo_desc) == "phrases"
+
+
+def test_prompt_dialect_sdxl_positive_tags_with_prohibitions():
+    """Проверяет, что маркеры danbooru в позитивных фрагментах определяются как tags, даже если есть другие запреты."""
+    assert resolve_prompt_dialect("sdxl", "Anime style, no realistic skin, using Danbooru tags") == "tags"
+    assert resolve_prompt_dialect("sdxl", "Anime style, no realistic skin, using Danbooru tags. Avoid 3D.") == "tags"
+    assert resolve_prompt_dialect("sdxl", "Не используй реализм. Чистый Danbooru стиль, 1girl anime.") == "tags"
+
+
+def test_get_art_directive_dialect_dispatch():
+    """Проверяет диспетчеризацию шаблонов в get_art_directive на основе диалекта."""
+    illustrious_desc = "Dense Danbooru anime tags, 1girl. Strictly avoid photo."
+    juggernaut_desc = "Cinematic photograph. Avoid booru tags."
+
+    # Illustrious (SDXL arch, но dialect == 'tags') -> получает SD15 теговый шаблон
+    art_dir_tags = get_art_directive("gallery", "sdxl", model_hint=illustrious_desc)
+    assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in art_dir_tags
+    assert "STYLE GUIDANCE" in art_dir_tags
+
+    # Juggernaut (SDXL arch, dialect == 'phrases') -> получает SDXL фразовый шаблон
+    art_dir_phrases = get_art_directive("gallery", "sdxl", model_hint=juggernaut_desc)
+    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in art_dir_phrases
+    assert "STYLE GUIDANCE" in art_dir_phrases
+
 

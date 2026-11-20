@@ -3,8 +3,8 @@
 > **Версия системы**: NeonRoute v0.9.8-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 327 файлов Python, ~112 100 строк кода  
-> **Статус верификации**: 843 теста собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
+> **Метрики кодовой базы**: 324 файла Python, ~112 500 строк кода  
+> **Статус верификации**: 839 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
 
 ---
 
@@ -61,6 +61,7 @@
 | **ADR-45** | `HEAD` | `config.py`, `services/process_manager.py`, `services/vram_arbiter.py`, `tests/unit/test_kv_slot_save_restore.py` | 1) При временной выгрузке `llama-server` под запуск SD Forge (арбитраж VRAM на 8 ГБ GPU) весь накопленный контекст диалога терялся.<br>2) После возврата LLM первый же запрос пользователя вызывал полный пересчет промпта (Prompt Processing / TTFT до 4–8 с). | 1) В `config.py` зарегистрирована директория слотов `KV_SLOTS_DIR = DATA_DIR / "kv_slots"`.<br>2) В `ProcessManager.start_llama_server_sync`: аргумент CLI `["--slot-save-path", str(KV_SLOTS_DIR)]`.<br>3) При вытеснении LLM (`_save_kv_slot_for_eviction`): отправка `POST /slots/0?action=save` с сохранением состояния слота в `evicted_slot_0.bin` (лог размера файла и времени сохранения).<br>4) При возврате LLM (`_restore_kv_slot_after_start`): вызов `POST /slots/0?action=restore` с валидацией файла и восстановлением контекста за ~1.0 с (~1.2 ГБ слота).<br>5) Потокобезопасная очистка кэша слотов `clear_kv_slot_cache()` при смене модели.<br>6) Создан юнит-сьют `test_kv_slot_save_restore.py` (9 тестов). |
 | **ADR-46** | `HEAD` | `services/assistant_prompt_builder.py`, `services/context_window_builder.py`, `services/assistant_flow.py`, `services/lm_studio.py`, `tests/unit/test_static_prefix_anchoring.py` | 1) Наличие динамического штампа текущей даты и времени (`{current_dt_str}`) в системном промпте меняло первый токен `system`-сообщения каждую минуту, приводя к инвалидации префикса KV-кэша и полному пересчету промпта (Prompt Re-eval).<br>2) Мутация `assembled_messages[0]` блоками RAG и скиллами разрушала кэшированный префикс.<br>3) Отсутствовала детальная телеметрия использования KV-кэша (`cache_n`, `prompt_n`). | 1) **Static Prefix Anchoring**: системный промпт Ассистента (`AssistantPromptBuilder.build()`) заморожен в побитово идентичное статическое ядро (персона, стиль, скиллы, `<UserInfo>`), гарантируя 100% KV-кэш хит системного префикса.<br>2) **Инкапсуляция контекста хода (`<TurnContext>`)**: динамические метаданные (время хода, факты `<PassiveMemory>`, фрагменты `<KnowledgeBase>`, документы `<AttachedDocument>`, скилл-директивы) упаковываются методом `build_turn_context()` и инжектируются исключительно в эфемерную копию последнего пользовательского сообщения (`messages[-1]["content"]`) без сохранения в сессию `SessionManager`.<br>3) **Ролевая защита (Role Guard)**: в системный промпт добавлено правило, запрещающее модели цитировать теги `<TurnContext>` или путать их с репликами пользователя.<br>4) В `LMStudioClient`: передача `"id_slot": 0`, активация `"stream_options": {"include_usage": True}` и разбор блоков `"usage"` и `"timings"` (`cache_n`, `prompt_n`) в SSE-потоке с информативным логом попаданий в KV-кэш.<br>5) Создан тестовый сьют `test_static_prefix_anchoring.py` (4 теста). |
 | **ADR-47** | `HEAD` | `services/forge_client.py`, `ui/controllers/hardware_engine.py`, `services/vram_arbiter.py`, `tests/unit/test_forge_client.py` | 1) Инцидент: падение ядра Forge с `IndexError: list index out of range` в `backend/memory_management.py:466` и зависание ~908 МБ VRAM вместо ~490 МБ при выгрузке чекпоинта после ADetailer.<br>2) Причина: агрессивный клиентский таймаут 5.0 с на `POST /sdapi/v1/unload-checkpoint` (перемещение 6.7 ГБ SDXL весов по PCIe в RAM на 16 ГБ ПК физически занимает 5–8 с); при таймауте клиент немедленно слал `POST /sdapi/v1/free-vram`, вызывая гонку двух параллельных потоков Uvicorn на незащищенном глобальном списке `current_loaded_models`.<br>3) Дублирующий вызов выгрузки из `_finalize_forge_generation` (`force=True`). | 1) **Сериализация выгрузки**: на экземпляр `ForgeClient` добавлен мьютекс `self._unload_lock = threading.Lock()`, исключающий параллельные вызовы выгрузки.<br>2) **Адаптивный таймаут и защита от конкуренции**: таймаут `/unload-checkpoint` увеличен до 18.0 с; при `ReadTimeout` конкурирующий `free-vram` не отправляется немедленно — выдерживается пауза 1.0 с перед аварийной очисткой; таймаут `free-vram` поднят до 10.0 с.<br>3) **Остановка поллера**: ожидание фонового потока прогресса увеличено с 0.05 до 1.5 с (`poller_thread.join(timeout=1.5)`), гарантируя закрытие сокета `/progress` до старта выгрузки.<br>4) **Устранение дублирующей выгрузки**: в `_finalize_forge_generation` передается `force=not getattr(self.forge_client, "_checkpoint_unloaded", False)`; при уже выгруженном чекпоинте повторные HTTP-запросы пропускаются.<br>5) Созданы 4 unit-теста в `tests/unit/test_forge_client.py` (96 тестов в сьюте, 843 теста суммарно). |
+| **ADR-48** | `HEAD` | `services/lm_studio.py`, `services/rp_cast_extractor.py`, `services/roleplay_flow_controller.py`, `services/roleplay_prompt_builder.py`, `services/assistant_prompt_builder.py`, `services/regex_filter.py`, `ui/controllers/hardware_engine.py`, `ui/controllers/chat_flow_controller.py`, `ui/builders/chat_bubble_builder.py`, `services/assistant_flow.py`, `services/context_window_builder.py`, `services/roleplay_state_manager.py`, `tests/smoke/test_roleplay_e2e_smoke.py` | 1) В ролевом режиме (РП-чат) при нажатии кнопки «Арт сцены» позитивный промпт не доходил до Forge при использовании думающих моделей (Qwen 2.5/3, DeepSeek-R1): служебные запросы экстракции сцены и персонажей активировали reasoning-токены, prefill роли `assistant` ломал JSON-грамматику, а фоновый запрос затирал KV-кэш слота 0 диалога.<br>2) При пустом промпте происходила преждевременная выгрузка LLM из VRAM перед падением рендера.<br>3) Разрозненные регулярные выражения перехвата арт-тегов не учитывали опечатки модели (`IMAGE_PROP`, `IMAGE_PROMT`, `IMG_PROMPT`) и регистронезависимость.<br>4) Выбор формата промпта («Danbooru tags» vs «SDXL descriptive phrases») зависел от хрупких проверок имен моделей; дефолтный аргумент `target_model_id="realistic"` ломал авто-подбор профиля в режиме Арт-директора.<br>5) Тестовое покрытие РП-чата было фрагментировано по 5 разрозненным файлам с дублированием моков. | 1) **Подавление Thinking в служебных вызовах**: в `services/lm_studio.py` добавлена поддержка `enable_thinking=False`, отключение role prefill при наличии `response_format` (защита JSON-грамматики) и изоляция слота через `id_slot=None` (предотвращение вытеснения KV-кэша слота 0); в `RPCastExtractor` и `_generate_ephemeral_rp_art_prompt` служебные вызовы изолированы (`enable_thinking=False`, `id_slot=None`, `cache_prompt=False`).<br>2) **Fail-Fast Guard VRAM**: в `ui/controllers/hardware_engine.py` добавлена предварительная проверка непустого промпта до вызова `VRAMArbiter.release_llm_for_diffusion()`.<br>3) **Единый SSOT-перехватчик арт-тегов**: в `services/regex_filter.py` внедрены константа `IMAGE_TAG_LABEL_PATTERN`, обновленный `_RE_IMAGE_TAG` (re.IGNORECASE, поддержка опечаток) и метод `strip_image_tags(cls, text)`; стриминговые и UI-фильтры синхронизированы.<br>4) **Data-Driven резолвинг диалектов промпта**: в `services/assistant_prompt_builder.py` реализована функция `resolve_prompt_dialect(architecture, routing_description)` без хардкода моделей, с нарезкой по знакам препинания и фильтрацией запретов (`avoid`, `never use`, `do not use`, `не используй`); в `services/roleplay_prompt_builder.py` внедрена динамическая секция `STYLE GUIDANCE`; в `RoleplayFlowControllerMixin` устранена ловушка `"realistic"` (`ckpt_for_resolver = None`, `effective_query=clean_ctx`) и добавлен фоллбэк `- Subject:` на имя персонажа.<br>5) **Консолидация E2E-тестов РП-чата**: 5 разрозненных смоук-файлов объединены в единый сьют `tests/smoke/test_roleplay_e2e_smoke.py` (7 исчерпывающих сценариев) с унифицированной диагностикой `assert_diag`. |
 
 ---
 
@@ -1352,21 +1353,76 @@ flowchart TD
 
 Это исключает искусственное игнорирование фактов моделью при живом общении.
 
+### 6.6. Архитектура генерации арта сцены в РП-чате и дата-дривен диалекты (Data-Driven Prompt Dialect Resolution & ADR-48)
+
+В ролевом режиме (РП-чат) генерация фонового арта текущей сцены по кнопке «Арт сцены» или тегу `[IMAGE_PROMPT: ...]` представляет собой многоэтапный конвейер взаимодействия языковой модели (LLM), Арт-директора и диффузионного движка (Forge).
+
+```mermaid
+flowchart TD
+    subgraph UI_RP["1. Пользовательский интерфейс РП-чата"]
+        UserClick["Клик: «Арт сцены»"] --> GenEphemeral["RoleplayFlowControllerMixin<br>._generate_ephemeral_rp_art_prompt()"]
+        ModelTag["Ответ модели с тегом<br>[IMAGE_PROMPT: ...]"] --> TagFilter["SSOT TextRegexFilter<br>.extract_image_prompt()"]
+    end
+
+    subgraph PromptPrep["2. Подготовка промпта и резолвинг профиля"]
+        GenEphemeral --> CleanCtx["Очистка контекста сцены<br>(strip_image_tags)"]
+        TagFilter --> CleanCtx
+        CleanCtx --> ResolveProfile["AssistantPromptBuilder<br>.resolve_gallery_target_profile()<br>(Авто-подбор модели по сцене clean_ctx)"]
+        ResolveProfile --> DialectRes["resolve_prompt_dialect(arch, style_desc)<br>• sd15 -> tags<br>• booru markers -> tags<br>• prohibition filtering (avoid, do not use)"]
+    end
+
+    subgraph LLM_Director["3. Служебный вызов LLM (Эфемерный промптинг)"]
+        DialectRes --> Directive["RoleplayPromptBuilder<br>.get_cinematic_scene_directive(model_hint)<br>• Инъекция STYLE GUIDANCE"]
+        Directive --> ServiceLLM["LMStudioClient.chat_completion()<br>• enable_thinking=False (подавление CoT)<br>• id_slot=None (сохранение KV-слота 0 диалога)<br>• prefill disabled upon response_format"]
+    end
+
+    subgraph Guard_Render["4. Fail-Fast Guard и диффузионный рендеринг"]
+        ServiceLLM --> ExtractPrompt["Формирование prompt, subject, neg"]
+        ExtractPrompt --> VRAMGuard{"Промпт не пустой?<br>(Fail-Fast Guard)"}
+        VRAMGuard -- "Пусто / Сбой" --> AbortNoVRAM["Прерывание без выгрузки LLM<br>(VRAMArbiter НЕ вызывается)"]
+        VRAMGuard -- "Промпт готов" --> ReleaseLLM["VRAMArbiter.release_llm_for_diffusion()"]
+        ReleaseLLM --> ForgeRender["ForgeClient.text_to_image()<br>(Рендеринг сцены в Forge)"]
+    end
+```
+
+#### 6.6.1. Служебные вызовы LLM и защита диалогового слота
+- **Подавление режима рассуждений (`enable_thinking=False`)**: для вторичных задач (извлечение каста персонажей `RPCastExtractor`, генерация эфемерного арт-промпта `_generate_ephemeral_rp_art_prompt`, суммаризация) рассуждения модели принудительно отключаются. Это исключает замусоривание служебного JSON-ответа CoT-токенами и экономит время пользователя.
+- **Отключение Assistant Prefill при валидации схемы**: передача искусственного prefill `{"role": "assistant", "content": "..."}` при активной JSON-грамматике (`response_format={"type": "json_object"}`) ломает синтаксический анализатор современных моделей; prefill передается строго при отсутствии `response_format`.
+- **Изоляция диалогового KV-слота (`id_slot=None`)**: диалог пользователя привязан к слоту 0 (`id_slot=0`) для быстрого кэширования префикса. Служебные подзапросы передают `id_slot=None`, направляясь в свободные эфемерные слоты инференс-сервера и не вытесняя кэшированный контекст активной беседы.
+
+#### 6.6.2. Fail-Fast Guard арбитража видеопамяти
+Перед дорогостоящей процедурой выгрузки LLM из видеопамяти (`VRAMArbiter.release_llm_for_diffusion()`) контроллер `HardwareEngineMixin._on_scene_art_requested()` проверяет наличие валидного непустого арт-промпта. Если генерация промпта вернула пустую строку или завершилась сбоем, процесс рендеринга прерывается немедленно: LLM остаётся в VRAM, не вызывая бесполезных и долгих циклов выгрузки и повторной загрузки модели.
+
+#### 6.6.3. Единый SSOT-перехватчик арт-тегов и устойчивость к опечаткам
+В `services/regex_filter.py` стандартизирована константа `IMAGE_TAG_LABEL_PATTERN`:
+- Перехватывает любые формы тегов: `[IMAGE_PROMPT: ...]`, `[IMAGE_PROP: ...]`, `[IMAGE_PROMT: ...]`, `[IMG_PROMPT: ...]`, `[img_prop: ...]`.
+- Регулярное выражение скомпилировано с флагом `re.IGNORECASE`.
+- Предоставлен централизованный метод `TextRegexFilter.strip_image_tags(text)`, гарантирующий полное удаление тегов арта из диалогового пузыря, истории сессии и контекста последующих ходов.
+
+#### 6.6.4. Data-Driven определение диалекта промпта (`resolve_prompt_dialect`)
+Вместо захардкоженных списков моделей в коде архитектурное решение опирается на данные конфигурации модели (`architecture` и `routing_description`):
+1. Если `architecture == "sd15"`, всегда возвращается диалект `"tags"`.
+2. Для других архитектур (SDXL, Pony и др.) строка `routing_description` очищается от хвостовых предложений с отрицаниями с помощью регулярного выражения:
+   `re.split(r'\b(?:strictly\s+)?(?:avoid|never\s+use|do\s+not\s+use|не\s+используй)\b', desc, maxsplit=1, flags=re.IGNORECASE)[0]`
+   Это предотвращает ложные срабатывания, когда описание модели содержит запрет вида «Avoid Danbooru tags».
+3. Оставшийся фрагмент проверяется на наличие маркеров тегов (`danbooru`, `e621`, `booru`, `1girl`, `1boy`). При их обнаружении выбирается диалект `"tags"`, в остальных случаях — `"phrases"`.
+4. В генераторе промптов устранена ловушка технического плейсхолдера `"realistic"`: при значении `"realistic"` параметр чекпоинта сбрасывается в `None`, обеспечивая честный выбор модели через `ModelRouter` по контексту текущей сцены.
+
 ---
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (843 теста, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (839 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 843 автоматических тестов в 87 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 839 автоматических тестов в 84 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
-| **`tests/smoke/`** | 20 | 119 | Быстрые сквозные смоук-тесты: гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`, включая интеграцию автозагрузчика llama-server в `install.bat` и исключение `hotfix_v098/`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (17 тестов), Layer Budgeter (28 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
-| **`tests/unit/`** | 53 | 529 | Изолированное модульное тестирование: сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
+| **`tests/smoke/`** | 18 | 121 | Быстрые сквозные смоук-тесты: единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`, 7 сценариев: диалог, кэш слота 0, подавление thinking в касте, генерация арт-сцены, data-driven диалекты, Fail-Fast Guard VRAM, карточки и сессии), гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`, включая интеграцию автозагрузчика llama-server в `install.bat` и исключение `hotfix_v098/`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (17 тестов), Layer Budgeter (28 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
+| **`tests/unit/`** | 53 | 532 | Изолированное модульное тестирование: сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, ADetailer, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
 | **`tests/integration/`** | 2 | 9 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
-| **`tests/` (root)** | 12 | 186 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer |
-| **ИТОГО** | **87** | **843** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **`tests/` (root)** | 11 | 177 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer |
+| **ИТОГО** | **84** | **839** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 
@@ -1509,9 +1565,16 @@ flowchart TD
 
 ### 7.4. Карта сквозных смоук-тестов (`tests/smoke/`)
 
-19 сквозных смоук-сьютов (101 тест) гарантируют надежность пользовательских сценариев:
+18 сквозных смоук-сьютов (121 тест) гарантируют надежность пользовательских сценариев:
 1. **`test_smoke_assistant_6phases_pipeline.py`**: сквозная верификация 6 фаз конвейера Ассистента (захват ввода, семантический роутинг, системное окно, стриминг токенов, мысли `<think>`, сессии) и галерейный single-pass.
-2. **`test_rp_pipeline_smoke.py`**: ролевой ход в изоляции (память, каст, сборка сообщений, Depth-1 якорь, вызов инференса, анализ сцены).
+2. **`test_roleplay_e2e_smoke.py` (7 сценариев)**: единый сквозной смоук-сьют ролевого режима с подробной диагностикой `assert_diag` («Сценарий -> Вход -> Ожидали -> Получили»), консолидировавший 5 разрозненных тестовых файлов без потери покрытия:
+   - Сценарий 1: Базовый ролевой ход, макросы `{{char}}`/`{{user}}`, очистка тегов и валидация thinking-режима.
+   - Сценарий 2: Подавление thinking (`enable_thinking=False`) и изоляция слота (`id_slot=None`) при фоновой экстракции каста `RPCastExtractor`.
+   - Сценарий 3: Генерация арта сцены с data-driven выбором диалекта (Danbooru tags vs SDXL descriptive phrases) и инъекцией `STYLE GUIDANCE`.
+   - Сценарий 4: Fail-Fast Guard арбитража видеопамяти (блокировка выгрузки LLM из VRAM при пустом арт-промпте).
+   - Сценарий 5: VRAM-арбитраж и сохранение состояния KV-слота (`evicted_slot_0.bin`).
+   - Сценарий 6: Парсинг карточек персонажей, архетипы, сохранение RPG-разметки и устойчивость к опечаткам арт-тегов (`IMAGE_PROP`, `IMAGE_PROMT`, `IMG_PROMPT`).
+   - Сценарий 7: Изоляция сессий диалогов и сохранение ролевых воспоминаний в SQLite WAL.
 3. **`test_three_modes_deep_smoke.py`**: контрактный тест утилит трех режимов (`PatchApplier`, `AutoImporter`, AST-скелетирование, парсинг инструментов, Markdown-нарезчик, RPG-виджеты, апдейтер каста).
 4. **`test_smoke_mainwindow_lifecycle.py`**: Zero-Freeze Startup Pipeline (старт главного окна $< 1000$ мс, отсутствие блокировок на UI-потоке).
 5. **`test_sqlite_sessions_and_leak_guard_smoke.py`**: движок SQLite WAL, атомарные JSON-зеркала, изоляция боевой БД `data/memory.db`.
@@ -1519,15 +1582,13 @@ flowchart TD
 7. **`test_smoke_tool_engine.py`**: диспетчеризация инструментов песочницы (`write_file`, `patch_file`, `run_script`, `run_pytest`), защита от path traversal за пределы `workspace/`.
 8. **`test_art_pipeline_smoke.py`**: полный цикл Арт-директора (директивы `!art`, резолвинг моделей, LoRA, BREAK-симметризация, генерационный план).
 9. **`test_adetailer_prompt_passthrough_smoke.py` (2 теста)**: сквозной проброс основного позитива и базового негатива модели в оба слота ADetailer через `ArtDirector -> GenerationPlan.to_forge_kwargs() -> ForgeClient.text_to_image()` и проверка отсутствия полей ввода промптов в `ADetailerSettingsDialog`.
-10. **`test_rp_art_pipeline_smoke.py`**: генерация арта в ролевом режиме с автоматической маршрутизацией по моделям SD 1.5 и SDXL.
-11. **`test_rp_card_and_ui_smoke.py`**: импорт карточек персонажей, визуальная ДНК, оффлайн-диспатч арта сцены.
-12. **`test_dialog_sync_smoke.py`**: синхронизация конфигурации при закрытии диалогов через кнопку закрытия `X` или Escape (`reject()`).
-13. **`test_forge_baseline.py` & `test_forge_edge_cases.py`**: интеграция SD WebUI Forge, устойчивость к поврежденным INI-файлам, кириллице и пробелам в путях, защита от лавинных запросов при мертвом бэкенде.
-14. **`test_forge_vram_profiles_smoke.py` (15 тестов)**: сквозной смоук-сьют цепочки `ProcessManager` → `ArtDirector` → `vram_policy` → `VRAMArbiter` → `ForgeClient.text_to_image` на краевых профилях VRAM (2/4/6/8/12 ГБ) для SD 1.5, SDXL FP8 и SDXL FP16 Heavy, включая `Host RAM Starvation Guard` на 4 ГБ RAM, авто-включение VAE Tiling и проверку идемпотентности выгрузок при смене моделей в одной сессии.
-15. **`test_layer_budgeter_profiles_smoke.py` (26 тестов)**: комплексный смоук-сьют калиброванного расчёта слоёв `LayerBudgeter` на 4 профилях видеокарт (2 ГБ, 4 ГБ, 8 ГБ, 16 ГБ), подтвердивший предотвращение WDDM paging, полнослойный возврат NGL=99 (48/48 слоёв) после выгрузки SD Forge при used VRAM = 590.5 МБ, устранение двойного налога `frag_margin`, нормализацию NGL в гистерезисе, привязку `_evicted_for_forge_ngl` к модели и сброс при смене модели.
-16. **`test_isolated_core_smoke.py`**: изолированная валидация атомарной записи JSON, арбитра VRAM, калькулятора слоев GGUF, AST-валидатора и конечного автомата `ModeCoordinator`.
-17. **`test_clean_pc_startup_smoke.py`**: холодный старт NeonRoute на чистом ПК без предварительно установленного Forge (отсутствие модальных блокировок и навязчивых окон при старте, мягкий фоллбэк на текстовый режим LLM-only).
-18. **`test_forge_settings_dialog_smoke.py` (3 теста)**: инициализация диалога настроек Forge, PEP 562 ленивый импорт в `ui.dialogs`, валидация путей и лаунчера, сохранение конфигурации и динамический жизненный цикл применения/отката патча.
+10. **`test_dialog_sync_smoke.py`**: синхронизация конфигурации при закрытии диалогов через кнопку закрытия `X` или Escape (`reject()`).
+11. **`test_forge_baseline.py` & `test_forge_edge_cases.py`**: интеграция SD WebUI Forge, устойчивость к поврежденным INI-файлам, кириллице и пробелам в путях, защита от лавинных запросов при мертвом бэкенде.
+12. **`test_forge_vram_profiles_smoke.py` (15 тестов)**: сквозной смоук-сьют цепочки `ProcessManager` → `ArtDirector` → `vram_policy` → `VRAMArbiter` → `ForgeClient.text_to_image` на краевых профилях VRAM (2/4/6/8/12 ГБ) для SD 1.5, SDXL FP8 и SDXL FP16 Heavy, включая `Host RAM Starvation Guard` на 4 ГБ RAM, авто-включение VAE Tiling и проверку идемпотентности выгрузок при смене моделей в одной сессии.
+13. **`test_layer_budgeter_profiles_smoke.py` (26 тестов)**: комплексный смоук-сьют калиброванного расчёта слоёв `LayerBudgeter` на 4 профилях видеокарт (2 ГБ, 4 ГБ, 8 ГБ, 16 ГБ), подтвердивший предотвращение WDDM paging, полнослойный возврат NGL=99 (48/48 слоёв) после выгрузки SD Forge при used VRAM = 590.5 МБ, устранение двойного налога `frag_margin`, нормализацию NGL в гистерезисе, привязку `_evicted_for_forge_ngl` к модели и сброс при смене модели.
+14. **`test_isolated_core_smoke.py`**: изолированная валидация атомарной записи JSON, арбитра VRAM, калькулятора слоев GGUF, AST-валидатора и конечного автомата `ModeCoordinator`.
+15. **`test_clean_pc_startup_smoke.py`**: холодный старт NeonRoute на чистом ПК без предварительно установленного Forge (отсутствие модальных блокировок и навязчивых окон при старте, мягкий фоллбэк на текстовый режим LLM-only).
+16. **`test_forge_settings_dialog_smoke.py` (3 теста)**: инициализация диалога настроек Forge, PEP 562 ленивый импорт в `ui.dialogs`, валидация путей и лаунчера, сохранение конфигурации и динамический жизненный цикл применения/отката патча.
 
 ### 7.5. Характеризационный базовый сьют ModelsManagerDialog (`tests/unit/test_models_manager_dialog.py`)
 

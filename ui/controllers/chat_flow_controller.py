@@ -59,7 +59,8 @@ from services.art_director import GenerationPlan, VisualIntent, TargetSubject
 from ui.components.chat_bubble import ChatMessageWidget
 import base64
 
-RE_IMAGE_TAG = re.compile(r'\[IMAGE[\s_-]PROMPT:\s*([\s\S]*?)\]', re.IGNORECASE)
+from services.regex_filter import TextRegexFilter
+RE_IMAGE_TAG = TextRegexFilter.RE_IMAGE_TAG
 
 
 def _resolve_target_image(prompt: str) -> Optional[str]:
@@ -1025,7 +1026,7 @@ class ChatFlowControllerMixin:
             img_match = art_filter.RE_IMAGE_FULL.search(full_text)
             if img_match:
                 tag_content = img_match.group(0)
-                m_prompt = re.search(r'\[IMAGE[\s_-]PROMPT:\s*([^\]]+)\]', tag_content, re.IGNORECASE)
+                m_prompt = TextRegexFilter.RE_IMAGE_TAG.search(tag_content)
                 if m_prompt:
                     extracted_prompt = m_prompt.group(1).strip()
             bubble.show_art_loading_placeholder(aspect_ratio=cast_ar, prompt=extracted_prompt)
