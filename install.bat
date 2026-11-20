@@ -78,26 +78,48 @@ if %ERRORLEVEL% NEQ 0 (
 :: 5. Install dependencies from requirements.txt
 echo.
 echo [3/5] Installing dependencies from requirements.txt...
-if exist "wheels\" (
-    echo [OFFLINE] Found wheels directory. Installing from local cache...
-    "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels -r requirements.txt
-) else (
-    echo [ONLINE] Installing dependencies from PyPI...
-    "%PYTHON_BIN%" -m pip install -r requirements.txt
+set "SKIP_PIP="
+if defined IS_EMBEDDED (
+    "%PYTHON_BIN%" -c "import PyQt6, qfluentwidgets, fastapi, lancedb" >nul 2>&1
+    if !ERRORLEVEL! EQU 0 (
+        echo [OK] Pre-installed dependencies found in autonomous runtime. Skipping pip install.
+        set "SKIP_PIP=1"
+    )
 )
 
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo [ERROR] Package installation failed.
-    echo Please check network connection or wheels integrity and review the log above.
-    echo =======================================================
-    if not "%1"=="--unattended" if not defined CI pause
-    exit /b %ERRORLEVEL%
+if not defined SKIP_PIP (
+    if exist "wheels\" (
+        echo [OFFLINE] Found wheels directory. Installing from local cache...
+        "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels -r requirements.txt
+    ) else (
+        echo [ONLINE] Installing dependencies from PyPI...
+        "%PYTHON_BIN%" -m pip install -r requirements.txt
+    )
+
+    if !ERRORLEVEL! NEQ 0 (
+        echo.
+        echo [ERROR] Package installation failed.
+        echo Please check network connection or wheels integrity and review the log above.
+        echo =======================================================
+        if not "%1"=="--unattended" if not defined CI pause
+        exit /b !ERRORLEVEL!
+    )
 )
 
-:: 6. Check and download llama-server binary
+:: 6. Create application shortcuts
 echo.
-echo [4/5] Checking llama-server engine...
+echo [4/5] Creating application shortcuts...
+set "SHORTCUT_ARGS="
+if "%1"=="--unattended" set "SHORTCUT_ARGS=--no-desktop"
+if "%2"=="--unattended" set "SHORTCUT_ARGS=--no-desktop"
+"%PYTHON_BIN%" scripts\create_shortcuts.py %SHORTCUT_ARGS%
+if !ERRORLEVEL! NEQ 0 (
+    echo [WARNING] Shortcut creation skipped or failed, continuing...
+)
+
+:: 7. Check and download llama-server binary
+echo.
+echo [5/5] Checking llama-server engine...
 set "SKIP_LLAMA="
 if "%1"=="--skip-llama" set "SKIP_LLAMA=1"
 if "%2"=="--skip-llama" set "SKIP_LLAMA=1"
@@ -111,17 +133,6 @@ if defined SKIP_LLAMA (
     if !ERRORLEVEL! NEQ 0 (
         echo [WARNING] llama-server auto-download skipped or failed, continuing...
     )
-)
-
-:: 7. Create application shortcuts
-echo.
-echo [5/5] Creating application shortcuts...
-set "SHORTCUT_ARGS="
-if "%1"=="--unattended" set "SHORTCUT_ARGS=--no-desktop"
-if "%2"=="--unattended" set "SHORTCUT_ARGS=--no-desktop"
-"%PYTHON_BIN%" scripts\create_shortcuts.py %SHORTCUT_ARGS%
-if !ERRORLEVEL! NEQ 0 (
-    echo [WARNING] Shortcut creation skipped or failed, continuing...
 )
 
 :: 8. Verify llama-server engine presence

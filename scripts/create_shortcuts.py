@@ -16,7 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from config import BASE_DIR, APP_ICON_PATH, APP_NAME, APP_USER_MODEL_ID
+try:
+    from config import BASE_DIR, APP_ICON_PATH, APP_USER_MODEL_ID
+    try:
+        from config import APP_NAME
+    except ImportError:
+        APP_NAME = "NeonRoute"
+except Exception:
+    BASE_DIR = REPO_ROOT
+    APP_ICON_PATH = REPO_ROOT / "assets" / "neonroute.ico"
+    APP_NAME = "NeonRoute"
+    APP_USER_MODEL_ID = "NeonRoute.Desktop.App.1"
 
 
 def _set_shortcut_app_id(link_path: Path, app_id: str) -> None:
@@ -37,24 +47,34 @@ def _set_shortcut_app_id(link_path: Path, app_id: str) -> None:
 
 def get_desktop_dir() -> Path:
     """
-    Resolves Desktop directory using PowerShell [Environment]::GetFolderPath('Desktop')
-    to properly handle OneDrive-redirected or localized Desktop paths.
+    Resolves Desktop directory using native Win32 API SHGetKnownFolderPath
+    (FOLDERID_Desktop = {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}) via ctypes
+    (c_wchar_p + CoTaskMemFree) to properly handle OneDrive-redirected or
+    localized Desktop paths and Cyrillic user names in UTF-16 without console
+    codepage dependency.
     """
-    try:
-        ps_cmd = "[Environment]::GetFolderPath('Desktop')"
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        desktop_str = result.stdout.strip()
-        if desktop_str:
-            p = Path(desktop_str)
-            if p.exists():
-                return p
-    except Exception as e:
-        print(f"[create_shortcuts] Warning resolving Desktop via PowerShell: {e}", file=sys.stderr)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import uuid
+
+            # FOLDERID_Desktop = {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}
+            guid_bytes = uuid.UUID("{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}").bytes_le
+            guid_buf = ctypes.create_string_buffer(guid_bytes)
+            ppath = ctypes.c_wchar_p()
+
+            res = ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.byref(guid_buf), 0, None, ctypes.byref(ppath)
+            )
+            if res == 0 and ppath.value:
+                desktop_path = Path(ppath.value)
+                ctypes.windll.ole32.CoTaskMemFree(ppath)
+                if desktop_path.exists():
+                    return desktop_path
+            elif ppath.value:
+                ctypes.windll.ole32.CoTaskMemFree(ppath)
+        except Exception as e:
+            print(f"[create_shortcuts] Warning resolving Desktop via Win32 API: {e}", file=sys.stderr)
 
     # Fallback to standard user desktop
     fallback = Path.home() / "Desktop"
@@ -70,28 +90,34 @@ def create_shortcut_powershell(
 ) -> bool:
     """
     Creates a Windows .lnk shortcut using WScript.Shell via PowerShell.
+    Paths are passed via environment variables (NR_LNK_PATH, NR_TARGET_PATH, etc.)
+    to safely handle apostrophes, spaces, and special characters.
     """
-    target_str = str(target_path.resolve())
-    link_str = str(link_path.resolve())
-    work_str = str(working_dir.resolve())
-    icon_str = f"{icon_path.resolve()}, 0" if icon_path and icon_path.exists() else ""
+    env = os.environ.copy()
+    env["NR_LNK_PATH"] = str(link_path.resolve())
+    env["NR_TARGET_PATH"] = str(target_path.resolve())
+    env["NR_WORKING_DIR"] = str(working_dir.resolve())
+    env["NR_DESCRIPTION"] = str(description)
+    env["NR_ICON_PATH"] = f"{icon_path.resolve()}, 0" if icon_path and icon_path.exists() else ""
 
-    ps_script = f"""
+    ps_script = """
 $ws = New-Object -ComObject WScript.Shell
-$s = $ws.CreateShortcut('{link_str}')
-$s.TargetPath = '{target_str}'
-$s.WorkingDirectory = '{work_str}'
-$s.Description = '{description}'
+$s = $ws.CreateShortcut($env:NR_LNK_PATH)
+$s.TargetPath = $env:NR_TARGET_PATH
+$s.WorkingDirectory = $env:NR_WORKING_DIR
+$s.Description = $env:NR_DESCRIPTION
+if ($env:NR_ICON_PATH) {
+    $s.IconLocation = $env:NR_ICON_PATH
+}
+$s.Save()
 """
-    if icon_str:
-        ps_script += f"$s.IconLocation = '{icon_str}'\n"
-    ps_script += "$s.Save()\n"
 
     try:
         res = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
             capture_output=True,
             text=True,
+            env=env,
             check=True
         )
         if link_path.exists():
@@ -143,7 +169,7 @@ def main() -> int:
         print("[create_shortcuts] Skipping Desktop shortcut (--no-desktop or CI mode).")
     else:
         desktop_dir = get_desktop_dir()
-        if desktop_dir.exists():
+        if desktop_dir and desktop_dir.exists():
             desktop_lnk = desktop_dir / "NeonRoute.lnk"
             print(f"[create_shortcuts] Creating Desktop shortcut: {desktop_lnk}")
             if create_shortcut_powershell(run_bat, desktop_lnk, BASE_DIR, icon, desc):
@@ -152,7 +178,8 @@ def main() -> int:
                 print(f"[create_shortcuts] Failed to create: {desktop_lnk}", file=sys.stderr)
                 success = False
         else:
-            print(f"[create_shortcuts] Desktop directory not found at {desktop_dir}; skipping.", file=sys.stderr)
+            print(f"[create_shortcuts] Error: Desktop directory not found at {desktop_dir}", file=sys.stderr)
+            success = False
 
     return 0 if success else 1
 
