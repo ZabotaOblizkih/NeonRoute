@@ -54,6 +54,8 @@ def parse_structured_art_response(raw_text: str) -> Optional[Dict[str, Any]]:
         clean = re.sub(r'\s*```$', '', clean, flags=re.IGNORECASE).strip()
 
     if "{" not in clean:
+        if "[IMAGE_PROMPT" in clean:
+            logger.warning("[StructuredArt] Falling back to [IMAGE_PROMPT] legacy format.")
         return None
 
     data = None
@@ -115,7 +117,15 @@ def parse_structured_art_response(raw_text: str) -> Optional[Dict[str, Any]]:
 
     if data and isinstance(data, dict):
         if "scene_prompt" in data:
+            logger.info(
+                f"[StructuredArt] JSON parsed successfully: ar={data.get('aspect_ratio')}, "
+                f"face={bool(data.get('face_prompt'))}, hands={bool(data.get('hands_prompt'))}, "
+                f"self={bool(data.get('is_self_portrait'))}"
+            )
             return data
+
+    if "[IMAGE_PROMPT" in raw_text:
+        logger.warning("[StructuredArt] Falling back to [IMAGE_PROMPT] legacy format.")
     return None
 
 
@@ -746,6 +756,8 @@ def build_gallery_art_plan(
             mode=mode,
         )
     else:
+        if "[IMAGE_PROMPT" not in clean_tags:
+            logger.warning("[StructuredArt] Structured JSON not found, falling back to [IMAGE_PROMPT] legacy parser.")
         extracted_tags, _ = TextRegexFilter.extract_image_prompt(
             clean_tags,
             strip_thoughts=False,
@@ -1009,6 +1021,8 @@ def prepare_assistant_art_dispatch(
         target_char = "Элария" if is_self else None
         return v_intent, effective_style or sug_model, is_self, target_char
 
+    if "[IMAGE_PROMPT" not in raw_prompt:
+        logger.warning("[StructuredArt] Structured JSON not found, falling back to [IMAGE_PROMPT] legacy parser.")
     parsed_flags = parse_image_prompt_flags(raw_prompt)
     effective_style = resolve_effective_art_style(
         parsed_model_style=parsed_flags.model_style,

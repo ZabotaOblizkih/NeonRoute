@@ -435,3 +435,105 @@ def test_stream_filter_and_sanitize_structured_art_response():
     assert target_char == "Элария"
 
 
+def test_adetailer_diagnostic_logging(caplog):
+    """
+    Проверка диагностического логирования:
+    1. parse_structured_art_response: logger.info с флагами (ar, face, hands, self) и warning при fallback.
+    2. _format_adetailer_log_blocks: теги [src=json|override|fallback] и статус SKIPPED при [SKIP].
+    3. forge_client slots_summary: SlotN(SKIPPED) при ad_model == 'None'.
+    """
+    import logging
+    from services.assistant_flow import parse_structured_art_response
+    from services.art_director.plan import GenerationPlan
+    from services.art_director.director import ArtDirector
+    from services.art_director.contracts import VisualIntent
+
+    caplog.set_level(logging.INFO)
+
+    # 1. parse_structured_art_response
+    valid_json = json.dumps({
+        "scene_prompt": "1girl, cyberpunk",
+        "face_prompt": "smile, glowing eyes",
+        "hands_prompt": "slender fingers",
+        "aspect_ratio": "portrait",
+        "is_self_portrait": True,
+    })
+    data = parse_structured_art_response(valid_json)
+    assert data is not None
+    assert "[StructuredArt] JSON parsed successfully: ar=portrait, face=True, hands=True, self=True" in caplog.text
+
+    # Fallback to [IMAGE_PROMPT]
+    legacy_prompt = "[IMAGE_PROMPT: 1girl, cyberpunk --ar portrait]"
+    caplog.clear()
+    data_legacy = parse_structured_art_response(legacy_prompt)
+    assert data_legacy is None
+    assert "Falling back to [IMAGE_PROMPT] legacy format" in caplog.text
+
+    # 2. _format_adetailer_log_blocks
+    # 2a. SKIPPED face & hands
+    plan_skipped = GenerationPlan(
+        enable_adetailer=True,
+        adetailer_hands_enabled=True,
+        ad_prompt="[SKIP]",
+        adetailer_hands_prompt="[SKIP]",
+        ad_source="json",
+        adetailer_hands_source="json",
+    )
+    face_info, hands_info = ArtDirector._format_adetailer_log_blocks(plan_skipped)
+    assert "SKIPPED [src=json] | Model=None" in face_info
+    assert "SKIPPED [src=json] | Model=None" in hands_info
+
+    # 2b. ON with sources: face=json, hands=override
+    plan_override = GenerationPlan(
+        enable_adetailer=True,
+        adetailer_hands_enabled=True,
+        ad_prompt="beautiful detailed face",
+        adetailer_hands_prompt="tactical gloves",
+        ad_source="json",
+        adetailer_hands_source="override",
+    )
+    face_info, hands_info = ArtDirector._format_adetailer_log_blocks(plan_override)
+    assert "ON [src=json]" in face_info
+    assert "ON [src=override]" in hands_info
+
+    # 2c. ON with fallback
+    plan_fallback = GenerationPlan(
+        enable_adetailer=True,
+        adetailer_hands_enabled=True,
+        ad_source="fallback",
+        adetailer_hands_source="fallback",
+    )
+    face_info, hands_info = ArtDirector._format_adetailer_log_blocks(plan_fallback)
+    assert "ON [src=fallback]" in face_info
+    assert "ON [src=fallback]" in hands_info
+
+    # 3. forge_client slots_summary with SKIPPED slot
+    plan_to_forge = GenerationPlan(
+        enable_adetailer=True,
+        adetailer_hands_enabled=True,
+        ad_prompt="[SKIP]",
+        adetailer_hands_prompt="delicate hands",
+    )
+    kwargs = plan_to_forge.to_forge_kwargs()
+    ad_args = kwargs["alwayson_scripts"]["ADetailer"]["args"]
+    # ad_args: [True, False, face_slot, hand_slot, ...]
+    assert ad_args[2]["ad_model"] == "None"
+    assert ad_args[3]["ad_model"] != "None"
+
+    # Simulate ForgeClient slot formatting
+    slots_summary = []
+    for idx, slot in enumerate(ad_args[2:], start=1):
+        if isinstance(slot, dict):
+            m = slot.get("ad_model", "none")
+            if m == "None":
+                slots_summary.append(f"Slot{idx}(SKIPPED)")
+            else:
+                d = slot.get("ad_denoising_strength", 0.0)
+                sz = slot.get("ad_inpaint_width", 0)
+                st = slot.get("ad_steps", "auto")
+                slots_summary.append(f"Slot{idx}({m}: d={d}, steps={st}, {sz}px)")
+    assert slots_summary[0] == "Slot1(SKIPPED)"
+    assert "Slot2(" in slots_summary[1] and "SKIPPED" not in slots_summary[1]
+
+
+

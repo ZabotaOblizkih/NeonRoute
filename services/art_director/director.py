@@ -571,36 +571,66 @@ class ArtDirector:
         neg_val = getattr(plan, "negative_prompt", "") or ""
         ad_p = getattr(plan, "ad_prompt", None) or pos_val
         ad_neg = getattr(plan, "ad_negative_prompt", None) or neg_val
-        face_p = f'"{ad_p}"' if ad_p else '""'
-        face_neg = f'"{ad_neg}"' if ad_neg else '""'
+
+        # Определение источника Face
+        face_src = getattr(plan, "ad_source", None)
+        if not face_src:
+            if ad_p == "[SKIP]":
+                face_src = "json"
+            elif getattr(plan, "ad_prompt", None) is not None and plan.ad_prompt != pos_val:
+                face_src = "json"
+            else:
+                face_src = "fallback"
+
         face_model = getattr(plan, "adetailer_face_model", "none")
         face_conf = getattr(plan, "adetailer_face_confidence", 0.0)
         face_denoise = getattr(plan, "adetailer_face_denoise", 0.0)
         face_inpaint_sz = getattr(plan, "adetailer_face_inpaint_size", getattr(plan, "adetailer_inpaint_size", 512))
-        ad_face_info = (
-            f"ON | Model={face_model} | Conf={face_conf} | "
-            f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
-            f"   └── Prompt: {face_p}\n"
-            f"   └── Neg   : {face_neg}"
-        )
+
+        if ad_p == "[SKIP]":
+            ad_face_info = f"SKIPPED [src={face_src}] | Model=None"
+        else:
+            face_p = f'"{ad_p}"' if ad_p else '""'
+            face_neg = f'"{ad_neg}"' if ad_neg else '""'
+            ad_face_info = (
+                f"ON [src={face_src}] | Model={face_model} | Conf={face_conf} | "
+                f"Denoise={face_denoise} | Inpaint={face_inpaint_sz}px\n"
+                f"   └── Prompt: {face_p}\n"
+                f"   └── Neg   : {face_neg}"
+            )
 
         ad_hands_info = "OFF"
         if getattr(plan, "adetailer_hands_enabled", False):
             h_p_val = getattr(plan, "adetailer_hands_prompt", None) or pos_val
             h_neg_val = getattr(plan, "adetailer_hands_negative_prompt", None) or neg_val
-            h_p = f'"{h_p_val}"' if h_p_val else '""'
-            h_neg = f'"{h_neg_val}"' if h_neg_val else '""'
+
+            # Определение источника Hands
+            hands_src = getattr(plan, "adetailer_hands_source", None)
+            if not hands_src:
+                if h_p_val == "[SKIP]":
+                    hands_src = "json"
+                elif getattr(plan, "adetailer_hands_prompt", None) is not None and plan.adetailer_hands_prompt != pos_val:
+                    hands_src = "json"
+                else:
+                    hands_src = "fallback"
+
             h_sz = getattr(plan, "adetailer_hands_inpaint_size", 512)
             h_model = getattr(plan, "adetailer_hands_model", "none")
             h_conf = getattr(plan, "adetailer_hands_confidence", 0.0)
             h_denoise = getattr(plan, "adetailer_hands_denoise", 0.0)
             h_blur = getattr(plan, "adetailer_hands_mask_blur", 8)
-            ad_hands_info = (
-                f"ON | Model={h_model} | Conf={h_conf} | "
-                f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
-                f"   └── Prompt: {h_p}\n"
-                f"   └── Neg   : {h_neg}"
-            )
+
+            if h_p_val == "[SKIP]":
+                ad_hands_info = f"SKIPPED [src={hands_src}] | Model=None"
+            else:
+                h_p = f'"{h_p_val}"' if h_p_val else '""'
+                h_neg = f'"{h_neg_val}"' if h_neg_val else '""'
+                ad_hands_info = (
+                    f"ON [src={hands_src}] | Model={h_model} | Conf={h_conf} | "
+                    f"Denoise={h_denoise} | Inpaint={h_sz}px | Blur={h_blur}\n"
+                    f"   └── Prompt: {h_p}\n"
+                    f"   └── Neg   : {h_neg}"
+                )
         return ad_face_info, ad_hands_info
 
     def _log_vram_planner_passport(
@@ -1245,6 +1275,7 @@ class ArtDirector:
         # Разрешение раздельных слотов ADetailer (Face и Hands)
         # 1. Слот лица
         if intent.face_prompt is not None:
+            face_source = "json"
             if intent.face_prompt.strip() == "":
                 resolved_face_prompt = "[SKIP]"
             else:
@@ -1262,13 +1293,16 @@ class ArtDirector:
                 else:
                     resolved_face_prompt = face_clean
         else:
+            face_source = "fallback"
             resolved_face_prompt = final_positive
 
         # 2. Слот рук
         manual_hand_override = model_pipeline.get("adetailer_hands_prompt") if isinstance(model_pipeline, dict) else None
         if manual_hand_override and str(manual_hand_override).strip() and "legacy" not in str(manual_hand_override).lower():
+            hands_source = "override"
             resolved_hands_prompt = str(manual_hand_override).strip()
         elif intent.hands_prompt is not None:
+            hands_source = "json"
             if intent.hands_prompt.strip() == "":
                 resolved_hands_prompt = "[SKIP]"
             else:
@@ -1280,6 +1314,7 @@ class ArtDirector:
                 else:
                     resolved_hands_prompt = hands_clean
         else:
+            hands_source = "fallback"
             resolved_hands_prompt = final_positive
 
         manual_hand_neg_override = model_pipeline.get("adetailer_hands_negative_prompt") if isinstance(model_pipeline, dict) else None
@@ -1346,6 +1381,8 @@ class ArtDirector:
             adetailer_hands=hands_enabled,
             adetailer_hands_prompt=resolved_hands_prompt,
             adetailer_hands_negative_prompt=resolved_hands_neg,
+            ad_source=face_source,
+            adetailer_hands_source=hands_source,
             archetype=archetype,
         )
 
@@ -1878,6 +1915,8 @@ class ArtDirector:
             adetailer_hands=hands_enabled,
             adetailer_hands_prompt=final_positive,
             adetailer_hands_negative_prompt=final_negative,
+            ad_source="fallback",
+            adetailer_hands_source="fallback",
             archetype=archetype,
             raw_prompt=raw_prompt,
         )

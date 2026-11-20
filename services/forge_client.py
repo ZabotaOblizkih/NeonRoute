@@ -1111,10 +1111,13 @@ class ForgeClient(QObject):
             for idx, slot in enumerate(ad_args[2:], start=1):
                 if isinstance(slot, dict):
                     m = slot.get("ad_model", "none")
-                    d = slot.get("ad_denoising_strength", 0.0)
-                    sz = slot.get("ad_inpaint_width", 0)
-                    st = slot.get("ad_steps", "auto")
-                    slots_summary.append(f"Slot{idx}({m}: d={d}, steps={st}, {sz}px)")
+                    if m == "None":
+                        slots_summary.append(f"Slot{idx}(SKIPPED)")
+                    else:
+                        d = slot.get("ad_denoising_strength", 0.0)
+                        sz = slot.get("ad_inpaint_width", 0)
+                        st = slot.get("ad_steps", "auto")
+                        slots_summary.append(f"Slot{idx}({m}: d={d}, steps={st}, {sz}px)")
             if slots_summary:
                 logger.info(f"[ForgeClient.ADetailer] Активные слоты в payload: {' | '.join(slots_summary)}")
 

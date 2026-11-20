@@ -92,6 +92,8 @@ class GenerationPlan:
     adetailer_hands_mask_blur: int = 8
     adetailer_hands_prompt: Optional[str] = None
     adetailer_hands_negative_prompt: Optional[str] = None
+    ad_source: Optional[str] = None
+    adetailer_hands_source: Optional[str] = None
     archetype: str = "unknown"
     raw_prompt: Optional[str] = None
 
