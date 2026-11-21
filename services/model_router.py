@@ -174,6 +174,11 @@ class ModelRouter(metaclass=ModelRouterMeta):
         self.embeddings: Dict[str, np.ndarray] = {}
         self._embed_engine = None
         self._deferred_timer: Optional[threading.Timer] = None
+        self._embed_calc_lock = threading.Lock()
+        self._update_in_progress = False
+        self._rerun_requested = False
+        self._last_computed_descriptors: Optional[List[Tuple[str, str]]] = None
+        self._embeddings_loaded = False
 
         if auto_load:
             self.load_profiles()
@@ -191,12 +196,14 @@ class ModelRouter(metaclass=ModelRouterMeta):
     def cancel_deferred_warmup(self) -> None:
         """Отменяет висящий таймер фонового прогрева, предотвращая утечки потоков."""
         self._cancel_deferred_timer()
+        self._update_in_progress = False
+        self._rerun_requested = False
         self._initialized = False
 
     def update_embeddings_async(self, delay: float = 5.0):
         """
-        Runs update_embeddings in a background daemon thread with deferred delay
-        to eliminate CPU contention with LLM startup and prevent GUI freeze.
+        Запускает обновление векторных эмбеддингов в фоновом потоке без блокировки GUI.
+        Поддерживает дедупликацию, коалесинг повторных вызовов и отмену устаревших таймеров.
         """
         # Гасим предыдущий незавершенный таймер (защита от гонок и утечек)
         self._cancel_deferred_timer()
@@ -206,15 +213,49 @@ class ModelRouter(metaclass=ModelRouterMeta):
             return None
 
         if delay > 0:
-            timer = threading.Timer(delay, self.update_embeddings)
+            timer = threading.Timer(delay, self._on_deferred_timer_fired)
             timer.daemon = True
             timer.name = "ModelRouterDeferredWarmup"
             self._deferred_timer = timer
             timer.start()
             return timer
-        thread = threading.Thread(target=self.update_embeddings, daemon=True, name="ModelRouterWarmup")
+
+        return self._schedule_async_worker()
+
+    def _on_deferred_timer_fired(self) -> None:
+        """Колбэк таймера: запуск воркера обновления эмбеддингов."""
+        self._deferred_timer = None
+        self._schedule_async_worker()
+
+    def _schedule_async_worker(self) -> Optional[threading.Thread]:
+        """Планирует или коалесит фоновый поток обновления эмбеддингов."""
+        with self._embed_calc_lock:
+            if self._update_in_progress:
+                self._rerun_requested = True
+                logger.debug("[ModelRouter] update_embeddings already in progress, coalesced rerun requested.")
+                return None
+            self._update_in_progress = True
+            self._rerun_requested = False
+
+        thread = threading.Thread(target=self._async_worker_loop, daemon=True, name="ModelRouterWarmup")
         thread.start()
         return thread
+
+    def _async_worker_loop(self) -> None:
+        """Цикл фонового воркера с поддержкой отложенного перезапуска (coalescing)."""
+        while True:
+            try:
+                self._do_update_embeddings()
+            except Exception as e:
+                logger.error(f"[ModelRouter] Error in background embedding update: {e}", exc_info=True)
+
+            with self._embed_calc_lock:
+                if self._rerun_requested:
+                    self._rerun_requested = False
+                    continue
+                else:
+                    self._update_in_progress = False
+                    break
 
     def get_embedding_engine(self):
         """
@@ -323,20 +364,44 @@ class ModelRouter(metaclass=ModelRouterMeta):
 
     def update_embeddings(self) -> None:
         """
-        Calculates FastEmbed embeddings for the routing_description field of each active model.
+        Синхронный расчёт FastEmbed эмбеддингов (для CLI и тестов).
+        Защищён блокировкой _embed_calc_lock от гонок с фоновым потоком.
+        """
+        with self._embed_calc_lock:
+            self._cancel_deferred_timer()
+            self._do_update_embeddings()
+
+    def _do_update_embeddings(self) -> None:
+        """
+        Внутренний исполнитель расчёта FastEmbed эмбеддингов.
+        Выполняет дедупликацию по дескрипторам и потокобезопасную атомарную подмену.
         """
         self.load_profiles()
+        active_models = [m for m in self.profiles if m.get("active", True)]
+        current_descriptors = [
+            (
+                m.get("id", ""),
+                (m.get("routing_description") or m.get("description") or "").strip()
+            )
+            for m in active_models
+        ]
+
+        # Дедупликация: если дескрипторы не изменились и эмбеддинги уже в памяти, пропускаем
+        if (
+            getattr(self, "_embeddings_loaded", False)
+            and self.embeddings
+            and getattr(self, "_last_computed_descriptors", None) == current_descriptors
+        ):
+            logger.debug("[ModelRouter] Model profiles and descriptions unchanged, skipping embedding recomputation.")
+            return
+
         engine = self.get_embedding_engine()
         if engine is None:
             logger.warning("[ModelRouter] Embedding engine unavailable, skipping update_embeddings.")
             return
 
-        active_models = [m for m in self.profiles if m.get("active", True)]
         new_embeddings: Dict[str, np.ndarray] = {}
-
-        for m in active_models:
-            m_id = m.get("id", "")
-            desc = (m.get("routing_description") or m.get("description") or "").strip()
+        for m_id, desc in current_descriptors:
             if not m_id or not desc:
                 continue
 
@@ -351,7 +416,9 @@ class ModelRouter(metaclass=ModelRouterMeta):
             except Exception as e:
                 logger.error(f"[ModelRouter] Error embedding profile '{m_id}': {e}")
 
+        # Атомарная подмена словаря эмбеддингов
         self.embeddings = new_embeddings
+        self._last_computed_descriptors = current_descriptors
         self._embeddings_loaded = True
         logger.info(f"[ModelRouter] Vector embeddings updated for {len(self.embeddings)} active models.")
 

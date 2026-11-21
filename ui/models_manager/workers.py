@@ -164,11 +164,12 @@ class FP8ConvertWorker(QThread):
     conversion_finished = pyqtSignal(str)
     conversion_failed = pyqtSignal(str)
 
-    def __init__(self, python_exe: str, script_path: Path, input_checkpoint_path: Path, parent=None):
+    def __init__(self, python_exe: str, script_path: Path, input_checkpoint_path: Path, forge_client: Optional[ForgeClient] = None, parent=None):
         super().__init__(parent)
         self.python_exe = str(python_exe)
         self.script_path = Path(script_path)
         self.input_checkpoint_path = Path(input_checkpoint_path)
+        self.forge_client = forge_client
         stem = self.input_checkpoint_path.stem
         ext = self.input_checkpoint_path.suffix
         stem_lower = stem.lower()
@@ -277,6 +278,11 @@ class FP8ConvertWorker(QThread):
 
             ret = self.process.wait()
             if ret == 0 and self.dst_path.exists() and self.dst_path.stat().st_size > 0:
+                if self.forge_client is not None:
+                    try:
+                        self.forge_client.refresh_checkpoints()
+                    except Exception as e_rf:
+                        logger.debug(f"[FP8ConvertWorker] refresh_checkpoints background error (ignored): {e_rf}")
                 self.conversion_finished.emit(str(self.dst_path))
             else:
                 tail_msg = chr(10).join(stdout_tail)
@@ -312,6 +318,10 @@ def register_orphaned_worker(worker: Optional[QThread]) -> None:
                     lambda w=worker: _MODELS_MANAGER_ORPHANED_WORKERS.remove(w)
                     if w in _MODELS_MANAGER_ORPHANED_WORKERS else None
                 )
+                try:
+                    worker.finished.connect(worker.deleteLater)
+                except Exception:
+                    pass
     except Exception as e:
         logger.debug(f"[Workers] register_orphaned_worker error: {e}")
 

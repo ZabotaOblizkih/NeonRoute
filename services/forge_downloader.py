@@ -17,7 +17,7 @@ import threading
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, Callable, List
+from typing import Optional, Tuple, Dict, Any, Callable, List, Union
 
 import urllib.request
 import urllib.error
@@ -195,8 +195,11 @@ def extract_7z_archive(archive_path: Path, target_dir: Path) -> Tuple[bool, str]
     При успехе проверяет появление файлов Forge. При неудаче возвращает (False, "MANUAL_EXTRACT_REQUIRED").
     """
     archive_path = Path(archive_path).resolve()
-    target_dir = Path(target_dir).resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir, _ = validate_or_fallback_forge_dir(target_dir)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, f"Ошибка создания папки распаковки {target_dir}: {e}"
 
     if not archive_path.is_file():
         return False, f"Файл архива не найден: {archive_path}"
@@ -321,10 +324,49 @@ def create_forge_launcher_bat(forge_root: Path) -> Path:
     return launcher_file
 
 
+def get_default_forge_install_dir(preferred_name: str = "sd-webui-forge") -> Path:
+    """
+    Возвращает безопасный путь установки на реально существующем системном диске.
+    Приоритет: C:/ (если диск существует) -> диск BASE_DIR -> первый найденный диск системы.
+    """
+    clean_name = preferred_name.strip("/\\") or "sd-webui-forge"
+    if Path("C:/").exists():
+        return Path(f"C:/{clean_name}").resolve()
+    base_dir = getattr(config, "BASE_DIR", None)
+    if base_dir and hasattr(base_dir, "drive") and base_dir.drive:
+        b_drive = base_dir.drive
+        if Path(b_drive + "/").exists():
+            return Path(f"{b_drive}/{clean_name}").resolve()
+    import string
+    for letter in string.ascii_uppercase:
+        d_path = Path(f"{letter}:/")
+        if d_path.exists():
+            return (d_path / clean_name).resolve()
+    return Path(f"./{clean_name}").resolve()
+
+
+def validate_or_fallback_forge_dir(target_dir: Union[str, Path, None]) -> Tuple[Path, bool]:
+    """
+    Проверяет валидность и существование физического диска для target_dir.
+    Если диск отсутствует в системе, автоматически подбирает доступный существующий диск.
+    Возвращает: (валидный Path, был_ли_фоллбэк: bool).
+    """
+    try:
+        t_path = Path(target_dir).resolve() if target_dir else get_default_forge_install_dir()
+    except Exception:
+        return get_default_forge_install_dir(), True
+
+    drive = t_path.drive
+    if drive and not Path(drive + "/").exists():
+        fallback = get_default_forge_install_dir(t_path.name or "sd-webui-forge")
+        return fallback, True
+    return t_path, False
+
+
 def _check_disk_space(target_path: Path, required_bytes: int, part_path: Optional[Path] = None) -> Tuple[bool, int, int]:
     """Проверяет доступное место на диске с учётом уже скачанных байт .part."""
     try:
-        check_dir = target_path
+        check_dir = Path(target_path).resolve()
         while not check_dir.exists() and check_dir.parent != check_dir:
             check_dir = check_dir.parent
         usage = shutil.disk_usage(str(check_dir))
@@ -345,14 +387,25 @@ def install_forge_pipeline(
 ) -> Tuple[bool, str, str]:
     """
     Полный автоматический конвейер установки Forge:
-    1. Проверка свободного места на диске (>= 12 ГБ или 14.5 ГБ с DreamShaper).
-    2. Скачивание архива Forge (stage="forge").
-    3. Распаковка архива и создание forge_launcher.bat (stage="extract").
-    4. Загрузка детекторов ADetailer (stage="adetailer").
-    5. Скачивание DreamShaper 8 и регистрация в art_director_models.json (stage="checkpoint").
+    1. Проверка существования диска и создание целевой директории.
+    2. Проверка свободного места на диске (>= 12 ГБ или 14.5 ГБ с DreamShaper).
+    3. Скачивание архива Forge (stage="forge").
+    4. Распаковка архива и создание forge_launcher.bat (stage="extract").
+    5. Загрузка детекторов ADetailer (stage="adetailer").
+    6. Скачивание DreamShaper 8 и регистрация в art_director_models.json (stage="checkpoint").
     """
-    target_dir = Path(target_dir).resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir, fell_back = validate_or_fallback_forge_dir(target_dir)
+    if fell_back:
+        logger.warning(
+            f"[ForgeDownloader] Целевой диск для Forge не найден в системе. "
+            f"Автоматическое переключение на доступный диск: {target_dir}"
+        )
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error(f"[ForgeDownloader] Не удалось создать директорию {target_dir}: {e}")
+        return False, "", f"Не удалось создать директорию установки '{target_dir}': {e}"
 
     spec = resolve_forge_hardware_spec()
 
@@ -654,6 +707,25 @@ class ForgeDownloadWorker(QThread):
 
 
 _ACTIVE_FORGE_WORKER: Optional[ForgeDownloadWorker] = None
+
+
+def start_forge_download_worker(worker: ForgeDownloadWorker) -> None:
+    """
+    Регистрирует воркер в глобальном реестре ДО запуска QThread.
+
+    Если сильная ссылка на QThread появляется только внутри run(), Python
+    успевает уничтожить объект сразу после worker.start(), пока новый поток
+    ещё не получил GIL. Это приводит к фатальному падению процесса:
+    "QThread: Destroyed while thread is still running" (0xC0000409).
+    """
+    global _ACTIVE_FORGE_WORKER
+    _ACTIVE_FORGE_WORKER = worker
+    try:
+        worker.start()
+    except Exception:
+        if _ACTIVE_FORGE_WORKER is worker:
+            _ACTIVE_FORGE_WORKER = None
+        raise
 
 
 def get_active_forge_download_worker() -> Optional[ForgeDownloadWorker]:

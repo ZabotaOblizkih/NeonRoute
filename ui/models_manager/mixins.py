@@ -643,9 +643,20 @@ class ForgeCivitaiSyncMixin:
             self.btn_refresh_forge.setText("Опрос Forge...")
             self.btn_refresh_forge.setIcon(FIF.SYNC)
 
-        self._scan_worker = ForgeScanWorker(self.forge_client, parent=self)
-        self._scan_worker.scan_completed.connect(self._on_forge_scan_completed)
-        self._scan_worker.start()
+        worker = ForgeScanWorker(self.forge_client, parent=None)
+        self._scan_worker = worker
+        worker.scan_completed.connect(self._on_forge_scan_completed)
+
+        def _on_scan_finished():
+            if getattr(self, "_scan_worker", None) is worker:
+                self._scan_worker = None
+
+        worker.finished.connect(_on_scan_finished)
+        try:
+            worker.finished.connect(worker.deleteLater)
+        except Exception:
+            pass
+        worker.start()
 
     def _on_forge_scan_completed(self, raw_models: list, installed_list: list, upscalers: list):
         if not getattr(self, "_scan_silent", True):
@@ -799,8 +810,6 @@ class ForgeCivitaiSyncMixin:
                 msg += f"\n\nАвтоматически добавлено новых моделей: {new_added}."
             QMessageBox.information(self, "Сканирование чекпоинтов Forge", msg)
 
-        self._scan_worker = None
-
     def _scan_forge_checkpoints(self, silent: bool = False):
         """Псевдоним для обратной совместимости."""
         self._start_forge_scan(silent=silent)
@@ -820,14 +829,48 @@ class ForgeCivitaiSyncMixin:
         self.btn_autofill_params.setEnabled(False)
         self.btn_autofill_params.setText("Опрос Civitai...")
         self.btn_autofill_params.setIcon(FIF.SYNC)
+
+        # Очищаем возможный висящий курсор ожидания перед запуском
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
-        self._civitai_worker = CivitaiParamsWorker(checkpoint, parent=self)
-        self._civitai_worker.params_ready.connect(self._on_civitai_params_ready)
-        self._civitai_worker.error_occurred.connect(self._on_civitai_params_error)
-        self._civitai_worker.start()
+        try:
+            worker = CivitaiParamsWorker(checkpoint, parent=None)
+            self._civitai_worker = worker
+            worker.params_ready.connect(self._on_civitai_params_ready)
+            worker.error_occurred.connect(self._on_civitai_params_error)
+
+            def _on_civitai_finished():
+                if getattr(self, "_civitai_worker", None) is worker:
+                    self._civitai_worker = None
+
+            worker.finished.connect(_on_civitai_finished)
+            try:
+                worker.finished.connect(worker.deleteLater)
+            except Exception:
+                pass
+            worker.start()
+        except Exception as e:
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+            self._civitai_worker = None
+            self.btn_autofill_params.setEnabled(True)
+            self.btn_autofill_params.setText("Автонастройка (Civitai)")
+            self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
+            logger.error(f"[ForgeCivitaiSyncMixin] Ошибка запуска CivitaiParamsWorker: {e}", exc_info=True)
+            InfoBar.error(
+                title="Ошибка запуска Civitai",
+                content=f"Не удалось запустить опрос Civitai: {e}",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=4000
+            )
 
     def _on_civitai_params_ready(self, params: dict):
+        # Гарантированный сброс курсора ожидания до показа возможных диалогов
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
         try:
             target_row = getattr(self, "_autofill_target_row", self.current_selected_row)
             if target_row < 0 or target_row >= len(self.row_widgets):
@@ -948,14 +991,16 @@ class ForgeCivitaiSyncMixin:
                 duration=4000
             )
         finally:
-            self._civitai_worker = None
-            QApplication.restoreOverrideCursor()
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
             self.btn_autofill_params.setEnabled(True)
             self.btn_autofill_params.setText("Автонастройка (Civitai)")
             self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
 
     def _on_civitai_params_error(self, err_msg: str):
         try:
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
             logger.error(f"[ForgeCivitaiSyncMixin] Сбой автонастройки: {err_msg}")
             InfoBar.error(
                 title="Ошибка сети Civitai",
@@ -965,8 +1010,8 @@ class ForgeCivitaiSyncMixin:
                 duration=4500
             )
         finally:
-            self._civitai_worker = None
-            QApplication.restoreOverrideCursor()
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
             self.btn_autofill_params.setEnabled(True)
             self.btn_autofill_params.setText("Автонастройка (Civitai)")
             self.btn_autofill_params.setIcon(FIF.CLOUD_DOWNLOAD)
@@ -1129,11 +1174,28 @@ class FP8ConversionMixin:
         self.lbl_fp8_status.setText("Запуск конвертера FP8 (e4m3fn)...")
         QApplication.processEvents()
 
-        self._fp8_worker = FP8ConvertWorker(python_exe, script_path, ckpt_path, parent=self)
-        self._fp8_worker.progress_updated.connect(self._on_fp8_progress)
-        self._fp8_worker.conversion_finished.connect(self._on_fp8_finished)
-        self._fp8_worker.conversion_failed.connect(self._on_fp8_failed)
-        self._fp8_worker.start()
+        worker = FP8ConvertWorker(
+            python_exe,
+            script_path,
+            ckpt_path,
+            forge_client=getattr(self, "forge_client", None),
+            parent=None
+        )
+        self._fp8_worker = worker
+        worker.progress_updated.connect(self._on_fp8_progress)
+        worker.conversion_finished.connect(self._on_fp8_finished)
+        worker.conversion_failed.connect(self._on_fp8_failed)
+
+        def _on_fp8_finished_cb():
+            if getattr(self, "_fp8_worker", None) is worker:
+                self._fp8_worker = None
+
+        worker.finished.connect(_on_fp8_finished_cb)
+        try:
+            worker.finished.connect(worker.deleteLater)
+        except Exception:
+            pass
+        worker.start()
 
     def _on_fp8_progress(self, msg: str):
         """Отображает текущий прогресс конвертации в UI."""
@@ -1202,14 +1264,7 @@ class FP8ConversionMixin:
                 except Exception as e:
                     logger.error(f"[FP8] Ошибка при замене исходного файла: {e}", exc_info=True)
 
-        # 3. Вызов refresh_checkpoints в Forge
-        if hasattr(self, "forge_client") and self.forge_client:
-            try:
-                self.forge_client.refresh_checkpoints()
-            except Exception as e:
-                logger.debug(f"refresh_checkpoints error: {e}")
-
-        # 4. Обновление списков доступных чекпоинтов
+        # 3. Обновление списков доступных чекпоинтов
         if final_checkpoint_name not in self.available_checkpoints:
             self.available_checkpoints.append(final_checkpoint_name)
 
@@ -1254,7 +1309,6 @@ class FP8ConversionMixin:
         self._update_fp8_button_state()
         self.progress_fp8.setVisible(False)
         self.lbl_fp8_status.setVisible(False)
-        self._fp8_worker = None
         self._fp8_source_path = None
         self._fp8_source_name = ""
         self._fp8_target_row = -1
@@ -1279,7 +1333,6 @@ class FP8ConversionMixin:
         self._update_fp8_button_state()
         self.progress_fp8.setVisible(False)
         self.lbl_fp8_status.setVisible(False)
-        self._fp8_worker = None
         self._fp8_source_path = None
         self._fp8_source_name = ""
         self._fp8_target_row = -1

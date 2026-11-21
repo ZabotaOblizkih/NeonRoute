@@ -48,8 +48,11 @@ from services.forge_patcher import ForgePatcher, ForgePatchStatus
 from services.forge_downloader import (
     ForgeDownloadWorker,
     get_active_forge_download_worker,
+    start_forge_download_worker,
     resolve_forge_hardware_spec,
     ForgeInstallSpec,
+    get_default_forge_install_dir,
+    validate_or_fallback_forge_dir,
 )
 from ui.common.palette_utils import extract_adaptive_palette
 from ui.common.toast_helper import toast_success, toast_info, toast_warning, toast_error
@@ -74,6 +77,7 @@ class ForgeSettingsDialog(FramelessDialog):
         self._parent_ref = parent
         self._auto_start_download = auto_start_download
         self._hardware_spec: Optional[ForgeInstallSpec] = None
+        self._forge_download_worker: Optional[ForgeDownloadWorker] = None
         self.setWindowTitle("Настройки SD WebUI Forge — NeonRoute")
         self.setObjectName("ForgeSettingsDialog")
         self.resize(580, 680)
@@ -266,9 +270,14 @@ class ForgeSettingsDialog(FramelessDialog):
             super().keyPressEvent(event)
 
     def _load_current_settings(self):
-        """Загрузка сохраненных параметров Forge."""
+        """Загрузка сохраненных параметров Forge с проверкой доступности диска."""
         self.app_cfg = ConfigManager.load_config()
-        self.current_forge_root = str(config.FORGE_ROOT_DIR.resolve()) if config.FORGE_ROOT_DIR else ""
+        raw_root = str(config.FORGE_ROOT_DIR.resolve()) if config.FORGE_ROOT_DIR else ""
+        if raw_root:
+            valid_root, _ = validate_or_fallback_forge_dir(raw_root)
+            self.current_forge_root = str(valid_root)
+        else:
+            self.current_forge_root = str(get_default_forge_install_dir())
         self.current_sdxl_fp8 = bool(self.app_cfg.get("forge_sdxl_fp8_enabled", True))
         self.current_auto_art = bool(self.app_cfg.get("auto_generate_art", False))
 
@@ -669,7 +678,7 @@ class ForgeSettingsDialog(FramelessDialog):
 
     def _disconnect_forge_worker_signals(self, worker: Optional[ForgeDownloadWorker] = None):
         """Отключает слоты диалога от сигналов рабочего потока во избежание RuntimeError."""
-        w = worker or get_active_forge_download_worker()
+        w = worker or self._forge_download_worker or get_active_forge_download_worker()
         if w is not None:
             try:
                 w.progress_signal.disconnect(self._on_forge_download_progress)
@@ -701,14 +710,24 @@ class ForgeSettingsDialog(FramelessDialog):
 
         target_path_str = self.line_path.text().strip()
         if not target_path_str:
-            target_path = Path("C:/sd-webui-forge")
+            target_path = get_default_forge_install_dir()
             self.line_path.setText(str(target_path))
         else:
-            target_path = Path(target_path_str)
+            target_path, fell_back = validate_or_fallback_forge_dir(target_path_str)
+            if fell_back:
+                toast_warning(
+                    self,
+                    "Диск недоступен",
+                    f"Диск указанного пути не найден. Путь переключен на: {target_path}",
+                )
+                self.line_path.setText(str(target_path))
 
         download_dreamshaper = self.chk_download_dreamshaper.isChecked()
 
         worker = ForgeDownloadWorker(target_dir=target_path, download_dreamshaper=download_dreamshaper)
+        # Держим сильную ссылку и регистрируем воркер ДО start(), иначе QThread
+        # может быть уничтожен сборщиком мусора прямо во время работы (0xC0000409).
+        self._forge_download_worker = worker
         self._connect_forge_worker_signals(worker)
 
         self.btn_download_forge.hide()
@@ -720,7 +739,7 @@ class ForgeSettingsDialog(FramelessDialog):
         self.lbl_download_status.setText("⏳ Подготовка к скачиванию SD WebUI Forge...")
         self.chk_download_dreamshaper.setEnabled(False)
 
-        worker.start()
+        start_forge_download_worker(worker)
 
     def _cancel_forge_download(self):
         """Отмена фоновой загрузки Forge."""
@@ -770,6 +789,9 @@ class ForgeSettingsDialog(FramelessDialog):
     def _on_forge_download_finished(self, success: bool, resolved_root: str, message: str):
         """Слот завершения процесса установки Forge."""
         self._disconnect_forge_worker_signals()
+        # Глобальный реестр ещё держит QThread до сигнала finished, поэтому
+        # сбрасываем локальную ссылку только здесь, после отписки от сигналов.
+        self._forge_download_worker = None
         self.btn_cancel_forge_dl.hide()
         self.btn_cancel_forge_dl.setEnabled(True)
         self.chk_download_dreamshaper.setEnabled(True)

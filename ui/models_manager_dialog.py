@@ -806,10 +806,21 @@ class ModelsManagerDialog(
         self.btn_test_match.setText("Расчёт...")
         self.result_badge.set_loading()
 
-        self._test_worker = RoutingTestWorker(test_text, current_profiles, self.router, parent=self)
-        self._test_worker.result_ready.connect(self._on_test_match_success)
-        self._test_worker.error_occurred.connect(self._on_test_match_failed)
-        self._test_worker.start()
+        worker = RoutingTestWorker(test_text, current_profiles, self.router, parent=None)
+        self._test_worker = worker
+        worker.result_ready.connect(self._on_test_match_success)
+        worker.error_occurred.connect(self._on_test_match_failed)
+
+        def _on_test_finished():
+            if getattr(self, "_test_worker", None) is worker:
+                self._test_worker = None
+
+        worker.finished.connect(_on_test_finished)
+        try:
+            worker.finished.connect(worker.deleteLater)
+        except Exception:
+            pass
+        worker.start()
 
     def _on_test_match_success(self, winner_id: str, score: float, reason: str, profiles: list):
         self.btn_test_match.setEnabled(True)
@@ -824,13 +835,11 @@ class ModelsManagerDialog(
                 break
 
         self.result_badge.set_success(winner_name, winner_ckpt, reason, score)
-        self._test_worker = None
 
     def _on_test_match_failed(self, err_msg: str):
         self.btn_test_match.setEnabled(True)
         self.btn_test_match.setText("Проверить выбор")
         self.result_badge.set_error(f"Ошибка роутинга: {err_msg}")
-        self._test_worker = None
 
     def _on_test_prompt_clicked(self):
         """Псевдоним для обратной совместимости."""
@@ -924,32 +933,42 @@ class ModelsManagerDialog(
 
     def _save_all(self):
         """
-        Сохраняет модели в data/art_director_models.json и синхронизирует кэш FastEmbed.
+        Сохраняет модели в data/art_director_models.json и запускает неблокирующее обновление FastEmbed.
         """
         self._save_models_to_json()
         if not self.models:
             QMessageBox.warning(self, "Ошибка", "Таблица моделей пуста.")
             return
 
-        # 2. Обновление FastEmbed эмбеддингов
+        # 2. Неблокирующее обновление FastEmbed эмбеддингов
         if self.art_director and hasattr(self.art_director, "router") and self.art_director.router:
-            self.art_director.router.update_embeddings()
+            self.art_director.router.update_embeddings_async(delay=0.0)
         else:
-            self.router.update_embeddings()
+            self.router.update_embeddings_async(delay=0.0)
 
         # 3. Синхронизация реестра моделей Forge
         sync_registry_with_user_config()
 
-        QMessageBox.information(
-            self,
-            "Сохранено",
-            f"Успешно сохранено {len(self.models)} моделей в data/art_director_models.json.\n"
-            "Векторные эмбеддинги роутера обновлены!"
+        # 4. Неблокирующее уведомление пользователя в UI
+        InfoBar.info(
+            title="Сохранено",
+            content=f"Успешно сохранено {len(self.models)} моделей в data/art_director_models.json.\n"
+                    "Векторные эмбеддинги роутера обновляются в фоне.",
+            parent=self,
+            position=InfoBarPosition.TOP_RIGHT,
+            duration=4000
         )
 
     # ---------------- Lifecycle & Thread Safety ---------------- #
     def _stop_all_workers(self):
         """Безопасная остановка всех фоновых потоков менеджера моделей."""
+        # Гарантированный сброс WaitCursor при закрытии окна
+        while QApplication.overrideCursor() is not None:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                break
+
         workers = [self._scan_worker, self._test_worker, self._civitai_worker, self._fp8_worker]
         for worker in workers:
             if worker is None:

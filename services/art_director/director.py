@@ -499,11 +499,12 @@ class ArtDirector:
         self.next_seed: int = -1
 
     def reload_models(self) -> None:
-        """Перезагружает конфигурацию моделей из файла настроек."""
+        """Перезагружает конфигурацию моделей из файла настроек без блокировки GUI."""
         from services.forge_models import sync_registry_with_user_config
         sync_registry_with_user_config()
         if hasattr(self, "router") and self.router is not None:
-            self.router.update_embeddings()
+            self.router.load_profiles()
+            self.router.update_embeddings_async(delay=0.0)
 
     def match_model_by_vector(self, query: str, active_models: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, float]:
         """Возвращает (winner_title, score) через роутер моделей (SSOT для UI и генерации)."""

@@ -462,6 +462,15 @@ class ChatFlowControllerMixin:
         if not text and not self.attached_files:
             return
 
+        logger.info(
+            "[SendFlow] _on_send_clicked: mode=%r, is_busy=%r, has_session=%s, text_len=%d, attachments=%d",
+            getattr(self, "current_mode", None),
+            getattr(self, "is_busy", None),
+            bool(getattr(self, "current_session", None)),
+            len(text),
+            len(self.attached_files) if hasattr(self, "attached_files") and self.attached_files else 0,
+        )
+
         self._last_llm_msg_text = None
 
         # Гарантированный детерминированный перехват установки напоминаний
@@ -547,41 +556,86 @@ class ChatFlowControllerMixin:
                 self._sync_turn(role="assistant", content=reply_text, replace_last=True, trigger_memory=False)
                 return
 
-        self.input_box.clear()
-        attached_copy = list(self.attached_files)
-        if hasattr(self, "input_panel") and hasattr(self.input_panel, "clear_attachments"):
-            self.input_panel.clear_attachments()
-        else:
-            self.attached_files.clear()
-            self._update_attachments_ui()
+        try:
+            self.input_box.clear()
+            attached_copy = list(self.attached_files)
+            if hasattr(self, "input_panel") and hasattr(self.input_panel, "clear_attachments"):
+                self.input_panel.clear_attachments()
+            else:
+                self.attached_files.clear()
+                self._update_attachments_ui()
 
-        user_text = text
-        self._current_user_request = (user_text or "").strip()
-        lower_text = user_text.lower()
+            user_text = text
+            self._current_user_request = (user_text or "").strip()
+            lower_text = user_text.lower()
 
-        # Выбор стиля арта полностью делегирован LLM через протокол --model
-        guidance = None
-        self._pre_routed_art_style = None
-        self._pre_routed_art_guidance = None
+            # Выбор стиля арта полностью делегирован LLM через протокол --model
+            guidance = None
+            self._pre_routed_art_style = None
+            self._pre_routed_art_guidance = None
 
-        from services.sandbox_manager import SandboxManager
-        from services.vision_utils import VisionUtils
+            from services.sandbox_manager import SandboxManager
+            from services.vision_utils import VisionUtils
 
-        image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-        image_attachments = [p for p in attached_copy if p.suffix.lower() in image_exts and p.exists()]
+            image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+            image_attachments = [p for p in attached_copy if p.suffix.lower() in image_exts and p.exists()]
 
-        resolved_image_path = _resolve_target_image(user_text)
-        if not resolved_image_path and image_attachments:
-            resolved_image_path = str(image_attachments[0].resolve())
+            resolved_image_path = _resolve_target_image(user_text)
+            if not resolved_image_path and image_attachments:
+                resolved_image_path = str(image_attachments[0].resolve())
 
-        doc_creation_verbs = ("создай", "сделай", "сверстай", "построй", "перенеси", "таблиц", "документ", "excel", "word", "docx", "xlsx")
-        is_doc_task = bool(resolved_image_path and any(v in user_text.lower() for v in doc_creation_verbs))
+            doc_creation_verbs = ("создай", "сделай", "сверстай", "построй", "перенеси", "таблиц", "документ", "excel", "word", "docx", "xlsx")
+            is_doc_task = bool(resolved_image_path and any(v in user_text.lower() for v in doc_creation_verbs))
 
-        if is_doc_task and resolved_image_path:
-            # Отображение сообщения в UI и отправка в инженерный воркер
-            img_path = Path(resolved_image_path)
-            display_text = user_text or f"🖼️ [Макет: {img_path.name}]"
-            self._append_message("Вы", display_text, is_user=True, image_path=img_path, file_paths=attached_copy)
+            if is_doc_task and resolved_image_path:
+                # Отображение сообщения в UI и отправка в инженерный воркер
+                img_path = Path(resolved_image_path)
+                display_text = user_text or f"🖼️ [Макет: {img_path.name}]"
+                self._append_message("Вы", display_text, is_user=True, image_path=img_path, file_paths=attached_copy)
+
+                if getattr(self, "current_session", None) and not self.current_session.get("is_custom_titled", False):
+                    char_name = getattr(self.active_character, "name", "") if hasattr(self, "active_character") and self.active_character else ""
+                    new_title = SessionManager.generate_smart_title(
+                        prompt=user_text or getattr(self, "_current_user_request", ""),
+                        mode=getattr(self, "current_mode", "assistant"),
+                        character_name=char_name
+                    )
+                    self.current_session["title"] = new_title
+                    self.current_session["is_custom_titled"] = True
+                    SessionManager.save_session(self.current_session)
+
+                    sess_id = self.current_session.get("id")
+                    if sess_id and hasattr(self, "_session_items") and sess_id in self._session_items:
+                        _, it_w = self._session_items[sess_id]
+                        it_w.update_title(new_title)
+
+                self.chat_history.append({"role": "user", "content": user_text or ""})
+                self._save_current_session()
+                self._scroll_to_bottom()
+
+                if self._dispatch_ephemeral_doc_worker(task_prompt=user_text, attached_files=attached_copy, image_path=resolved_image_path):
+                    return
+
+            # 3. ИНАЧЕ (обычный диалоговый режим чата, например вопросы "что на картинке?", "опиши скриншот"):
+            vision_content: Optional[List[Dict[str, Any]]] = None
+            primary_user_image: Optional[Path] = None
+
+            if resolved_image_path and Path(resolved_image_path).exists():
+                image_payload = VisionUtils.prepare_image_payload(resolved_image_path, max_dim=768)
+                content = [
+                    {"type": "text", "text": user_text},
+                    image_payload
+                ]
+                vision_content = content
+                primary_user_image = Path(resolved_image_path)
+                logger.info(f"Vision payload: изображение {primary_user_image.name} подготовлено через VisionUtils (max_dim=768)")
+            else:
+                content = user_text
+                vision_content = None
+
+            # Add user message to UI and history (displaying user attached image thumbnail in bubble)
+            display_text = user_text or ("🖼️ [Прикреплено изображение]" if primary_user_image else "📄 [Прикреплен файл]")
+            self._append_message("Вы", display_text, is_user=True, image_path=primary_user_image, file_paths=attached_copy)
 
             if getattr(self, "current_session", None) and not self.current_session.get("is_custom_titled", False):
                 char_name = getattr(self.active_character, "name", "") if hasattr(self, "active_character") and self.active_character else ""
@@ -599,168 +653,126 @@ class ChatFlowControllerMixin:
                     _, it_w = self._session_items[sess_id]
                     it_w.update_title(new_title)
 
-            self.chat_history.append({"role": "user", "content": user_text or ""})
+            # В историю для LLM кладем сформированное сообщение
+            self.chat_history.append({"role": "user", "content": content})
+            if hasattr(self, "btn_load_character") and self.current_mode == "roleplay":
+                self.btn_load_character.setEnabled(False)
+                self.btn_load_character.setText("🔒 Компаньон зафиксирован")
+                self.btn_load_character.setToolTip("Смена персонажа заблокирована после старта диалога. Для выбора другого начните новый чат (+ Новый).")
+            if hasattr(self, "_check_mode_lock"):
+                self._check_mode_lock()
+
+            # Интеллектуальное чтение документов и вложений через DocumentParser
+            from services.document_parser import DocumentParser
+
+            attached_texts = []
+            docs_meta = []
+            is_eng_active = self.is_engineer_mode_active() if hasattr(self, "is_engineer_mode_active") else False
+            is_asst_mode = (getattr(self, "current_mode", "assistant") == "assistant") and not is_eng_active
+
+            for p in attached_copy:
+                if DocumentParser.is_supported(p) and p.exists():
+                    try:
+                        if is_asst_mode:
+                            parsed_doc = DocumentParser.parse_file(p)
+                            if parsed_doc:
+                                from services.assistant_prompt_builder import AssistantPromptBuilder
+                                prefix = "\n\n" + AssistantPromptBuilder.build_document_context(parsed_doc)
+                                attached_texts.append(prefix)
+                                docs_meta.append({
+                                    "filename": parsed_doc.filename,
+                                    "extension": parsed_doc.extension,
+                                    "summary": parsed_doc.summary_header,
+                                    "is_truncated": parsed_doc.is_truncated,
+                                    "size_kb": parsed_doc.size_kb,
+                                    "page_count": parsed_doc.page_count
+                                })
+                                logger.info(f"Документ {p.name} разобран через parse_file ({len(parsed_doc.content)} симв.)")
+                        else:
+                            f_content = DocumentParser.extract_text(p)
+                            if f_content and f_content.strip():
+                                if is_eng_active:
+                                    prefix = f"\n\n[ВХОДЯЩИЙ МАТЕРИАЛ ДЛЯ ОЗНАКОМЛЕНИЯ В ОЗУ: Файл '{p.name}']\n(Справочный документ. Это не запрос на изменение диска за пределами workspace):\n\"\"\"\n{f_content}\n\"\"\""
+                                else:
+                                    prefix = f"\n\n### Содержимое прикрепленного файла [{p.name}]:\n\"\"\"\n{f_content}\n\"\"\""
+                                attached_texts.append(prefix)
+                                logger.info(f"Документ {p.name} успешно прочитан ({len(f_content)} симв.)")
+                    except Exception as e:
+                        logger.warning(f"Ошибка чтения {p.name}: {e}")
+
+            # Сохранение метаданных прикрепленного документа в сессию для истории
+            if docs_meta and getattr(self, "current_session", None) and isinstance(self.current_session, dict):
+                messages = self.current_session.get("messages", [])
+                if messages:
+                    for m in reversed(messages):
+                        if m.get("is_user") or m.get("role") == "user":
+                            m["attached_documents"] = docs_meta
+                            break
+
+            user_query = user_text.strip()
+            if attached_texts:
+                base_q = user_query if user_query else "Изучи прикрепленный файл и предоставь краткую выжимку его сути и содержания."
+                full_prompt_for_llm = (base_q + "".join(attached_texts)).strip()
+            else:
+                full_prompt_for_llm = user_query or "Опиши изображение"
+
+            if self.chat_history and self.chat_history[-1]["role"] == "user":
+                if vision_content is not None:
+                    if attached_texts:
+                        content[0]["text"] = full_prompt_for_llm
+                    self.chat_history[-1]["content"] = content
+                else:
+                    self.chat_history[-1]["content"] = full_prompt_for_llm
+
+            # Lock model on first message in this chat
+            if self.current_session:
+                self.current_session["is_model_locked"] = True
+                if hasattr(self, "lm_combo") and self.lm_combo:
+                    self.lm_combo.setEnabled(False)
+                    self.lm_combo.setToolTip("Модель зафиксирована для этого диалога")
+
             self._save_current_session()
+            self._tool_loop_count = 0
+            self._tool_executed_this_turn = False
+            self._turn_bubble = None
+            self._is_post_tool_synthesis = False
+            self._synthesis_first_chunk = False
+            self._turn_assistant_widget = None
+            self._pending_workspace_file = None
+            self._last_tool_bubble = None
+            self._script_executed_this_turn = False
+            # Сброс буфера потокового вывода
+            self._stream_token_buffer = ""
+            if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer is not None:
+                self._stream_flush_timer.stop()
             self._scroll_to_bottom()
 
-            if self._dispatch_ephemeral_doc_worker(task_prompt=user_text, attached_files=attached_copy, image_path=resolved_image_path):
-                return
+            # Проверка возврата модели из RAM при переходе от !art к обычному диалогу (выполняется в воркере)
+            lower_t = user_query.lower()
+            is_art_cmd = lower_t.startswith(('!art', '!арт', '!img', '!картинка'))
+            if not is_art_cmd and getattr(self, 'current_mode_is_art', False):
+                self.current_mode_is_art = False
 
-        # 3. ИНАЧЕ (обычный диалоговый режим чата, например вопросы "что на картинке?", "опиши скриншот"):
-        vision_content: Optional[List[Dict[str, Any]]] = None
-        primary_user_image: Optional[Path] = None
+            # Приоритетная маршрутизация: Режим «Инженер» или запрос на работу с документами/скриптами
+            is_eng_active = self.is_engineer_mode_active()
+            if is_eng_active or self._is_ephemeral_doc_request(user_query, has_vision=bool(vision_content)):
+                if self.chat_history and self.chat_history[-1]["role"] == "user":
+                    self.chat_history[-1]["content"] = user_text or user_query
+                if self._dispatch_ephemeral_doc_worker(task_prompt=user_text or user_query, attached_files=attached_copy):
+                    return
 
-        if resolved_image_path and Path(resolved_image_path).exists():
-            image_payload = VisionUtils.prepare_image_payload(resolved_image_path, max_dim=768)
-            content = [
-                {"type": "text", "text": user_text},
-                image_payload
-            ]
-            vision_content = content
-            primary_user_image = Path(resolved_image_path)
-            logger.info(f"Vision payload: изображение {primary_user_image.name} подготовлено через VisionUtils (max_dim=768)")
-        else:
-            content = user_text
-            vision_content = None
-
-        # Add user message to UI and history (displaying user attached image thumbnail in bubble)
-        display_text = user_text or ("🖼️ [Прикреплено изображение]" if primary_user_image else "📄 [Прикреплен файл]")
-        self._append_message("Вы", display_text, is_user=True, image_path=primary_user_image, file_paths=attached_copy)
-
-        if getattr(self, "current_session", None) and not self.current_session.get("is_custom_titled", False):
-            char_name = getattr(self.active_character, "name", "") if hasattr(self, "active_character") and self.active_character else ""
-            new_title = SessionManager.generate_smart_title(
-                prompt=user_text or getattr(self, "_current_user_request", ""),
-                mode=getattr(self, "current_mode", "assistant"),
-                character_name=char_name
-            )
-            self.current_session["title"] = new_title
-            self.current_session["is_custom_titled"] = True
-            SessionManager.save_session(self.current_session)
-
-            sess_id = self.current_session.get("id")
-            if sess_id and hasattr(self, "_session_items") and sess_id in self._session_items:
-                _, it_w = self._session_items[sess_id]
-                it_w.update_title(new_title)
-
-        # В историю для LLM кладем сформированное сообщение
-        self.chat_history.append({"role": "user", "content": content})
-        if hasattr(self, "btn_load_character") and self.current_mode == "roleplay":
-            self.btn_load_character.setEnabled(False)
-            self.btn_load_character.setText("🔒 Компаньон зафиксирован")
-            self.btn_load_character.setToolTip("Смена персонажа заблокирована после старта диалога. Для выбора другого начните новый чат (+ Новый).")
-        if hasattr(self, "_check_mode_lock"):
-            self._check_mode_lock()
-
-        # Интеллектуальное чтение документов и вложений через DocumentParser
-        from services.document_parser import DocumentParser
-
-        attached_texts = []
-        docs_meta = []
-        is_eng_active = self.is_engineer_mode_active() if hasattr(self, "is_engineer_mode_active") else False
-        is_asst_mode = (getattr(self, "current_mode", "assistant") == "assistant") and not is_eng_active
-
-        for p in attached_copy:
-            if DocumentParser.is_supported(p) and p.exists():
-                try:
-                    if is_asst_mode:
-                        parsed_doc = DocumentParser.parse_file(p)
-                        if parsed_doc:
-                            from services.assistant_prompt_builder import AssistantPromptBuilder
-                            prefix = "\n\n" + AssistantPromptBuilder.build_document_context(parsed_doc)
-                            attached_texts.append(prefix)
-                            docs_meta.append({
-                                "filename": parsed_doc.filename,
-                                "extension": parsed_doc.extension,
-                                "summary": parsed_doc.summary_header,
-                                "is_truncated": parsed_doc.is_truncated,
-                                "size_kb": parsed_doc.size_kb,
-                                "page_count": parsed_doc.page_count
-                            })
-                            logger.info(f"Документ {p.name} разобран через parse_file ({len(parsed_doc.content)} симв.)")
-                    else:
-                        f_content = DocumentParser.extract_text(p)
-                        if f_content and f_content.strip():
-                            if is_eng_active:
-                                prefix = f"\n\n[ВХОДЯЩИЙ МАТЕРИАЛ ДЛЯ ОЗНАКОМЛЕНИЯ В ОЗУ: Файл '{p.name}']\n(Справочный документ. Это не запрос на изменение диска за пределами workspace):\n\"\"\"\n{f_content}\n\"\"\""
-                            else:
-                                prefix = f"\n\n### Содержимое прикрепленного файла [{p.name}]:\n\"\"\"\n{f_content}\n\"\"\""
-                            attached_texts.append(prefix)
-                            logger.info(f"Документ {p.name} успешно прочитан ({len(f_content)} симв.)")
-                except Exception as e:
-                    logger.warning(f"Ошибка чтения {p.name}: {e}")
-
-        # Сохранение метаданных прикрепленного документа в сессию для истории
-        if docs_meta and getattr(self, "current_session", None) and isinstance(self.current_session, dict):
-            messages = self.current_session.get("messages", [])
-            if messages:
-                for m in reversed(messages):
-                    if m.get("is_user") or m.get("role") == "user":
-                        m["attached_documents"] = docs_meta
-                        break
-
-        user_query = user_text.strip()
-        if attached_texts:
-            base_q = user_query if user_query else "Изучи прикрепленный файл и предоставь краткую выжимку его сути и содержания."
-            full_prompt_for_llm = (base_q + "".join(attached_texts)).strip()
-        else:
-            full_prompt_for_llm = user_query or "Опиши изображение"
-
-        if self.chat_history and self.chat_history[-1]["role"] == "user":
+            # Если сформирован мультимодальный контент (Vision анализ скриншота/изображения), 
+            # передаем задачу с сохранением активного режима (RP vs Assistant)
+            self._last_has_vision_flag = bool(vision_content)
             if vision_content is not None:
-                if attached_texts:
-                    content[0]["text"] = full_prompt_for_llm
-                self.chat_history[-1]["content"] = content
-            else:
-                self.chat_history[-1]["content"] = full_prompt_for_llm
-
-        # Lock model on first message in this chat
-        if self.current_session:
-            self.current_session["is_model_locked"] = True
-            if hasattr(self, "lm_combo") and self.lm_combo:
-                self.lm_combo.setEnabled(False)
-                self.lm_combo.setToolTip("Модель зафиксирована для этого диалога")
-
-        self._save_current_session()
-        self._tool_loop_count = 0
-        self._tool_executed_this_turn = False
-        self._turn_bubble = None
-        self._is_post_tool_synthesis = False
-        self._synthesis_first_chunk = False
-        self._turn_assistant_widget = None
-        self._pending_workspace_file = None
-        self._last_tool_bubble = None
-        self._script_executed_this_turn = False
-        # Сброс буфера потокового вывода
-        self._stream_token_buffer = ""
-        if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer is not None:
-            self._stream_flush_timer.stop()
-        self._scroll_to_bottom()
-
-        # Проверка возврата модели из RAM при переходе от !art к обычному диалогу (выполняется в воркере)
-        lower_t = user_query.lower()
-        is_art_cmd = lower_t.startswith(('!art', '!арт', '!img', '!картинка'))
-        if not is_art_cmd and getattr(self, 'current_mode_is_art', False):
-            self.current_mode_is_art = False
-
-        # Приоритетная маршрутизация: Режим «Инженер» или запрос на работу с документами/скриптами
-        is_eng_active = self.is_engineer_mode_active()
-        if is_eng_active or self._is_ephemeral_doc_request(user_query, has_vision=bool(vision_content)):
-            if self.chat_history and self.chat_history[-1]["role"] == "user":
-                self.chat_history[-1]["content"] = user_text or user_query
-            if self._dispatch_ephemeral_doc_worker(task_prompt=user_text or user_query, attached_files=attached_copy):
+                is_rp = (getattr(self, "current_mode", "assistant") == "roleplay")
+                self._enqueue_llm_task(is_roleplay=is_rp, vision_content=vision_content, art_guidance=None)
                 return
 
-        # Если сформирован мультимодальный контент (Vision анализ скриншота/изображения), 
-        # передаем задачу с сохранением активного режима (RP vs Assistant)
-        self._last_has_vision_flag = bool(vision_content)
-        if vision_content is not None:
-            is_rp = (getattr(self, "current_mode", "assistant") == "roleplay")
-            self._enqueue_llm_task(is_roleplay=is_rp, vision_content=vision_content, art_guidance=None)
-            return
-
-        # Передаем полный промпт для модели, но исходный user_query для проверки намерений
-        self._route_and_enqueue(full_prompt_for_llm, attached_files=attached_copy, vision_content=None, user_query=user_query, art_guidance=None)
+            # Передаем полный промпт для модели, но исходный user_query для проверки намерений
+            self._route_and_enqueue(full_prompt_for_llm, attached_files=attached_copy, vision_content=None, user_query=user_query, art_guidance=None)
+        except Exception:
+            logger.exception("[SendFlow] Необработанное исключение в _on_send_clicked")
 
     def _enqueue_llm_task(
         self,

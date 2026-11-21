@@ -471,6 +471,15 @@ class AssistantFlowControllerMixin:
         self.is_busy = True
         if hasattr(self, "_stream_flush_timer") and self._stream_flush_timer and not self._stream_flush_timer.isActive():
             self._stream_flush_timer.start()
+        logger.info(
+            "[SendFlow] enqueue assistant task id=%s name=%r type=%s model=%r ctx=%s max_tokens=%s",
+            task.id,
+            task.name,
+            task.task_type,
+            model_name,
+            target_ctx_len,
+            target_max_tokens,
+        )
         self.task_queue.enqueue(task)
 
     def _dispatch_art_to_forge(self, extracted_image_prompt: str, target_widget: Any, raw_user_query: str):
@@ -757,6 +766,13 @@ class AssistantFlowControllerMixin:
         if hasattr(self, "_active_tasks") and isinstance(self._active_tasks, dict):
             self._active_tasks[task.id] = task
         if hasattr(self, "task_queue") and self.task_queue:
+            logger.info(
+                "[SendFlow] enqueue secondary task id=%s name=%r type=%s model=%r",
+                task.id,
+                task.name,
+                task.task_type,
+                model_name,
+            )
             self.task_queue.enqueue(task)
 
     def _handle_assistant_llm_response(self, text: str):

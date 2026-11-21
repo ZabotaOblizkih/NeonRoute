@@ -160,6 +160,9 @@ flowchart TD
 5. **Configuration & Utilities (`config.py`, `utils/`)**:
    - `config.py`: единый источник правды (SSOT) путей, лимитов памяти, профилей режимов, динамический метод `get_forge_models_dir()`, независимость от рабочего каталога (CWD-independence).
    - `utils/`: `system_monitor.py` (NVML/psutil), `health_checker.py` (сокетный опрос без блокировок), `file_utils.py` (атомарная запись `atomic_write_json`), `config_manager.py`.
+6. **System Entry Point & Logging Hygiene (`main.py`)**:
+   - `pythonw.exe` Guard: автоматическое перенаправление `sys.stdout` в `logs/stdout.log` и `sys.stderr` в `logs/stderr.log` при запуске приложения без консоли (`pythonw.exe`), предотвращающее аварийные падения библиотек инференса (`'NoneType' object has no attribute 'write'`).
+   - Изоляция сбоев и аварийный дамп: регистрация обработчиков `sys.excepthook`, `threading.excepthook` и активация `faulthandler.enable(file=crash_file)` для гарантированной фиксации трассировок всех потоков в `logs/crash.log` при непредвиденных исключениях и сбоях уровня C-рантайма.
 
 ---
 
@@ -462,6 +465,7 @@ NeonRoute/
         ├── test_build_release_versioning.py # Интерактивное управление версией, валидация формата, ведение hotfix.md и откат
         ├── test_gpu_detection_fallback.py # Реестровый детектор GPU Windows для AMD/Intel/iGPU и безопасный оффлоад NGL=0
         ├── test_llama_downloader.py     # Авто-загрузчик llama-server (CUDA/Vulkan/CPU), Range-докачка, валидация cudart/cublas DLL и --list-devices
+        ├── test_logging_hygiene.py      # Гигиена pythonw.exe, перенаправление stdout/stderr, crash.log и threading.excepthook
         ├── test_models_manager_dialog.py# 10 сквозных тестов ModelsManagerDialog: CRUD, пресеты, спинбоксы, воркеры
         ├── test_seamless_onboarding_and_models.py # Бесшовный авто-подбор .gguf моделей и умный однократный онбординг Forge
         ├── test_assistant_flow.py       # Резолвинг температур и диспетчеризация арт-прохода
@@ -674,6 +678,10 @@ flowchart TD
 
 4. **Автоматическая регистрация DreamShaper 8**:
    - При установке стартового чекпоинта `dreamshaper_8.safetensors` конвейер обновляет `data/art_director_models.json`, выставляя профилю `"dreamshaper_8"` признак `"is_default": True` и сбрасывая его у нескачанного `"model_sd15.safetensors"`. Это позволяет пользователю генерировать арты сразу после установки без ручного сканирования через `ModelsManagerDialog`.
+
+5. **Валидация физических дисков и жизненный цикл `ForgeDownloadWorker`**:
+   - **Защита от отсутствующего диска (`validate_or_fallback_forge_dir`, `get_default_forge_install_dir`)**: перед созданием папок и скачиванием выполняется валидация существования физического корня диска (`Path(target_dir).anchor`). Если целевой путь указывает на отсутствующий том (например, `D:\neyroGPD` при наличии только диска `C:`), предотвращается краш и ошибка `[WinError 3]` с автоматическим переводом на системный диск (`C:\sd-webui-forge` или `C:\neyroGPD`).
+   - **Синглтон и изоляция потока**: `ForgeDownloadWorker` управляется как синглтон активного инстанса (`ForgeDownloadWorker.get_active_instance()`) с `parent=None`. Это гарантирует отсутствие гонок потоков при повторном нажатии кнопок, безопасное переподключение сигналов `progress_signal` и `finished_signal` при закрытии/переоткрытии `ForgeSettingsDialog`, а также исключает прямые обращения к виджетам из не-GUI потока.
 
 ### 3.3. Защита от процессов-сирот через Windows Job Objects (`core/win32_job.py`)
 
@@ -1011,6 +1019,10 @@ classDiagram
    - **Legacy / Pre-assembled Mode (`messages is not None`)**: если в задачу уже передан готовый список сообщений (в смоук-тестах или прямых вызовах), раннер напрямую делегирует его в `chat_completion()`, гарантируя 100% обратную совместимость и отсутствие повторного RAG-поиска.
 3. **Сохранение метаданных и защита от «липких» документов**: источники знаний `_pending_knowledge_sources` и `active_knowledge_docs` привязываются к объекту задачи и баблу ответа; повторное использование `active_knowledge_docs` при пустом ответе RAG допускается **только** при явной документной анафоре (`KnowledgeManager.has_document_anaphora`), а самостоятельный несвязанный запрос очищает `active_knowledge_docs` и `_pending_knowledge_sources`. В `find_relevant_documents` также передаётся `previous_query` из истории диалога.
 4. **Точечный per-request override сэмплирования и размышлений для SDXL (`gallery`)**: при активации скилла генерации изображений формирование арт-промпта (`enqueue_gallery_art_pass`) выполняется с принудительно заниженной температурой (`temperature=0.4`) и отключенным режимом рассуждений (`enable_thinking=False`). Эти параметры передаются точечно в `llm_kwargs` конкретного запроса в памяти, не мутируя глобальный `config.json` и профили режимов (`MODE_PROFILES`).
+5. **Прозрачная диагностическая телеметрия отправки сообщений (`[SendFlow]`)**:
+   - `ChatFlowControllerMixin._on_send_clicked`: входная точка пользовательской отправки, фиксирующая режим (`current_mode`), занятость UI (`is_busy`), статус сессии, длину текста и количество вложений. Блок подготовки и маршрутизации защищен барьером перехвата исключений `[SendFlow] Необработанное исключение в _on_send_clicked` без изменения логики возвратов.
+   - `TaskLifecycleMixin._route_and_enqueue`: логирование параметров маршрутизации (`is_eng`, `has_vision`, `is_excel`, `is_word`) непосредственно перед передачей в контроллеры режимов.
+   - `AssistantFlowControllerMixin`: фиксация метаданных задач (`id`, `name`, `task_type`, `model`, `ctx`, `max_tokens`) непосредственно перед вызовом `self.task_queue.enqueue(task)` в основном потоке Ассистента и вторичном сервисном галерейном проходе.
 
 ```mermaid
 sequenceDiagram
@@ -1105,10 +1117,11 @@ classDiagram
         +_test_routing_flow()
     }
     class FP8ConversionMixin {
-        +_check_fp8_conversion_capability()
-        +_start_fp8_conversion()
+        +_update_fp8_button_state()
+        +_on_start_fp8_conversion()
         +_on_fp8_progress()
         +_on_fp8_finished()
+        +_on_fp8_failed()
         +_handle_atomic_replacement()
     }
     class ModelsManagerDialog {
@@ -1132,9 +1145,9 @@ classDiagram
 ```
 
 1. **Контроллер-миксины (`ui/models_manager/mixins.py`)**:
-   - `ModelPipelineFormMixin`: двусторонняя привязка полей формы пайплайна (сэмплеры, планировщики, шаги, CFG, денойз hires, clip skip, негативный промпт), пресеты параметров (`MODEL_PRESETS`), расчет геометрии и разрешения, синхронизация с дашбордом ADetailer.
-   - `ForgeCivitaiSyncMixin`: фоновые интеграции сканирования локальных чекпоинтов SD Forge (`ForgeScanWorker`), парсинг параметров Civitai API (`CivitaiParamsWorker`), авторегистрация новых моделей в реестре и семантическое тестирование роутинга (`RoutingTestWorker`).
-   - `FP8ConversionMixin`: управление конвейером квантования весов в FP8 E4M3FN (`FP8ConvertWorker`), обнаружение локального torch/python окружения, Name Affinity Guard и безопасная атомарная замена файлов.
+   - `ModelPipelineFormMixin`: двусторонняя привязка полей формы пайплайна (сэмплеры, планировщики, шаги, CFG, денойз hires, clip skip, негативный промпт), пресеты параметров (`MODEL_PRESETS`), расчет геометрии и разрешения, синхронизация с дашбордом ADetailer. Блокировка сигналов (`blockSignals(True)`) для всех виджетов формы при загрузке модели предотвращает рекурсивные вызовы и преждевременную перезапись параметров.
+   - `ForgeCivitaiSyncMixin`: фоновые интеграции сканирования локальных чекпоинтов SD Forge (`ForgeScanWorker`), парсинг параметров Civitai API (`CivitaiParamsWorker`), авторегистрация новых моделей в реестре и семантическое тестирование роутинга (`RoutingTestWorker`). Все операции сканирования и хеширования изолированы от GUI-потока.
+   - `FP8ConversionMixin`: управление конвейером квантования весов в FP8 E4M3FN (`FP8ConvertWorker`), обнаружение локального torch/python окружения, Name Affinity Guard и безопасная атомарная замена файлов. Метод `_update_fp8_button_state()` выполняется за $\mathcal{O}(1)$ строковыми проверками суффиксов, не вызывая `subprocess.run` и `import torch` при открытии окна.
    - `_DynamicModuleProxy`: динамический прокси для `InfoBar`, `InfoBarPosition` и `MessageBox`, прозрачно перенаправляющий вызовы на моки `patch("ui.models_manager_dialog.*")` в существующих тестовых сьютах.
 
 2. **Эргономика и дизайн числовых счетчиков (`SamplingSpinBox` / `SamplingDoubleSpinBox`)**:
@@ -1144,9 +1157,12 @@ classDiagram
    - Унифицированная ширина `setFixedWidth(82)` для всех четырех регуляторов, полностью устраняющая обрезание текста любых числовых параметров.
    - Жесткая блокировка нежелательной прокрутки колесиком мыши (`wheelEvent: e.ignore()`).
 
-3. **Потокобезопасность и жизненный цикл фоновых потоков**:
-   - Метод `_stop_all_workers()` выполняет надежную грациозную остановку: отключение Qt-сигналов, вызов `abort()` / `requestInterruption()`, `quit()`, мягкое ожидание `wait(200)`.
-   - Активные воркеры, не успевшие завершиться за таймаут, отвязываются от родительского `QDialog` и изолируются через глобальный реестр `register_orphaned_worker()`, гарантируя отсутствие вылетов `QThread: Destroyed while thread is still running` и полностью ликвидируя скрытый баг `NameError`.
+3. **Потокобезопасность, жизненный цикл фоновых потоков и неблокирующий FastEmbed**:
+   - **Неблокирующий пересчет эмбеддингов**: в `_save_all()` и `ArtDirector.reload_models()` синхронный `update_embeddings()` полностью заменен на `self.router.update_embeddings_async(delay=0.0)`. При закрытии окна (`reject()` / крестик) контракт `test_dialog_sync_smoke.py` гарантирован: `self.router.load_profiles()` синхронизирует профили в памяти за $< 1$ мс, а векторизация выполняется в фоновом потоке без фризов GUI.
+   - **Дедупликация и слияние запросов в `ModelRouter`**: блокировка `_embed_calc_lock`, флаги `_update_in_progress`, `_rerun_requested` и кэш `_last_computed_descriptors` предотвращают параллельные повторные пересчеты и устраняют взаимную блокировку с `ModelRouterDeferredWarmup` на `_EMBED_INIT_LOCK`. Подмена `cached_descriptors` и `cached_embeddings` выполняется атомарно.
+   - **Разгрузка главного потока при FP8**: вызов `self.forge_client.refresh_checkpoints()` перенесен из UI-слота `_on_fp8_finished` в фоновый рабочий цикл `FP8ConvertWorker.run()`.
+   - **Жизненный цикл воркеров (Инвариант 8)**: воркеры `ForgeScanWorker`, `RoutingTestWorker`, `CivitaiParamsWorker` и `FP8ConvertWorker` создаются строго с `parent=None`. Очистка ссылок на них выполняется только по Qt-сигналу `finished` с подключением `worker.finished.connect(worker.deleteLater)`.
+   - **Надежная остановка `_stop_all_workers()`**: гарантированный сброс висящего `WaitCursor` (`while QApplication.overrideCursor(): QApplication.restoreOverrideCursor()`), выборочное отключение UI-сигналов (сохраняя `finished`), вызов `abort()`/`quit()`, ожидание `wait(200)` и регистрация активных потоков в `register_orphaned_worker()` с отвязкой от родителя и отложенным удалением `deleteLater`.
 
 ### 5.5. Архитектура Headless Mobile Gateway (`mobile_server/`)
 
@@ -1511,21 +1527,21 @@ flowchart TD
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (838 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (861 тест, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 838 автоматических тестов в 85 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 861 автоматического теста в 93 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
-| **`tests/smoke/`** | 18 | 121 | Быстрые сквозные смоук-тесты: единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`, 7 сценариев: диалог, кэш слота 0, подавление thinking в касте, генерация арт-сцены, data-driven диалекты, Fail-Fast Guard VRAM, карточки и сессии), гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`, включая интеграцию автозагрузчика llama-server в `install.bat` и исключение `hotfix_v098/`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (17 тестов), Layer Budgeter (28 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
-| **`tests/unit/`** | 54 | 531 | Изолированное модульное тестирование: встроенный загрузчик и конвейер автоустановки SD WebUI Forge с каскадной распаковкой 7z, генерацией `forge_launcher.bat`, детекцией Blackwell/Ada, установкой ADetailer и DreamShaper 8 (`test_forge_downloader.py`, 11 тестов), 3-слойный ADetailer и потоковый Structured JSON (`test_adetailer_dialog.py`, 12 тестов), сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
-| **`tests/integration/`** | 2 | 9 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
-| **`tests/` (root)** | 11 | 177 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer |
-| **ИТОГО** | **85** | **838** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **`tests/smoke/`** | 15 | 82 | Быстрые сквозные смоук-тесты: контракт синхронизации закрытия диалога моделей (`test_dialog_sync_smoke.py`, 5 тестов: async reload, неблокирующий save_all, дедупликация ModelRouter, фоновый refresh_checkpoints, сброс WaitCursor), единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`), гигиена batch-файлов, проброс ADetailer, матрица профилей VRAM/RAM Forge, Layer Budgeter, жизненный цикл MainWindow, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` |
+| **`tests/unit/`** | 63 | 574 | Изолированное модульное тестирование: гигиена pythonw.exe, перенаправление stdout/stderr и crash.log (`test_logging_hygiene.py`, 6 тестов), встроенный загрузчик и конвейер автоустановки SD WebUI Forge с валидацией физических томов дисков (`test_forge_downloader.py`, 11 тестов), сквозные тесты ModelsManagerDialog (`test_models_manager_dialog.py`), 3-слойный ADetailer и потоковый Structured JSON (`test_adetailer_dialog.py`, 12 тестов), сохранение и восстановление KV-слотов, KV-кэш и Flash Attention, автозагрузчик llama-server (`test_llama_downloader.py`), клиенты Forge и LM Studio, патчер Forge, долговременная память MemoryDB, RAG FastEmbed ONNX, Deferred RAG |
+| **`tests/integration/`** | 3 | 13 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`), отказоустойчивости e2e (`test_e2e_fault_tolerance.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
+| **`tests/` (root)** | 12 | 192 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer, Chat Flow & Gallery Override (`test_chat.py`) |
+| **ИТОГО** | **93** | **861** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Правила верификации для ИИ-агента
 
-- **Команда полного прогона**: `pytest -q` (гарантирует прохождение всех 838 тестов).
+- **Команда полного прогона**: `pytest -q` (гарантирует прохождение всех 861 теста).
 - **Автоматическая изоляция окружения**: флаг `PYTEST_CURRENT_TEST` и airgap-фикстуры в `conftest.py` изолируют сеть, файловую систему и системный реестр Windows.
 - **Блокировка побочных эффектов**: фоновые daemon-потоки `ProcessManager`, модальные диалоги онбординга Forge и фоновые таймеры автоматически подавляются в тестовом режиме.
 - **Безопасная эмуляция процессов**: вместо запуска реальных внешних дочерних процессов (Forge, llama-server) используются легковесные in-process заставки и моки.

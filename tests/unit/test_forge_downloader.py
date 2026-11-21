@@ -24,7 +24,10 @@ from services.forge_downloader import (
     extract_7z_archive,
     install_forge_pipeline,
     ForgeDownloadWorker,
+    start_forge_download_worker,
     get_active_forge_download_worker,
+    get_default_forge_install_dir,
+    validate_or_fallback_forge_dir,
 )
 from services.art_director_config import load_art_director_models, save_art_director_models
 
@@ -232,6 +235,55 @@ def test_forge_download_worker_signals_and_cancel(tmp_path):
     worker.cancel()
     assert worker.is_cancelled() is True
     assert part_file.exists(), ".part файл не должен удаляться при отмене для докачки"
+
+
+def test_start_forge_download_worker_registers_reference_before_start():
+    """
+    Регрессия 0xC0000409: глобальная ссылка на QThread должна выставляться
+    ДО start(), иначе Python собирает воркер и Qt падает с
+    'QThread: Destroyed while thread is still running'.
+    """
+    import services.forge_downloader as fd
+
+    mock_worker = MagicMock()
+    observed = {}
+
+    def _fake_start():
+        observed["active_at_start"] = fd._ACTIVE_FORGE_WORKER
+
+    mock_worker.start.side_effect = _fake_start
+    try:
+        start_forge_download_worker(mock_worker)
+        assert observed["active_at_start"] is mock_worker
+        assert fd._ACTIVE_FORGE_WORKER is mock_worker
+    finally:
+        fd._ACTIVE_FORGE_WORKER = None
+
+    failing_worker = MagicMock()
+    failing_worker.start.side_effect = RuntimeError("start failed")
+    with pytest.raises(RuntimeError):
+        start_forge_download_worker(failing_worker)
+    assert fd._ACTIVE_FORGE_WORKER is None
+
+
+def test_validate_or_fallback_forge_dir_nonexistent_drive():
+    """
+    Проверяет, что при несуществующем томе (например, Z:) происходит
+    безопасный фоллбэк на существующий системный диск без падения с WinError 3.
+    """
+    non_existent = Path("Z:/neyroGPD")
+    fallback_dir, fell_back = validate_or_fallback_forge_dir(non_existent)
+    assert fell_back is True
+    # Целевой диск должен реально существовать
+    assert Path(fallback_dir.drive + "/").exists()
+    assert fallback_dir.name in ("neyroGPD", "sd-webui-forge")
+
+    # Валидный существующий диск не должен вызывать фоллбэк
+    if Path("C:/").exists():
+        c_dir = Path("C:/sd-webui-forge")
+        valid_dir, fell_back_c = validate_or_fallback_forge_dir(c_dir)
+        assert fell_back_c is False
+        assert valid_dir == c_dir.resolve()
 
 
 def test_forge_settings_dialog_downloader_elements(qtbot):

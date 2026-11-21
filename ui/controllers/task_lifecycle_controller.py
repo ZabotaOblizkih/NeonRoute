@@ -210,6 +210,14 @@ class TaskLifecycleMixin:
 
         # 1. Roleplay Mode: Изолированный контроллер ролевого режима
         if self.current_mode == "roleplay":
+            logger.debug(
+                "[SendFlow] _route_and_enqueue: mode=%r, is_eng=%s, has_vision=%s, is_excel=%s, is_word=%s",
+                getattr(self, "current_mode", None),
+                is_eng,
+                bool(vision_content),
+                locals().get("is_excel", False),
+                locals().get("is_word", False),
+            )
             if hasattr(self, "_enqueue_roleplay_llm_task"):
                 self._enqueue_roleplay_llm_task(vision_content=vision_content, art_guidance=art_guidance)
             else:
@@ -219,6 +227,14 @@ class TaskLifecycleMixin:
         # 2. Engineer Mode: Приоритетный перехват активного инженерного контура
         is_eng = self.is_engineer_mode_active()
         if is_eng:
+            logger.debug(
+                "[SendFlow] _route_and_enqueue: mode=%r, is_eng=%s, has_vision=%s, is_excel=%s, is_word=%s",
+                getattr(self, "current_mode", None),
+                is_eng,
+                bool(vision_content),
+                locals().get("is_excel", False),
+                locals().get("is_word", False),
+            )
             if hasattr(self, "_dispatch_ephemeral_doc_worker"):
                 if self._dispatch_ephemeral_doc_worker(task_prompt=prompt, attached_files=attached_files):
                     return
@@ -226,6 +242,15 @@ class TaskLifecycleMixin:
         # 3. Assistant Mode: Изолированный контроллер Ассистента (Элария)
         is_excel = any(k in lower for k in ["excel", "эксель", "таблиц", "смет", "xlsx", "расчет"])
         is_word = any(k in lower for k in ["word", "ворд", "docx", "документ", "отчет", "реферат", "стать"])
+
+        logger.debug(
+            "[SendFlow] _route_and_enqueue: mode=%r, is_eng=%s, has_vision=%s, is_excel=%s, is_word=%s",
+            getattr(self, "current_mode", None),
+            is_eng,
+            bool(vision_content),
+            locals().get("is_excel", False),
+            locals().get("is_word", False),
+        )
 
         if hasattr(self, "_enqueue_assistant_llm_task"):
             self._enqueue_assistant_llm_task(is_excel=is_excel, is_word=is_word, vision_content=vision_content, art_guidance=art_guidance)
