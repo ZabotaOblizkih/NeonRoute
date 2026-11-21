@@ -138,57 +138,48 @@ ARCHETYPE_TEMPLATES = {
 }
 
 SDXL_FORMAT_RULES = (
-    "\nCRITICAL FORMAT RULES (SDXL):\n"
-    "1. Output a coherent, descriptive visual scene in English (2-3 concise sentences) inside [IMAGE_PROMPT: ...].\n"
-    "2. Sentence Structure Priority:\n"
-    "   - Sentence 1 (Subject & Framing): Subject identity/gender in natural English, camera framing/shot type, canonical attire, and facial expression.\n"
-    "   - Sentence 2 (Action, Hands & Gear): Body posture, hand interactions, held props, weapon status (strictly obey Weapon Policy), and magic VFX.\n"
-    "   - Sentence 3 (Environment & Lighting): Setting depth, environmental storytelling, lighting atmosphere, and lens optics.\n"
-    "3. SDXL Specifics:\n"
-    "   - Do NOT use Danbooru tag spam (NO: '1girl, solo, tags, comma'). Write fluent descriptive clauses.\n"
-    "   - NEVER use obsolete quality tags (NO: 'masterpiece', '8k', 'best quality', 'photorealistic'). Convey quality through lighting, textures, and optics.\n"
-    "4. Token Density: STRICTLY 20–35 impactful words/tokens. Keep it focused.\n"
-    "5. STRICTLY PROHIBITED: Do NOT write conversational filler, explanations, greetings, or narrative dialogue."
+    "\nCRITICAL FORMAT RULES (SDXL, inside JSON `scene_prompt`):\n"
+    "1. Write 2-3 concise, natural English descriptive sentences in `scene_prompt` (no `[IMAGE_PROMPT:...]` wrapper, no `--` flags).\n"
+    "2. Sentence order: (1) subject identity/gender, framing, attire, expression; "
+    "(2) body posture, atomic hand/prop/weapon state (obey Weapon Policy); "
+    "(3) setting depth, atmosphere, directional lighting, lens.\n"
+    "3. Avoid Danbooru tag spam (`1girl`, `solo`) and obsolete quality tags (`masterpiece`, `8k`, `best quality`).\n"
+    "4. Keep `scene_prompt` around 25-45 words so it stays crisp and within context."
 )
 
 SD15_FORMAT_RULES = (
-    "\nCRITICAL FORMAT RULES (SD 1.5):\n"
-    "1. Output ONLY concise, comma-separated Danbooru/SD positive tags inside [IMAGE_PROMPT: ...].\n"
-    "2. Tag Order:\n"
-    "   [Subject: '1girl, solo' / '1boy, solo'] -> [Facial expression & gaze] -> [Canonical attire & pose] -> "
-    "[Hands, held items & weapon status] -> [Environment & location] -> [Lighting & mood] -> [Framing].\n"
-    "3. Density: 25–40 high-impact Danbooru tags. Strictly obey Weapon Policy (e.g. 'sheathed sword at hip').\n"
-    "4. STRICTLY PROHIBITED: Do NOT write full sentences, narrative prose, conversational filler, or Russian text."
+    "\nCRITICAL FORMAT RULES (SD 1.5, inside JSON `scene_prompt`):\n"
+    "1. Write 14-24 concise, comma-separated English keyword tags in `scene_prompt` (no `[IMAGE_PROMPT:...]` wrapper, no `--` flags, no full sentences).\n"
+    "2. Tag order: [Subject: `1girl, solo` / `1boy, solo`] -> [Expression & gaze] -> [Attire & pose] -> "
+    "[Atomic hands, held item & weapon state] -> [Environment] -> [Directional lighting & framing].\n"
+    "3. Keep `scene_prompt` under ~60 words so it fits cleanly in the first SD 1.5 CLIP chunk."
 )
 
 CINEMATIC_DIRECTIVE_HEADERS = {
     "intimate": (
-        "[CINEMATIC DIRECTIVE: INTIMATE & PRIVATE SCENE]\n"
-        "Scene Context: Characters are strictly alone in a secluded, safe sanctuary (bedroom, private quarters, hot springs, bath).\n"
-        "Attire & Body: Characters are undressed or in delicate sleepwear/towels. You MUST include tags like 'nude', 'bare skin', 'bare shoulders', or 'disheveled hair'.\n"
-        "Weapon & Gear Ban: STRICT PROHIBITION. Do NOT mention weapons, swords, firearms, combat armor, or backpacks. Do NOT write negative phrases like 'no weapon' or 'without clothes'—simply omit gear entirely.\n"
-        "Lighting & Framing: Soft diffuse lighting, candlelight or moonlight, warm gentle shadows, shallow depth of field, intimate emotional focus on gaze and touch.\n"
+        "[RP SCENE DIRECTIVE: INTIMATE & PRIVATE]\n"
+        "Context: Characters alone in a private sanctuary (bedroom, quarters, hot springs, bath).\n"
+        "Attire & Body: Match the actual RP state—use tags like `nude`, `bare skin`, `bare shoulders`, or `disheveled hair` when undressed, or `sleepwear`, `bathrobe`, `towel` when covered.\n"
+        "Gear Rule: Omit weapons, combat armor, and backpacks; do not put negative filler like `no weapon` in positive prompts.\n"
+        "Lighting & Framing: Soft diffuse light, candlelight or moonlight, warm shadows, shallow depth of field, intimate gaze/touch; set `aspect_ratio` to `\"portrait\"` or `\"cinematic\"`."
     ),
     "action": (
-        "[CINEMATIC DIRECTIVE: COMBAT & HIGH-STAKES ACTION]\n"
-        "Scene Context: Active battle, sudden danger, duel, ambush, or aggressive confrontation.\n"
-        "Attire & Equipment: Full combat readiness, functional armor, tactical harness. Weapons MUST be actively drawn, brandished, or striking (e.g., 'holding katana in combat stance', 'aiming weapon', 'casting glowing spell'). Include battle-damage, dust, or dirt smudges.\n"
-        "Weapon Policy: Describe weapons in hand with precise visual tags. Never place weapons in relaxed positions.\n"
-        "Lighting & Framing: Dynamic action angle, Dutch tilt, high contrast, dramatic rim lighting, motion blur, sparks, smoke, debris, intense focused expression.\n"
+        "[RP SCENE DIRECTIVE: COMBAT & ACTION]\n"
+        "Context: Active battle, duel, ambush, or confrontation.\n"
+        "Attire & Weapon: Combat armor or tactical gear; weapons actively drawn or wielded (`holding katana, combat stance`, `aiming pistol`, `casting glowing spell`), with battle dust, sparks, or debris.\n"
+        "Lighting & Framing: Dynamic angle, dutch tilt, high contrast, dramatic rim light, intense expression; set `aspect_ratio` to `\"cinematic\"` or `\"portrait\"`."
     ),
     "dialogue": (
-        "[CINEMATIC DIRECTIVE: DIALOGUE & SOCIAL INTERACTION]\n"
-        "Scene Context: Conversation, tavern rest, camp gathering, strategic council, or quiet emotional discussion.\n"
-        "Attire & Posture: Canonical everyday clothes, travel attire, or casual wear. Natural, relaxed sitting or standing pose.\n"
-        "Weapon Policy: Weapons are safely sheathed, holstered, or laid aside. Hands are free, gesturing, or holding mundane items (e.g., 'holding mug', 'reading scroll').\n"
-        "Lighting & Framing: Medium shot, waist-up or chest-up framing, eye-level cinematic camera, natural ambient light, clear facial expression, eye contact.\n"
+        "[RP SCENE DIRECTIVE: DIALOGUE & SOCIAL]\n"
+        "Context: Conversation, tavern rest, camp, or council.\n"
+        "Attire & Hands: Everyday/travel/casual attire; relaxed posture; weapons sheathed/holstered/laid aside; hands free or holding mundane props (`holding mug`, `reading scroll`).\n"
+        "Lighting & Framing: Medium shot, waist-up or chest-up, eye-level camera, motivated ambient/practical light, eye contact; set `aspect_ratio` to `\"cinematic\"` or `\"portrait\"`."
     ),
     "exploration": (
-        "[CINEMATIC DIRECTIVE: EXPLORATION & ENVIRONMENT]\n"
-        "Scene Context: Traveling across uncharted wilderness, exploring ancient ruins, panoramic journey, or arriving at a landmark.\n"
-        "Attire & Gear: Travel cloaks, sturdy boots, backpacks, utility belts, lanterns, or torches. Weapons are sheathed on the back or hip.\n"
-        "Environment Priority: Deep environmental focus. The character is integrated into the scale of the massive surrounding architecture or natural vista.\n"
-        "Lighting & Framing: Wide panoramic shot, environmental storytelling, deep depth of field, atmospheric perspective, volumetric god rays, weather effects.\n"
+        "[RP SCENE DIRECTIVE: EXPLORATION & ENVIRONMENT]\n"
+        "Context: Traveling across wilderness, ruins, landmarks, or vistas.\n"
+        "Attire & Gear: Travel cloak, boots, backpack, lantern or torch; weapons sheathed on back or hip.\n"
+        "Lighting & Framing: Wide panoramic shot or deep setting, volumetric light, weather/atmosphere; set `aspect_ratio` to `\"wide\"` or `\"ultrawide\"` for panoramas."
     ),
 }
 
