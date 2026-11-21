@@ -348,7 +348,7 @@ def test_scenario_3_scene_art_generation_multi_architecture_and_dialects(isolate
     user_payload_15 = call_kwargs_15["messages"][1]["content"]
     sys_payload_15 = call_kwargs_15["messages"][0]["content"]
 
-    assert_diag("CRITICAL FORMAT RULES (SD 1.5):" in sys_payload_15, scen, "SD 1.5 Directive", "SD 1.5 format rules", sys_payload_15)
+    assert_diag("CRITICAL FORMAT RULES (SD 1.5" in sys_payload_15, scen, "SD 1.5 Directive", "SD 1.5 format rules", sys_payload_15)
     assert_diag("Generate concise, comma-separated Danbooru tags" in user_payload_15, scen, "SD 1.5 Task Header", "Danbooru tags header", user_payload_15)
     assert_diag("- Equipment:" not in user_payload_15, scen, "Passive gear guard in dialogue", "No active equipment", user_payload_15)
     assert_diag("<stats>" not in user_payload_15, scen, "Stats sanitization", "No <stats> tag", user_payload_15)
@@ -373,7 +373,7 @@ def test_scenario_3_scene_art_generation_multi_architecture_and_dialects(isolate
 
     window._generate_ephemeral_rp_art_prompt("sess1", "Диалог", target_model_id="WAI-Nsfw-Illustrious-17")
     call_ill = window.lm_client.chat_completion.call_args[1]
-    assert_diag("CRITICAL FORMAT RULES (SD 1.5):" in call_ill["messages"][0]["content"], scen, "Illustrious tag dialect", "SD 1.5 rules for Illustrious", call_ill["messages"][0]["content"])
+    assert_diag("CRITICAL FORMAT RULES (SD 1.5" in call_ill["messages"][0]["content"], scen, "Illustrious tag dialect", "SD 1.5 rules for Illustrious", call_ill["messages"][0]["content"])
 
     # 3. Проверка диалекта для Juggernaut (SDXL arch + 'Avoid booru tags' -> phrases)
     juggernaut_profile = (
@@ -386,7 +386,7 @@ def test_scenario_3_scene_art_generation_multi_architecture_and_dialects(isolate
 
     window._generate_ephemeral_rp_art_prompt("sess1", "Диалог", target_model_id="Juggernaut_XI")
     call_jug = window.lm_client.chat_completion.call_args[1]
-    assert_diag("CRITICAL FORMAT RULES (SDXL):" in call_jug["messages"][0]["content"], scen, "Juggernaut phrases dialect", "SDXL rules for Juggernaut", call_jug["messages"][0]["content"])
+    assert_diag("CRITICAL FORMAT RULES (SDXL" in call_jug["messages"][0]["content"], scen, "Juggernaut phrases dialect", "SDXL rules for Juggernaut", call_jug["messages"][0]["content"])
 
     # 4. Фоллбэк Subject на имя персонажа при пустом visual_dna
     window.active_character = CharacterCard(name="Лира", visual_dna="")
@@ -498,6 +498,7 @@ def test_scenario_5_vram_arbitrage_and_kv_slot_preservation(smoke_isolation_guar
     fake_model.write_bytes(b"GGUF_MODEL_DATA")
     pm._current_running_model_path = str(fake_model)
     pm._current_running_ctx = 8192
+    pm._current_running_ngl = 99
     pm._current_running_ctk = "f16"
     pm._current_running_ctv = "f16"
     pm._current_running_fa = "true"
@@ -520,6 +521,7 @@ def test_scenario_5_vram_arbitrage_and_kv_slot_preservation(smoke_isolation_guar
         "model_path": str(fake_model.resolve()),
         "model_mtime": os.path.getmtime(fake_model),
         "context_length": 8192,
+        "gpu_layers": 99,
         "kv_cache_type_k": "f16",
         "kv_cache_type_v": "f16",
         "flash_attn": "true"

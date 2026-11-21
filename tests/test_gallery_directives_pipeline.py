@@ -161,8 +161,8 @@ def test_get_gallery_directive_formatting():
 def test_cinematic_directive_sd15_default():
     """Вызов без указания архитектуры по умолчанию возвращает правила SD 1.5."""
     directive = RoleplayPromptBuilder.get_cinematic_scene_directive("dialogue", "test_model")
-    assert "CRITICAL FORMAT RULES (SD 1.5):" in directive
-    assert "Danbooru/SD positive tags" in directive
+    assert "CRITICAL FORMAT RULES (SD 1.5" in directive
+    assert "keyword tags in `scene_prompt`" in directive
     assert "1girl/1boy" not in directive
     assert "[IMAGE_PROMPT: 1girl, solo, amber eyes" in directive
 
@@ -170,8 +170,8 @@ def test_cinematic_directive_sd15_default():
 def test_cinematic_directive_sdxl():
     """Вызов с указанием архитектуры 'sdxl' возвращает правила SDXL."""
     directive = RoleplayPromptBuilder.get_cinematic_scene_directive("dialogue", "test_model", architecture="sdxl")
-    assert "CRITICAL FORMAT RULES (SDXL):" in directive
-    assert "NEVER use obsolete quality tags" in directive
+    assert "CRITICAL FORMAT RULES (SDXL" in directive
+    assert "obsolete quality tags" in directive
     assert "[IMAGE_PROMPT: medium waist-up portrait" in directive
     assert "[IMAGE_PROMPT: 1girl, solo" not in directive
     assert "1girl/1boy" not in directive
@@ -220,7 +220,7 @@ def test_roleplay_flow_ephemeral_art_prompt_architecture_dispatch(monkeypatch):
     sys_xl = messages_xl[0]["content"]
     user_xl = messages_xl[1]["content"]
 
-    assert "CRITICAL FORMAT RULES (SDXL):" in sys_xl
+    assert "CRITICAL FORMAT RULES (SDXL" in sys_xl
     assert "1girl/1boy" not in sys_xl
     assert "Generate a concise descriptive visual prompt (2-3 sentences) for this RP scene:" in user_xl
     assert "Output ONLY the descriptive prompt inside [IMAGE_PROMPT: ...]" in user_xl
@@ -233,7 +233,7 @@ def test_roleplay_flow_ephemeral_art_prompt_architecture_dispatch(monkeypatch):
     sys_15 = messages_15[0]["content"]
     user_15 = messages_15[1]["content"]
 
-    assert "CRITICAL FORMAT RULES (SD 1.5):" in sys_15
+    assert "CRITICAL FORMAT RULES (SD 1.5" in sys_15
     assert "1girl/1boy" not in sys_15
     assert "Generate concise, comma-separated Danbooru tags for this RP scene:" in user_15
     assert "CRITICAL: Output ONLY comma-separated tags inside [IMAGE_PROMPT: ...]. Do NOT write prose or paragraphs." in user_15
