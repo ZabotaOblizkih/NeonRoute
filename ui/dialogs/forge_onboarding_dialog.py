@@ -274,7 +274,7 @@ class ForgeOnboardingDialog(FramelessDialog):
         self.btn_locate.clicked.connect(self._on_locate_clicked)
         btn_layout.addWidget(self.btn_locate)
 
-        self.btn_download = PrimaryPushButton(FIF.DOWNLOAD, "Скачать Forge (GitHub)", self.body_widget)
+        self.btn_download = PrimaryPushButton(FIF.DOWNLOAD, "Скачать и установить SD Forge", self.body_widget)
         self.btn_download.clicked.connect(self._on_download_clicked)
         btn_layout.addWidget(self.btn_download)
 
@@ -283,7 +283,6 @@ class ForgeOnboardingDialog(FramelessDialog):
 
     def _on_download_clicked(self):
         self.choice = "download"
-        QDesktopServices.openUrl(QUrl(FORGE_GITHUB_URL))
         self.accept()
 
     def _on_locate_clicked(self):

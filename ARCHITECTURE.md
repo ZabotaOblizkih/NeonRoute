@@ -3,8 +3,8 @@
 > **Версия системы**: NeonRoute v0.9.8-beta  
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
-> **Метрики кодовой базы**: 324 файла Python, ~112 500 строк кода  
-> **Статус верификации**: 821 тест собран и пройден (100% Pass Rate на полном прогоне `pytest -q`)
+> **Метрики кодовой базы**: 325 файлов Python, ~113 500 строк кода  
+> **Статус верификации**: 838 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
 
 ---
 
@@ -63,6 +63,7 @@
 | **ADR-47** | `HEAD` | `services/forge_client.py`, `ui/controllers/hardware_engine.py`, `services/vram_arbiter.py`, `tests/unit/test_forge_client.py` | 1) Инцидент: падение ядра Forge с `IndexError: list index out of range` в `backend/memory_management.py:466` и зависание ~908 МБ VRAM вместо ~490 МБ при выгрузке чекпоинта после ADetailer.<br>2) Причина: агрессивный клиентский таймаут 5.0 с на `POST /sdapi/v1/unload-checkpoint` (перемещение 6.7 ГБ SDXL весов по PCIe в RAM на 16 ГБ ПК физически занимает 5–8 с); при таймауте клиент немедленно слал `POST /sdapi/v1/free-vram`, вызывая гонку двух параллельных потоков Uvicorn на незащищенном глобальном списке `current_loaded_models`.<br>3) Дублирующий вызов выгрузки из `_finalize_forge_generation` (`force=True`). | 1) **Сериализация выгрузки**: на экземпляр `ForgeClient` добавлен мьютекс `self._unload_lock = threading.Lock()`, исключающий параллельные вызовы выгрузки.<br>2) **Адаптивный таймаут и защита от конкуренции**: таймаут `/unload-checkpoint` увеличен до 18.0 с; при `ReadTimeout` конкурирующий `free-vram` не отправляется немедленно — выдерживается пауза 1.0 с перед аварийной очисткой; таймаут `free-vram` поднят до 10.0 с.<br>3) **Остановка поллера**: ожидание фонового потока прогресса увеличено с 0.05 до 1.5 с (`poller_thread.join(timeout=1.5)`), гарантируя закрытие сокета `/progress` до старта выгрузки.<br>4) **Устранение дублирующей выгрузки**: в `_finalize_forge_generation` передается `force=not getattr(self.forge_client, "_checkpoint_unloaded", False)`; при уже выгруженном чекпоинте повторные HTTP-запросы пропускаются.<br>5) Созданы 4 unit-теста в `tests/unit/test_forge_client.py` (96 тестов в сьюте, 843 теста суммарно). |
 | **ADR-48** | `HEAD` | `services/lm_studio.py`, `services/rp_cast_extractor.py`, `services/roleplay_flow_controller.py`, `services/roleplay_prompt_builder.py`, `services/assistant_prompt_builder.py`, `services/regex_filter.py`, `ui/controllers/hardware_engine.py`, `ui/controllers/chat_flow_controller.py`, `ui/builders/chat_bubble_builder.py`, `services/assistant_flow.py`, `services/context_window_builder.py`, `services/roleplay_state_manager.py`, `tests/smoke/test_roleplay_e2e_smoke.py` | 1) В ролевом режиме (РП-чат) при нажатии кнопки «Арт сцены» позитивный промпт не доходил до Forge при использовании думающих моделей (Qwen 2.5/3, DeepSeek-R1): служебные запросы экстракции сцены и персонажей активировали reasoning-токены, prefill роли `assistant` ломал JSON-грамматику, а фоновый запрос затирал KV-кэш слота 0 диалога.<br>2) При пустом промпте происходила преждевременная выгрузка LLM из VRAM перед падением рендера.<br>3) Разрозненные регулярные выражения перехвата арт-тегов не учитывали опечатки модели (`IMAGE_PROP`, `IMAGE_PROMT`, `IMG_PROMPT`) и регистронезависимость.<br>4) Выбор формата промпта («Danbooru tags» vs «SDXL descriptive phrases») зависел от хрупких проверок имен моделей; дефолтный аргумент `target_model_id="realistic"` ломал авто-подбор профиля в режиме Арт-директора.<br>5) Тестовое покрытие РП-чата было фрагментировано по 5 разрозненным файлам с дублированием моков. | 1) **Подавление Thinking в служебных вызовах**: в `services/lm_studio.py` добавлена поддержка `enable_thinking=False`, отключение role prefill при наличии `response_format` (защита JSON-грамматики) и изоляция слота через `id_slot=None` (предотвращение вытеснения KV-кэша слота 0); в `RPCastExtractor` и `_generate_ephemeral_rp_art_prompt` служебные вызовы изолированы (`enable_thinking=False`, `id_slot=None`, `cache_prompt=False`).<br>2) **Fail-Fast Guard VRAM**: в `ui/controllers/hardware_engine.py` добавлена предварительная проверка непустого промпта до вызова `VRAMArbiter.release_llm_for_diffusion()`.<br>3) **Единый SSOT-перехватчик арт-тегов**: в `services/regex_filter.py` внедрены константа `IMAGE_TAG_LABEL_PATTERN`, обновленный `_RE_IMAGE_TAG` (re.IGNORECASE, поддержка опечаток) и метод `strip_image_tags(cls, text)`; стриминговые и UI-фильтры синхронизированы.<br>4) **Data-Driven резолвинг диалектов промпта**: в `services/assistant_prompt_builder.py` реализована функция `resolve_prompt_dialect(architecture, routing_description)` без хардкода моделей, с нарезкой по знакам препинания и фильтрацией запретов (`avoid`, `never use`, `do not use`, `не используй`); в `services/roleplay_prompt_builder.py` внедрена динамическая секция `STYLE GUIDANCE`; в `RoleplayFlowControllerMixin` устранена ловушка `"realistic"` (`ckpt_for_resolver = None`, `effective_query=clean_ctx`) и добавлен фоллбэк `- Subject:` на имя персонажа.<br>5) **Консолидация E2E-тестов РП-чата**: 5 разрозненных смоук-файлов объединены в единый сьют `tests/smoke/test_roleplay_e2e_smoke.py` (7 исчерпывающих сценариев) с унифицированной диагностикой `assert_diag`. |
 | **ADR-49** | `HEAD` | `services/art_director/contracts.py`, `services/art_director/plan.py`, `services/art_director/director.py`, `services/assistant_prompt_builder.py`, `services/assistant_flow.py`, `ui/controllers/assistant_flow_controller.py`, `services/forge_client.py`, `mobile_server/services/chat_service.py`, `services/rp_cast_extractor.py`, `services/roleplay_flow_controller.py`, `ui/controllers/hardware_engine.py`, `tests/unit/test_adetailer_dialog.py` | 1) Общий промпт сцены (`shared_ad_prompt`) дублировался в оба слота ADetailer (лицо и руки), размывая анатомические детали кистей описанием глаз/причёски, а лица — деталями пальцев/оружия.<br>2) Отсутствовал механизм пропуска слота при отсутствии лица/рук в кадре (`[SKIP]`), из-за чего ADetailer пытался инпейнтить несуществующие анатомические зоны пейзажей или персонажей со спины.<br>3) Вывод арт-инструкций в формате одной строки `[IMAGE_PROMPT: ...]` ограничивал передачу многослойных визуальных намерений и приводил к задержкам ответа в UI до полного завершения генерации.<br>4) Отсутствовало диагностическое разделение источников промптов (`json`, `override`, `fallback`) и статусов слотов в логах Forge/ArtDirector. | 1) **Контракт `VisualIntent` и раздельные слоты**: расширение `VisualIntent` полями `face_prompt` и `hands_prompt` (с поддержкой `[SKIP]` для пустых строк и строковыми методами совместимости). В `GenerationPlan.to_forge_kwargs()` разделены `face_slot` и `hand_slot`, а маркер `[SKIP]` транслируется в `ad_model = "None"`.<br>2) **Изоляция и разрешение слотов в `ArtDirector`**: слот лица изолирует `ELARIA_VISUAL_DNA`, companion DNA, guidance и LoRA; слот рук строго приоритизирует ручной override модели (`adetailer_hands_prompt`), изолирует кисти от DNA лица/фона и автоматически дополняет негативный стек анатомической защитой (`bad hands, extra fingers...`).<br>3) **Схемы Structured JSON Output**: в `services/assistant_prompt_builder.py` добавлены строгие JSON-схемы `ART_DIRECTOR_ASSISTANT_JSON_SCHEMA` и `ART_DIRECTOR_RP_SCENE_JSON_SCHEMA` с изоляцией `scene_prompt`, `face_prompt`, `hands_prompt`, `negative_prompt`, `aspect_ratio`, `reply_ru`, а директивы `gallery` и `cinematic` переведены на генерацию структурированного JSON.<br>4) **Потоковое извлечение `reply_ru` в `StreamArtTagFilter`**: инкрементальное декодирование реплики ассистента в реальном времени с поддержкой escape-последовательностей и полной изоляцией служебных ключей до `flush()`.<br>5) **Отказоустойчивый парсинг и диагностическое логирование**: парсер `parse_structured_art_response` с автоматическим исправлением оборванного JSON, логированием флагов (`ar`, `face`, `hands`, `self`), ворнингом при fallback на `[IMAGE_PROMPT]`, тегами источников `[src=json|override|fallback]` и статусом `SlotN(SKIPPED)`.<br>6) **Тестовое покрытие**: 821 тест собран и успешно пройден (100% Pass Rate). |
+| **ADR-50** | `HEAD` | `services/forge_downloader.py`, `ui/dialogs/forge_settings_dialog.py`, `ui/dialogs/forge_onboarding_dialog.py`, `ui/controllers/hardware_engine.py`, `ui/workers/shutdown_worker.py`, `requirements.txt`, `tests/unit/test_forge_downloader.py` | 1) Отсутствие встроенного установщика SD WebUI Forge вынуждало пользователя вручную переходить на сторонние ресурсы, искать совместимую cu121-сборку, устанавливать архиватор 7-Zip и скачивать веса.<br>2) В официальном архиве Forge (`webui_forge_cu121_torch231.7z`) корневой `run.bat` не передаёт аргументы командной строки (`%*`), а `webui-user.bat` принудительно обнуляет `COMMANDLINE_ARGS=`, из-за чего запуск через `ProcessManager` терял флаги `--api`, `--port 7860` и VRAM-политики.<br>3) При холодном старте на чистом ПК без `data/art_director_models.json` дефолтная маршрутизация ссылалась на отсутствующий `model_sd15.safetensors`, а скачивание `dreamshaper_8.safetensors` требовало обязательного ручного сканирования.<br>4) Отсутствие детекторов ADetailer (`face_yolov8m.pt`, `hand_yolov9c.pt`) вызывало задержки ретраев при первых генерациях.<br>5) Риск краша Qt (`RuntimeError: wrapped C/C++ object has been deleted`) и утечки потоков при закрытии окна во время загрузки. | 1) **Сервисный модуль `services/forge_downloader.py`**: повторное использование `download_file` (докачка Range/206 через `.part`, таймаут 60 с, 3 ретрая); резолвер `resolve_forge_hardware_spec()` с детектом NVIDIA GPU $\ge 3.8$ ГБ VRAM, флагом Blackwell (`compute_cap >= 10.0` / RTX 50xx) и автовыбором релиза через GitHub Releases API.<br>2) **Каскадная 3-фазная распаковка `extract_7z_archive`**: системный `tar.exe` (Windows 10/11 bsdtar с libarchive) $\rightarrow$ поиск установленного `7z.exe`/`7za.exe` $\rightarrow$ чистый Python-фоллбэк через `py7zr>=0.20.0` (добавлен в `requirements.txt`).<br>3) **Генератор безопасного лаунчера `create_forge_launcher_bat`**: создание `forge_launcher.bat`, изолирующего `system\python` и `webui` и пробрасывающего все аргументы `%*` от `ProcessManager` напрямую в `launch.py`.<br>4) **Конвейер `install_forge_pipeline`**: предстартовый аудит диска ($\ge 12$ ГБ или $14.5$ ГБ с DreamShaper) с учётом байт `.part`; 4 этапа (`forge`, `extract`, `adetailer`, `checkpoint`); best-effort `ForgePatcher.apply_patch()`; авто-активация DreamShaper 8 в `data/art_director_models.json` с `"is_default": True`.<br>5) **Асинхронный воркер `ForgeDownloadWorker(QThread)`**: троттлинг сигналов прогресса ($0.12$ с), расчёт скорости по дельте байт, сохранение `.part` при отмене (`cancel()`), синглтон `get_active_forge_download_worker()`, корректная отмена в `ShutdownWorker` и безопасная отписка слотов в `ForgeSettingsDialog` (`closeEvent`, `reject`, `accept`).<br>6) **Бесшовный UI онбординга**: перенаправление кнопки «Скачать Forge» в онбординге на `ForgeSettingsDialog(parent=self, auto_start_download=True)` прямо в приложении; отображение скачанных МБ, процентов и скорости в реальном времени.<br>7) **Тестовое покрытие**: 11 новых юнит-тестов (`test_forge_downloader.py`); общий тестовый сьют проекта достиг 838 тестов (100% Pass Rate). |
 
 ---
 
@@ -647,6 +648,65 @@ flowchart TD
 
 #### Устранение ложного завершения процессов
 В методах `_run_forge_stop` и `shutdown_all` сервиса `services/process_manager.py` фильтрация процессов `psutil` выполняется строго по полному нормализованному пути рабочей папки (`forge_dir_str in cmd_str`), исключая случайное завершение редакторов кода или терминалов.
+
+### 3.2.1. Встроенный загрузчик и конвейер автоустановки Forge, DreamShaper 8 и ADetailer (`services/forge_downloader.py`)
+
+Для исключения ручной настройки визуального движка пользователем внедрена подсистема автономной установки полного стека SD WebUI Forge:
+
+```mermaid
+flowchart TD
+    subgraph Spec ["1. Аппаратный резолвер (resolve_forge_hardware_spec)"]
+        HW["LayerBudgeter.detect_hardware_kv_profile()"] --> VENDOR{"NVIDIA && VRAM >= 3800 MB?"}
+        VENDOR -- Нет --> UNSUPPORTED["supported = False (предупреждение в UI)"]
+        VENDOR -- Да --> BLACKWELL{"CC >= 10.0 || RTX 50xx?"}
+        BLACKWELL -- Да --> BW_FLAG["is_blackwell = True (hint: PyTorch 2.6+)"]
+        BLACKWELL -- Нет --> STD_NVIDIA["Стандартный профиль Turing/Ampere/Ada"]
+        STD_NVIDIA & BW_FLAG --> GH_API["GitHub API /releases/latest -> cu121*.7z (fallback: latest URL)"]
+    end
+
+    subgraph Pipeline ["2. Установочный конвейер (install_forge_pipeline)"]
+        SPACE{"Free Disk >= 12/14.5 GB?"} -- Нет --> ERR_SPACE["Ошибка: Недостаточно места на диске"]
+        SPACE -- Да --> STAGE1["Этап 1: download_file (Forge 7z + Range/206 .part)"]
+        STAGE1 --> STAGE2["Этап 2: extract_7z_archive (tar.exe -> 7z.exe -> py7zr)"]
+        STAGE2 --> LAUNCHER["create_forge_launcher_bat(resolved_root)"]
+        LAUNCHER --> PATCH["ForgePatcher.apply_patch (Best-effort)"]
+        PATCH --> STAGE3["Этап 3: Загрузка ADetailer (face_yolov8m.pt + hand_yolov9c.pt)"]
+        STAGE3 --> STAGE4["Этап 4: Скачивание DreamShaper 8 (~2.1 ГБ)"]
+        STAGE4 --> ACTIVATE["data/art_director_models.json: dreamshaper_8 is_default = True"]
+    end
+
+    subgraph Worker ["3. Асинхронное управление (ForgeDownloadWorker)"]
+        QTHREAD["QThread (parent=None)"] --> THROTTLE["Троттлинг сигналов 0.12 с + расчет MB/s"]
+        THROTTLE --> UI_UPDATE["ForgeSettingsDialog: прогресс-бар, МБ и скорость"]
+        SHUTDOWN["ShutdownWorker / dialog.closeEvent"] --> CANCEL["worker.cancel() (сохранение .part для докачки)"]
+    end
+
+    Spec --> Pipeline --> Worker
+```
+
+1. **Транспорт и докачка (`download_file`)**:
+   - Единый с `LlamaDownloader` HTTP-транспорт с таймаутом 60 с, 3 ретраями и поддержкой докачки через `.part` (HTTP Range / 206 Partial Content).
+   - При отмене пользователем (`cancel()`) файл `.part` не удаляется, позволяя продолжить скачивание с прерванного байта.
+
+2. **Каскадная 3-фазная распаковка (`extract_7z_archive`)**:
+   - **Фаза 1 (нативная Win32):** Системный `tar.exe` (Windows 10 билд 17063+ / Windows 11 bsdtar с libarchive), выполняемый без всплывающего окна (`CREATE_NO_WINDOW`).
+   - **Фаза 2 (системная утилита):** Поиск бинарников `7z.exe` / `7za.exe` в `PATH`, `C:\Program Files\7-Zip\` и `C:\Program Files (x86)\7-Zip\`.
+   - **Фаза 3 (чистый Python fallback):** Библиотека `py7zr>=0.20.0`.
+   - Если все методы завершились неудачно, архив сохраняется на диске со статусом `MANUAL_EXTRACT_REQUIRED`.
+
+3. **Генерация безопасного лаунчера (`create_forge_launcher_bat`)**:
+   - В корне `forge_root` генерируется `forge_launcher.bat`:
+     ```bat
+     @echo off
+     set BASE_DIR=%~dp0
+     set PATH=%BASE_DIR%system\python;%BASE_DIR%system\python\Scripts;%BASE_DIR%system\git\bin;%PATH%
+     cd /d "%BASE_DIR%webui"
+     python.exe launch.py %*
+     ```
+   - Решает критический конфликт официального дистрибутива Forge, где `run.bat` теряет аргументы `%*`, а `webui-user.bat` затирает `COMMANDLINE_ARGS=`, гарантируя доставку флагов `--api`, `--port 7860` и VRAM-политик.
+
+4. **Автоматическая регистрация DreamShaper 8**:
+   - При установке стартового чекпоинта `dreamshaper_8.safetensors` конвейер обновляет `data/art_director_models.json`, выставляя профилю `"dreamshaper_8"` признак `"is_default": True` и сбрасывая его у нескачанного `"model_sd15.safetensors"`. Это позволяет пользователю генерировать арты сразу после установки без ручного сканирования через `ModelsManagerDialog`.
 
 ### 3.3. Защита от процессов-сирот через Windows Job Objects (`core/win32_job.py`)
 
@@ -1484,17 +1544,17 @@ flowchart TD
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (821 тест, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (838 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 821 автоматического теста в 84 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 838 автоматических тестов в 85 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
 | **`tests/smoke/`** | 18 | 121 | Быстрые сквозные смоук-тесты: единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`, 7 сценариев: диалог, кэш слота 0, подавление thinking в касте, генерация арт-сцены, data-driven диалекты, Fail-Fast Guard VRAM, карточки и сессии), гигиена и контракты batch-файлов (`test_release_pipeline_smoke.py`, включая интеграцию автозагрузчика llama-server в `install.bat` и исключение `hotfix_v098/`), арт-пайплайн, проброс промптов ADetailer, матрица краевых профилей VRAM/RAM Forge (17 тестов), Layer Budgeter (28 тестов), жизненный цикл MainWindow, смена 3 режимов, SQLite WAL, изоляция песочницы, baseline и краевые случаи Forge, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` (`test_forge_settings_dialog_smoke.py`) |
-| **`tests/unit/`** | 53 | 514 | Изолированное модульное тестирование: 3-слойный ADetailer и потоковый Structured JSON (`test_adetailer_dialog.py`, 12 тестов), сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
+| **`tests/unit/`** | 54 | 531 | Изолированное модульное тестирование: встроенный загрузчик и конвейер автоустановки SD WebUI Forge с каскадной распаковкой 7z, генерацией `forge_launcher.bat`, детекцией Blackwell/Ada, установкой ADetailer и DreamShaper 8 (`test_forge_downloader.py`, 11 тестов), 3-слойный ADetailer и потоковый Structured JSON (`test_adetailer_dialog.py`, 12 тестов), сохранение и восстановление KV-слотов (`test_kv_slot_save_restore.py`), заморозка статического префикса и телеметрия KV-кэша (`test_static_prefix_anchoring.py`), сериализация и Race Condition Guard выгрузки Forge (`test_forge_client.py`), асимметричный KV-кэш и Flash Attention (`test_llm_engine_settings_dialog.py`), интерактивное версионирование (`test_build_release_versioning.py`), динамический резолвинг mmap аргументов `--load-mode none` vs `--no-mmap` (`test_server_mmap_args.py`), авто-загрузчик llama-server с 2-фазным скачиванием/распаковкой и проверкой CUDA DLL (`test_llama_downloader.py`), реестровый детектор GPU Windows для AMD/Intel/iGPU (`test_gpu_detection_fallback.py`), бесшовный онбординг моделей и фильтр VRAM Forge (`test_seamless_onboarding_and_models.py`), клиенты Forge и LM Studio (включая fallback HTTP 404 free-vram), очистка runtime\python в `get_clean_forge_env`, сервис и CLI патчинга/бэкапа/отката Forge (`test_forge_patcher.py`), геометрия и резолвинг --ar, 3-уровневая политика VRAM и RAM-гард, ModelsManagerDialog, долговременная память MemoryDB (L2, косинус, кавычки, умное удаление), MemoryExtractor, HUD-чипы памяти, RAG FastEmbed ONNX, Deferred RAG, пути и симлинки, Windows Job Objects, L4+L7 хэндшейк, VRAM Guard, локатор |
 | **`tests/integration/`** | 2 | 9 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
 | **`tests/` (root)** | 11 | 177 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer |
-| **ИТОГО** | **84** | **821** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **ИТОГО** | **85** | **838** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Карта unit-тестов подсистем Forge, рантайма и отложенного контекста
 

@@ -7,11 +7,12 @@ ui/dialogs/forge_settings_dialog.py
 а также переключать аппаратную FP8-оптимизацию SDXL и режим автогенерации иллюстраций.
 """
 
+import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QVBoxLayout,
@@ -30,6 +31,8 @@ from qfluentwidgets import (
     SegmentedWidget,
     PushButton,
     PrimaryPushButton,
+    CheckBox,
+    ProgressBar,
     FluentIcon as FIF,
     IconWidget,
     FluentTitleBar,
@@ -42,6 +45,12 @@ from core.forge_locator import (
     FORGE_LAUNCHER_CANDIDATES,
 )
 from services.forge_patcher import ForgePatcher, ForgePatchStatus
+from services.forge_downloader import (
+    ForgeDownloadWorker,
+    get_active_forge_download_worker,
+    resolve_forge_hardware_spec,
+    ForgeInstallSpec,
+)
 from ui.common.palette_utils import extract_adaptive_palette
 from ui.common.toast_helper import toast_success, toast_info, toast_warning, toast_error
 from utils.config_manager import ConfigManager
@@ -60,13 +69,15 @@ class ForgeSettingsDialog(FramelessDialog):
     - Динамическая адаптивная палитра под цвет обоев
     """
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, auto_start_download: bool = False):
         super().__init__(parent=parent if isinstance(parent, QWidget) else None)
         self._parent_ref = parent
+        self._auto_start_download = auto_start_download
+        self._hardware_spec: Optional[ForgeInstallSpec] = None
         self.setWindowTitle("Настройки SD WebUI Forge — NeonRoute")
         self.setObjectName("ForgeSettingsDialog")
-        self.resize(580, 640)
-        self.setMinimumSize(520, 560)
+        self.resize(580, 680)
+        self.setMinimumSize(520, 580)
         self.setModal(True)
 
         # 1. Fluent TitleBar с [X]
@@ -212,6 +223,40 @@ class ForgeSettingsDialog(FramelessDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self.update_adaptive_palette()
+        self._attach_to_active_forge_worker_if_running()
+        if getattr(self, "_auto_start_download", False):
+            self._auto_start_download = False
+            QTimer.singleShot(150, self._start_forge_download)
+
+    def closeEvent(self, event):
+        self._disconnect_forge_worker_signals()
+        worker = get_active_forge_download_worker()
+        if worker is not None and worker.isRunning() and "PYTEST_CURRENT_TEST" not in os.environ:
+            parent_win = getattr(self, "_parent_ref", None) or self.parent()
+            if parent_win and isinstance(parent_win, QWidget):
+                toast_info(
+                    parent_win,
+                    "Загрузка продолжается в фоне",
+                    "Установка SD WebUI Forge продолжается в фоновом режиме.",
+                )
+        super().closeEvent(event)
+
+    def reject(self):
+        self._disconnect_forge_worker_signals()
+        worker = get_active_forge_download_worker()
+        if worker is not None and worker.isRunning() and "PYTEST_CURRENT_TEST" not in os.environ:
+            parent_win = getattr(self, "_parent_ref", None) or self.parent()
+            if parent_win and isinstance(parent_win, QWidget):
+                toast_info(
+                    parent_win,
+                    "Загрузка продолжается в фоне",
+                    "Установка SD WebUI Forge продолжается в фоновом режиме.",
+                )
+        super().reject()
+
+    def accept(self):
+        self._disconnect_forge_worker_signals()
+        super().accept()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -292,6 +337,65 @@ class ForgeSettingsDialog(FramelessDialog):
         self.lbl_launcher_status = CaptionLabel("", self.card_path)
         self.lbl_launcher_status.setStyleSheet("font-size: 11px;")
         path_layout.addWidget(self.lbl_launcher_status)
+
+        # 2.1. Контейнер автоматической установки Forge
+        self.container_install = QWidget(self.card_path)
+        self.container_install.setObjectName("forgeInstallContainer")
+        install_layout = QVBoxLayout(self.container_install)
+        install_layout.setContentsMargins(0, 4, 0, 0)
+        install_layout.setSpacing(6)
+
+        # Разделитель внутри карточки пути
+        install_sep = QFrame(self.container_install)
+        install_sep.setFrameShape(QFrame.Shape.HLine)
+        install_sep.setStyleSheet("background-color: rgba(255, 255, 255, 0.05);")
+        install_sep.setFixedHeight(1)
+        install_layout.addWidget(install_sep)
+
+        # Метка информации о GPU и совместимости
+        self.lbl_gpu_spec = CaptionLabel("", self.container_install)
+        self.lbl_gpu_spec.setWordWrap(True)
+        self.lbl_gpu_spec.setStyleSheet("font-size: 11px; line-height: 1.3;")
+        install_layout.addWidget(self.lbl_gpu_spec)
+
+        # Чекбокс DreamShaper + ADetailer
+        self.chk_download_dreamshaper = CheckBox(
+            "Скачать стартовую модель DreamShaper 8 (~2.1 ГБ) и детекторы лиц/рук",
+            self.container_install,
+        )
+        self.chk_download_dreamshaper.setChecked(True)
+        install_layout.addWidget(self.chk_download_dreamshaper)
+
+        # Кнопки управления загрузкой
+        dl_btn_row = QHBoxLayout()
+        dl_btn_row.setSpacing(8)
+        self.btn_download_forge = PrimaryPushButton(
+            FIF.DOWNLOAD, "Скачать и установить SD Forge", self.container_install
+        )
+        self.btn_download_forge.clicked.connect(self._start_forge_download)
+        dl_btn_row.addWidget(self.btn_download_forge)
+
+        self.btn_cancel_forge_dl = PushButton(FIF.CANCEL, "Остановить", self.container_install)
+        self.btn_cancel_forge_dl.clicked.connect(self._cancel_forge_download)
+        self.btn_cancel_forge_dl.hide()
+        dl_btn_row.addWidget(self.btn_cancel_forge_dl)
+        dl_btn_row.addStretch()
+        install_layout.addLayout(dl_btn_row)
+
+        # Прогресс-бар и метка подробного статуса
+        self.forge_progress_bar = ProgressBar(self.container_install)
+        self.forge_progress_bar.setRange(0, 100)
+        self.forge_progress_bar.setValue(0)
+        self.forge_progress_bar.hide()
+        install_layout.addWidget(self.forge_progress_bar)
+
+        self.lbl_download_status = CaptionLabel("", self.container_install)
+        self.lbl_download_status.setWordWrap(True)
+        self.lbl_download_status.setStyleSheet("font-size: 11px; color: #CBD5E1;")
+        self.lbl_download_status.hide()
+        install_layout.addWidget(self.lbl_download_status)
+
+        path_layout.addWidget(self.container_install)
 
         main_layout.addWidget(self.card_path)
 
@@ -481,6 +585,204 @@ class ForgeSettingsDialog(FramelessDialog):
             self.btn_check_patch.setText("Не найдено")
             self.btn_check_patch.setIcon(FIF.SEARCH)
             self.btn_check_patch.setEnabled(False)
+
+        # Обновление состояния карточки загрузчика Forge
+        self._update_installer_ui(dir_path_str, launcher_p is not None)
+
+    def _update_installer_ui(self, dir_path_str: str, launcher_found: bool):
+        """Синхронизирует блок автоустановщика с текущим статусом лаунчера и фоновой загрузки."""
+        worker = get_active_forge_download_worker()
+        is_dl_active = (worker is not None and worker.isRunning())
+
+        if self._hardware_spec is None:
+            try:
+                self._hardware_spec = resolve_forge_hardware_spec()
+            except Exception as e:
+                logger.debug(f"[ForgeSettingsDialog] Ошибка resolve_forge_hardware_spec: {e}")
+
+        if self._hardware_spec and hasattr(self, "lbl_gpu_spec"):
+            spec = self._hardware_spec
+            if not spec.supported:
+                self.lbl_gpu_spec.setText(
+                    f"⚠️ {spec.gpu_summary} — видеокарта не отвечает минимальным требованиям SD Forge "
+                    "(требуется NVIDIA с >= 4 ГБ VRAM). Генерация может быть нестабильной."
+                )
+                self.lbl_gpu_spec.setStyleSheet("font-size: 11px; color: #F59E0B;")
+            elif spec.is_blackwell:
+                self.lbl_gpu_spec.setText(
+                    f"⚡ {spec.gpu_summary} — архитектура Blackwell (RTX 50xx). "
+                    "Для стабильной работы может потребоваться обновление PyTorch 2.6+ / CUDA 12.8+."
+                )
+                self.lbl_gpu_spec.setStyleSheet("font-size: 11px; color: #38BDF8;")
+            else:
+                self.lbl_gpu_spec.setText(
+                    f"🟢 {spec.gpu_summary} — полная аппаратная поддержка SD Forge (VRAM Arbiter)."
+                )
+                self.lbl_gpu_spec.setStyleSheet("font-size: 11px; color: #10B981;")
+
+        if not hasattr(self, "container_install"):
+            return
+
+        if is_dl_active:
+            self.container_install.show()
+            self.btn_download_forge.hide()
+            self.btn_cancel_forge_dl.show()
+            self.btn_cancel_forge_dl.setEnabled(True)
+            self.forge_progress_bar.show()
+            self.lbl_download_status.show()
+            self.chk_download_dreamshaper.setEnabled(False)
+        else:
+            self.btn_cancel_forge_dl.hide()
+            self.forge_progress_bar.hide()
+            self.lbl_download_status.hide()
+            self.chk_download_dreamshaper.setEnabled(True)
+
+            if launcher_found:
+                self.btn_download_forge.setText("Переустановить SD Forge")
+                self.btn_download_forge.setIcon(FIF.SYNC)
+                self.container_install.hide()
+            else:
+                self.container_install.show()
+                self.btn_download_forge.show()
+                target_p = Path(dir_path_str) if dir_path_str else Path("C:/sd-webui-forge")
+                part_p = target_p / "webui_forge_cu121_torch231.7z.part"
+                if part_p.exists() and part_p.stat().st_size > 0:
+                    part_mb = part_p.stat().st_size / (1024 * 1024)
+                    self.btn_download_forge.setText(f"Докачать SD Forge (найдено {part_mb:.0f} МБ)")
+                else:
+                    self.btn_download_forge.setText("Скачать и установить SD Forge")
+                self.btn_download_forge.setIcon(FIF.DOWNLOAD)
+
+    def _connect_forge_worker_signals(self, worker: ForgeDownloadWorker):
+        """Подключает слоты диалога к сигналам рабочего потока загрузки Forge."""
+        try:
+            worker.progress_signal.connect(self._on_forge_download_progress)
+        except Exception:
+            pass
+        try:
+            worker.finished_signal.connect(self._on_forge_download_finished)
+        except Exception:
+            pass
+
+    def _disconnect_forge_worker_signals(self, worker: Optional[ForgeDownloadWorker] = None):
+        """Отключает слоты диалога от сигналов рабочего потока во избежание RuntimeError."""
+        w = worker or get_active_forge_download_worker()
+        if w is not None:
+            try:
+                w.progress_signal.disconnect(self._on_forge_download_progress)
+            except Exception:
+                pass
+            try:
+                w.finished_signal.disconnect(self._on_forge_download_finished)
+            except Exception:
+                pass
+
+    def _attach_to_active_forge_worker_if_running(self):
+        """При открытии окна цепляется к уже идущей фоновой загрузке Forge."""
+        worker = get_active_forge_download_worker()
+        if worker is not None and worker.isRunning():
+            self._connect_forge_worker_signals(worker)
+            self._update_installer_ui(self.line_path.text().strip(), False)
+            self._on_forge_download_progress(
+                worker._current_stage or "forge",
+                worker.last_downloaded,
+                worker.last_total,
+                worker.last_speed_mb,
+            )
+
+    def _start_forge_download(self):
+        """Запуск фонового процесса скачивания и распаковки Forge."""
+        if get_active_forge_download_worker() is not None:
+            toast_warning(self, "Загрузка уже идёт", "Процесс установки Forge уже выполняется в фоне.")
+            return
+
+        target_path_str = self.line_path.text().strip()
+        if not target_path_str:
+            target_path = Path("C:/sd-webui-forge")
+            self.line_path.setText(str(target_path))
+        else:
+            target_path = Path(target_path_str)
+
+        download_dreamshaper = self.chk_download_dreamshaper.isChecked()
+
+        worker = ForgeDownloadWorker(target_dir=target_path, download_dreamshaper=download_dreamshaper)
+        self._connect_forge_worker_signals(worker)
+
+        self.btn_download_forge.hide()
+        self.btn_cancel_forge_dl.show()
+        self.btn_cancel_forge_dl.setEnabled(True)
+        self.forge_progress_bar.show()
+        self.forge_progress_bar.setValue(0)
+        self.lbl_download_status.show()
+        self.lbl_download_status.setText("⏳ Подготовка к скачиванию SD WebUI Forge...")
+        self.chk_download_dreamshaper.setEnabled(False)
+
+        worker.start()
+
+    def _cancel_forge_download(self):
+        """Отмена фоновой загрузки Forge."""
+        worker = get_active_forge_download_worker()
+        if worker is not None:
+            worker.cancel()
+            self.lbl_download_status.setText("⏳ Остановка загрузки... Пожалуйста, подождите.")
+            self.btn_cancel_forge_dl.setEnabled(False)
+
+    def _on_forge_download_progress(self, stage: str, cur: int, tot: int, speed: float):
+        """Слот отображения прогресса, скачанных МБ и скорости."""
+        self.forge_progress_bar.show()
+        self.lbl_download_status.show()
+        self.btn_download_forge.hide()
+        self.btn_cancel_forge_dl.show()
+        self.btn_cancel_forge_dl.setEnabled(True)
+
+        has_ds = self.chk_download_dreamshaper.isChecked()
+        tot_stages = "3" if has_ds else "2"
+
+        if tot > 0:
+            pct = int((cur / tot) * 100)
+            self.forge_progress_bar.setValue(min(100, max(0, pct)))
+            cur_mb = cur / (1024 * 1024)
+            tot_mb = tot / (1024 * 1024)
+        else:
+            pct = 0
+            cur_mb = 0.0
+            tot_mb = 0.0
+
+        if stage == "forge":
+            self.lbl_download_status.setText(
+                f"⏳ [1/{tot_stages}] Скачивание SD Forge: {pct}% ({cur_mb:.0f} / {tot_mb:.0f} МБ • {speed:.1f} МБ/с)"
+            )
+        elif stage == "extract":
+            self.forge_progress_bar.setValue(100)
+            self.lbl_download_status.setText("📦 Распаковка архива и создание лаунчера...")
+        elif stage == "adetailer":
+            self.lbl_download_status.setText(f"⏳ [2/{tot_stages}] Загрузка детекторов ADetailer...")
+        elif stage == "checkpoint":
+            self.lbl_download_status.setText(
+                f"⏳ [3/3] Скачивание DreamShaper 8: {pct}% ({cur_mb:.0f} / {tot_mb:.0f} МБ • {speed:.1f} МБ/с)"
+            )
+        else:
+            self.lbl_download_status.setText(f"⏳ Установка: {stage}...")
+
+    def _on_forge_download_finished(self, success: bool, resolved_root: str, message: str):
+        """Слот завершения процесса установки Forge."""
+        self._disconnect_forge_worker_signals()
+        self.btn_cancel_forge_dl.hide()
+        self.btn_cancel_forge_dl.setEnabled(True)
+        self.chk_download_dreamshaper.setEnabled(True)
+
+        if success:
+            if resolved_root:
+                self.line_path.setText(resolved_root)
+                self._update_path_and_patch_status(resolved_root)
+            self.forge_progress_bar.setValue(100)
+            self.lbl_download_status.setText("✅ Установка успешно завершена!")
+            toast_success(self, "Установка Forge завершена", message)
+        else:
+            self.forge_progress_bar.hide()
+            self.lbl_download_status.setText(f"❌ {message}")
+            self._update_path_and_patch_status(self.line_path.text().strip())
+            toast_error(self, "Ошибка установки Forge", message)
 
     def _on_path_text_changed(self, text: str):
         """Реактивное обновление статуса при ручном вводе пути."""

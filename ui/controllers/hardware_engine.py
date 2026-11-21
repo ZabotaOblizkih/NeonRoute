@@ -285,11 +285,9 @@ class HardwareEngineMixin:
         dlg.exec()
 
         if dlg.choice == "download":
-            toast_info(
-                self,
-                "SD Forge",
-                "После скачивания и распаковки Forge укажите папку: Параметры и настройки → Система → SD Forge..."
-            )
+            from ui.dialogs.forge_settings_dialog import ForgeSettingsDialog
+            settings_dlg = ForgeSettingsDialog(parent=self, auto_start_download=True)
+            settings_dlg.exec()
         elif dlg.choice == "locate":
             self.prompt_locate_forge()
         else:

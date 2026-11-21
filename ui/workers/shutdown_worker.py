@@ -65,6 +65,15 @@ class ShutdownWorker(QThread):
         except Exception as e:
             logger.debug(f"Error cancelling active GGUF download on shutdown: {e}")
 
+        # 2.6. Отмена активной фоновой загрузки SD WebUI Forge (если скачивается)
+        try:
+            from services.forge_downloader import get_active_forge_download_worker
+            active_forge_dl = get_active_forge_download_worker()
+            if active_forge_dl is not None:
+                active_forge_dl.cancel()
+        except Exception as e:
+            logger.debug(f"Error cancelling active Forge download on shutdown: {e}")
+
         # 3. Выгрузка VRAM и серверов
         try:
             import sys

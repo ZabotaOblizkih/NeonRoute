@@ -26,6 +26,7 @@ psutil>=5.9.0
 pynvml>=11.5.0
 requests>=2.31.0
 json-repair>=0.25.0
+py7zr>=0.20.0
 
 # 4. Mobile Companion Server (Autonomous API & SSE Streaming)
 fastapi>=0.100.0
