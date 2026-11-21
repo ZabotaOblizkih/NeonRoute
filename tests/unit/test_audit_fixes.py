@@ -10,6 +10,7 @@ Unit tests for the 4 failure point fixes verified from 2026-11-18 incident logs:
 
 import time
 import struct
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -675,4 +676,173 @@ def test_models_cache_invalidates_entry_without_schema_version_2(tmp_path, monke
     assert meta["schema_version"] == 3
     assert written_cache[cache_key]["schema_version"] == 3
     assert written_cache[cache_key]["total_layers"] == 28
+
+
+# ---------------------------------------------------------------------------
+# 6. Gemma 4 Audit Fixes: KV Slot Topology, -b/-ub CLI sync, and SSE Error / OOM
+# ---------------------------------------------------------------------------
+def test_kv_slot_invalidation_on_gpu_layers_mismatch(tmp_path, monkeypatch):
+    """
+    KV-slot dump saved at NGL=99 (normalized to 48) is rejected on reload if NGL=47.
+    When NGL matches, slot restore is accepted.
+    """
+    kv_dir = tmp_path / "kv_slots"
+    kv_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("services.process_manager.KV_SLOTS_DIR", kv_dir)
+
+    pm = ProcessManager()
+    pm._llama_process = MagicMock()
+    pm._current_running_port = 1234
+    pm._current_running_model_path = "C:/models/gemma-4-12b.gguf"
+    pm._current_running_ctx = 14336
+    pm._current_running_ngl = 99
+    pm._current_total_layers = 48
+    pm._current_running_ctk = "q8_0"
+    pm._current_running_ctv = "q8_0"
+    pm._current_running_fa = "on"
+
+    fake_mtime = 1700000000.0
+    mock_save_resp = MagicMock(status_code=200)
+
+    with patch("requests.post", return_value=mock_save_resp), \
+         patch("services.server_config.ServerConfigResolver.resolve_model_path", return_value=Path("C:/models/gemma-4-12b.gguf")), \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("os.path.getmtime", return_value=fake_mtime):
+        saved = pm._save_kv_slot_for_eviction()
+        assert saved is True
+
+    meta_file = kv_dir / "slot_metadata.json"
+    assert meta_file.exists()
+    import json
+    with open(meta_file, "r", encoding="utf-8") as f:
+        saved_meta = json.load(f)
+    assert saved_meta["gpu_layers"] == 48
+
+    slot_file = kv_dir / "evicted_slot_0.bin"
+    slot_file.write_bytes(b"dummy_slot_data")
+
+    # 1. Попытка восстановить при gpu_layers = 47 (дефицит VRAM после Forge)
+    mismatched_meta = dict(saved_meta)
+    mismatched_meta["gpu_layers"] = 47
+
+    with patch("requests.post") as mock_post:
+        restored = pm._restore_kv_slot_after_start(mismatched_meta)
+        assert restored is False
+        mock_post.assert_not_called()
+
+    # Дамп должен быть инвалидирован и удален
+    assert not slot_file.exists()
+    assert not meta_file.exists()
+
+    # 2. Повторное сохранение и проверка успешного восстановления при совпадении gpu_layers = 48
+    with patch("requests.post", return_value=mock_save_resp), \
+         patch("services.server_config.ServerConfigResolver.resolve_model_path", return_value=Path("C:/models/gemma-4-12b.gguf")), \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("os.path.getmtime", return_value=fake_mtime):
+        saved2 = pm._save_kv_slot_for_eviction()
+        assert saved2 is True
+
+    slot_file.write_bytes(b"dummy_slot_data_2")
+    matching_meta = dict(saved_meta)
+    mock_restore_resp = MagicMock(status_code=200)
+
+    with patch("requests.post", return_value=mock_restore_resp) as mock_post:
+        restored_ok = pm._restore_kv_slot_after_start(matching_meta)
+        assert restored_ok is True
+        mock_post.assert_called_once_with(
+            "http://127.0.0.1:1234/slots/0?action=restore",
+            json={"filename": "evicted_slot_0.bin"},
+            timeout=5.0
+        )
+
+
+def test_llama_server_cli_includes_batch_size_and_ubatch_size(tmp_path, monkeypatch):
+    """ProcessManager includes both -b and -ub in llama-server CLI arguments."""
+    pm = ProcessManager()
+    captured_cmd = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured_cmd.extend(cmd)
+        raise RuntimeError("Intercepted Popen for inspection")
+
+    with patch("services.process_manager.ServerConfigResolver.resolve_server_exe", return_value=Path("C:/bin/llama-server.exe")), \
+         patch("services.process_manager.ServerConfigResolver.resolve_model_path", return_value=Path("C:/models/test_model.gguf")), \
+         patch("services.process_manager.ServerConfigResolver.resolve_mmproj_for_model", return_value=None), \
+         patch("services.process_manager.ServerConfigResolver.resolve_cuda_dir", return_value=None), \
+         patch("services.layer_budgeter.LayerBudgeter.detect_gpu_topology", return_value=(True, 150)), \
+         patch("services.layer_budgeter.LayerBudgeter.get_current_used_vram_mb", return_value=150.0), \
+         patch("services.layer_budgeter.LayerBudgeter.parse_gguf_metadata", return_value={"total_layers": 32, "model_size_mb": 4000.0, "vocab_size": 32000}), \
+         patch("utils.system_monitor.SystemMonitor.get_total_vram_mb", return_value=8192), \
+         patch("subprocess.Popen", side_effect=fake_popen), \
+         patch.object(pm, "inspect_port_occupant", return_value=(False, None, None)), \
+         patch("pathlib.Path.exists", return_value=True):
+
+        pm.start_llama_server_sync(model_identifier="test_model", context_length=8192)
+
+        assert "-b" in captured_cmd
+        assert "-ub" in captured_cmd
+        b_idx = captured_cmd.index("-b")
+        ub_idx = captured_cmd.index("-ub")
+        b_val = int(captured_cmd[b_idx + 1])
+        ub_val = int(captured_cmd[ub_idx + 1])
+        assert ub_val == 256
+        assert b_val >= ub_val
+        assert b_val == 512
+
+
+def test_sse_error_chunk_triggers_runtime_error_and_model_state_reset(monkeypatch):
+    """
+    When llama-server emits an SSE chunk with 'error' (e.g. bad allocation),
+    chat_completion raises RuntimeError, marks model unloaded and triggers OOM failure flag on PM.
+    """
+    LMStudioClient._instance = None
+    client = LMStudioClient()
+    client._is_model_unloaded = False
+    client._last_loaded_model_id = "gemma-4-12b"
+
+    mock_pm = MagicMock()
+    mock_pm.is_lm_studio_running.return_value = True
+    client.set_process_manager(mock_pm)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_lines.return_value = [
+        b'data: {"error": {"message": "got exception: bad allocation", "code": 500, "type": "server_error"}}\n\n'
+    ]
+    mock_resp.content = b""
+    client._persistent_session = MagicMock()
+    client._persistent_session.post.return_value = mock_resp
+
+    monkeypatch.setattr(client, "is_model_loaded", lambda m=None: True)
+
+    with pytest.raises(RuntimeError, match="bad allocation"):
+        client.chat_completion(
+            model="gemma-4-12b",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True
+        )
+
+    # State must be reset for reload
+    assert client._is_model_unloaded is True
+    assert client._last_loaded_model_id is None
+    assert mock_pm.is_oom_failure is True
+    assert "bad allocation" in str(mock_pm.last_error).lower()
+
+
+def test_stream_llama_stdout_rc_nonzero_triggers_extract_error_and_oom_flag(tmp_path, monkeypatch):
+    """When llama-server crashes with rc != 0, _stream_llama_stdout extracts error and sets ServerState.ERROR."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("services.process_manager.LOGS_DIR", log_dir)
+    log_file = log_dir / "llama_server.log"
+    log_file.write_text("slot iterate: id 0 | task 1 | got exception: bad allocation\n", encoding="utf-8")
+
+    pm = ProcessManager()
+    pm._server_state = ServerState.READY
+    pm._llama_process = MagicMock()
+
+    err_msg, is_oom = pm._extract_llama_startup_error()
+    assert is_oom is True
+    assert "bad allocation" in err_msg.lower()
+
 

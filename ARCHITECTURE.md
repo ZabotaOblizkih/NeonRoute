@@ -515,9 +515,18 @@ NeonRoute поддерживает двойной контур инференс�
      - Интеграция с Flash Attention (`-fa on`) и синхронизация селектора в `LLMEngineSettingsDialog`.
    - **Сохранение и восстановление контекста слотов llama-server (`--slot-save-path`)**:
      - Запуск `llama-server.exe` с аргументом `["--slot-save-path", str(KV_SLOTS_DIR)]` (`data/kv_slots/`).
-     - При вытеснении LLM под диффузию (`ProcessManager._save_kv_slot_for_eviction`) отправляется `POST /slots/0?action=save` с сохранением дампа слота в `evicted_slot_0.bin`.
-     - При возврате LLM в VRAM (`ProcessManager._restore_kv_slot_after_start`) вызывается `POST /slots/0?action=restore`, восстанавливая полный контекст сессии за ~1.0 с (~1.2 ГБ слота) без задержки TTFT (Time-to-First-Token) и без повторного вычисления токенов диалога.
+     - При вытеснении LLM под диффузию (`ProcessManager._save_kv_slot_for_eviction`) отправляется `POST /slots/0?action=save` с сохранением дампа слота в `evicted_slot_0.bin` и метаданных в `slot_metadata.json` (включая эффективное число слоев оффлоада `gpu_layers`).
+     - При возврате LLM в VRAM (`ProcessManager._restore_kv_slot_after_start`) выполняется строгая валидация метаданных слота (`model_path`, `n_ctx`, `kv_cache_type_k`, `kv_cache_type_v`, `flash_attention` и топологии оффлоада слоев `gpu_layers`).
+     - При несовпадении любого из параметров (включая изменение числа слоев оффлоада, например NGL=99 vs NGL=47) кэш слота безопасно инвалидируется через `clear_kv_slot_cache()`, вызов `action=restore` пропускается во избежание сбоев аллокации (`bad allocation`) и рассинхронизации топологии тензоров в памяти, а инференс выполняется с чистого prefill.
+     - При совпадении вызывается `POST /slots/0?action=restore`, восстанавливая полный контекст сессии за ~1.0 с (~1.2 ГБ слота) без задержки TTFT (Time-to-First-Token) и без повторного вычисления токенов диалога.
      - Потокобезопасная очистка кэша слотов `clear_kv_slot_cache()` при смене активной модели или завершении приложения.
+   - **Синхронизация логического и физического микробатча (`-b` / `-ub`)**:
+     - Передача в CLI запуска аргументов `["-b", str(batch_size), "-ub", str(ubatch_size)]`.
+     - `ServerConfigResolver` считывает `batch_size` из `server_config.ini` (секция `[SERVER]`) со значением по умолчанию `DEFAULT_LLAMA_BATCH_SIZE = 512` и гарантирует инвариант `batch_size >= ubatch_size` (дефолт `DEFAULT_LLAMA_UBATCH_SIZE = 256`), исключая падения `GGML_ASSERT(batch.slot_batched || batch.size() == 0)` при обработке запросов, превышающих физический микробатч.
+   - **Отказоустойчивость SSE-стриминга и Step-Down откат слоев при OOM**:
+     - В `services/lm_studio.py` (`chat_completion`) реализован превентивный разбор SSE-чанков на наличие поля `"error"`, возвращаемого сервером при ошибках аллокации (`got exception: bad allocation`), с немедленным возбуждением `RuntimeError`.
+     - При обрыве стрима (`0 tokens`) или OOM (`bad allocation`, `out of memory`, `cudamalloc failed`) сбрасывается конечное состояние клиента (`_is_model_unloaded = True`, `_last_loaded_model_id = None`), взводится флаг `ProcessManager.is_oom_failure = True` и сохраняется `last_error`.
+     - При аварийном завершении процесса `llama-server` в рантайме (`rc != 0` из состояния `READY` или `STARTING`) `ProcessManager._stream_llama_stdout()` вызывает `_extract_llama_startup_error()` с распознаванием маркеров OOM (включая `"bad allocation"`), выставляет флаг `is_oom_failure = True` и переводит сервер в `ServerState.ERROR`. При последующем запросе `ensure_model_loaded()` это инициирует автоматический откат слоев (`base_layers - 4`) с сохранением работоспособности сервиса.
 2. **LM Studio CLI (`lms`) и REST API (Резервный контур)**:
    - Взаимодействие через CLI-команды `lms server start` / `lms server stop` и постоянное HTTP Keep-Alive соединение на порту 1234.
    - **Стриминг токенов рассуждений (DeepSeek-R1 `reasoning_content`)**: парсер SSE-потока в `services/lm_studio.py` детектирует поле `delta.reasoning_content` наряду с традиционным полем `delta.content`, направляя цепочку рассуждений в `ThoughtStreamParser` с буфером до 16K токенов.
@@ -688,7 +697,7 @@ flowchart TD
 | **OS Reserve (dGPU)** | 700 | Резерв Windows DWM / Desktop Rendering для первичного дисплея |
 | **OS Reserve (iGPU)** | 150 | Резерв в режиме `PURE COMPUTE` (дисплей подключен к интегрированному видеоядру) |
 | **Forge VRAM Reserve** | 450 | Неснижаемый контекст PyTorch CUDA для SD WebUI Forge |
-| **Safety Margin VRAM** | 250 | Буфер предотвращения срабатывания Windows TDR (таймаут видеодрайвера) |
+| **Safety Margin VRAM** | 170 | Буфер предотвращения срабатывания Windows TDR (таймаут видеодрайвера) |
 | **Emergency VRAM Limit** | 150 | Порог экстренной остановки инференса при опасном исчерпании VRAM |
 | **Usable VRAM (Active Model)** | ~6742–7292 | Полезный бюджет для квантов LLM либо диффузионного чекпоинта |
 
@@ -787,16 +796,16 @@ sequenceDiagram
 2. **Калиброванная формула полезной видеопамяти под WDDM**:
    $$\text{Usable\_VRAM} = \text{Total\_VRAM} - \text{Effective\_OS\_Reserve} - \text{Forge\_Reserve} - \text{Safety\_Margin} - \text{KV\_Cache} - \text{Compute\_Buffer}$$
    - **Forge Reserve**: вычитается `450 МБ` в автономном режиме (`is_arbiter_managed=False`) и строго `0 МБ` при активном арбитре (`is_arbiter_managed=True`), гарантирующем взаимное исключение.
-   - **Safety Margin (WDDM Headroom)**: `SAFETY_MARGIN_VRAM_MB = 250 МБ` (+ `frag_margin` при `is_arbiter_managed=True`). Базовый буфер 250 МБ предотвращает скачки аллокаций драйвера WDDM и вытеснение тензоров в PCIe Shared Memory.
+   - **Safety Margin (WDDM Headroom)**: `SAFETY_MARGIN_VRAM_MB = 170 МБ` (+ `frag_margin` при `is_arbiter_managed=True`). Базовый буфер 170 МБ предотвращает скачки аллокаций драйвера WDDM и вытеснение тензоров в PCIe Shared Memory.
    - **Динамический Fragmentation Margin**: при недавней работе Forge ($t < 8.0$ с) запас `frag_margin = 180 МБ` начисляется только если `used_vram <= 400.0 МБ` (когда след Forge ещё не проявился в NVML); при `used_vram > 400.0 МБ` резидентный контекст процесса Forge (~345 МБ) уже вычтен в `Effective_OS_Reserve`, поэтому `frag_margin = 0 МБ` во избежание двойного штрафа.
    - **Аналитический KV-кэш (`estimate_kv_cache_mb`)**: при наличии размерностей голов в GGUF рассчитывается точный физический размер с 15% CUDA-буфером на выравнивание памяти с поддержкой раздельных типов квантования Key и Value:
      $$\text{Bytes\_Per\_Token\_Per\_Layer} = \text{Head\_Count\_KV} \times (\text{Key\_Length} \times \text{Type\_Bytes\_K} + \text{Value\_Length} \times \text{Type\_Bytes\_V}) \times 1.15$$
      (где `Type_Bytes`: `0.5625` для `q4_0`, `1.0625` для `q8_0`, `2.0` для `f16`). Для асимметричной пары `q8_0_q4_0` эффективный размер составляет 1.625 байт на измерение (экономия 25–30% VRAM по сравнению с симметричным `q8_0` при сохранении точности матрицы внимания). Для гибридных SWA-архитектур (Gemma 3/4) списочные поля усредняются по слоям и учитывается эффективное число токенов локальных слоёв с окном $\min(\text{ctx}, \text{sliding\_window} + 512)$ и глобальных слоёв с полным контекстом. При отсутствии размерностей голов действует надёжный fallback: ~64 КБ/токен для `q8_0`, ~36 КБ/токен для `q4`, ~128 КБ/токен для `f16`.
-   - **Аналитический Compute & Logits Buffer**: буфер тензоров вычислений графа и выходного тензора логитов, вычисляемый от реального физического микробатча `ubatch` (`DEFAULT_LLAMA_UBATCH_SIZE = 512`) и размера словаря модели `vocab_size`:
+   - **Аналитический Compute & Logits Buffer**: буфер тензоров вычислений графа и выходного тензора логитов, вычисляемый от реального физического микробатча `ubatch` (`DEFAULT_LLAMA_UBATCH_SIZE = 256`, логический батч `DEFAULT_LLAMA_BATCH_SIZE = 512`) и размера словаря модели `vocab_size`:
      $$\text{Logits\_MB} = \left\lceil \frac{\text{ubatch\_size} \times \text{vocab\_size} \times 4}{1024^2} \right\rceil$$
      $$\text{Base\_Graph\_MB} = 100 \text{ (при model\_size} < 5000\text{ МБ) } \mid 140 \text{ (при } \ge 5000\text{ МБ)}$$
      $$\text{Compute\_Buffer} = \text{Base\_Graph\_MB} + \text{Logits\_MB}$$
-     Примеры: Llama 2/3 (Vocab 32K) -> $140 + 63 = 203\text{ МБ}$; Qwen 2.5 (Vocab 152K) -> $140 + 297 = 437\text{ МБ}$; Gemma 4 (Vocab 262K) -> $140 + 512 = 652\text{ МБ}$. Флаг `-ub <ubatch_size>` явно передается в CLI запуска `llama-server`.
+     Примеры: Llama 2/3 (Vocab 32K) -> $140 + 32 = 172\text{ МБ}$; Qwen 2.5 (Vocab 152K) -> $140 + 149 = 289\text{ МБ}$; Gemma 4 (Vocab 262K) -> $140 + 256 = 396\text{ МБ}$. Флаги `-b <batch_size>` и `-ub <ubatch_size>` явно передаются в CLI запуска `llama-server` с соблюдением инварианта $\text{batch\_size} \ge \text{ubatch\_size}$.
 3. **Бинарный парсинг GGUF-заголовков и анатомия весов**:
    - Чтение метаданных `_parse_gguf_header` с сохранением длины массива (`metadata[f"{key}.count"] = int(arr_len)`) непосредственно при чтении дескриптора типа `9` (`ARRAY`), что обеспечивает корректное определение размера словаря (`262 144` токена у Gemma 4) даже при переполнении 64 КБ буфера заголовка токенами `tokenizer.ggml.tokens`.
    - Автоматическая инвалидация устаревших записей в `models_cache.json`, если в кэше отсутствует валидное значение `vocab_size`.

@@ -18,7 +18,7 @@ if str(_ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR))
 
 import config
-from config import DEFAULT_LLAMA_UBATCH_SIZE
+from config import DEFAULT_LLAMA_UBATCH_SIZE, DEFAULT_LLAMA_BATCH_SIZE
 
 logger = logging.getLogger("NeonRoute.ServerConfig")
 
@@ -110,6 +110,7 @@ class ServerConfigResolver:
         "cache_type_v": "q8_0",
         "parallel_slots": 1,
         "ubatch_size": DEFAULT_LLAMA_UBATCH_SIZE,
+        "batch_size": DEFAULT_LLAMA_BATCH_SIZE,
         "no_mmap": True,
         "server_bin_path": "",
         "cuda_dll_dir": "",
@@ -182,6 +183,17 @@ class ServerConfigResolver:
                     cfg["ubatch_size"] = int(_sanitize_ini_value(s.get("ubatch_size")))
                 except (ValueError, TypeError):
                     pass
+            if "batch_size" in s:
+                try:
+                    cfg["batch_size"] = int(_sanitize_ini_value(s.get("batch_size")))
+                except (ValueError, TypeError):
+                    pass
+
+            # Гарантируем batch_size >= ubatch_size
+            ub_val = cfg.get("ubatch_size", DEFAULT_LLAMA_UBATCH_SIZE)
+            b_val = cfg.get("batch_size", DEFAULT_LLAMA_BATCH_SIZE)
+            if b_val < ub_val:
+                cfg["batch_size"] = ub_val
 
         # Section [PATHS]
         if parser.has_section("PATHS"):

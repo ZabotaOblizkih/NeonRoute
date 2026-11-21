@@ -54,6 +54,8 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
     pm._current_running_port = 1234
     pm._current_running_model_path = "C:/models/gemma-4-12b.gguf"
     pm._current_running_ctx = 14336
+    pm._current_running_ngl = 99
+    pm._current_total_layers = 48
     pm._current_running_ctk = "q8_0"
     pm._current_running_ctv = "q4_0"
     pm._current_running_fa = "on"
@@ -87,6 +89,7 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
             meta = json.load(f)
 
         assert meta["context_length"] == 14336
+        assert meta["gpu_layers"] == 48
         assert meta["kv_cache_type_k"] == "q8_0"
         assert meta["kv_cache_type_v"] == "q4_0"
         assert meta["flash_attn"] == "on"
@@ -101,6 +104,7 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
         "model_path": "C:/models/gemma-4-12b.gguf",
         "model_mtime": fake_mtime,
         "context_length": 14336,
+        "gpu_layers": 48,
         "kv_cache_type_k": "q8_0",
         "kv_cache_type_v": "q4_0",
         "flash_attn": "on",
@@ -129,13 +133,14 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
     ("model_path", "C:/models/qwen-2.5-7b.gguf"),
     ("model_mtime", 1800000000.0),
     ("context_length", 24576),
+    ("gpu_layers", 47),
     ("kv_cache_type_v", "q8_0"),
     ("flash_attn", "off"),
 ])
 def test_kv_slot_invalidation_on_parameter_change(mock_kv_dir, mismatched_key, mismatched_val):
     """
     Scenario 2:
-    - If any key (model_path, mtime, context, ctv, flash_attn) changed between
+    - If any key (model_path, mtime, context, gpu_layers, ctv, flash_attn) changed between
       eviction and startup, restore must be skipped and files purged.
     """
     pm = ProcessManager()
@@ -148,6 +153,7 @@ def test_kv_slot_invalidation_on_parameter_change(mock_kv_dir, mismatched_key, m
         "model_path": "C:/models/gemma-4-12b.gguf",
         "model_mtime": 1700000000.0,
         "context_length": 14336,
+        "gpu_layers": 99,
         "kv_cache_type_k": "q8_0",
         "kv_cache_type_v": "q4_0",
         "flash_attn": "on",
@@ -203,6 +209,7 @@ def test_kv_slot_save_and_restore_fault_tolerance(mock_kv_dir):
         "context_length": 8192,
         "kv_cache_type_k": "q8_0",
         "kv_cache_type_v": "q8_0",
+        "gpu_layers": 99,
         "flash_attn": "on",
     }
     meta_file.write_text(json.dumps(meta), encoding="utf-8")

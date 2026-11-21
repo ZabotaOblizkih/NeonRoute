@@ -133,6 +133,7 @@ OS_RESERVE_PURE_COMPUTE_MB = 150     # Резерв ОС при изолиров
 OS_RESERVE_PRIMARY_DISPLAY_MB = 700  # Резерв ОС при выводе экрана через dGPU
 HYSTERESIS_LAYER_DELTA = 3           # Зона нечувствительности рестартов по слоям
 DEFAULT_LLAMA_UBATCH_SIZE = 256      # Физический микробатч вычислений llama-server по умолчанию
+DEFAULT_LLAMA_BATCH_SIZE = 512       # Логический батч вычислений llama-server по умолчанию
 
 # Пороги относительного коэффициента заполнения контекста (Контур 1)
 CONTEXT_RATIO_TIER_1 = 0.60        # ratio < 0.60 -> Ступень 1 (60 сообщ / 1024 токена)

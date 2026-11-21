@@ -793,7 +793,20 @@ class LMStudioClient(QObject):
                                 break
                             try:
                                 chunk = json.loads(data_str)
+                            except Exception:
+                                continue
 
+                            # Перехват SSE chunk с полем "error" от сервера
+                            if isinstance(chunk, dict) and chunk.get("error"):
+                                err_payload = chunk["error"]
+                                if isinstance(err_payload, dict):
+                                    err_msg = err_payload.get("message") or err_payload.get("code") or "Unknown SSE error"
+                                else:
+                                    err_msg = str(err_payload)
+                                logger.error(f"[LMStudio] Сервер вернул ошибку в SSE-потоке: {err_msg}")
+                                raise RuntimeError(f"LLM stream error: {err_msg}")
+
+                            try:
                                 # Извлекаем usage и timings до проверки choices (в финальном служебном чанке choices=[])
                                 usage_obj = chunk.get("usage")
                                 if isinstance(usage_obj, dict):
@@ -986,6 +999,19 @@ class LMStudioClient(QObject):
             self.error_occurred.emit(err_msg)
             raise ConnectionError(err_msg)
         except Exception as e:
+            err_str = str(e).lower()
+            if isinstance(e, RuntimeError) and any(m in err_str for m in ("0 tokens", "bad allocation", "out of memory", "cudamalloc failed")):
+                logger.warning(f"[LMStudio] Обнаружен срыв потока/OOM ('{e}'). Сброс состояния модели для перезапуска.")
+                self._is_model_unloaded = True
+                self._last_loaded_model_id = None
+                if self.process_manager is not None:
+                    try:
+                        if any(m in err_str for m in ("bad allocation", "out of memory", "cudamalloc failed")):
+                            self.process_manager.is_oom_failure = True
+                            self.process_manager.last_error = str(e)
+                        self.process_manager.is_lm_studio_running()
+                    except Exception:
+                        pass
             if not self._is_aborted:
                 self.error_occurred.emit(str(e))
             raise

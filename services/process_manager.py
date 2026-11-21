@@ -30,6 +30,7 @@ from config import (
     LM_STUDIO_CLI_CMD,
     LOGS_DIR,
     DEFAULT_LLAMA_UBATCH_SIZE,
+    DEFAULT_LLAMA_BATCH_SIZE,
     KV_SLOTS_DIR,
 )
 from core.forge_locator import get_clean_forge_env
@@ -454,10 +455,26 @@ class ProcessManager(QObject):
             ctv = getattr(self, "_current_running_ctv", None) or "q8_0"
             fa = getattr(self, "_current_running_fa", None) or "on"
 
+            ngl_val = getattr(self, "_current_running_ngl", None)
+            if ngl_val is None and hasattr(self, "lm_client") and self.lm_client:
+                ngl_val = getattr(self.lm_client, "_current_running_ngl", None)
+            tot_layers = getattr(self, "_current_total_layers", None)
+            if tot_layers is None and hasattr(self, "lm_client") and self.lm_client:
+                tot_layers = getattr(self.lm_client, "_current_total_layers", None)
+
+            if ngl_val is not None:
+                if tot_layers is not None and tot_layers > 0 and int(ngl_val) >= int(tot_layers):
+                    saved_gpu_layers = int(tot_layers)
+                else:
+                    saved_gpu_layers = int(ngl_val)
+            else:
+                saved_gpu_layers = 99
+
             meta = {
                 "model_path": norm_path,
                 "model_mtime": model_mtime,
                 "context_length": int(ctx),
+                "gpu_layers": int(saved_gpu_layers),
                 "kv_cache_type_k": str(ctk),
                 "kv_cache_type_v": str(ctv),
                 "flash_attn": str(fa),
@@ -519,7 +536,7 @@ class ProcessManager(QObject):
 
         # Сверка метаданных с актуальными expected_meta
         mismatch_reasons = []
-        for key in ("model_path", "model_mtime", "context_length", "kv_cache_type_k", "kv_cache_type_v", "flash_attn"):
+        for key in ("model_path", "model_mtime", "context_length", "gpu_layers", "kv_cache_type_k", "kv_cache_type_v", "flash_attn"):
             saved_val = saved_meta.get(key)
             exp_val = expected_meta.get(key)
             if key == "model_mtime":
@@ -533,6 +550,14 @@ class ProcessManager(QObject):
                 e_name = Path(str(exp_val)).name.lower() if exp_val else ""
                 if s_name != e_name:
                     mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
+            elif key == "gpu_layers":
+                try:
+                    s_ngl = int(saved_val) if saved_val is not None else None
+                    e_ngl = int(exp_val) if exp_val is not None else None
+                    if s_ngl is None or e_ngl is None or s_ngl != e_ngl:
+                        mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
+                except (ValueError, TypeError):
+                    mismatch_reasons.append(f"{key}: parse error")
             else:
                 if str(saved_val) != str(exp_val):
                     mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
@@ -590,7 +615,7 @@ class ProcessManager(QObject):
 
         parsed_message = ""
         is_oom = False
-        oom_markers = ("cudamalloc failed", "out of memory", "failed to allocate")
+        oom_markers = ("cudamalloc failed", "out of memory", "failed to allocate", "bad allocation")
 
         for line in lines:
             line_stripped = line.strip()
@@ -921,6 +946,9 @@ class ProcessManager(QObject):
                 self._last_attempted_ngl = effective_ngl
 
                 ubatch_size = int(ini_cfg.get("ubatch_size", DEFAULT_LLAMA_UBATCH_SIZE))
+                batch_size = int(ini_cfg.get("batch_size", DEFAULT_LLAMA_BATCH_SIZE))
+                if batch_size < ubatch_size:
+                    batch_size = ubatch_size
 
                 # 6. Assemble CLI arguments (strict list, no shell=True)
                 cmd = [
@@ -931,6 +959,7 @@ class ProcessManager(QObject):
                     "-fa", str(fa_str),
                     "-ctk", str(ctk),
                     "-ctv", str(ctv),
+                    "-b", str(batch_size),
                     "-ub", str(ubatch_size),
                     "-np", str(ini_cfg.get("parallel_slots", 1)),
                     "--slot-save-path", str(KV_SLOTS_DIR),
@@ -976,11 +1005,12 @@ class ProcessManager(QObject):
                 startupinfo, flags = _get_win32_hidden_process_flags(create_new_group=True)
                 try:
                     logger.info(
-                        "[ProcessManager] Запуск llama-server: model=%s | NGL=%s/%s | CTX=%s | ubatch=%s | FA=%s | KV=%s/%s | slots=%s",
+                        "[ProcessManager] Запуск llama-server: model=%s | NGL=%s/%s | CTX=%s | batch=%s | ubatch=%s | FA=%s | KV=%s/%s | slots=%s",
                         Path(model_path).name,
                         effective_ngl,
                         total_model_layers or 99,
                         effective_ctx,
+                        batch_size,
                         ubatch_size,
                         fa_str,
                         ctk,
@@ -1038,7 +1068,14 @@ class ProcessManager(QObject):
                         if rc is not None and self._server_state in (ServerState.READY, ServerState.STARTING):
                             if self._llama_process is proc:
                                 self._llama_process = None
-                            self._set_server_state(ServerState.STOPPED, f"llama-server завершился неожиданно (код {rc})")
+                            if rc != 0:
+                                detail_msg, is_oom = self._extract_llama_startup_error()
+                                self.is_oom_failure = is_oom
+                                err_msg = f"llama-server завершился с ошибкой (код {rc}): {detail_msg}"
+                                self._set_server_state(ServerState.ERROR, err_msg)
+                                self._safe_emit("lms_status_changed", False, err_msg)
+                            else:
+                                self._set_server_state(ServerState.STOPPED, f"llama-server завершился неожиданно (код {rc})")
 
                 threading.Thread(
                     target=_stream_llama_stdout,
@@ -1073,10 +1110,15 @@ class ProcessManager(QObject):
                         mtime = os.path.getmtime(resolved_p) if (resolved_p and resolved_p.exists()) else 0.0
                     except OSError:
                         mtime = 0.0
+                    norm_expected_ngl = int(effective_ngl)
+                    if total_model_layers and total_model_layers > 0 and norm_expected_ngl >= int(total_model_layers):
+                        norm_expected_ngl = int(total_model_layers)
+
                     expected_meta = {
                         "model_path": str(resolved_p.resolve()) if (resolved_p and resolved_p.exists()) else str(model_path),
                         "model_mtime": mtime,
                         "context_length": int(effective_ctx),
+                        "gpu_layers": norm_expected_ngl,
                         "kv_cache_type_k": str(ctk),
                         "kv_cache_type_v": str(ctv),
                         "flash_attn": str(fa_str),
