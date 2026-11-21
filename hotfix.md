@@ -1,8 +1,61 @@
 # История изменений и релизов NeonRoute
-
 ## v0.9.8.4-beta (2026-11-21)
 
-## v0.9.8.4-beta (2026-11-21)
+> **Ключевое обновление:** встроенный автозагрузчик и установщик SD WebUI Forge (`ADR-50`), 3-слойный раздельный промптинг ADetailer через Structured JSON Output (`ADR-49`) и поддержка старых процессоров без инструкций AVX2.
+
+### Что изменилось
+
+#### Автоустановка SD WebUI Forge и генерации картинок «из коробки» (`ADR-50`)
+
+- **Встроенный загрузчик SD WebUI Forge:** больше не нужно вручную искать, скачивать и распаковывать сборки Forge на GitHub. Прямо в окне настроек генерации картинок (и при первом онбординге) появилась кнопка скачивания с проверкой свободного места на диске (`12 ГБ` / `14.5 ГБ` с базовой моделью), прогресс-баром, скоростью загрузки и поддержкой докачки при обрыве связи.
+- **Каскадная распаковка и безопасный лаунчер (`forge_launcher.bat`):** распаковка 7z-архива работает через встроенный в Windows `tar.exe` (без всплывающих окон консоли), установленный `7z.exe` или встроенную библиотеку `py7zr`. После распаковки автоматически создаётся `forge_launcher.bat`, корректно пробрасывающий аргументы запуска и изолирующий окружение.
+- **Автоподхват стартовой модели DreamShaper 8 и детекторов ADetailer:** при установке автоматически скачиваются и регистрируются стартовый чекпоинт `dreamshaper_8.safetensors` (с активацией по умолчанию) и детекторы `face_yolov8m.pt` + `hand_yolov9c.pt` — генерация картинок и коррекция лиц/рук работают сразу после установки.
+- **Корректное завершение при выходе:** если пользователь закрывает NeonRoute во время скачивания Forge, фоновый загрузчик аккуратно останавливается до выгрузки процессов.
+
+#### Арт-директор и 3-слойный ADetailer (`ADR-49`)
+
+- **Раздельный 3-слойный промптинг ADetailer (`Scene`, `Face`, `Hands`):** устранено взаимное загрязнение кропов лица и кистей рук общим промптом сцены. Слоты детекции и инпейнта Forge теперь получают строго изолированные наборы тегов с физическим разделением визуальной ДНК персонажа.
+- **Схемы Structured JSON Output для Арт-директора:** директивы `gallery` и `cinematic` переведены на генерацию строго валидного JSON через `response_format`, возвращающего изолированные поля `scene_prompt`, `face_prompt`, `hands_prompt`, `negative_prompt`, `aspect_ratio` и `reply_ru`.
+- **Поддержка пропуска слотов (`[SKIP]`):** пустые строки в `face_prompt` и `hands_prompt` распознаются как явная директива `[SKIP]` и транслируются в `ad_model="None"`, предотвращая артефактный инпейнт пейзажей или персонажей со спины.
+- **Потоковое извлечение ответа (`StreamArtTagFilter`):** фраза ассистента `reply_ru` декодируется и печатается в бабле чата в реальном времени во время генерации JSON с поддержкой escape-последовательностей и полной изоляцией служебных ключей до завершения потока.
+- **Анатомическая защита кистей и изоляция ДНК:** слот лица изолирует `ELARIA_VISUAL_DNA` и companion DNA, а слот рук исключает описание лица/фона и автоматически дополняет негативный промпт анатомическим стеком (`bad hands`, `mutated hands`, `extra fingers` и др.).
+- **Диагностическое логирование и паспорт слотов:** добавлены теги источников `[src=json|override|fallback]` для слотов Face и Hands, статус `SKIPPED` при `[SKIP]` и маркировка `SlotN(SKIPPED)` в `slots_summary` клиента Forge.
+
+#### Совместимость с железом и движок `llama-server`
+
+- **Поддержка процессоров без AVX2 (режим совместимости):** добавлена автоматическая проверка поддержки инструкций AVX2 на Windows. Если процессор их не поддерживает, загрузчик исключает несовместимые сборки (`avx2`, `avx512`) и выбирает безопасные CPU-бинарники с приоритетом `noavx` → `avx` → базовый `cpu`.
+- **Универсальная верификация бинарника и понятная диагностика сбоев:** пробный запуск с флагом `--list-devices` теперь выполняется для всех типов сборок, а не только для CUDA. При падении процесса с кодом `0xC000001D` (`STATUS_ILLEGAL_INSTRUCTION`) вместо сухой ошибки возвращается ясное диагностическое сообщение о несовместимости с AVX2.
+- **Автоматический откат с Vulkan на совместимую CPU-сборку:** если сборка `vulkan` завершается с ошибкой `0xC000001D`, загрузчик автоматически очищает старые `.dll` в целевой папке, скачивает и распаковывает совместимую CPU-сборку без AVX2 и повторно запускает проверку работоспособности.
+- **Адаптивный Flash Attention и индикация в UI:** дефолтное состояние Flash Attention в настройках движка больше не захардкожено и подтягивается из аппаратного профиля оборудования, а в карточке железа для AMD, Intel и CPU-режима при отсутствии AVX2 выводится пометка `CPU без AVX2 (режим совместимости)`.
+- **Актуализация спецификации и верификация:** в `ARCHITECTURE.md` задокументированы решения `ADR-49` и `ADR-50`, добавлены разделы `3.2.1` и `6.7`; полный тестовый сьют проекта: `838 passed` в `pytest -q` (100% Pass Rate).
+
+---
+
+### Технический список изменений (Changelog)
+
+- **Встроенный загрузчик и конвейер установки Forge (`services/forge_downloader.py`, `requirements.txt`):**
+  - Реализованы dataclass `ForgeInstallSpec` и функция `resolve_forge_hardware_spec()` (детекция NVIDIA GPU, `VRAM >= 3800 МБ`, флаг Blackwell `CC >= 10.0` / RTX 50xx, авторезолв релиза `cu121` через GitHub API с fallback).
+  - Реализована каскадная распаковка `extract_7z_archive()` (`tar.exe` → `7z.exe` → `py7zr` с флагом `CREATE_NO_WINDOW`), верификация корня `resolve_extracted_forge_root()` и генератор лаунчера `create_forge_launcher_bat()` с пробросом `%*`.
+  - Реализован конвейер `install_forge_pipeline()` (проверка свободного места на диске, 4 этапа установки, best-effort `ForgePatcher.apply_patch()`, скачивание детекторов `face_yolov8m.pt` / `hand_yolov9c.pt` и авто-активация `dreamshaper_8.safetensors` в `data/art_director_models.json` с `is_default: True`).
+  - Реализован фоновый воркер `ForgeDownloadWorker(QThread)` и синглтон `get_active_forge_download_worker()` с троттлингом прогресса `0.12 с` и расчётом скорости по дельте байт; добавлена зависимость `py7zr>=0.20.0`.
+- **UI настроек Forge, онбординг и корректное завершение (`ui/dialogs/forge_settings_dialog.py`, `ui/dialogs/forge_onboarding_dialog.py`, `ui/controllers/hardware_engine.py`, `ui/workers/shutdown_worker.py`):**
+  - В `ForgeSettingsDialog` добавлен блок автоустановки (`lbl_gpu_spec`, `chk_download_dreamshaper`, `btn_download_forge`, `btn_cancel_forge_dl`, `forge_progress_bar`, `lbl_download_status`), поддержка `auto_start_download=True`, безопасная отписка от сигналов воркера в `closeEvent`, `reject`, `accept` и переподключение к активной загрузке при повторном открытии окна.
+  - В онбординге замена внешнего перехода на GitHub на запуск встроенного диалога `ForgeSettingsDialog(parent=self, auto_start_download=True)`.
+  - В `ShutdownWorker` добавлена отмена активного `ForgeDownloadWorker` перед выгрузкой VRAM и завершением процессов.
+- **Детекция AVX2, верификация и фоллбэк `llama-server` (`services/layer_budgeter.py`, `services/llama_downloader.py`, `ui/dialogs/llm_engine_settings_dialog.py`):**
+  - В `LayerBudgeter` добавлен статический метод `has_cpu_avx2() -> bool` (`IsProcessorFeaturePresent(40)` на Windows) и ключ `"cpu_avx2"` в `detect_hardware_kv_profile()`.
+  - В `select_download_urls(assets, build_type, cpu_avx2=None)` при `cpu_avx2 is False` исключаются сборки `avx2` / `avx512` и применяется приоритет `noavx` → `avx` → `cpu`.
+  - В `verify_llama_server_binary(target_dir)` пробный запуск `[str(exe_path), "--list-devices"]` распространён на все типы сборок с диагностикой `0xC000001D` (`STATUS_ILLEGAL_INSTRUCTION`) и автоматическим откатом `vulkan` → `cpu` без AVX2 в `download_and_extract_llama_server(...)`.
+  - В `LLMEngineSettingsDialog` дефолтный Flash Attention считывается из `self.hw_profile.get("recommended_fa", False)`, добавлена индикация `• CPU без AVX2 (режим совместимости)`.
+- **3-слойный ADetailer и Structured JSON Output (`services/art_director/contracts.py`, `plan.py`, `director.py`, `services/assistant_prompt_builder.py`, `services/assistant_flow.py`):**
+  - В `VisualIntent` добавлены поля `face_prompt` и `hands_prompt` с поддержкой `[SKIP]` для пустых строк и строковыми методами совместимости; в `GenerationPlan` разделены `face_slot` и `hand_slot` с трансляцией `[SKIP]` в `ad_model="None"`.
+  - В `ArtDirector` реализована независимая сборка `resolved_face_prompt` (с `ELARIA_VISUAL_DNA` / companion DNA и LoRA #1) и `resolved_hands_prompt` (с анатомическим стеком в негативе) и диагностика `[src=json|override|fallback]`.
+  - Объявлены схемы `ART_DIRECTOR_ASSISTANT_JSON_SCHEMA` и `ART_DIRECTOR_RP_SCENE_JSON_SCHEMA`, реализован инкрементальный потоковый парсер `reply_ru` в `StreamArtTagFilter` и 4-фазное восстановление JSON в `parse_structured_art_response`.
+- **Контроллеры, Forge и мобильный шлюз (`ui/controllers/assistant_flow_controller.py`, `services/rp_cast_extractor.py`, `services/roleplay_flow_controller.py`, `services/forge_client.py`, `mobile_server/services/chat_service.py`):**
+  - Обеспечена сквозная передача `response_format` в `lm_client` и `stream_chat_completion`, безопасное извлечение `session_id` в `AssistantFlowController`, поддержка Structured JSON в арт-сценах ролевого режима и маркировка `SlotN(SKIPPED)` в `ForgeClient`.
+- **Тестирование и документация (`tests/unit/`, `ARCHITECTURE.md`):**
+  - Добавлены юнит-тесты `tests/unit/test_forge_downloader.py` (11 тестов), тесты AVX2-фоллбэка в `tests/unit/test_llama_downloader.py` и тесты 3-слойного ADetailer в `tests/unit/test_adetailer_dialog.py`.
+  - Итоговый прогон `pytest -q`: **838 passed (100% Pass Rate)**; в `ARCHITECTURE.md` добавлены блоки `ADR-49`, `ADR-50` и разделы `3.2.1`, `6.7`.
 
 ## v0.9.8.3-beta (2026-11-21)
 

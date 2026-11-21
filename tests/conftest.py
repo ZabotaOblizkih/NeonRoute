@@ -60,6 +60,7 @@ def _apply_airgap_paths(temp_root: Path) -> None:
         "MEMORY_DB_PATH": temp_root / "data" / "memory.db",
         "ART_DIRECTOR_MODELS_PATH": temp_root / "data" / "art_director_models.json",
         "LORA_REGISTRY_PATH": temp_root / "data" / "lora_registry.json",
+        "SERVER_CONFIG_INI_PATH": temp_root / "server_config.ini",
     }
     for attr, target_path in mapping.items():
         setattr(config, attr, target_path)
@@ -67,6 +68,9 @@ def _apply_airgap_paths(temp_root: Path) -> None:
             target_path.mkdir(parents=True, exist_ok=True)
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not mapping["SERVER_CONFIG_INI_PATH"].exists():
+        mapping["SERVER_CONFIG_INI_PATH"].write_text("[PATHS]\nforge_root_dir = \n", encoding="utf-8")
 
     # Синхронизируем уже импортированные модули, которые могли скопировать константы через from config import ...
     for mod_name, mod_attrs in [
@@ -78,6 +82,7 @@ def _apply_airgap_paths(temp_root: Path) -> None:
         ("services.art_director_config", {"ART_DIRECTOR_MODELS_PATH": mapping["ART_DIRECTOR_MODELS_PATH"], "DATA_DIR": mapping["DATA_DIR"]}),
         ("services.knowledge_manager", {"KNOWLEDGE_BASE_DIR": mapping["KNOWLEDGE_BASE_DIR"], "KNOWLEDGE_REGISTRY_PATH": mapping["KNOWLEDGE_REGISTRY_PATH"]}),
         ("services.memory_db", {"MEMORY_DB_PATH": mapping["MEMORY_DB_PATH"], "DATA_DIR": mapping["DATA_DIR"]}),
+        ("core.forge_locator", {"SERVER_CONFIG_INI_PATH": mapping["SERVER_CONFIG_INI_PATH"]}),
     ]:
         mod = sys.modules.get(mod_name)
         if mod is not None:

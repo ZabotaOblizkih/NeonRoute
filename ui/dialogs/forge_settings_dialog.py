@@ -637,11 +637,10 @@ class ForgeSettingsDialog(FramelessDialog):
             self.lbl_download_status.hide()
             self.chk_download_dreamshaper.setEnabled(True)
 
-            if launcher_found:
-                self.btn_download_forge.setText("Переустановить SD Forge")
-                self.btn_download_forge.setIcon(FIF.SYNC)
-                self.container_install.hide()
-            else:
+            patch_not_found = (getattr(self, "_current_patch_status", None) == ForgePatchStatus.NOT_FOUND)
+            should_show_installer = (not launcher_found or patch_not_found)
+
+            if should_show_installer:
                 self.container_install.show()
                 self.btn_download_forge.show()
                 target_p = Path(dir_path_str) if dir_path_str else Path("C:/sd-webui-forge")
@@ -652,6 +651,10 @@ class ForgeSettingsDialog(FramelessDialog):
                 else:
                     self.btn_download_forge.setText("Скачать и установить SD Forge")
                 self.btn_download_forge.setIcon(FIF.DOWNLOAD)
+            else:
+                self.btn_download_forge.setText("Переустановить SD Forge")
+                self.btn_download_forge.setIcon(FIF.SYNC)
+                self.container_install.hide()
 
     def _connect_forge_worker_signals(self, worker: ForgeDownloadWorker):
         """Подключает слоты диалога к сигналам рабочего потока загрузки Forge."""

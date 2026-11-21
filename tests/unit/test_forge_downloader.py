@@ -29,6 +29,18 @@ from services.forge_downloader import (
 from services.art_director_config import load_art_director_models, save_art_director_models
 
 
+@pytest.fixture(autouse=True)
+def isolate_server_config_ini(tmp_path, monkeypatch):
+    """Изоляция server_config.ini для исключения утечек в боевую конфигурацию."""
+    fake_ini = tmp_path / "server_config.ini"
+    fake_ini.write_text("[PATHS]\nforge_root_dir = \n", encoding="utf-8")
+    import config
+    import core.forge_locator
+    monkeypatch.setattr(config, "SERVER_CONFIG_INI_PATH", fake_ini)
+    monkeypatch.setattr(core.forge_locator, "SERVER_CONFIG_INI_PATH", fake_ini)
+    yield fake_ini
+
+
 def test_resolve_hardware_spec_ada(monkeypatch):
     """Тест спецификации для GPU NVIDIA RTX 4060 (Turing/Ada, 8 ГБ)."""
     mock_profile = {
@@ -131,7 +143,7 @@ def test_install_forge_pipeline_disk_space_fail(tmp_path):
         assert "Недостаточно свободного места" in msg
 
 
-def test_install_forge_pipeline_success(tmp_path, monkeypatch):
+def test_install_forge_pipeline_success(tmp_path, monkeypatch, isolate_server_config_ini):
     """Полный тест конвейера: архив, распаковка, лаунчер, ADetailer, DreamShaper 8, JSON."""
     mock_usage = MagicMock()
     mock_usage.free = 30 * 1024 * 1024 * 1024  # 30 GB free
@@ -156,7 +168,6 @@ def test_install_forge_pipeline_success(tmp_path, monkeypatch):
     with patch("shutil.disk_usage", return_value=mock_usage), \
          patch("services.forge_downloader.extract_7z_archive", side_effect=mock_extract), \
          patch("services.forge_downloader.download_file", side_effect=mock_download_file), \
-         patch("core.forge_locator.update_server_config_forge_root", return_value=True), \
          patch("services.forge_patcher.ForgePatcher.apply_patch", return_value=(True, "Patched")):
 
         progress_events = []
@@ -173,6 +184,7 @@ def test_install_forge_pipeline_success(tmp_path, monkeypatch):
         assert ok is True
         assert Path(res_root).exists()
         assert (Path(res_root) / "forge_launcher.bat").is_file()
+        assert "webui_forge_cu121_torch231" in isolate_server_config_ini.read_text(encoding="utf-8")
 
         # Проверка скачивания ADetailer
         ad_dir = Path(res_root) / "webui" / "models" / "adetailer"
@@ -277,4 +289,56 @@ def test_shutdown_worker_cancels_forge_download():
             active_forge_dl.cancel()
 
         mock_forge_worker.cancel.assert_called_once()
+
+
+def test_forge_settings_dialog_installer_visibility(qtbot, tmp_path, monkeypatch):
+    """Проверка условий отображения блока установки Forge:
+    1. Лаунчер не найден -> блок виден.
+    2. Лаунчер найден, но статус патча NOT_FOUND -> блок виден.
+    3. Лаунчер найден, статус патча PATCHED/NEEDS_PATCH, нет скачивания -> блок скрыт.
+    4. Лаунчер найден, статус патча PATCHED, но активно фоновое скачивание -> блок виден.
+    """
+    import config
+    from ui.dialogs.forge_settings_dialog import ForgeSettingsDialog
+    from services.forge_patcher import ForgePatchStatus
+
+    # 1. Лаунчер не найден -> блок виден
+    monkeypatch.setattr(config, "FORGE_ROOT_DIR", None)
+    with patch("ui.dialogs.forge_settings_dialog.get_active_forge_download_worker", return_value=None):
+        dlg = ForgeSettingsDialog()
+        qtbot.addWidget(dlg)
+        assert not dlg.container_install.isHidden()
+        dlg.reject()
+
+    # 2. Лаунчер есть, но папка пустая/без api.py (NOT_FOUND) -> блок виден
+    fake_launcher = tmp_path / "run.bat"
+    fake_launcher.touch()
+    monkeypatch.setattr(config, "FORGE_ROOT_DIR", tmp_path)
+    with patch("services.forge_patcher.ForgePatcher.check_status", return_value=(ForgePatchStatus.NOT_FOUND, "Not found")), \
+         patch("ui.dialogs.forge_settings_dialog.get_active_forge_download_worker", return_value=None):
+        dlg = ForgeSettingsDialog()
+        qtbot.addWidget(dlg)
+        assert dlg._current_patch_status == ForgePatchStatus.NOT_FOUND
+        assert not dlg.container_install.isHidden()
+        dlg.reject()
+
+    # 3. Лаунчер есть, статус PATCHED, нет скачивания -> блок скрыт
+    with patch("services.forge_patcher.ForgePatcher.check_status", return_value=(ForgePatchStatus.PATCHED, "Patched")), \
+         patch("ui.dialogs.forge_settings_dialog.get_active_forge_download_worker", return_value=None):
+        dlg = ForgeSettingsDialog()
+        qtbot.addWidget(dlg)
+        assert dlg._current_patch_status == ForgePatchStatus.PATCHED
+        assert dlg.container_install.isHidden()
+        dlg.reject()
+
+    # 4. Лаунчер есть, статус PATCHED, но фоновое скачивание активно -> блок виден
+    mock_dl_worker = MagicMock()
+    mock_dl_worker.isRunning.return_value = True
+    with patch("services.forge_patcher.ForgePatcher.check_status", return_value=(ForgePatchStatus.PATCHED, "Patched")), \
+         patch("ui.dialogs.forge_settings_dialog.get_active_forge_download_worker", return_value=mock_dl_worker):
+        dlg = ForgeSettingsDialog()
+        qtbot.addWidget(dlg)
+        assert not dlg.container_install.isHidden()
+        dlg.reject()
+
 

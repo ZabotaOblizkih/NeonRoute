@@ -19,7 +19,11 @@ FORGE_LAUNCHER_CANDIDATES = [
 
 _module_dir = Path(__file__).resolve().parent
 REPO_ROOT = _module_dir.parent if _module_dir.name in ("core", "services", "utils") else _module_dir
-SERVER_CONFIG_INI_PATH = REPO_ROOT / "server_config.ini"
+try:
+    import config
+    SERVER_CONFIG_INI_PATH = getattr(config, "SERVER_CONFIG_INI_PATH", REPO_ROOT / "server_config.ini")
+except Exception:
+    SERVER_CONFIG_INI_PATH = REPO_ROOT / "server_config.ini"
 
 
 def is_valid_forge_dir(path: Path | str | None) -> bool:
