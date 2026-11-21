@@ -1,4 +1,43 @@
 # История изменений и релизов NeonRoute
+## v0.9.8.5-beta (2026-11-22)
+
+Что изменилось:
+    Устранение вылета при скачивании SD Forge и защита от несуществующих томов:
+        Локализован и устранен критический сбой при нажатии «Скачать и установить SD Forge» в окне ForgeSettingsDialog.
+        Внедрен синглтон ForgeDownloadWorker с изоляцией потока (parent=None) и безопасным переподключением сигналов.
+        Реализована предварительная валидация физического тома диска (validate_or_fallback_forge_dir), предотвращающая
+        падение приложения с ошибкой [WinError 3] при отсутствии целевого диска (D:\neyroGPD) с автоматическим
+        безопасным фоллбэком на системный диск C:\ (C:\sd-webui-forge или C:\neyroGPD).
+    Гигиена рантайма pythonw.exe и прозрачное логирование сбоев:
+        Устранено аварийное закрытие и ошибки FastEmbed ('NoneType' object has no attribute 'write') при запуске
+        через run.bat (pythonw.exe) за счет безопасного перенаправления sys.stdout в logs/stdout.log и sys.stderr
+        в logs/stderr.log. Настроены перехватчики sys.excepthook, threading.excepthook и faulthandler.enable()
+        с гарантированной записью дампов всех активных потоков в logs/crash.log при непредвиденных сбоях.
+    Ликвидация мертвых зависаний в «Модели генерации» (ModelsManagerDialog):
+        Полностью исключен синхронный сетевой/CPU-инференс FastEmbed из главного GUI-потока. Вызовы update_embeddings()
+        в ModelsManagerDialog._save_all() и ArtDirector.reload_models() переведены на неблокирующий вызов
+        update_embeddings_async(delay=0.0). При закрытии диалога через reject() или крестик гарантированно
+        сохраняется контракт синхронизации профилей в памяти через load_profiles().
+    Защита от гонок и слияние запросов в ModelRouter:
+        Внедрен механизм коалесценции (_embed_calc_lock, _update_in_progress, _rerun_requested, _last_computed_descriptors),
+        объединяющий повторные и параллельные запросы пересчета векторов и исключающий deadlock на _EMBED_INIT_LOCK
+        с фоновым прогревом ModelRouterDeferredWarmup. Подмена векторов выполняется атомарно.
+    Разгрузка GUI-потока при FP8-квантовании:
+        Тяжелый сетевой опрос self.forge_client.refresh_checkpoints() перенесен из UI-слота _on_fp8_finished
+        непосредственно в фоновый рабочий цикл FP8ConvertWorker.run().
+    Жизненный цикл воркеров менеджера моделей (Инвариант 8 и раздел 5.4 ARCHITECTURE.md):
+        Все воркеры (ForgeScanWorker, RoutingTestWorker, CivitaiParamsWorker, FP8ConvertWorker) переведены
+        на строгое создание с parent=None. Очистка ссылок в диалоге привязана к сигналу finished, подключен
+        worker.deleteLater. В _stop_all_workers() добавлен гарантированный сброс курсора WaitCursor,
+        выборочное отключение сигналов UI и регистрация активных потоков в register_orphaned_worker().
+    Сквозная диагностика цепочки отправки сообщений ([SendFlow]):
+        Внедрена единая система телеметрии прохождения пользовательских запросов вплоть до постановки
+        в TaskQueueWorker (ChatFlowController, TaskLifecycleController, AssistantFlowController) с защитным
+        барьером перехвата исключений в _on_send_clicked().
+    Актуализация архитектурной спецификации:
+        В ARCHITECTURE.md задокументированы решения по гигиене pythonw.exe, защите дисков при загрузке Forge,
+        телеметрии [SendFlow], жизненному циклу воркеров Инварианта 8 и метрикам верификации (861 тест, 100% Pass Rate).
+
 ## v0.9.8.4-beta (2026-11-21)
 
 > **Ключевое обновление:** встроенный автозагрузчик и установщик SD WebUI Forge (`ADR-50`), 3-слойный раздельный промптинг ADetailer через Structured JSON Output (`ADR-49`) и поддержка старых процессоров без инструкций AVX2.
