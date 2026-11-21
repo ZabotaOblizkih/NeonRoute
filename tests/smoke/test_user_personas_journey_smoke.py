@@ -28,11 +28,15 @@ tests/smoke/test_user_personas_journey_smoke.py
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
+import base64
+import io
 import pytest
 import requests
+from PIL import Image
 
 import config
 from utils.system_monitor import SystemMonitor
+from core.forge_locator import find_forge_root, update_server_config_forge_root
 from services.layer_budgeter import LayerBudgeter
 from services.llama_downloader import (
     resolve_required_build,
@@ -47,6 +51,8 @@ from services.forge_downloader import (
 from services.forge_patcher import ForgePatcher, ForgePatchStatus
 from services.forge_client import ForgeClient
 from services.art_director import vram_policy
+from services.art_director.contracts import VisualIntent
+from services.art_director.director import ArtDirector
 from services.vram_arbiter import VRAMArbiter, GPUOwner
 from services.art_director_config import load_art_director_models, save_art_director_models
 
@@ -54,6 +60,13 @@ try:
     assert_diag
 except NameError:
     from tests.smoke.conftest import assert_diag, assert_diag_eq, assert_diag_in
+
+
+def _make_png_b64() -> str:
+    """Генерирует минимальный валидный PNG (64x64) в формате Base64 для тестов инференса."""
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), color=(16, 24, 32)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 SAMPLE_GITHUB_RELEASE_ASSETS = [
@@ -350,14 +363,23 @@ def test_user_journey_gtx1050ti_legacy_unpatched_forge(smoke_isolation_guard, tm
     launcher_path = create_forge_launcher_bat(forge_dir)
     assert_diag(launcher_path.is_file(), scen, "Создание forge_launcher.bat", True, launcher_path.is_file())
 
-    # Проверка приоритета лаунчера (forge_launcher.bat должен опережать webui-user.bat и run.bat)
-    candidate_names = ["forge_launcher.bat", "webui-user.bat", "run.bat"]
-    chosen_launcher = next((forge_dir / name for name in candidate_names if (forge_dir / name).exists()), None)
+    # Проверка обнаружения и выбора лаунчера через боевой ForgeLocator
+    detected_root = find_forge_root(configured_path=forge_dir)
+    assert_diag(
+        detected_root == forge_dir.resolve(),
+        scen,
+        "Детекция рабочей директории find_forge_root",
+        forge_dir.resolve(),
+        detected_root
+    )
+
+    update_ok = update_server_config_forge_root(forge_dir)
+    assert_diag(update_ok is True, scen, "Обновление конфигурации боевым локатором", True, update_ok)
     assert_diag_eq(
-        chosen_launcher.name if chosen_launcher else None,
+        config.FORGE_LAUNCHER_PATH.name,
         "forge_launcher.bat",
         scen,
-        "Приоритет выбора лаунчера в ForgeLocator/Config"
+        "Приоритет выбора лаунчера боевым локатором (config.FORGE_LAUNCHER_PATH)"
     )
 
     # Регистрация стартового чекпоинта DreamShaper 8
@@ -534,16 +556,52 @@ def test_user_journey_rtx5050_blackwell_full_cycle(smoke_isolation_guard, tmp_pa
             mmap_args
         )
 
-    # 4. Сквозной цикл арбитража VRAM и инференса
+    # 4. Сквозной цикл арбитража VRAM и инференса (LLM -> VRAMArbiter -> ArtDirector -> ForgeClient -> VRAMArbiter -> LLM)
+    outputs_dir = tmp_path / "outputs_rtx5050"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
     mock_lm = MagicMock()
     mock_lm.chat_completion.return_value = "Готов к работе. Давайте напишем код."
     mock_lm.unload_models_cli.return_value = True
 
-    mock_forge = MagicMock()
-    mock_forge.text_to_image.return_value = "C:/outputs/rendered_art.png"
-    mock_forge.unload_checkpoint.return_value = True
+    real_forge_client = ForgeClient(base_url="http://127.0.0.1:7860")
+    monkeypatch.setattr(real_forge_client, "is_server_ready", lambda timeout=1.0: True)
+    monkeypatch.setattr(real_forge_client, "_wait_for_vram_clear", lambda: None)
 
-    arbiter = VRAMArbiter(lm_client=mock_lm, forge_client=mock_forge)
+    captured_payloads = []
+    valid_b64 = _make_png_b64()
+
+    def mock_scenario3_post(url, json=None, timeout=None, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "/sdapi/v1/txt2img" in str(url):
+            captured_payloads.append(json)
+            resp.json.return_value = {"images": [valid_b64], "info": "{}"}
+        else:
+            resp.json.return_value = {}
+        return resp
+
+    def mock_scenario3_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "/sdapi/v1/sd-models" in str(url):
+            resp.json.return_value = [{"title": "realistic", "model_name": "realistic"}]
+        elif "/sdapi/v1/options" in str(url):
+            resp.json.return_value = {"sd_model_checkpoint": "realistic"}
+        elif "/sdapi/v1/progress" in str(url):
+            resp.json.return_value = {"progress": 1.0, "state": {"step": 20, "job_count": 1}}
+        else:
+            resp.json.return_value = {}
+        return resp
+
+    monkeypatch.setattr("services.forge_client.requests.post", mock_scenario3_post)
+    monkeypatch.setattr("services.forge_client.requests.get", mock_scenario3_get)
+    monkeypatch.setattr(
+        "services.forge_client.requests.Session.post",
+        lambda self, url, json=None, **kwargs: mock_scenario3_post(url, json=json, **kwargs),
+    )
+
+    arbiter = VRAMArbiter(lm_client=mock_lm, forge_client=real_forge_client)
 
     # Фаза А: Текстовый диалог (LLM)
     arbiter.prepare_for_task("llm")
@@ -557,18 +615,41 @@ def test_user_journey_rtx5050_blackwell_full_cycle(smoke_isolation_guard, tmp_pa
     assert_diag(arbiter._current_owner == GPUOwner.DIFFUSION, scen, "Владелец GPU: Diffusion", GPUOwner.DIFFUSION, arbiter._current_owner)
     assert_diag(mock_lm.unload_models_cli.called, scen, "Выгрузка LLM из VRAM перед стартом Forge", True, mock_lm.unload_models_cli.called)
 
-    img_res = mock_forge.text_to_image(
-        prompt="cyberpunk alleyway, neon lights, 50mm photo",
-        enable_adetailer=True,
-        enable_hand_adetailer=True,
+    director = ArtDirector()
+    intent = VisualIntent(
+        prompt="cyberpunk girl, neon lights, 50mm portrait",
+        aspect_ratio="1:1",
+        mode="assistant",
     )
-    assert_diag(mock_forge.text_to_image.called, scen, "Вызов диффузии с ADetailer", True, mock_forge.text_to_image.called)
-    call_kwargs = mock_forge.text_to_image.call_args.kwargs
-    assert_diag(call_kwargs.get("enable_adetailer") is True, scen, "Активация ADetailer для лиц", True, call_kwargs.get("enable_adetailer"))
-    assert_diag(call_kwargs.get("enable_hand_adetailer") is True, scen, "Активация ADetailer для кистей рук", True, call_kwargs.get("enable_hand_adetailer"))
-    assert_diag(img_res == "C:/outputs/rendered_art.png", scen, "Результат рендера изображения", "C:/outputs/rendered_art.png", img_res)
+    plan = director.plan_from_visual_intent(visual_intent=intent, mode="assistant")
+    forge_kwargs = plan.to_forge_kwargs(output_dir=outputs_dir)
+
+    img_res = real_forge_client.text_to_image(**forge_kwargs)
+    assert_diag(img_res.is_file(), scen, "Создание файла изображения реальным ForgeClient", True, img_res.is_file())
+    assert_diag(len(captured_payloads) == 1, scen, "Запрос к Forge /sdapi/v1/txt2img отправлен", 1, len(captured_payloads))
+
+    txt2img_payload = captured_payloads[0]
+    assert_diag("alwayson_scripts" in txt2img_payload, scen, "Наличие alwayson_scripts в payload Forge", True, "alwayson_scripts" in txt2img_payload)
+    assert_diag(
+        "ADetailer" in txt2img_payload.get("alwayson_scripts", {}),
+        scen,
+        "Наличие блока ADetailer в alwayson_scripts",
+        True,
+        "ADetailer" in txt2img_payload.get("alwayson_scripts", {})
+    )
+
+    ad_block = txt2img_payload["alwayson_scripts"]["ADetailer"]
+    ad_args = ad_block.get("args", [])
+    assert_diag(len(ad_args) >= 3, scen, "Аргументы ADetailer содержат лицо и настройки", True, len(ad_args) >= 3)
+    assert_diag(ad_args[0] is True, scen, "Мастер-флаг активации ADetailer", True, ad_args[0])
 
     # Фаза В: Возврат к общению с текстовым ассистентом -> выгрузка Forge и возврат LLM
     arbiter.prepare_for_task("llm")
     assert_diag(arbiter._current_owner == GPUOwner.LLM, scen, "Возврат владельца GPU под LLM", GPUOwner.LLM, arbiter._current_owner)
-    assert_diag(mock_forge.unload_checkpoint.called, scen, "Выгрузка чекпоинта Forge из VRAM", True, mock_forge.unload_checkpoint.called)
+    assert_diag(
+        real_forge_client._checkpoint_unloaded is True,
+        scen,
+        "Выгрузка чекпоинта Forge из VRAM в RAM",
+        True,
+        real_forge_client._checkpoint_unloaded
+    )
