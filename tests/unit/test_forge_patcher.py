@@ -4,6 +4,7 @@ Verifies status detection (NEEDS_PATCH, PATCHED, INCOMPATIBLE, NOT_FOUND),
 backup creation in .neonroute_backup/original/, idempotency, and clean restore.
 """
 
+import logging
 import pytest
 from pathlib import Path
 from services.forge_patcher import ForgePatcher, ForgePatchStatus
@@ -570,6 +571,92 @@ def test_forge_patcher_get_sd_models_getattr_config_and_delegated_set_config(tmp
     assert models_file.read_text(encoding="utf-8").strip() == STOCK_MODELS_PY.strip()
     assert sd_file.read_text(encoding="utf-8").strip() == EXISTING_UNLOAD_SD_MODELS_PY.strip()
     assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.NEEDS_PATCH
+
+
+def test_forge_patcher_logging_structured_audit_and_step_tracing(tmp_path, caplog):
+    """
+    Verifies structured logging with prefix [ForgePatcher] across:
+    1. Directory resolution (find_forge_webui_dir)
+    2. Inspection audit line in check_status (api, models, sd_models, launcher diag)
+    3. Step-by-step tracing in apply_patch (Шаг 1, 2, 3, 4)
+    4. Safe handling of delegated set_config and getattr config in get_sd_models
+    5. Clean restore logging
+    """
+    caplog.set_level(logging.DEBUG, logger="NeonRoute.ForgePatcher")
+
+    forge_dir = tmp_path / "logged_forge"
+    webui_dir = forge_dir / "webui"
+    (webui_dir / "modules" / "api").mkdir(parents=True, exist_ok=True)
+
+    getattr_api_py = SYSINFO_DELEGATED_API_PY.replace(
+        '"filename": x.filename}',
+        '"filename": x.filename, "config": getattr(x, \'config\', None)}'
+    )
+    (webui_dir / "modules" / "api" / "api.py").write_text(getattr_api_py, encoding="utf-8")
+    (webui_dir / "modules" / "api" / "models.py").write_text(STOCK_MODELS_PY, encoding="utf-8")
+    (webui_dir / "modules" / "sd_models.py").write_text(EXISTING_UNLOAD_SD_MODELS_PY, encoding="utf-8")
+
+    # 1. check_status logging
+    status, msg = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.NEEDS_PATCH
+
+    logs = caplog.text
+    assert "[ForgePatcher] Найден каталог webui:" in logs
+    assert "[ForgePatcher] Аудит" in logs
+    assert "status=NEEDS_PATCH" in logs
+    assert "api(" in logs
+    assert "delegated" in logs
+    assert "getattr_or_key" in logs
+    assert "models=stock_anchor" in logs
+    assert "sd_models=unload_anchor" in logs
+
+    caplog.clear()
+
+    # 2. apply_patch logging
+    ok, res_msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is True
+
+    apply_logs = caplog.text
+    assert "[ForgePatcher] Старт применения патча для" in apply_logs
+    assert "[ForgePatcher] Создана резервная копия оригинальных файлов" in apply_logs
+    assert "[ForgePatcher] Шаг 1 (api.py): добавлен маршрут /sdapi/v1/free-vram" in apply_logs
+    assert "[ForgePatcher] Шаг 1 (api.py): добавлен метод free_vram_api" in apply_logs
+    assert "[ForgePatcher] Шаг 1 (api.py): вставлен блок refresh_model_loading_parameters (сценарий: delegated set_config)" in apply_logs
+    assert "[ForgePatcher] Шаг 1 (api.py): в get_sd_models сохранено существующее поле config (getattr)" in apply_logs
+    assert "[ForgePatcher] Шаг 2 (models.py): обновлено поле config на default=None" in apply_logs
+    assert "[ForgePatcher] Шаг 3 (sd_models.py): обновлено тело unload_model_weights" in apply_logs
+    assert "[ForgePatcher] Патч успешно применен к" in apply_logs
+
+    caplog.clear()
+
+    # 3. restore_backup logging
+    ok_res, _ = ForgePatcher.restore_backup(forge_dir)
+    assert ok_res is True
+
+    restore_logs = caplog.text
+    assert "[ForgePatcher] Файлы Forge" in restore_logs
+    assert "успешно восстановлены из" in restore_logs
+
+
+def test_forge_patcher_logging_failure_and_rollback_trace(tmp_path, caplog):
+    """Verifies that failures during apply_patch log explicit rollback reasons."""
+    caplog.set_level(logging.DEBUG, logger="NeonRoute.ForgePatcher")
+
+    forge_dir = tmp_path / "failing_forge"
+    webui_dir = forge_dir / "webui"
+    (webui_dir / "modules" / "api").mkdir(parents=True, exist_ok=True)
+
+    (webui_dir / "modules" / "api" / "api.py").write_text(STOCK_API_PY, encoding="utf-8")
+    (webui_dir / "modules" / "api" / "models.py").write_text(STOCK_MODELS_PY, encoding="utf-8")
+    # Body cannot be matched by SD_UNLOAD_PATTERN
+    (webui_dir / "modules" / "sd_models.py").write_text(
+        "def unload_model_weights(sd_model=None, info=None):\n    custom_foreign_body()\n",
+        encoding="utf-8"
+    )
+
+    ok, msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is False
+    assert "[ForgePatcher] Шаг 3 (sd_models.py) откат: не удалось найти тело unload_model_weights" in caplog.text
 
 
 

@@ -123,10 +123,12 @@ class ForgePatcher:
         4. Любая подпапка webui*/webui
         """
         if not root_path:
+            logger.debug("[ForgePatcher] Каталог webui не обнаружен по пути: None")
             return None
         try:
             root = Path(root_path).resolve()
             if not root.is_dir():
+                logger.debug(f"[ForgePatcher] Каталог webui не обнаружен по пути: {root_path}")
                 return None
 
             candidates = [
@@ -136,14 +138,18 @@ class ForgePatcher:
             ]
             for c in candidates:
                 if (c / "modules" / "api" / "api.py").is_file():
+                    logger.debug(f"[ForgePatcher] Найден каталог webui: {c}")
                     return c
 
             # Поиск по шаблону
             for sub in root.glob("webui*/webui"):
                 if sub.is_dir() and (sub / "modules" / "api" / "api.py").is_file():
+                    logger.debug(f"[ForgePatcher] Найден каталог webui: {sub}")
                     return sub
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ForgePatcher] Ошибка поиска каталога webui в {root_path}: {e}")
             pass
+        logger.debug(f"[ForgePatcher] Каталог webui не обнаружен по пути: {root_path}")
         return None
 
     @classmethod
@@ -301,6 +307,47 @@ class ForgePatcher:
             return "".join(result_lines)
 
     @classmethod
+    def _detect_set_config_scenario(cls, api_text: str) -> str:
+        """Определяет структуру метода set_config в api.py."""
+        if "refresh_model_loading_parameters" in api_text:
+            return "already_patched"
+        lines = api_text.splitlines()
+        def_idx = None
+        base_indent = 0
+        for idx, line in enumerate(lines):
+            match = re.match(r'^([ \t]*)(?:async\s+)?def\s+set_config\b', line)
+            if match:
+                def_idx = idx
+                base_indent = len(match.group(1).expandtabs(4))
+                break
+        if def_idx is None:
+            return "not_found"
+        end_idx = len(lines)
+        for idx in range(def_idx + 1, len(lines)):
+            match = re.match(r'^([ \t]*)(?:def|class|async\s+def)\b', lines[idx])
+            if match and len(match.group(1).expandtabs(4)) <= base_indent:
+                end_idx = idx
+                break
+        body_lines = lines[def_idx + 1:end_idx]
+        has_save = any("shared.opts.save(" in l for l in body_lines)
+        if has_save:
+            return "direct_save"
+        has_delegated = any(re.search(r'\b(?:sysinfo\.)?set_config\s*\(\s*req\b', l) for l in body_lines)
+        if has_delegated:
+            return "delegated"
+        return "not_found"
+
+    @classmethod
+    def _detect_get_models_config_variant(cls, api_text: str) -> str:
+        """Определяет вариант поля config в get_sd_models."""
+        if '"config": None' in api_text or "'config': None" in api_text:
+            return "literal_none"
+        match = re.search(r'def\s+get_sd_models\b[\s\S]*?(?=(?:\n[ \t]*(?:def|class)\b)|\Z)', api_text)
+        if match and re.search(r'["\']config["\']\s*:', match.group(0)):
+            return "getattr_or_key"
+        return "missing"
+
+    @classmethod
     def _has_get_models_config(cls, api_text: str) -> bool:
         """
         Проверяет наличие поля 'config' в get_sd_models:
@@ -403,14 +450,18 @@ class ForgePatcher:
         """
         webui_dir = cls.find_forge_webui_dir(forge_root)
         if not webui_dir:
-            return ForgePatchStatus.NOT_FOUND, "Файлы SD WebUI Forge не найдены по указанному пути."
+            msg = "Файлы SD WebUI Forge не найдены по указанному пути."
+            logger.debug(f"[ForgePatcher] Аудит {forge_root}: status={ForgePatchStatus.NOT_FOUND.value} | {msg}")
+            return ForgePatchStatus.NOT_FOUND, msg
 
         api_path = webui_dir / "modules" / "api" / "api.py"
         models_path = webui_dir / "modules" / "api" / "models.py"
         sd_path = webui_dir / "modules" / "sd_models.py"
 
         if not (api_path.is_file() and models_path.is_file() and sd_path.is_file()):
-            return ForgePatchStatus.NOT_FOUND, "Один или несколько файлов ядра Forge отсутствуют (api.py / models.py / sd_models.py)."
+            msg = "Один или несколько файлов ядра Forge отсутствуют (api.py / models.py / sd_models.py)."
+            logger.warning(f"[ForgePatcher] Аудит {webui_dir}: status={ForgePatchStatus.NOT_FOUND.value} | {msg}")
+            return ForgePatchStatus.NOT_FOUND, msg
 
         try:
             api_text = api_path.read_text(encoding="utf-8", errors="ignore")
@@ -438,14 +489,6 @@ class ForgePatcher:
             launcher_bat = cls.find_launcher_to_patch(forge_root)
             launcher_needs_patch = bool(launcher_bat and not cls.is_webui_user_bat_patched(launcher_bat))
 
-            if api_patched and models_patched and sd_patched:
-                if launcher_needs_patch:
-                    return (
-                        ForgePatchStatus.NEEDS_PATCH,
-                        f"Требуется патч совместимости ({launcher_bat.name}: флаг --api и передача параметров NeonRoute)."
-                    )
-                return ForgePatchStatus.PATCHED, "Патч совместимости активен ✓ (поддерживается VRAM offload и автосмена моделей)."
-
             # 3. Проверяем якорные места стокового Forge 2.0
             can_insert_refresh = (has_refresh_opts or cls._insert_refresh_in_set_config(api_text, API_REFRESH_BLOCK) is not None)
             has_api_anchor = (API_ROUTE_UNLOAD in api_text or has_free_vram_route) and can_insert_refresh
@@ -455,6 +498,33 @@ class ForgePatcher:
                 or models_patched
             )
             has_sd_anchor = sd_patched or bool(SD_UNLOAD_PATTERN.search(sd_text)) or (SD_UNLOAD_DEF in sd_text)
+
+            # Диагностический срез
+            set_cfg_scenario = cls._detect_set_config_scenario(api_text)
+            models_cfg_variant = cls._detect_get_models_config_variant(api_text)
+            models_diag = "models_patched" if models_patched else ("stock_anchor" if has_models_anchor else "incompatible")
+            sd_diag = "sd_patched" if sd_patched else ("unload_anchor" if has_sd_anchor else "incompatible")
+            launcher_diag = f"{launcher_bat.name}(needs_patch={launcher_needs_patch})" if launcher_bat else "none_or_configured"
+
+            if api_patched and models_patched and sd_patched:
+                if launcher_needs_patch:
+                    status = ForgePatchStatus.NEEDS_PATCH
+                    res_msg = f"Требуется патч совместимости ({launcher_bat.name}: флаг --api и передача параметров NeonRoute)."
+                    logger.info(
+                        f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
+                        f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
+                        f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                    )
+                    return status, res_msg
+
+                status = ForgePatchStatus.PATCHED
+                res_msg = "Патч совместимости активен ✓ (поддерживается VRAM offload и автосмена моделей)."
+                logger.debug(
+                    f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
+                    f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
+                    f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                )
+                return status, res_msg
 
             if has_api_anchor and has_models_anchor and has_sd_anchor:
                 missing = []
@@ -466,9 +536,23 @@ class ForgePatcher:
                     missing.append("sd_models unload")
                 if launcher_needs_patch:
                     missing.append(f"{launcher_bat.name} (--api/args)")
-                return ForgePatchStatus.NEEDS_PATCH, f"Требуется патч совместимости ({', '.join(missing)})."
+                status = ForgePatchStatus.NEEDS_PATCH
+                res_msg = f"Требуется патч совместимости ({', '.join(missing)})."
+                logger.info(
+                    f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
+                    f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
+                    f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                )
+                return status, res_msg
 
-            return ForgePatchStatus.INCOMPATIBLE, "Нестандартная версия или модифицированный форк Forge (целевые функции не распознаны)."
+            status = ForgePatchStatus.INCOMPATIBLE
+            res_msg = "Нестандартная версия или модифицированный форк Forge (целевые функции не распознаны)."
+            logger.warning(
+                f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
+                f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
+                f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+            )
+            return status, res_msg
         except Exception as e:
             logger.error(f"[ForgePatcher] Ошибка инспекции: {e}", exc_info=True)
             return ForgePatchStatus.INCOMPATIBLE, f"Ошибка чтения файлов Forge: {e}"
@@ -520,7 +604,7 @@ class ForgePatcher:
                 meta["webui_user_bat_path"] = str(launcher_bat)
 
             (backup_dir.parent / "backup_info.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-            logger.info(f"[ForgePatcher] Создана резервная копия оригинальных файлов в {backup_dir}")
+            logger.info(f"[ForgePatcher] Создана резервная копия оригинальных файлов ({', '.join(backup_files)}) в {backup_dir}")
             return True
         except Exception as e:
             logger.error(f"[ForgePatcher] Сбой создания резервной копии: {e}", exc_info=True)
@@ -534,19 +618,26 @@ class ForgePatcher:
         """
         status, msg = cls.check_status(forge_root)
         if status == ForgePatchStatus.PATCHED:
+            logger.info(f"[ForgePatcher] Патч уже применён для {forge_root}.")
             return True, "Патч уже применён."
         if status == ForgePatchStatus.NOT_FOUND:
+            logger.warning(f"[ForgePatcher] Отказ применения патча: {msg}")
             return False, f"Ошибка: {msg}"
         if status == ForgePatchStatus.INCOMPATIBLE:
+            logger.warning(f"[ForgePatcher] Отказ применения патча: {msg}")
             return False, f"Отклонено: {msg}"
 
         webui_dir = cls.find_forge_webui_dir(forge_root)
         if not webui_dir:
+            logger.error(f"[ForgePatcher] Не удалось определить каталог webui для {forge_root}.")
             return False, "Не удалось определить каталог webui."
+
+        logger.info(f"[ForgePatcher] Старт применения патча для {webui_dir} (текущий статус: {status.value})")
 
         # 1. Создание резервной копии
         if not cls.has_backup(forge_root):
             if not cls.create_backup(forge_root):
+                logger.error(f"[ForgePatcher] Не удалось создать резервную копию оригинальных файлов перед патчингом: {webui_dir}")
                 return False, "Не удалось создать резервную копию оригинальных файлов перед патчингом."
 
         try:
@@ -569,9 +660,13 @@ class ForgePatcher:
                         API_ROUTE_UNLOAD,
                         f"{API_ROUTE_UNLOAD}\n        {API_ROUTE_FREE_VRAM}"
                     )
+                    logger.info("[ForgePatcher] Шаг 1 (api.py): добавлен маршрут /sdapi/v1/free-vram")
                 else:
+                    logger.error("[ForgePatcher] Шаг 1 (api.py) откат: не удалось найти точку вставки маршрута free-vram в api.py")
                     cls.restore_backup(forge_root)
                     return False, "Не удалось найти точку вставки маршрута free-vram в api.py."
+            else:
+                logger.debug("[ForgePatcher] Шаг 1 (api.py): маршрут /sdapi/v1/free-vram уже присутствует")
 
             # Б. Метод free_vram_api
             if "def free_vram_api(" not in api_text:
@@ -581,49 +676,79 @@ class ForgePatcher:
                         reload_anchor,
                         f"{API_FREE_VRAM_METHOD}\n{reload_anchor}"
                     )
+                    logger.info("[ForgePatcher] Шаг 1 (api.py): добавлен метод free_vram_api")
                 else:
+                    logger.error("[ForgePatcher] Шаг 1 (api.py) откат: не удалось найти точку вставки метода free_vram_api в api.py")
                     cls.restore_backup(forge_root)
                     return False, "Не удалось найти точку вставки метода free_vram_api в api.py."
+            else:
+                logger.debug("[ForgePatcher] Шаг 1 (api.py): метод free_vram_api уже присутствует")
 
             # В. refresh_model_loading_parameters() в set_config
-            new_api_text = cls._insert_refresh_in_set_config(api_text, API_REFRESH_BLOCK)
-            if new_api_text is None:
-                cls.restore_backup(forge_root)
-                return False, "Не удалось найти точку вставки refresh_model_loading_parameters в set_config (api.py)."
-            api_text = new_api_text
+            if "refresh_model_loading_parameters" in api_text:
+                logger.debug("[ForgePatcher] Шаг 1 (api.py): refresh_model_loading_parameters уже присутствует")
+            else:
+                scenario_before = cls._detect_set_config_scenario(api_text)
+                scenario_desc = (
+                    "shared.opts.save" if scenario_before == "direct_save"
+                    else ("delegated set_config" if scenario_before == "delegated" else scenario_before)
+                )
+                new_api_text = cls._insert_refresh_in_set_config(api_text, API_REFRESH_BLOCK)
+                if new_api_text is None:
+                    logger.error("[ForgePatcher] Шаг 1 (api.py) откат: не удалось найти точку вставки refresh_model_loading_parameters в set_config (api.py)")
+                    cls.restore_backup(forge_root)
+                    return False, "Не удалось найти точку вставки refresh_model_loading_parameters в set_config (api.py)."
+                api_text = new_api_text
+                logger.info(f"[ForgePatcher] Шаг 1 (api.py): вставлен блок refresh_model_loading_parameters (сценарий: {scenario_desc})")
 
             # Г. "config" в get_sd_models
-            if '"config": None' not in api_text and "'config': None" not in api_text:
+            if '"config": None' in api_text or "'config': None" in api_text:
+                logger.debug('[ForgePatcher] Шаг 1 (api.py): get_sd_models уже содержит литерал "config": None')
+            else:
                 pattern_old = '"filename": x.filename}'
                 pattern_new = '"filename": x.filename, "config": None}'
                 if pattern_old in api_text:
                     api_text = api_text.replace(pattern_old, pattern_new, 1)
+                    logger.info('[ForgePatcher] Шаг 1 (api.py): get_sd_models обновлен литералом "config": None')
                 elif "'filename': x.filename}" in api_text:
                     api_text = api_text.replace("'filename': x.filename}", "'filename': x.filename, 'config': None}", 1)
-                # Если pattern_old не найден, но метод get_sd_models уже содержит поле "config"
-                # (например, "config": getattr(x, 'config', None)), не блокируем применение патча.
+                    logger.info('[ForgePatcher] Шаг 1 (api.py): get_sd_models обновлен литералом "config": None')
+                elif cls._has_get_models_config(api_text):
+                    logger.info('[ForgePatcher] Шаг 1 (api.py): в get_sd_models сохранено существующее поле config (getattr)')
+                else:
+                    logger.debug('[ForgePatcher] Шаг 1 (api.py): get_sd_models не требует изменений')
 
             # Модификация 2: modules/api/models.py
-            if not (
+            models_already_patched = (
                 MODELS_PATCHED_CONFIG in models_text
-                or re.search(r'config:\s*Optional\[str\]\s*=\s*Field\(default=None,\s*title=["\']Config file["\']\)', models_text)
-            ):
+                or bool(re.search(r'config:\s*Optional\[str\]\s*=\s*Field\(default=None,\s*title=["\']Config file["\']\)', models_text))
+            )
+            if not models_already_patched:
                 stock_match = re.search(r'config:\s*Optional\[str\]\s*=\s*Field\(title=["\']Config file["\']\)', models_text)
                 if stock_match:
                     models_text = models_text[:stock_match.start()] + MODELS_PATCHED_CONFIG + models_text[stock_match.end():]
+                    logger.info("[ForgePatcher] Шаг 2 (models.py): обновлено поле config на default=None")
                 elif MODELS_STOCK_CONFIG in models_text:
                     models_text = models_text.replace(MODELS_STOCK_CONFIG, MODELS_PATCHED_CONFIG, 1)
+                    logger.info("[ForgePatcher] Шаг 2 (models.py): обновлено поле config на default=None")
                 else:
+                    logger.error("[ForgePatcher] Шаг 2 (models.py) откат: не удалось найти поле config в SDModelItem (models.py)")
                     cls.restore_backup(forge_root)
                     return False, "Не удалось найти поле config в SDModelItem (models.py)."
+            else:
+                logger.debug("[ForgePatcher] Шаг 2 (models.py): поле config уже пропатчено (default=None)")
 
             # Модификация 3: modules/sd_models.py
             if "model_data.forge_hash = ''" not in sd_text:
                 if SD_UNLOAD_PATTERN.search(sd_text):
                     sd_text = SD_UNLOAD_PATTERN.sub(rf'\1{SD_PATCHED_UNLOAD_BODY}', sd_text, count=1)
+                    logger.info("[ForgePatcher] Шаг 3 (sd_models.py): обновлено тело unload_model_weights")
                 else:
+                    logger.error("[ForgePatcher] Шаг 3 (sd_models.py) откат: не удалось найти тело unload_model_weights в sd_models.py")
                     cls.restore_backup(forge_root)
                     return False, "Не удалось найти тело unload_model_weights в sd_models.py."
+            else:
+                logger.debug("[ForgePatcher] Шаг 3 (sd_models.py): unload_model_weights уже пропатчено")
 
             # -------------------------------------------------------------
             # Запись модифицированных файлов на диск с гарантированным откатом
@@ -643,6 +768,9 @@ class ForgePatcher:
                         if not dst_bat.is_file():
                             shutil.copy2(launcher_bat, dst_bat)
                     cls._patch_webui_user_bat(launcher_bat)
+                    logger.info(f"[ForgePatcher] Шаг 4 (launcher): адаптирован {launcher_bat.name}")
+                else:
+                    logger.debug("[ForgePatcher] Шаг 4 (launcher): модификация лаунчера не требуется (уже настроен или forge_launcher.bat)")
 
                 # Итоговая верификация
                 new_status, new_msg = cls.check_status(forge_root)
@@ -650,6 +778,7 @@ class ForgePatcher:
                     logger.info(f"[ForgePatcher] Патч успешно применен к {webui_dir}")
                     return True, "Патч совместимости успешно применен."
                 else:
+                    logger.error(f"[ForgePatcher] Откат: патч был применен частично. Итоговый статус: {new_msg}")
                     cls.restore_backup(forge_root)
                     return False, f"Патч был применен частично. Выполнен откат к резервной копии. Итоговый статус: {new_msg}"
             except Exception as write_err:
@@ -726,11 +855,13 @@ class ForgePatcher:
         Восстанавливает оригинальные файлы Forge из резервной копии .neonroute_backup/original/.
         """
         if not cls.has_backup(forge_root):
+            logger.warning(f"[ForgePatcher] Резервная копия оригинальных файлов не найдена для {forge_root}")
             return False, "Резервная копия оригинальных файлов не найдена."
 
         webui_dir = cls.find_forge_webui_dir(forge_root)
         backup_dir = cls.get_backup_dir(forge_root)
         if not webui_dir or not backup_dir:
+            logger.error(f"[ForgePatcher] Не удалось разрешить пути к резервной копии для {forge_root}")
             return False, "Не удалось разрешить пути к резервной копии."
 
         try:
@@ -746,6 +877,7 @@ class ForgePatcher:
             shutil.copy2(src_models, dst_models)
             shutil.copy2(src_sd, dst_sd)
 
+            restored_files = ["modules/api/api.py", "modules/api/models.py", "modules/sd_models.py"]
             # Восстанавливаем webui-user.bat если он сохранён в бэкапе
             src_bat = backup_dir / "webui-user.bat"
             if src_bat.is_file():
@@ -754,8 +886,9 @@ class ForgePatcher:
                     dst_bat = webui_dir / "webui-user.bat"
                 if dst_bat:
                     shutil.copy2(src_bat, dst_bat)
+                    restored_files.append("webui-user.bat")
 
-            logger.info(f"[ForgePatcher] Файлы Forge успешно восстановлены из {backup_dir}")
+            logger.info(f"[ForgePatcher] Файлы Forge ({', '.join(restored_files)}) успешно восстановлены из {backup_dir}")
             return True, "Оригинальные файлы Forge успешно восстановлены из резервной копии."
         except Exception as e:
             logger.error(f"[ForgePatcher] Ошибка восстановления из бэкапа: {e}", exc_info=True)
