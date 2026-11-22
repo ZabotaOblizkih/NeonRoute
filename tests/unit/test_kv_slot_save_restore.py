@@ -126,9 +126,10 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
         assert restore_kwargs["json"]["filename"] == saved_filename
         assert restore_kwargs["timeout"] >= 15.0
 
-    # 3. Verify single-use hygiene: both files are cleared
-    assert not slot_file.exists()
+    # 3. Verify single-use hygiene: metadata is cleared immediately, while dump file is cleaned up on post-stop
     assert not meta_file.exists()
+    pm.clear_kv_slot_cache()
+    assert not slot_file.exists()
 
 
 @pytest.mark.parametrize("mismatched_key,mismatched_val", [
@@ -171,9 +172,10 @@ def test_kv_slot_invalidation_on_parameter_change(mock_kv_dir, mismatched_key, m
         # action=restore must NOT be sent
         mock_post.assert_not_called()
 
-    # Invalidation must clean up slot files
-    assert not slot_file.exists()
+    # Invalidation cleans up metadata immediately; dump file is purged on post-stop
     assert not meta_file.exists()
+    pm.clear_kv_slot_cache()
+    assert not slot_file.exists()
 
 
 def test_kv_slot_save_and_restore_fault_tolerance(mock_kv_dir):
@@ -224,9 +226,10 @@ def test_kv_slot_save_and_restore_fault_tolerance(mock_kv_dir):
         restored = pm._restore_kv_slot_after_start(meta)
         assert restored is False
 
-    # Cleaned up in finally block
-    assert not slot_file.exists()
+    # Metadata invalidated; dump file cleaned up in post-stop cleanup
     assert not meta_file.exists()
+    pm.clear_kv_slot_cache()
+    assert not slot_file.exists()
 
 
 def test_clear_kv_slot_cache_invoked_on_session_switch_and_shutdown(qapp):

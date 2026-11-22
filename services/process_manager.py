@@ -655,7 +655,11 @@ class ProcessManager(QObject):
                 f"[ProcessManager] Инвалидация KV-слота: параметры запуска не совпадают ({'; '.join(mismatch_reasons)}). "
                 f"Кэш очищен, выполняется стандартный холодный prefill."
             )
-            self.clear_kv_slot_cache()
+            try:
+                if meta_file.exists():
+                    meta_file.unlink()
+            except OSError:
+                pass
             return False
 
         # Проверка аномального размера дампа перед restore
@@ -693,7 +697,12 @@ class ProcessManager(QObject):
                 f"[ProcessManager] ⚠️ Аномальный размер дампа KV-слота ({anomaly_reason}). "
                 f"Восстановление пропущено во избежание OOM. Слот будет очищен."
             )
-            self.clear_kv_slot_cache()
+            self.erase_kv_slot_sync(slot_id=0)
+            try:
+                if meta_file.exists():
+                    meta_file.unlink()
+            except OSError:
+                pass
             return False
 
         port = getattr(self, "_current_running_port", None) or 1234
@@ -707,19 +716,32 @@ class ProcessManager(QObject):
             elapsed_ms = (time.time() - t0) * 1000.0
             if resp.status_code == 200:
                 logger.info(f"[ProcessManager] KV-слот 0 успешно восстановлен ({size_mb} MB за {elapsed_ms:.1f} мс).")
+                try:
+                    if meta_file.exists():
+                        meta_file.unlink()
+                except OSError:
+                    pass
                 return True
             else:
                 logger.warning(
                     f"[ProcessManager] Ошибка восстановления KV-слота 0 (HTTP {resp.status_code}): {resp.text[:100]}"
                 )
                 self.erase_kv_slot_sync(slot_id=0)
+                try:
+                    if meta_file.exists():
+                        meta_file.unlink()
+                except OSError:
+                    pass
                 return False
         except Exception as e:
             logger.warning(f"[ProcessManager] Исключение при восстановлении KV-слота 0: {e}")
             self.erase_kv_slot_sync(slot_id=0)
+            try:
+                if meta_file.exists():
+                    meta_file.unlink()
+            except OSError:
+                pass
             return False
-        finally:
-            self.clear_kv_slot_cache()
 
     def _extract_llama_startup_error(self) -> Tuple[str, bool]:
         """

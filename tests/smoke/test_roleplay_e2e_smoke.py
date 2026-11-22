@@ -536,7 +536,9 @@ def test_scenario_5_vram_arbitrage_and_kv_slot_preservation(smoke_isolation_guar
     # Восстановление слота при совпадающих параметрах
     restored = pm._restore_kv_slot_after_start(expected_meta=meta_current)
     assert_diag(restored is True, scen, "Restore KV slot status", True, restored)
-    assert_diag(not (kv_dir / "evicted_slot_0.bin").exists(), scen, "Dump cleaned up after restore", False, (kv_dir / "evicted_slot_0.bin").exists())
+    assert_diag(not (kv_dir / "slot_metadata.json").exists(), scen, "Metadata cleaned up after restore", False, (kv_dir / "slot_metadata.json").exists())
+    pm.clear_kv_slot_cache()
+    assert_diag(not (kv_dir / "evicted_slot_0.bin").exists(), scen, "Dump cleaned up after post-stop", False, (kv_dir / "evicted_slot_0.bin").exists())
 
     # Инвалидация при несовпадении context_length
     pm._save_kv_slot_for_eviction()
@@ -545,7 +547,9 @@ def test_scenario_5_vram_arbitrage_and_kv_slot_preservation(smoke_isolation_guar
 
     restored_mismatch = pm._restore_kv_slot_after_start(expected_meta=meta_mismatched)
     assert_diag(restored_mismatch is False, scen, "Invalidate KV on context mismatch", False, restored_mismatch)
-    assert_diag(not (kv_dir / "evicted_slot_0.bin").exists(), scen, "Dump cleaned up after invalidation", False, (kv_dir / "evicted_slot_0.bin").exists())
+    assert_diag(not (kv_dir / "slot_metadata.json").exists(), scen, "Metadata cleaned up after invalidation", False, (kv_dir / "slot_metadata.json").exists())
+    pm.clear_kv_slot_cache()
+    assert_diag(not (kv_dir / "evicted_slot_0.bin").exists(), scen, "Dump cleaned up after post-stop", False, (kv_dir / "evicted_slot_0.bin").exists())
 
 
 # =========================================================================

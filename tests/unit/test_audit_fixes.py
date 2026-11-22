@@ -730,9 +730,10 @@ def test_kv_slot_invalidation_on_gpu_layers_mismatch(tmp_path, monkeypatch):
         assert restored is False
         mock_post.assert_not_called()
 
-    # Дамп должен быть инвалидирован и удален
-    assert not slot_file.exists()
+    # Метаданные инвалидируются сразу, дамп очищается при пост-стоп очистке
     assert not meta_file.exists()
+    pm.clear_kv_slot_cache()
+    assert not slot_file.exists()
 
     # 2. Повторное сохранение и проверка успешного восстановления при совпадении gpu_layers = 48
     with patch("requests.post", return_value=mock_save_resp), \

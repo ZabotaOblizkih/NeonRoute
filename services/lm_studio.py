@@ -437,6 +437,15 @@ class LMStudioClient(QObject):
                     finally:
                         setattr(self.process_manager, "_force_cuda_no_pinned", False)
 
+                    if not ok:
+                        last_err = getattr(self.process_manager, "last_error", "")
+                        err_msg = (
+                            f"Недостаточно системной памяти хоста (RAM/Commit Limit) для запуска модели '{model_name}'. "
+                            f"Повторный запуск с GGML_CUDA_NO_PINNED=1 не увенчался успехом: {last_err or 'Host RAM OOM'}"
+                        )
+                        logger.error(f"[LMStudio] 🛑 {err_msg}")
+                        raise LlamaServerStartupError(err_msg)
+
                 if not ok:
                     err_msg = getattr(self.process_manager, "last_error", "") or f"Headless сервер не смог запустить модель '{model_name}'"
                     logger.warning(f"[LMStudio] {err_msg}")

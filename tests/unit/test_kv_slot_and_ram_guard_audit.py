@@ -111,14 +111,20 @@ def test_anomalous_dump_size_rejected_and_cache_purged(mock_kv_dir):
 
     with patch("services.layer_budgeter.LayerBudgeter.estimate_kv_cache_mb", return_value=500.0), \
          patch("psutil.virtual_memory", return_value=MagicMock(available=4 * 1024 * 1024 * 1024)), \
+         patch.object(pm, "erase_kv_slot_sync") as mock_erase, \
          patch("requests.post") as mock_post:
 
         restored = pm._restore_kv_slot_after_start(meta)
         assert restored is False
         mock_post.assert_not_called()
+        mock_erase.assert_called_once_with(slot_id=0)
 
-    # Verify cache is cleared
+    # Metadata file is invalidated immediately
     assert not meta_file.exists()
+    # Dump file remains open-safe until post-stop cleanup (descriptors closed)
+    assert huge_dump.exists()
+    pm.clear_kv_slot_cache()
+    assert not huge_dump.exists()
 
 
 def test_restore_timeout_triggers_action_erase(mock_kv_dir):
@@ -247,3 +253,69 @@ def test_connection_error_diagnostics_on_crashed_headless_server(tmp_path, monke
     err_str = str(exc_info.value)
     assert "Локальный процесс llama-server аварийно завершился (код 3221225477)" in err_str
     assert "Не удалось подключиться к LM Studio на" not in err_str
+
+
+# -------------------------------------------------------------------------
+# 5. Review Fix: LayerBudgeter host RAM calculation and Host OOM retry exhaustion
+# -------------------------------------------------------------------------
+def test_layer_budgeter_ram_not_clamped_by_small_pagefile(monkeypatch):
+    """When physical RAM is plentiful (>= 1500 MB), get_available_host_memory_mb must NOT clamp to small pagefile."""
+    from services.layer_budgeter import LayerBudgeter
+    import sys
+    import ctypes
+
+    class FakeMemoryStatus:
+        def __init__(self, phys_mb, pagefile_mb):
+            self.ullAvailPhys = int(phys_mb * 1024 * 1024)
+            self.ullAvailPageFile = int(pagefile_mb * 1024 * 1024)
+            self.dwLength = 64
+
+    fake_stat = FakeMemoryStatus(phys_mb=6000.0, pagefile_mb=800.0)
+
+    def mock_global_mem_status(byref_stat):
+        byref_stat._obj.ullAvailPhys = fake_stat.ullAvailPhys
+        byref_stat._obj.ullAvailPageFile = fake_stat.ullAvailPageFile
+        return 1
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    if hasattr(ctypes, "windll"):
+        monkeypatch.setattr(ctypes.windll.kernel32, "GlobalMemoryStatusEx", mock_global_mem_status)
+
+    avail_mb = LayerBudgeter.get_available_host_memory_mb()
+    assert avail_mb >= 6000.0, f"Expected >= 6000 MB, got {avail_mb}"
+
+
+def test_host_ram_oom_retry_failure_terminates_with_clear_error(tmp_path, monkeypatch):
+    """When host RAM OOM retry also fails, it must terminate with LlamaServerStartupError and NOT retry further."""
+    from services.lm_studio import LlamaServerStartupError
+    pm = ProcessManager()
+    lms_client = LMStudioClient()
+    lms_client.set_process_manager(pm)
+
+    pm.is_host_ram_oom_failure = True
+    pm.is_vram_oom_failure = False
+    pm.last_error = "Host RAM Out of Memory: unable to allocate CUDA_Host buffer"
+
+    model_file = tmp_path / "test_model.gguf"
+    model_file.write_text("gguf_bytes")
+    monkeypatch.setattr("services.server_config.ServerConfigResolver.resolve_model_path", lambda m: model_file)
+    monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: False)
+    monkeypatch.setattr(lms_client, "check_health", lambda: (False, ""))
+
+    retry_count = 0
+
+    def mock_start(**kwargs):
+        nonlocal retry_count
+        retry_count += 1
+        return False  # Both initial and retry fail
+
+    pm.start_llama_server_sync = mock_start
+
+    with pytest.raises(LlamaServerStartupError) as exc_info:
+        lms_client.ensure_model_loaded(preferred_model="test_model", gpu_ratio="1.0")
+
+    # Exactly 2 calls (1 initial + 1 retry with GGML_CUDA_NO_PINNED=1)
+    assert retry_count == 2
+    err_str = str(exc_info.value)
+    assert "Недостаточно системной памяти хоста" in err_str
+    assert "GGML_CUDA_NO_PINNED=1" in err_str

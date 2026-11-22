@@ -49,8 +49,9 @@ class LayerBudgeter:
         """
         Оценивает доступную системную память хоста:
         - В Windows опрашивает GlobalMemoryStatusEx для получения ullAvailPageFile
-          (лимит незакоммиченной виртуальной памяти) и psutil.virtual_memory().available,
-          выбирая безопасный минимум между свободной физической RAM и доступным коммитом.
+          (лимит незакоммиченной виртуальной памяти) и psutil.virtual_memory().available.
+          Если физической RAM достаточно (>= OS_HEADROOM_RAM_MB), не блокирует запуск
+          малым текущим значением ullAvailPageFile из-за настроек файла подкачки Windows.
         - На других платформах возвращает psutil.virtual_memory().available.
         """
         import psutil
@@ -79,9 +80,18 @@ class LayerBudgeter:
                 stat = MEMORYSTATUSEX()
                 stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
                 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                    avail_pagefile_mb = stat.ullAvailPageFile / (1024.0 * 1024.0)
                     avail_phys_mb = stat.ullAvailPhys / (1024.0 * 1024.0)
-                    return max(0.0, min(avail_phys_mb, avail_pagefile_mb))
+                    avail_pagefile_mb = stat.ullAvailPageFile / (1024.0 * 1024.0)
+
+                    # Если свободной физической RAM достаточно (>= OS_HEADROOM_RAM_MB),
+                    # не блокируем запуск малым текущим размером pagefile (ullAvailPageFile),
+                    # так как Windows динамически расширяет pagefile или размещает память в RAM.
+                    if avail_phys_mb >= cls.OS_HEADROOM_RAM_MB:
+                        return max(0.0, max(avail_phys_mb, avail_ram_mb))
+
+                    # При дефиците физической RAM берем доступную память с учетом коммита
+                    effective_mb = max(avail_phys_mb, min(avail_ram_mb, avail_pagefile_mb))
+                    return max(0.0, effective_mb)
             except Exception as e:
                 logger.debug(f"[LayerBudgeter] GlobalMemoryStatusEx fallback to psutil: {e}")
 
