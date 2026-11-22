@@ -355,6 +355,7 @@ class TestModelsAndCheckpoints:
         call_json = post_mock.call_args[1]["json"]
         assert call_json["sd_checkpoint_cache"] == 0
         assert call_json["sd_checkpoints_limit"] == 1
+        assert call_json["sd_checkpoints_keep_in_cpu"] is False
 
     def test_ensure_system_options_sets_cache_zero_on_16gb_and_skips_on_32gb(self, forge_client, monkeypatch):
         """ensure_system_options отправляет настройки только при RAM <= 16.5 ГБ."""
@@ -366,7 +367,8 @@ class TestModelsAndCheckpoints:
         assert forge_client.ensure_system_options() is True
         mock_set_opts.assert_called_once_with({
             "sd_checkpoint_cache": 0,
-            "sd_checkpoints_limit": 1
+            "sd_checkpoints_limit": 1,
+            "sd_checkpoints_keep_in_cpu": False,
         })
 
         # 2. 32 ГБ RAM -> пропуск вызова
