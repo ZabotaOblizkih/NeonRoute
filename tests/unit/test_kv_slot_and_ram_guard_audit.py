@@ -532,6 +532,7 @@ def test_e2e_smoke_llama_server_bad_allocation_and_host_ram_protection(tmp_path,
 
     monkeypatch.setattr("services.server_config.ServerConfigResolver.resolve_model_path", lambda m: model_file)
     monkeypatch.setattr("services.server_config.ServerConfigResolver.resolve_server_exe", lambda: Path("C:/llama/llama-server.exe"))
+    monkeypatch.setattr("services.server_config.ServerConfigResolver.resolve_mmap_disable_args", lambda *a, **k: ["--no-mmap"])
     monkeypatch.setattr("services.server_config.ServerConfigResolver.load_ini", lambda: {"host": "127.0.0.1", "port": 1234, "gpu_layers": 46})
     monkeypatch.setattr("services.layer_budgeter.LayerBudgeter.calculate_layer_offload", lambda **k: (46, True, "", {"total_layers": 48}))
     monkeypatch.setattr(pm, "inspect_port_occupant", lambda port: (False, None, None))
@@ -546,11 +547,20 @@ def test_e2e_smoke_llama_server_bad_allocation_and_host_ram_protection(tmp_path,
     recorded_first_vram_oom = None
 
     def mock_popen(cmd, env=None, **kwargs):
+        cmd_list = list(cmd)
+        if "-m" not in cmd_list:
+            mock_sub = MagicMock()
+            mock_sub.poll.return_value = 0
+            mock_sub.communicate.return_value = ("", "")
+            mock_sub.stdout = None
+            mock_sub.stderr = None
+            return mock_sub
+
         attempt_no = len(attempts) + 1
         cuda_no_pinned = env.get("GGML_CUDA_NO_PINNED") if env else None
         attempts.append({
             "attempt": attempt_no,
-            "cmd": list(cmd),
+            "cmd": cmd_list,
             "cuda_no_pinned": cuda_no_pinned,
         })
 
