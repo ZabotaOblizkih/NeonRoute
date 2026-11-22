@@ -353,3 +353,151 @@ def unload_model_weights(sd_model=None, info=None):
     assert sd_path2.read_text(encoding="utf-8") == unrecognized_sd_py
 
 
+SYSINFO_DELEGATED_API_PY = '''
+class Api:
+    def __init__(self):
+        self.add_api_route("/sdapi/v1/unload-checkpoint", self.unloadapi, methods=["POST"])
+        self.add_api_route("/sdapi/v1/reload-checkpoint", self.reloadapi, methods=["POST"])
+
+    def unloadapi(self):
+        sd_models.unload_model_weights()
+        return {}
+
+    def reloadapi(self):
+        sd_models.send_model_to_device(shared.sd_model)
+        return {}
+
+    def set_config(self, req: dict[str, Any]):
+        from modules.sysinfo import set_config
+        set_config(req)
+
+    def get_sd_models(self):
+        return [{"title": x.title, "model_name": x.model_name, "hash": x.shorthash, "sha256": x.sha256, "filename": x.filename} for x in sd_models.checkpoints_list.values()]
+'''
+
+EXISTING_UNLOAD_SD_MODELS_PY = '''
+def reload_model_weights(sd_model=None, info=None, forced_reload=False):
+    pass
+
+def unload_model_weights(sd_model=None, info=None):
+    from backend import memory_management
+    memory_management.unload_all_models()
+    return
+
+def apply_token_merging(sd_model, token_merging_ratio):
+    pass
+'''
+
+
+def test_forge_patcher_sysinfo_delegated_set_config_and_existing_unload_all_models(tmp_path):
+    """
+    Verifies support for Forge 2.0 builds where:
+    1. Api.set_config delegates directly to modules.sysinfo.set_config(req)
+       without local checkpoint_name or shared.opts.save.
+    2. unload_model_weights already contains basic backend.memory_management.unload_all_models()
+       and a return statement (instead of bare pass).
+    Verifies detection, atomic patch application, idempotency, and clean restore.
+    """
+    forge_dir = tmp_path / "forge_delegated"
+    webui_dir = forge_dir / "webui"
+    (webui_dir / "modules" / "api").mkdir(parents=True, exist_ok=True)
+
+    api_file = webui_dir / "modules" / "api" / "api.py"
+    models_file = webui_dir / "modules" / "api" / "models.py"
+    sd_file = webui_dir / "modules" / "sd_models.py"
+
+    api_file.write_text(SYSINFO_DELEGATED_API_PY, encoding="utf-8")
+    models_file.write_text(STOCK_MODELS_PY, encoding="utf-8")
+    sd_file.write_text(EXISTING_UNLOAD_SD_MODELS_PY, encoding="utf-8")
+
+    # 1. Detection
+    status, msg = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.NEEDS_PATCH
+    assert "API free-vram/refresh" in msg
+    assert "sd_models unload" in msg
+
+    # 2. Apply patch
+    ok, apply_msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is True, f"apply_patch failed: {apply_msg}"
+    assert ForgePatcher.has_backup(forge_dir) is True
+
+    # 3. Verify patched content
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.PATCHED
+
+    patched_api = api_file.read_text(encoding="utf-8")
+    assert "/sdapi/v1/free-vram" in patched_api
+    assert "def free_vram_api(" in patched_api
+    assert "refresh_model_loading_parameters" in patched_api
+    # Safe retrieval of checkpoint_name without relying on an existing local var
+    assert 'req.get("sd_model_checkpoint", None)' in patched_api
+    assert '"config": None' in patched_api
+
+    patched_models = models_file.read_text(encoding="utf-8")
+    assert 'config: Optional[str] = Field(default=None, title="Config file")' in patched_models
+
+    patched_sd = sd_file.read_text(encoding="utf-8")
+    assert "model_data.forge_hash = ''" in patched_sd
+    assert "memory_management.soft_empty_cache()" in patched_sd
+    assert "gc.collect()" in patched_sd
+
+    # 4. Idempotency
+    backup_api = webui_dir / ".neonroute_backup" / "original" / "modules" / "api" / "api.py"
+    backup_mtime = backup_api.stat().st_mtime
+    ok2, _ = ForgePatcher.apply_patch(forge_dir)
+    assert ok2 is True
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.PATCHED
+    assert backup_api.stat().st_mtime == backup_mtime
+
+    # 5. Clean restore
+    ok_res, res_msg = ForgePatcher.restore_backup(forge_dir)
+    assert ok_res is True
+    assert api_file.read_text(encoding="utf-8").strip() == SYSINFO_DELEGATED_API_PY.strip()
+    assert models_file.read_text(encoding="utf-8").strip() == STOCK_MODELS_PY.strip()
+    assert sd_file.read_text(encoding="utf-8").strip() == EXISTING_UNLOAD_SD_MODELS_PY.strip()
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.NEEDS_PATCH
+
+
+def test_forge_patcher_prepatched_config_fields(tmp_path):
+    """
+    Verifies that if models.py or api.py already have config=None populated,
+    the patcher respects them gracefully without failing or corrupting syntax.
+    """
+    forge_dir = tmp_path / "forge_prepatched_config"
+    webui_dir = forge_dir / "webui"
+    (webui_dir / "modules" / "api").mkdir(parents=True, exist_ok=True)
+
+    api_file = webui_dir / "modules" / "api" / "api.py"
+    models_file = webui_dir / "modules" / "api" / "models.py"
+    sd_file = webui_dir / "modules" / "sd_models.py"
+
+    # api.py has get_sd_models with config: None already
+    prepatched_api = STOCK_API_PY.replace('"filename": x.filename}', '"filename": x.filename, "config": None}')
+    # models.py already has default=None
+    prepatched_models = STOCK_MODELS_PY.replace(
+        'config: Optional[str] = Field(title="Config file")',
+        'config: Optional[str] = Field(default=None, title="Config file")'
+    )
+
+    api_file.write_text(prepatched_api, encoding="utf-8")
+    models_file.write_text(prepatched_models, encoding="utf-8")
+    sd_file.write_text(STOCK_SD_MODELS_PY, encoding="utf-8")
+
+    status, msg = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.NEEDS_PATCH
+    # models config=None should NOT be listed in missing
+    assert "models config=None" not in msg
+    assert "API free-vram/refresh" in msg
+    assert "sd_models unload" in msg
+
+    ok, apply_msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is True
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.PATCHED
+
+    # Restoring returns to prepatched state
+    ok_res, _ = ForgePatcher.restore_backup(forge_dir)
+    assert ok_res is True
+    assert api_file.read_text(encoding="utf-8").strip() == prepatched_api.strip()
+    assert models_file.read_text(encoding="utf-8").strip() == prepatched_models.strip()
+
+
+
