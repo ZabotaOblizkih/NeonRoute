@@ -1007,10 +1007,16 @@ class LMStudioClient(QObject):
             self._is_model_unloaded = True
             self._last_loaded_model_id = None
 
+            if self.process_manager is not None:
+                try:
+                    self.process_manager.is_lm_studio_running()
+                except Exception:
+                    pass
+
             is_headless = (
                 self.process_manager is not None
                 and hasattr(self.process_manager, "has_headless_server")
-                and self.process_manager.has_headless_server()
+                and (self.process_manager.has_headless_server() is True)
             )
 
             is_evicted = False
@@ -1022,8 +1028,9 @@ class LMStudioClient(QObject):
 
             if is_headless and not is_evicted:
                 proc = getattr(self.process_manager, "_llama_process", None)
-                if proc is not None and proc.poll() is not None:
-                    rc = proc.poll()
+                proc_poll = proc.poll() if (proc is not None and callable(getattr(proc, "poll", None))) else None
+                if isinstance(proc_poll, int):
+                    rc = proc_poll
                     detail_msg = ""
                     if hasattr(self.process_manager, "_extract_llama_startup_error"):
                         try:
@@ -1037,11 +1044,6 @@ class LMStudioClient(QObject):
                     self.error_occurred.emit(err_msg)
                     raise ConnectionError(err_msg)
 
-            if self.process_manager is not None:
-                try:
-                    self.process_manager.is_lm_studio_running()
-                except Exception:
-                    pass
             err_msg = (
                 f"Не удалось подключиться к LM Studio / серверу LLM на {self.base_url}.\n"
                 f"Убедитесь, что сервер запущен в LM Studio на порту 1234."

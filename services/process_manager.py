@@ -614,8 +614,13 @@ class ProcessManager(QObject):
         slot_filename = saved_meta.get("filename") or "evicted_slot_0.bin"
         slot_file = KV_SLOTS_DIR / slot_filename
         if not slot_file.exists():
-            self.clear_kv_slot_cache()
-            return False
+            fallback_file = KV_SLOTS_DIR / "evicted_slot_0.bin"
+            if fallback_file.exists():
+                slot_file = fallback_file
+                slot_filename = fallback_file.name
+            else:
+                self.clear_kv_slot_cache()
+                return False
 
         # Сверка метаданных с актуальными expected_meta
         mismatch_reasons = []

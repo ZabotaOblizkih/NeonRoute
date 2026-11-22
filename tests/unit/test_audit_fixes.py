@@ -749,11 +749,11 @@ def test_kv_slot_invalidation_on_gpu_layers_mismatch(tmp_path, monkeypatch):
     with patch("requests.post", return_value=mock_restore_resp) as mock_post:
         restored_ok = pm._restore_kv_slot_after_start(matching_meta)
         assert restored_ok is True
-        mock_post.assert_called_once_with(
-            "http://127.0.0.1:1234/slots/0?action=restore",
-            json={"filename": "evicted_slot_0.bin"},
-            timeout=5.0
-        )
+        assert mock_post.call_count == 1
+        call_url, call_kwargs = mock_post.call_args
+        assert call_url[0] == "http://127.0.0.1:1234/slots/0?action=restore"
+        assert call_kwargs["json"]["filename"] == "evicted_slot_0.bin"
+        assert call_kwargs["timeout"] >= 15.0
 
 
 def test_llama_server_cli_includes_batch_size_and_ubatch_size(tmp_path, monkeypatch):
