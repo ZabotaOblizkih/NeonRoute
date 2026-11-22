@@ -412,9 +412,10 @@ def test_e2e_kv_slot_restore_failure_fallback_to_clean_prefill(mock_kv_dir, monk
         restored = pm._restore_kv_slot_after_start(expected_meta)
         assert restored is False
 
-        # Инвариант: поврежденные файлы удалены
-        assert not slot_file.exists()
+        # Инвариант: метаданные инвалидированы сразу, дамп очищается на пост-стоп
         assert not meta_file.exists()
+        pm.clear_kv_slot_cache()
+        assert not slot_file.exists()
         assert pm._server_state == ServerState.READY
 
         # 3. Инференс продолжается штатно через полный пересчет префикса (clean prefill)
