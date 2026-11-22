@@ -403,10 +403,17 @@ class ChatMessageWidget(QWidget):
                 self.image_preview_lbl.setToolTip("\n".join(filter(None, tooltip_lines)))
 
                 def _on_preview_mouse_press(e):
+                    if hasattr(e, "accept"):
+                        e.accept()
+
+                def _on_preview_mouse_release(e):
                     if not hasattr(e, "button") or e.button() == Qt.MouseButton.LeftButton:
-                        self._open_image_preview(self.image_path)
+                        if hasattr(e, "pos") and not self.image_preview_lbl.rect().contains(e.pos()):
+                            return
+                        QTimer.singleShot(0, lambda: self._open_image_preview(self.image_path))
 
                 self.image_preview_lbl.mousePressEvent = _on_preview_mouse_press
+                self.image_preview_lbl.mouseReleaseEvent = _on_preview_mouse_release
                 self.image_preview_lbl.setVisible(True)
                 self.art_layout.addWidget(self.image_preview_lbl)
 

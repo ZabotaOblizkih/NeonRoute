@@ -28,36 +28,36 @@ ART_DIRECTOR_ASSISTANT_JSON_SCHEMA = {
             "properties": {
                 "reply_ru": {
                     "type": "string",
-                    "description": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например, 'Секунду, перевожу образ в кадр...')."
+                    "description": "1 short, natural conversational reply from Elaria in Russian for the chat bubble (e.g., 'Секунду, перевожу образ в кадр...')."
                 },
                 "scene_prompt": {
                     "type": "string",
-                    "description": "12–26 английских тегов/фраз всей сцены (без флагов --ar, --model, --neg, --self)."
+                    "description": "14 to 22 comma-separated English visual tags/phrases for the full scene (NO CLI flags like --ar, --model, --neg, --self). Must include an expressive camera angle (e.g., 3/4 view, slightly low angle), subject appearance/outfit details, a self-contained hand pose (never resting hands on tables/furniture in thigh-up shots), and physically consistent directional lighting."
                 },
                 "face_prompt": {
                     "type": "string",
-                    "description": "7–14 английских тегов/фраз СТРОГО для кропа лица (глаза, взгляд, причёска, выражение лица, кожа, свет; БЕЗ одежды, позы тела, рук и фона; \"\" если лица нет в кадре)."
+                    "description": "7 to 14 English tags/phrases STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin texture, lighting; NO clothing, body pose, hands, or background; empty string \"\" if face is not visible or seen from behind)."
                 },
                 "hands_prompt": {
                     "type": "string",
-                    "description": "6–12 английских тегов/фраз СТРОГО для кропа кистей рук (пальцы, хват, предмет в руке, текстура кожи, свет; БЕЗ лица, глаз, причёски и фона; \"\" если руки скрыты или людей нет)."
+                    "description": "6 to 12 English tags/phrases STRICTLY for hands crop enhancement (fingers, hand pose, grip, held item, skin texture, lighting; NO face, eyes, hair, furniture, surfaces, or background; empty string \"\" if hands are hidden or no humans are present)."
                 },
                 "negative_prompt": {
                     "type": "string",
-                    "description": "исключения пользователя ('без X' -> английские теги) или \"\"."
+                    "description": "Exclusions requested by the user ('без X' -> English tags/phrases) or empty string \"\"."
                 },
                 "aspect_ratio": {
                     "type": "string",
                     "enum": ["portrait", "square", "wide", "cinematic", "ultrawide"],
-                    "description": "Формат кадра."
+                    "description": "Target image aspect ratio."
                 },
                 "suggested_model": {
                     "type": "string",
-                    "description": "ID модели."
+                    "description": "Target checkpoint model ID."
                 },
                 "is_self_portrait": {
                     "type": "boolean",
-                    "description": "true только при запросе нарисовать саму Эларию ('нарисуй себя', 'сделай селфи')."
+                    "description": "Set to true ONLY when the user explicitly asks to draw Elaria herself ('нарисуй себя', 'сделай селфи'); otherwise false."
                 }
             },
             "required": [
@@ -85,32 +85,32 @@ ART_DIRECTOR_RP_SCENE_JSON_SCHEMA = {
             "properties": {
                 "scene_prompt": {
                     "type": "string",
-                    "description": "12–26 английских тегов/фраз всей сцены (без флагов --ar, --model, --neg, --self)."
+                    "description": "14 to 22 comma-separated English visual tags/phrases for the full scene (NO CLI flags like --ar, --model, --neg, --self). Must include an expressive camera angle (e.g., 3/4 view, slightly low angle), subject appearance/outfit details, a self-contained hand pose (never resting hands on tables/furniture in thigh-up shots), and physically consistent directional lighting."
                 },
                 "face_prompt": {
                     "type": "string",
-                    "description": "7–14 английских тегов/фраз СТРОГО для кропа лица (глаза, взгляд, причёска, выражение лица, кожа, свет; БЕЗ одежды, позы тела, рук и фона; \"\" если лица нет в кадре)."
+                    "description": "7 to 14 English tags/phrases STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin texture, lighting; NO clothing, body pose, hands, or background; empty string \"\" if face is not visible or seen from behind)."
                 },
                 "hands_prompt": {
                     "type": "string",
-                    "description": "6–12 английских тегов/фраз СТРОГО для кропа кистей рук (пальцы, хват, предмет в руке, текстура кожи, свет; БЕЗ лица, глаз, причёски и фона; \"\" если руки скрыты или людей нет)."
+                    "description": "6 to 12 English tags/phrases STRICTLY for hands crop enhancement (fingers, hand pose, grip, held item, skin texture, lighting; NO face, eyes, hair, furniture, surfaces, or background; empty string \"\" if hands are hidden or no humans are present)."
                 },
                 "negative_prompt": {
                     "type": "string",
-                    "description": "исключения пользователя ('без X' -> английские теги) или \"\"."
+                    "description": "Exclusions requested by the user ('без X' -> English tags/phrases) or empty string \"\"."
                 },
                 "aspect_ratio": {
                     "type": "string",
                     "enum": ["portrait", "square", "wide", "cinematic", "ultrawide"],
-                    "description": "Формат кадра."
+                    "description": "Target image aspect ratio."
                 },
                 "suggested_model": {
                     "type": "string",
-                    "description": "ID модели."
+                    "description": "Target checkpoint model ID."
                 },
                 "is_self_portrait": {
                     "type": "boolean",
-                    "description": "true только при запросе нарисовать саму Эларию ('нарисуй себя', 'сделай селфи')."
+                    "description": "Set to true ONLY when the user explicitly asks to draw Elaria herself ('нарисуй себя', 'сделай селфи'); otherwise false."
                 }
             },
             "required": [
@@ -265,52 +265,88 @@ ROUTING_TAIL_PROTOCOL = ""
 
 REASONING_PROTOCOL = ROUTING_TAIL_PROTOCOL
 
+REASONING_PROTOCOL = ROUTING_TAIL_PROTOCOL
+
 GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "\n\n[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]\n"
     "You are an expert prompt engineer for Stable Diffusion 1.5. Convert the user's request into 12 to 26 comma-separated English keyword tags.\n"
     "STYLE GUIDANCE (adapt your visual tags to match this aesthetic; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Style & Syntax Rules\n"
-    "1. **Language & Format:** English keyword tags only, separated by commas. No full sentences, no Russian words, and NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
-    "2. **Tag Order, Named Characters & Hand Anchor:** Write tags in this order:\n"
+    "1. **Language & Format:** English keyword tags only, separated by commas inside `scene_prompt`. No full sentences, no Russian words, and NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
+    "2. **Tag Order, Named Characters & Hand Anchor:** Write tags in `scene_prompt` in this order:\n"
     "   [Subject count & framing] -> [Camera angle & orientation] -> [Character name `<Name> (<Franchise>)` + canonical hair/eyes (omit eye tags when seen `from behind` or in `profile`; NEVER copy outfits from examples!)] -> [Pose with hand anchor: `hands on hips`, `hands in pockets`, `arms crossed`, or `holding <item> in one hand, other hand at side/in pocket`] -> [Clothing] -> [Environment & directional lighting] -> [2-3 quality tags matching Style Guidance, e.g. `sharp focus, high detail, detailed texture`].\n\n"
     "### Camera & Framing Priority\n"
     "1. **Strict User Priority:** If the user explicitly specifies a camera angle, framing, or POV (e.g., 'сверху вниз', 'снизу вверх', 'вид из-за плеча', 'от первого лица', 'в полный рост', 'крупный план лица', 'по пояс'), you MUST translate it accurately and NEVER override it.\n"
     "2. **Framing Baseline & Distance Ladder:**\n"
-    "   - **SINGLE CHARACTER / CREATURE IN LOCATION (default):** Keep the subject large in the foreground with a readable deep background—place `in foreground, medium shot, thigh-up shot, upper body` (or `in foreground, medium shot, upper body` for animals/creatures) near the start and add `deep background, depth of field` in the environment with `--ar portrait`. NEVER use `wide shot` for a single character or creature unless the user explicitly asks for a distant panoramic view or wide format.\n"
-    "   - **WAIST-UP / CLOSER ('по пояс', 'по грудь', 'поближе', 'waist-up'):** Use `medium shot, waist-up, upper body` with `--ar portrait`. NEVER use `close-up portrait` or `--ar square` for waist-up/closer requests so upper attire, hands, and background scenery remain visible.\n"
-    "   - **FACE CLOSE-UP ('крупный план лица', 'портрет лица', 'face close-up'):** Use `close-up portrait, face focus` with `--ar square`.\n"
-    "   - **FULL BODY (ONLY when explicitly requested 'в полный рост', 'с ног до головы', 'full body'):** Use `full body, head to toe` (include footwear and ground surface) with `--ar portrait` (do NOT add `wide shot`).\n"
+    "   - **SINGLE CHARACTER / CREATURE IN LOCATION (default):** Keep the subject large in the foreground with a readable deep background—place `in foreground, medium shot, thigh-up shot, upper body` (or `in foreground, medium shot, upper body` for animals/creatures) near the start and add `deep background, depth of field` in the environment with `\"aspect_ratio\": \"portrait\"`. NEVER use `wide shot` for a single character or creature unless the user explicitly asks for a distant panoramic view or wide format.\n"
+    "   - **WAIST-UP / CLOSER ('по пояс', 'по грудь', 'поближе', 'waist-up'):** Use `medium shot, waist-up, upper body` with `\"aspect_ratio\": \"portrait\"`. NEVER use `close-up portrait` or `\"square\"` for waist-up/closer requests so upper attire, hands, and background scenery remain visible.\n"
+    "   - **FACE CLOSE-UP ('крупный план лица', 'портрет лица', 'face close-up'):** Use `close-up portrait, face focus` with `\"aspect_ratio\": \"square\"`.\n"
+    "   - **FULL BODY (ONLY when explicitly requested 'в полный рост', 'с ног до головы', 'full body'):** Use `full body, head to toe` (include footwear and ground surface) with `\"aspect_ratio\": \"portrait\"` (do NOT add `wide shot`).\n"
     "   - **DYNAMIC ANGLE & ORIENTATION:** When the user gives a brief prompt without camera directions, choose an expressive angle that keeps the background horizon in frame (e.g., `3/4 view`, `slightly from below`, `from behind, looking back`). Use harsh `from below, low angle` ONLY when the user explicitly asks for 'снизу вверх'. Combine angle tags WITH the framing tag.\n"
     "   - **GAZE & HEAD DIRECTION:** When gaze is not specified by the user, omit gaze tags (or use `looking at viewer` for calm portraits). Add `looking away, looking to the side, head turned` (or `looking at <target>`) ONLY when the user explicitly asks the subject to look away, into the distance, or at something in the scene ('смотрит вдаль', 'смотрит в сторону', 'на горизонт', 'в окно')—place it BEFORE character/eye tags and avoid vague `looking into distance`. Omit eye-detail tags (`<color> eyes`, `expressive eyes`) when seen `from behind` or in `profile`.\n"
     "   - **OVER-THE-SHOULDER / POV:** When using `over-the-shoulder`, specify who is in the foreground and who is focused (e.g., `over-the-shoulder, <foreground subject> in foreground, facing <target subject>`).\n"
-    "   - **BATTLES / LANDSCAPES / WIDE SCENES:** Use `wide shot` (or `wide action shot`) with `--ar wide` ONLY for battles, large vehicles, wide group scenes, or `no humans, scenery` landscapes.\n"
-    "   - **SINGLE OBJECT / STILL LIFE:** Use `no humans, close-up` (or `macro shot`) with `--ar square`.\n"
+    "   - **BATTLES / LANDSCAPES / WIDE SCENES:** Use `wide shot` (or `wide action shot`) with `\"aspect_ratio\": \"wide\"` ONLY for battles, large vehicles, wide group scenes, or `no humans, scenery` landscapes.\n"
+    "   - **SINGLE OBJECT / STILL LIFE:** Use `no humans, close-up` (or `macro shot`) with `\"aspect_ratio\": \"square\"`.\n"
     "   - **Danbooru Camera Vocabulary:** `close-up`, `portrait`, `waist-up`, `upper body`, `thigh-up shot`, `full body`, `wide shot`, `in foreground`, `deep background`, `from below`, `low angle`, `from above`, `high angle`, `overhead shot`, `dutch angle`, `from behind`, `looking back`, `profile`, `looking at viewer`, `looking away`, `looking to the side`, `head turned`, `over-the-shoulder`, `pov`, `foreshortening`, `fisheye`.\n\n"
     "### Lighting & Atmosphere\n"
     "1. **User Priority:** Keep any lighting, time of day, or mood requested by the user.\n"
     "2. **Motivated & Directional Light:** When unspecified, avoid generic `soft lighting`; specify a light source and direction fitting the scene (e.g., `warm rim light, backlighting`, `window light, sidelighting`, `overhead streetlight`, `neon lighting`, `volumetric lighting, sunbeams`).\n\n"
-    "### Negative, Self-Portrait & Aspect Ratio\n"
-    "1. **Negative Tags (`--neg`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from positive tags AND append `--neg <X English in>` before `--self`/`--ar` (Exception: for 'без людей', keep `no humans` in positive tags and put `people, humans` in `--neg`).\n"
-    "2. **Self-Portrait (`--self`):** Append `--self` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'). When `--self` is active, DO NOT write `1girl`/`1boy`, gender, age, hair, eyes, or facial features—describe ONLY framing, pose/expression, clothes, background, and lighting.\n"
-    "3. **Aspect Ratio (`--ar`):**\n"
-    "   - `--ar portrait`: DEFAULT for single characters and creatures in location (`in foreground`, `thigh-up shot`, `waist-up`, `upper body`, `full body`), selfies (`--self`), and close two-person shots.\n"
-    "   - `--ar square`: ONLY for tight face `close-up portrait` (shoulders-up) or single objects/still life.\n"
-    "   - `--ar wide`: for battles, large vehicles, landscapes, and wide group scenes.\n"
-    "   - `--ar cinematic` (16:9) or `--ar ultrawide` (21:9): ONLY if the user explicitly requests `16:9`, `21:9`, or panoramic widescreen.\n"
-    "4. **Follow-Up Edits:** If the user asks to modify the previous image (e.g. 'то же самое, но ночью', 'убери очки', 'добавь меч'), keep the scene from the previous turn and apply only the requested changes. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing tags (`wide shot`, `full body`) and lower-body clothing/anatomy tags (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous prompt while preserving the character, upper outfit, and background location.\n\n"
-    "### Syntax Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
+    "### Negative Tags, Self-Portrait & Aspect Ratio Fields\n"
+    "1. **Exclusions (`negative_prompt`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from `scene_prompt` AND put `<X in English>` into `\"negative_prompt\"` (Exception: for 'без людей', keep `no humans` in `scene_prompt` and put `\"people, humans\"` in `\"negative_prompt\"`). Otherwise set `\"negative_prompt\": \"\"`.\n"
+    "2. **Self-Portrait (`is_self_portrait`):** Set `\"is_self_portrait\": true` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'); otherwise `false`. When `is_self_portrait` is `true`, DO NOT write `1girl`/`1boy`, gender, age, hair, eyes, or facial features in `scene_prompt` or `face_prompt`—describe ONLY framing, pose/expression, clothes, background, and lighting.\n"
+    "3. **Aspect Ratio (`aspect_ratio`):**\n"
+    "   - `\"portrait\"`: DEFAULT for single characters and creatures in location (`in foreground`, `thigh-up shot`, `waist-up`, `upper body`, `full body`), selfies (`\"is_self_portrait\": true`), and close two-person shots.\n"
+    "   - `\"square\"`: ONLY for tight face `close-up portrait` (shoulders-up) or single objects/still life.\n"
+    "   - `\"wide\"`: for battles, large vehicles, landscapes, and wide group scenes.\n"
+    "   - `\"cinematic\"` (16:9) or `\"ultrawide\"` (21:9): ONLY if the user explicitly requests `16:9`, `21:9`, or panoramic widescreen.\n"
+    "4. **Follow-Up Edits:** If the user asks to modify the previous image (e.g. 'то же самое, но ночью', 'убери очки', 'добавь меч'), keep the scene from the previous turn and apply only the requested changes. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing tags (`wide shot`, `full body`) and lower-body clothing/anatomy tags (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous `scene_prompt` while preserving the character, upper outfit, and background location.\n\n"
+    "### JSON Output Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
     "User: <any single-character prompt with an exclusion 'без/убери X'>\n"
-    "[IMAGE_PROMPT: <count>, <framing>, <angle>, <subject>, <pose & hand anchor>, <outfit>, <location & directional light>, <2-3 quality tags> --neg <excluded tags> --ar portrait --model {target_model_id}]\n\n"
-    "User: <any prompt with explicit camera angle, e.g. сверху вниз / снизу вверх>\n"
-    "[IMAGE_PROMPT: <count>, <framing>, <requested angle>, <subject>, <pose & hand anchor>, <outfit>, <location & directional light>, <2-3 quality tags> --ar portrait --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<count>, <framing>, <angle>, <subject>, <pose & hand anchor>, <outfit>, <location & directional light>, <2-3 quality tags>",\n'
+    '  "face_prompt": "<7-14 face-only tags: eyes, gaze, hair, expression, skin, lighting>",\n'
+    '  "hands_prompt": "<6-12 hands-only tags: fingers, grip, held item, skin texture, lighting>",\n'
+    '  "negative_prompt": "<excluded tags in English>",\n'
+    '  "aspect_ratio": "portrait",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any self-portrait request>\n"
-    "[IMAGE_PROMPT: <framing>, <angle>, <pose & hand anchor>, <outfit>, <location & directional light>, <2-3 quality tags> --self --ar portrait --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<framing>, <angle>, <pose & hand anchor>, <outfit>, <location & directional light>, <2-3 quality tags>",\n'
+    '  "face_prompt": "<7-14 face-only tags without age/gender/hair/eye color: expression, skin, directional lighting>",\n'
+    '  "hands_prompt": "<6-12 hands-only tags: fingers, pose, skin texture, lighting>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "portrait",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": true\n'
+    "}}\n\n"
     "User: <any closer/waist-up follow-up edit>\n"
-    "[IMAGE_PROMPT: <count>, <closer framing>, <angle>, <gaze if requested>, <subject>, <pose & hand anchor>, <upper outfit>, <location & directional light>, <2-3 quality tags> --ar portrait --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<count>, <closer framing>, <angle>, <gaze if requested>, <subject>, <pose & hand anchor>, <upper outfit only>, <location & directional light>, <2-3 quality tags>",\n'
+    '  "face_prompt": "<7-14 face-only tags>",\n'
+    '  "hands_prompt": "<6-12 hands-only tags or empty string if hands are out of frame>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "portrait",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any wide scene, battle, vehicle, or landscape>\n"
-    "[IMAGE_PROMPT: <no humans, scenery or subject count>, <wide framing>, <angle>, <scene or action>, <environment & directional light>, <2-3 quality tags> --ar wide --model {target_model_id}]\n\n"
-    "### Structured JSON Output & Slot Isolation Rules\n"
-    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<no humans, scenery or subject count>, <wide framing>, <angle>, <scene or action>, <environment & directional light>, <2-3 quality tags>",\n'
+    '  "face_prompt": "",\n'
+    '  "hands_prompt": "",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "wide",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
+    "### Structured JSON Schema & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching this exact schema:\n"
     "{{\n"
     '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
     '  "scene_prompt": "12 to 26 comma-separated English visual tags for the full scene (NO flags like --ar, --model, --neg, --self inside the string)",\n'
@@ -322,7 +358,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     '  "is_self_portrait": true or false\n'
     "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Output strictly valid JSON conforming to the schema above (with `\"suggested_model\": \"{target_model_id}\"`). "
     "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
@@ -331,49 +367,81 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "You are an expert AI prompt engineer specializing in SDXL. Convert the user's idea into 12 to 24 expressive, comma-separated English visual phrases.\n"
     "STYLE GUIDANCE (adapt your vocabulary and descriptors to match this aesthetic; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Style & Syntax Rules\n"
-    "1. **Language & Format:** English descriptive phrases only, separated by commas. Avoid booru/SD1.5 tags like `1girl`, `1boy`, `1woman`, `solo`, `masterpiece`, `best quality`. NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
-    "2. **Phrase Order, Named Characters, Hand Anchor & Outfits:** Write phrases in this order:\n"
+    "1. **Language & Format:** English descriptive phrases only, separated by commas inside `scene_prompt`. Avoid booru/SD1.5 tags like `1girl`, `1boy`, `1woman`, `solo`, `masterpiece`, `best quality`. NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
+    "2. **Phrase Order, Named Characters, Hand Anchor & Outfits:** Write phrases in `scene_prompt` in this order:\n"
     "   [Framing, camera angle & orientation] -> [Subject / `<Name> (<Franchise>)` + canonical appearance (omit eye details when seen `from behind` or in `side profile`; NEVER copy outfits from examples!)] -> [Natural hand pose: `hands on hips`, `arms crossed`, `hands in pockets`, or `holding <item> in one hand, other hand at side/in pocket`] -> [Clothing] -> [Environment & directional lighting] -> [Lens / atmosphere].\n\n"
     "### Camera & Framing Priority\n"
     "1. **Strict User Priority:** If the user explicitly specifies a camera angle, framing, lens, or POV (e.g., 'сверху вниз', 'снизу вверх', 'вид из-за плеча', 'от первого лица', 'в полный рост', 'крупный план лица', 'по пояс'), you MUST translate it accurately and NEVER override it.\n"
     "2. **Framing Baseline & Distance Ladder:**\n"
-    "   - **SINGLE CHARACTER / CREATURE IN LOCATION (default):** Keep the subject large in the foreground with a readable deep background—place `in foreground, medium shot, thigh-up portrait` (or `in foreground, medium shot, chest-up portrait` for animals/creatures) near the start and add `deep background, shallow depth of field` in the environment with `--ar portrait`. NEVER use `wide establishing shot` or `wide shot` for a single character or creature unless the user explicitly asks for a distant panoramic view or wide format.\n"
-    "   - **WAIST-UP / CLOSER ('по пояс', 'по грудь', 'поближе', 'waist-up'):** Use `medium shot, waist-up portrait` with `--ar portrait`. NEVER use `close-up portrait` or `--ar square` for waist-up/closer requests so upper attire, hands, and background scenery remain visible.\n"
-    "   - **FACE CLOSE-UP ('крупный план лица', 'портрет лица', 'face close-up'):** Use `close-up portrait, face focus` with `--ar square`.\n"
-    "   - **FULL BODY (ONLY when explicitly requested 'в полный рост', 'с ног до головы', 'full body'):** Use `full-length shot, head to toe` (include footwear and ground surface) with `--ar portrait` (do NOT add `wide shot`).\n"
+    "   - **SINGLE CHARACTER / CREATURE IN LOCATION (default):** Keep the subject large in the foreground with a readable deep background—place `in foreground, medium shot, thigh-up portrait` (or `in foreground, medium shot, chest-up portrait` for animals/creatures) near the start and add `deep background, shallow depth of field` in the environment with `\"aspect_ratio\": \"portrait\"`. NEVER use `wide establishing shot` or `wide shot` for a single character or creature unless the user explicitly asks for a distant panoramic view or wide format.\n"
+    "   - **WAIST-UP / CLOSER ('по пояс', 'по грудь', 'поближе', 'waist-up'):** Use `medium shot, waist-up portrait` with `\"aspect_ratio\": \"portrait\"`. NEVER use `close-up portrait` or `\"square\"` for waist-up/closer requests so upper attire, hands, and background scenery remain visible.\n"
+    "   - **FACE CLOSE-UP ('крупный план лица', 'портрет лица', 'face close-up'):** Use `close-up portrait, face focus` with `\"aspect_ratio\": \"square\"`.\n"
+    "   - **FULL BODY (ONLY when explicitly requested 'в полный рост', 'с ног до головы', 'full body'):** Use `full-length shot, head to toe` (include footwear and ground surface) with `\"aspect_ratio\": \"portrait\"` (do NOT add `wide shot`).\n"
     "   - **DYNAMIC ANGLE, ORIENTATION & LENS:** When the user gives a brief prompt without camera directions, choose an expressive angle or lens that keeps the background horizon in frame (`3/4 view`, `slightly low angle`, `looking back over shoulder`, `85mm telephoto lens`). Use harsh `low angle from below` ONLY when the user explicitly asks for 'снизу вверх'.\n"
     "   - **GAZE & HEAD DIRECTION:** When gaze is not specified by the user, omit gaze phrases (or use `looking at viewer` for calm portraits). Add `looking away from camera, gazing to the side, head turned` (or `gazing toward <target>`) ONLY when the user explicitly asks the subject to look away, into the distance, or at something in the scene ('смотрит вдаль', 'смотрит в сторону', 'на горизонт', 'в окно')—place it BEFORE subject/eye phrases, use `thigh-up shot` / `waist-up shot` instead of `portrait`, and avoid vague `looking into distance`. Omit eye-detail phrases (`<color> eyes`, `expressive eyes`) when seen `from behind` or in `side profile`.\n"
     "   - **FOREGROUND CLARITY FOR OTS / POV:** When using `over-the-shoulder shot`, specify who is blurred in the foreground and who is in focus (e.g., `over-the-shoulder shot past <foreground subject> in blurred foreground, facing <target subject>`).\n"
-    "   - **BATTLES / LANDSCAPES / WIDE SCENES:** Use `wide action shot` or `wide establishing shot` with `--ar wide` ONLY for battles, large vehicles, wide group scenes, or `no people, scenery` landscapes.\n"
-    "   - **SINGLE OBJECT / STILL LIFE (no people):** Use `close-up object shot` or `macro shot` with `--ar square`.\n"
+    "   - **BATTLES / LANDSCAPES / WIDE SCENES:** Use `wide action shot` or `wide establishing shot` with `\"aspect_ratio\": \"wide\"` ONLY for battles, large vehicles, wide group scenes, or `no people, scenery` landscapes.\n"
+    "   - **SINGLE OBJECT / STILL LIFE (no people):** Use `close-up object shot` or `macro shot` with `\"aspect_ratio\": \"square\"`.\n"
     "   - **SDXL Camera Vocabulary:** `extreme close-up`, `close-up`, `chest-up`, `waist-up portrait`, `waist-up shot`, `three-quarter length shot`, `thigh-up portrait`, `thigh-up shot`, `full-length shot`, `wide establishing shot`, `in foreground`, `deep background`, `slightly low angle`, `low angle from below`, `high angle from above`, `bird's-eye overhead`, `ground-level`, `dutch angle`, `from behind`, `looking back over shoulder`, `side profile`, `looking at viewer`, `looking away from camera`, `gazing to the side`, `head turned`, `over-the-shoulder shot`, `first-person POV`, `24mm wide-angle`, `85mm telephoto`, `foreshortening`.\n\n"
     "### Lighting & Atmosphere\n"
     "1. **User Priority:** Keep any lighting, time of day, or mood requested by the user.\n"
     "2. **Directional & Motivated Light:** When unspecified, replace generic `soft lighting` with a concrete light source and direction fitting the scene (e.g., `warm rim light from behind`, `soft directional window light from the side`, `overhead streetlight`, `cool neon reflections`, `volumetric sunbeams`).\n\n"
-    "### Negative, Self-Portrait & Aspect Ratio\n"
-    "1. **Negative Tags (`--neg`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from positive tags AND append `--neg <X English in>` before `--self`/`--ar`.\n"
-    "2. **Self-Portrait (`--self`):** Append `--self` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'). When `--self` is active, DO NOT describe gender, age, hair, eyes, or facial features—describe ONLY framing, pose/expression, clothes, background, and lighting.\n"
-    "3. **Aspect Ratio (`--ar`):**\n"
-    "   - `--ar portrait` (896x1152): DEFAULT for single characters and creatures in location (`in foreground`, `thigh-up portrait`, `waist-up portrait`, `medium shot`, `full-length shot`), selfies (`--self`), and close two-person shots.\n"
-    "   - `--ar square` (1024x1024): ONLY for tight face `close-up portrait` (shoulders-up), headshot avatars, and single objects/still life.\n"
-    "   - `--ar wide` (1152x896): for battles, large groups, vehicles, or landscapes.\n"
-    "   - `--ar cinematic` (1344x768) or `--ar ultrawide` (1536x640): ONLY if the user explicitly requests `16:9`, `21:9`, or panoramic widescreen.\n"
-    "4. **Follow-Up Edits:** If the user asks to modify the previous image (e.g. 'то же самое, но ночью', 'убери очки', 'добавь меч'), keep the scene from the previous turn and apply only the requested changes. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing phrases (`wide establishing shot`, `wide shot`, `full-length shot`, `full body`) and lower-body clothing/anatomy (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous prompt while preserving the character, upper outfit, and background location.\n\n"
-    "### Syntax Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
-    "User: <any single-character prompt>\n"
-    "[IMAGE_PROMPT: <framing & angle phrases>, <subject & appearance>, <pose & hand anchor>, <clothing>, <environment & directional light>, <lens/atmosphere> --ar portrait --model {target_model_id}]\n\n"
+    "### Negative Phrases, Self-Portrait & Aspect Ratio Fields\n"
+    "1. **Exclusions (`negative_prompt`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from `scene_prompt` AND put `<X in English>` into `\"negative_prompt\"`. Otherwise set `\"negative_prompt\": \"\"`.\n"
+    "2. **Self-Portrait (`is_self_portrait`):** Set `\"is_self_portrait\": true` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'); otherwise `false`. When `is_self_portrait` is `true`, DO NOT describe gender, age, hair, eyes, or facial features in `scene_prompt` or `face_prompt`—describe ONLY framing, pose/expression, clothes, background, and lighting.\n"
+    "3. **Aspect Ratio (`aspect_ratio`):**\n"
+    "   - `\"portrait\"` (896x1152): DEFAULT for single characters and creatures in location (`in foreground`, `thigh-up portrait`, `waist-up portrait`, `medium shot`, `full-length shot`), selfies (`\"is_self_portrait\": true`), and close two-person shots.\n"
+    "   - `\"square\"` (1024x1024): ONLY for tight face `close-up portrait` (shoulders-up), headshot avatars, and single objects/still life.\n"
+    "   - `\"wide\"` (1152x896): for battles, large groups, vehicles, or landscapes.\n"
+    "   - `\"cinematic\"` (1344x768) or `\"ultrawide\"` (1536x640): ONLY if the user explicitly requests `16:9`, `21:9`, or panoramic widescreen.\n"
+    "4. **Follow-Up Edits:** If the user asks to modify the previous image (e.g. 'то же самое, но ночью', 'убери очки', 'добавь меч'), keep the scene from the previous turn and apply only the requested changes. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing phrases (`wide establishing shot`, `wide shot`, `full-length shot`, `full body`) and lower-body clothing/anatomy (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous `scene_prompt` while preserving the character, upper outfit, and background location.\n\n"
+    "### JSON Output Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
     "User: <any single-character prompt with an exclusion 'без/убери X'>\n"
-    "[IMAGE_PROMPT: <framing & angle phrases>, <subject & appearance>, <pose & hand anchor>, <clothing>, <environment & directional light>, <lens/atmosphere> --neg <excluded phrases> --ar portrait --model {target_model_id}]\n\n"
-    "User: <any closer/waist-up follow-up edit>\n"
-    "[IMAGE_PROMPT: <closer framing & angle phrases>, <gaze if requested>, <subject & appearance>, <pose & hand anchor>, <upper clothing>, <environment & directional light>, <lens/atmosphere> --ar portrait --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<framing & angle phrases>, <subject & appearance>, <pose & hand anchor>, <clothing>, <environment & directional light>, <lens/atmosphere>",\n'
+    '  "face_prompt": "<7-14 face-only phrases: eyes, gaze, hair, expression, skin, lighting>",\n'
+    '  "hands_prompt": "<6-12 hands-only phrases: fingers, grip, held item, skin texture, lighting>",\n'
+    '  "negative_prompt": "<excluded phrases in English>",\n'
+    '  "aspect_ratio": "portrait",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any tight face close-up or single object/still life>\n"
-    "[IMAGE_PROMPT: <close-up or macro framing>, <subject or object details>, <lighting & lens> --ar square --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<close-up or macro framing>, <subject or object details>, <lighting & lens>",\n'
+    '  "face_prompt": "<7-14 face-only phrases, or empty string if still life/no humans>",\n'
+    '  "hands_prompt": "",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "square",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any self-portrait request>\n"
-    "[IMAGE_PROMPT: <framing & angle phrases>, <pose & hand anchor>, <clothing>, <environment & directional light>, <lens/atmosphere> --self --ar portrait --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<framing & angle phrases>, <pose & hand anchor>, <clothing>, <environment & directional light>, <lens/atmosphere>",\n'
+    '  "face_prompt": "<7-14 face-only phrases without age/gender/hair/eye color: expression, skin, directional lighting>",\n'
+    '  "hands_prompt": "<6-12 hands-only phrases: fingers, pose, skin texture, lighting>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "portrait",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": true\n'
+    "}}\n\n"
     "User: <any wide scene, battle, vehicle, or landscape>\n"
-    "[IMAGE_PROMPT: <wide framing & angle phrases>, <scene/action or no people, scenery>, <environment & directional light>, <lens/atmosphere> --ar wide --model {target_model_id}]\n\n"
-    "### Structured JSON Output & Slot Isolation Rules\n"
-    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<wide framing & angle phrases>, <scene/action or no people, scenery>, <environment & directional light>, <lens/atmosphere>",\n'
+    '  "face_prompt": "",\n'
+    '  "hands_prompt": "",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "wide",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
+    "### Structured JSON Schema & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching this exact schema:\n"
     "{{\n"
     '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
     '  "scene_prompt": "12 to 24 expressive, comma-separated English visual phrases for the full scene (NO flags like --ar, --model, --neg, --self inside the string)",\n'
@@ -385,7 +453,7 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     '  "is_self_portrait": true or false\n'
     "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Output strictly valid JSON conforming to the schema above (with `\"suggested_model\": \"{target_model_id}\"`). "
     "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
@@ -394,8 +462,8 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "You are a film director and cinematographer for Stable Diffusion 1.5. Convert the user's idea into 14 to 26 comma-separated English keyword tags styled as a widescreen movie still.\n"
     "STYLE GUIDANCE (adapt your visual tags to match this aesthetic without overriding the chosen model; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Style & Syntax Rules\n"
-    "1. **Language & Format:** English keyword tags only, separated by commas. No full sentences, no Russian words, and NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
-    "2. **Cinematic Composition & 4-Layer Scene Enrichment:** Even if the user's prompt is short, always build 4 layers: [Shot size, camera angle & orientation] -> [Subject (omit eye tags when seen `from behind` or in `profile`) & hand/action pose] -> [Environment & atmospheric depth: rain, dust motes, mist, volumetric haze] -> [Motivated directional lighting & film color grading, depth of field].\n\n"
+    "1. **Language & Format:** English keyword tags only, separated by commas inside `scene_prompt`. No full sentences, no Russian words, and NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
+    "2. **Cinematic Composition & 4-Layer Scene Enrichment:** Even if the user's prompt is short, always build 4 layers in `scene_prompt`: [Shot size, camera angle & orientation] -> [Subject (omit eye tags when seen `from behind` or in `profile`) & hand/action pose] -> [Environment & atmospheric depth: rain, dust motes, mist, volumetric haze] -> [Motivated directional lighting & film color grading, depth of field].\n\n"
     "### Camera & Framing Priority\n"
     "1. **Strict User Priority:** If the user explicitly specifies a camera angle, framing, or POV (e.g., 'сверху вниз', 'вид из-за плеча', 'снизу вверх', 'крупный план', 'по пояс', 'в полный рост'), translate it accurately and NEVER override it.\n"
     "2. **Framing Baseline & Distance Ladder (Widescreen Composition):**\n"
@@ -408,37 +476,62 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "   - **GAZE & HEAD DIRECTION:** When gaze is not specified by the user, omit gaze tags (or use `looking at viewer` for calm character shots). Add `looking away, looking to the side, head turned` (or `looking at <target>`) ONLY when the user explicitly asks the subject to look away, into the distance, or at something in the scene ('смотрит вдаль', 'смотрит в сторону', 'на горизонт', 'в окно')—place it BEFORE subject/eye tags and avoid vague `looking into distance`. Omit eye-detail tags (`<color> eyes`, `expressive eyes`) when seen `from behind` or in `profile`.\n\n"
     "### Lighting & Atmosphere\n"
     "Always specify a concrete light source, direction, and atmosphere (e.g., `warm rim light, backlighting`, `neon lighting, wet reflections`, `volumetric lighting, fog`, `chiaroscuro`).\n\n"
-    "### Negative, Self-Portrait & Widescreen Aspect Ratio (`--ar`)\n"
-    "1. **Negative Tags (`--neg`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from positive tags AND append `--neg <X English in>` before `--self`/`--ar`.\n"
-    "2. **Self-Portrait (`--self`):** Append `--self` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'), omitting gender/age/hair/eyes/face details.\n"
-    "3. **Aspect Ratio (`--ar`):**\n"
-    "   - `--ar cinematic` (16:9 widescreen): DEFAULT for all cinematic frames.\n"
-    "   - `--ar ultrawide` (21:9 anamorphic): when the user asks for `21:9`, `ultrawide`, `анаморф`, or an epic wide panorama.\n"
-    "   - `--ar portrait` or `--ar square`: ONLY if the user explicitly demands a vertical or square frame.\n"
-    "4. **Follow-Up Edits:** Keep the previous scene and apply only requested edits. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing tags (`wide shot`, `full body`) and lower-body clothing/anatomy tags (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous prompt while preserving the character, upper outfit, and background location.\n\n"
-    "### Syntax Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
+    "### Negative Tags, Self-Portrait & Widescreen Aspect Ratio Fields\n"
+    "1. **Exclusions (`negative_prompt`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from `scene_prompt` AND put `<X in English>` into `\"negative_prompt\"`. Otherwise set `\"negative_prompt\": \"\"`.\n"
+    "2. **Self-Portrait (`is_self_portrait`):** Set `\"is_self_portrait\": true` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'); otherwise `false`. When `is_self_portrait` is `true`, omit gender/age/hair/eyes/face details from `scene_prompt` and `face_prompt`.\n"
+    "3. **Aspect Ratio (`aspect_ratio`):**\n"
+    "   - `\"cinematic\"` (16:9 widescreen): DEFAULT for all cinematic frames.\n"
+    "   - `\"ultrawide\"` (21:9 anamorphic): when the user asks for `21:9`, `ultrawide`, `анаморф`, or an epic wide panorama.\n"
+    "   - `\"portrait\"` or `\"square\"`: ONLY if the user explicitly demands a vertical or square frame.\n"
+    "4. **Follow-Up Edits:** Keep the previous scene and apply only requested edits. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing tags (`wide shot`, `full body`) and lower-body clothing/anatomy tags (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous `scene_prompt` while preserving the character, upper outfit, and background location.\n\n"
+    "### JSON Output Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
     "User: <any single-character cinematic frame>\n"
-    "[IMAGE_PROMPT: <count>, <framing>, <angle>, <subject>, <pose & hand anchor>, <outfit>, <location & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags> --ar cinematic --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<count>, <framing>, <angle>, <subject>, <pose & hand anchor>, <outfit>, <location & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags>",\n'
+    '  "face_prompt": "<7-14 face-only tags: eyes, gaze, hair, expression, skin, cinematic lighting>",\n'
+    '  "hands_prompt": "<6-12 hands-only tags: fingers, grip, held item, skin texture, lighting>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "cinematic",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any closer/waist-up cinematic follow-up edit>\n"
-    "[IMAGE_PROMPT: <count>, <closer framing>, <angle>, <gaze if requested>, <subject>, <pose & hand anchor>, <upper outfit>, <location & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags> --ar cinematic --model {target_model_id}]\n\n"
-    "User: <any cinematic frame with gaze away or toward target>\n"
-    "[IMAGE_PROMPT: <count>, <framing>, <angle>, <gaze tag>, <subject>, <pose & hand anchor>, <outfit>, <location & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags> --ar cinematic --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<count>, <closer framing>, <angle>, <gaze if requested>, <subject>, <pose & hand anchor>, <upper outfit only>, <location & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags>",\n'
+    '  "face_prompt": "<7-14 face-only tags>",\n'
+    '  "hands_prompt": "<6-12 hands-only tags or empty string if hands are out of frame>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "cinematic",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any ultrawide 21:9 or wide panoramic scene>\n"
-    "[IMAGE_PROMPT: <count or no humans, scenery>, <wide framing>, <angle>, <scene or action>, <environment & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags> --ar ultrawide --model {target_model_id}]\n\n"
-    "### Structured JSON Output & Slot Isolation Rules\n"
-    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<count or no humans, scenery>, <wide framing>, <angle>, <scene or action>, <environment & atmosphere>, <directional light & color grading>, depth of field, <2-3 quality tags>",\n'
+    '  "face_prompt": "",\n'
+    '  "hands_prompt": "",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "ultrawide",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
+    "### Structured JSON Schema & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching this exact schema:\n"
     "{{\n"
     '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
     '  "scene_prompt": "14 to 26 comma-separated English keyword tags for the widescreen movie still (NO flags like --ar, --model, --neg, --self inside the string)",\n'
     '  "face_prompt": "7 to 14 English tags STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothing, body pose, hands, or background; \'\' if face is not visible or seen from behind)",\n'
     '  "hands_prompt": "6 to 12 English tags STRICTLY for hands crop enhancement (fingers, grip, held item, skin texture, lighting; NO face, eyes, hair, or background; \'\' if hands are hidden or no humans)",\n'
     '  "negative_prompt": "exclusions requested by user (\'без X\' -> English tags) or \'\'",\n'
-    '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",  // mapping to --ar <cinematic|ultrawide|portrait|square|wide>\n'
+    '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",\n'
     '  "suggested_model": "{target_model_id}",\n'
     '  "is_self_portrait": true or false\n'
     "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Output strictly valid JSON conforming to the schema above (with `\"suggested_model\": \"{target_model_id}\"`). "
     "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
@@ -447,8 +540,8 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "You are an expert film director and cinematographer for SDXL. Convert the user's idea into 14 to 24 expressive, comma-separated English visual phrases framed as a widescreen movie still.\n"
     "STYLE GUIDANCE (adapt your visual vocabulary to match this aesthetic without overriding the chosen model; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Style & Syntax Rules\n"
-    "1. **Language & Format:** English descriptive phrases only, separated by commas. Avoid booru/SD1.5 tags like `1girl`, `1boy`, `1woman`, `solo`, `masterpiece`, `best quality`. NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
-    "2. **4-Layer Cinematic Scene Enrichment:** Even if the user's request is brief, always construct 4 layers: (1) shot size, camera angle, orientation & lens (`35mm film still`, `anamorphic lens`, `shallow depth of field`), (2) subject (omit eye details when seen `from behind` or in `side profile`), expression & natural hand pose, (3) environmental depth & air atmosphere (`volumetric haze`, `drifting dust`, `rain`, `steam`), and (4) motivated directional lighting & film color grading.\n\n"
+    "1. **Language & Format:** English descriptive phrases only, separated by commas inside `scene_prompt`. Avoid booru/SD1.5 tags like `1girl`, `1boy`, `1woman`, `solo`, `masterpiece`, `best quality`. NEVER use square brackets `[]`, double dashes `--`, or line breaks inside the tag list.\n"
+    "2. **4-Layer Cinematic Scene Enrichment:** Even if the user's request is brief, always construct 4 layers in `scene_prompt`: (1) shot size, camera angle, orientation & lens (`35mm film still`, `anamorphic lens`, `shallow depth of field`), (2) subject (omit eye details when seen `from behind` or in `side profile`), expression & natural hand pose, (3) environmental depth & air atmosphere (`volumetric haze`, `drifting dust`, `rain`, `steam`), and (4) motivated directional lighting & film color grading.\n\n"
     "### Camera & Framing Priority\n"
     "1. **Strict User Priority:** If the user explicitly specifies a camera angle, framing, lens, or POV (e.g., 'сверху вниз', 'вид из-за плеча противника', 'снизу вверх', 'от первого лица', 'крупный план', 'по пояс', 'в полный рост'), translate it accurately and NEVER override it.\n"
     "2. **Framing Baseline & Distance Ladder (Widescreen Composition):**\n"
@@ -461,37 +554,73 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "   - **GAZE & HEAD DIRECTION:** When gaze is not specified by the user, omit gaze phrases (or use `looking at viewer` for calm character shots). Add `looking away from camera, gazing to the side, head turned` (or `gazing toward <target>`) ONLY when the user explicitly asks the subject to look away, into the distance, or at something in the scene ('смотрит вдаль', 'смотрит в сторону', 'на горизонт', 'в окно')—place it BEFORE subject/eye phrases, use `thigh-up shot` / `waist-up shot` instead of `portrait`, and avoid vague `looking into distance`. Omit eye-detail phrases (`<color> eyes`, `expressive eyes`) when seen `from behind` or in `side profile`.\n\n"
     "### Lighting & Atmosphere\n"
     "Always specify a concrete light source, direction, and atmosphere (e.g., `warm rim light from behind`, `cool teal shadows and warm practical lights`, `directional window light cutting through dusty air`, `neon reflections on wet pavement`).\n\n"
-    "### Negative, Self-Portrait & Widescreen Aspect Ratio (`--ar`)\n"
-    "1. **Negative Tags (`--neg`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from positive tags AND append `--neg <X English in>` before `--self`/`--ar`.\n"
-    "2. **Self-Portrait (`--self`):** Append `--self` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'), omitting gender, age, hair, eyes, or facial features.\n"
-    "3. **Aspect Ratio (`--ar`):**\n"
-    "   - `--ar cinematic` (1344x768, 16:9 widescreen): DEFAULT for all cinematic frames.\n"
-    "   - `--ar ultrawide` (1536x640, 21:9 anamorphic): when the user requests `21:9`, `ultrawide`, `анаморф`, or an epic panoramic frame.\n"
-    "   - `--ar portrait` or `--ar square`: ONLY if the user explicitly demands a vertical or square frame.\n"
-    "4. **Follow-Up Edits:** If the user asks to modify the previous image (e.g. 'то же самое, но ночью', 'убери очки', 'добавь меч'), keep the scene from the previous turn and apply only the requested changes. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing phrases (`wide establishing shot`, `wide shot`, `full-length shot`, `full body`) and lower-body clothing/anatomy (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous prompt while preserving the character, upper outfit, and background location.\n\n"
-    "### Syntax Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
+    "### Negative Phrases, Self-Portrait & Widescreen Aspect Ratio Fields\n"
+    "1. **Exclusions (`negative_prompt`):** Whenever the user says 'без X', 'но без X', 'убери X', or 'никаких X', omit X from `scene_prompt` AND put `<X in English>` into `\"negative_prompt\"`. Otherwise set `\"negative_prompt\": \"\"`.\n"
+    "2. **Self-Portrait (`is_self_portrait`):** Set `\"is_self_portrait\": true` ONLY when the user asks to see YOU ('нарисуй себя', 'покажи себя', 'сделай селфи'); otherwise `false`. When `is_self_portrait` is `true`, omit gender, age, hair, eyes, or facial features from `scene_prompt` and `face_prompt`.\n"
+    "3. **Aspect Ratio (`aspect_ratio`):**\n"
+    "   - `\"cinematic\"` (1344x768, 16:9 widescreen): DEFAULT for all cinematic frames.\n"
+    "   - `\"ultrawide\"` (1536x640, 21:9 anamorphic): when the user requests `21:9`, `ultrawide`, `анаморф`, or an epic panoramic frame.\n"
+    "   - `\"portrait\"` or `\"square\"`: ONLY if the user explicitly demands a vertical or square frame.\n"
+    "4. **Follow-Up Edits:** If the user asks to modify the previous image (e.g. 'то же самое, но ночью', 'убери очки', 'добавь меч'), keep the scene from the previous turn and apply only the requested changes. When zooming in or moving closer ('поближе', 'по пояс', 'крупный план'), REMOVE conflicting distant framing phrases (`wide establishing shot`, `wide shot`, `full-length shot`, `full body`) and lower-body clothing/anatomy (`jeans`, `pants`, `skirt`, `boots`, `shoes`, `legs`) from the previous `scene_prompt` while preserving the character, upper outfit, and background location.\n\n"
+    "### JSON Output Examples (Invent original subjects, outfits, and scenes freely; NEVER copy sample subjects or settings)\n"
     "User: <any single-character cinematic frame>\n"
-    "[IMAGE_PROMPT: <framing & angle phrases>, <subject & appearance>, <pose & hand anchor>, <clothing>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field --ar cinematic --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<framing & angle phrases>, <subject & appearance>, <pose & hand anchor>, <clothing>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field",\n'
+    '  "face_prompt": "<7-14 face-only phrases: eyes, gaze, hair, expression, skin, cinematic lighting>",\n'
+    '  "hands_prompt": "<6-12 hands-only phrases: fingers, grip, held item, skin texture, lighting>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "cinematic",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any over-the-shoulder or dynamic action shot>\n"
-    "[IMAGE_PROMPT: <over-the-shoulder or action framing & angle>, <foreground & focused subject/action>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field --ar cinematic --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<over-the-shoulder or action framing & angle>, <foreground & focused subject/action>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field",\n'
+    '  "face_prompt": "<7-14 face-only phrases for focused subject, or empty string if seen from behind>",\n'
+    '  "hands_prompt": "<6-12 hands-only phrases, or empty string if hands are not visible>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "cinematic",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any closer/waist-up cinematic follow-up edit>\n"
-    "[IMAGE_PROMPT: <closer framing & angle phrases>, <gaze if requested>, <subject & appearance>, <pose & hand anchor>, <upper clothing>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field --ar cinematic --model {target_model_id}]\n\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<closer framing & angle phrases>, <gaze if requested>, <subject & appearance>, <pose & hand anchor>, <upper clothing only>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field",\n'
+    '  "face_prompt": "<7-14 face-only phrases>",\n'
+    '  "hands_prompt": "<6-12 hands-only phrases or empty string if hands are out of frame>",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "cinematic",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
     "User: <any ultrawide 21:9 or wide panoramic scene>\n"
-    "[IMAGE_PROMPT: <wide framing & angle phrases>, <scene/action or no people, scenery>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field --ar ultrawide --model {target_model_id}]\n\n"
-    "### Structured JSON Output & Slot Isolation Rules\n"
-    "Respond strictly with a valid JSON object matching the schema (no markdown formatting, no conversational text outside JSON):\n"
+    "{{\n"
+    '  "reply_ru": "<1 short conversational reply in Russian>",\n'
+    '  "scene_prompt": "<wide framing & angle phrases>, <scene/action or no people, scenery>, <lens/film still>, <environment & atmosphere>, <directional light & color grading>, shallow depth of field",\n'
+    '  "face_prompt": "",\n'
+    '  "hands_prompt": "",\n'
+    '  "negative_prompt": "",\n'
+    '  "aspect_ratio": "ultrawide",\n'
+    '  "suggested_model": "{target_model_id}",\n'
+    '  "is_self_portrait": false\n'
+    "}}\n\n"
+    "### Structured JSON Schema & Slot Isolation Rules\n"
+    "Respond strictly with a valid JSON object matching this exact schema:\n"
     "{{\n"
     '  "reply_ru": "1 живая разговорная фраза Эларии на русском языке для бабла чата (например: \'Секунду, перевожу образ в кадр...\')",\n'
     '  "scene_prompt": "14 to 24 expressive, comma-separated English visual phrases for the widescreen movie still (NO flags like --ar, --model, --neg, --self inside the string)",\n'
     '  "face_prompt": "7 to 14 English phrases STRICTLY for face crop enhancement (eyes, gaze, hair, expression, skin, lighting; NO clothing, body pose, hands, or background; \'\' if face is not visible or seen from behind)",\n'
     '  "hands_prompt": "6 to 12 English phrases STRICTLY for hands crop enhancement (fingers, grip, held item, skin texture, lighting; NO face, eyes, hair, or background; \'\' if hands are hidden or no humans)",\n'
     '  "negative_prompt": "exclusions requested by user (\'без X\' -> English phrases) or \'\'",\n'
-    '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",  // mapping to --ar <cinematic|ultrawide|portrait|square|wide>\n'
+    '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",\n'
     '  "suggested_model": "{target_model_id}",\n'
     '  "is_self_portrait": true or false\n'
     "}}\n\n"
     "### Final Output Rule\n"
-    "Output strictly valid JSON conforming to the schema above (matching target model --model {target_model_id}). "
+    "Output strictly valid JSON conforming to the schema above (with `\"suggested_model\": \"{target_model_id}\"`). "
     "Do NOT wrap in markdown code blocks. Output ONLY raw JSON.\n"
 )
 
