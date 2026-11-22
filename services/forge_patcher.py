@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import shutil
+import textwrap
 import time
 from enum import Enum
 from pathlib import Path
@@ -120,6 +121,90 @@ class ForgePatcher:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _insert_refresh_in_set_config(api_text: str, refresh_block: str) -> Optional[str]:
+        """
+        Устойчиво вставляет refresh_block внутрь метода set_config перед ближайшим return
+        после вызова shared.opts.save(...).
+
+        Возвращает модифицированный api_text или None, если метод или якорные точки не найдены.
+        """
+        # a) Идемпотентность: если маркер уже присутствует
+        if "refresh_model_loading_parameters" in api_text:
+            return api_text
+
+        # b) Поиск определения def set_config
+        lines = api_text.splitlines(keepends=True)
+        def_line_idx = None
+        base_indent_len = 0
+
+        for idx, line in enumerate(lines):
+            match = re.match(r'^([ \t]*)(?:async\s+)?def\s+set_config\b', line)
+            if match:
+                def_line_idx = idx
+                base_indent_str = match.group(1)
+                base_indent_len = len(base_indent_str.expandtabs(4))
+                break
+
+        if def_line_idx is None:
+            return None
+
+        # Определение границ метода: до следующего def/class на том же или меньшем уровне отступа
+        end_line_idx = len(lines)
+        for idx in range(def_line_idx + 1, len(lines)):
+            line = lines[idx]
+            match = re.match(r'^([ \t]*)(?:def|class|async\s+def)\b', line)
+            if match:
+                indent_len = len(match.group(1).expandtabs(4))
+                if indent_len <= base_indent_len:
+                    end_line_idx = idx
+                    break
+
+        # c) Внутри тела set_config ищем shared.opts.save(...)
+        save_line_idx = None
+        for idx in range(def_line_idx + 1, end_line_idx):
+            if "shared.opts.save(" in lines[idx]:
+                save_line_idx = idx
+                break
+
+        if save_line_idx is None:
+            return None
+
+        # От строки shared.opts.save(...) ищем ближайший return на том же или более глубоком уровне отступа
+        return_line_idx = None
+        return_indent_str = None
+
+        for idx in range(save_line_idx, end_line_idx):
+            line = lines[idx]
+            match = re.match(r'^([ \t]*)return(?:\s.*)?$', line)
+            if match:
+                indent_str = match.group(1)
+                indent_len = len(indent_str.expandtabs(4))
+                if indent_len > base_indent_len:
+                    return_line_idx = idx
+                    return_indent_str = indent_str
+                    break
+
+        if return_line_idx is None or return_indent_str is None:
+            return None
+
+        # d) Форматирование refresh_block с выравниванием по отступу найденного return
+        newline = "\r\n" if "\r\n" in lines[return_line_idx] else "\n"
+        clean_block = textwrap.dedent(refresh_block).strip()
+        block_lines = [
+            (f"{return_indent_str}{b_line}{newline}" if b_line.strip() else newline)
+            for b_line in clean_block.splitlines()
+        ]
+
+        insert_pieces = []
+        if return_line_idx > 0 and lines[return_line_idx - 1].strip():
+            insert_pieces.append(newline)
+        insert_pieces.extend(block_lines)
+        insert_pieces.append(newline)
+
+        result_lines = lines[:return_line_idx] + insert_pieces + lines[return_line_idx:]
+        return "".join(result_lines)
 
     @classmethod
     def get_backup_dir(cls, forge_root: Path | str) -> Optional[Path]:
@@ -249,7 +334,8 @@ class ForgePatcher:
                 return ForgePatchStatus.PATCHED, "Патч совместимости активен ✓ (поддерживается VRAM offload и автосмена моделей)."
 
             # 3. Проверяем якорные места стокового Forge 2.0
-            has_api_anchor = (API_ROUTE_UNLOAD in api_text or has_free_vram_route) and "def set_config(" in api_text
+            can_insert_refresh = (has_refresh_opts or cls._insert_refresh_in_set_config(api_text, API_REFRESH_BLOCK) is not None)
+            has_api_anchor = (API_ROUTE_UNLOAD in api_text or has_free_vram_route) and can_insert_refresh
             has_models_anchor = (MODELS_STOCK_CONFIG in models_text or models_patched)
             has_sd_anchor = (SD_UNLOAD_DEF in sd_text)
 
@@ -352,10 +438,13 @@ class ForgePatcher:
             sd_path = webui_dir / "modules" / "sd_models.py"
 
             # -------------------------------------------------------------
-            # Модификация 1: modules/api/api.py
+            # Подготовка модификаций в памяти (без записи на диск)
             # -------------------------------------------------------------
             api_text = api_path.read_text(encoding="utf-8")
+            models_text = models_path.read_text(encoding="utf-8")
+            sd_text = sd_path.read_text(encoding="utf-8")
 
+            # Модификация 1: modules/api/api.py
             # А. Маршрут /sdapi/v1/free-vram
             if API_ROUTE_FREE_VRAM not in api_text:
                 if API_ROUTE_UNLOAD in api_text:
@@ -364,11 +453,11 @@ class ForgePatcher:
                         f"{API_ROUTE_UNLOAD}\n        {API_ROUTE_FREE_VRAM}"
                     )
                 else:
+                    cls.restore_backup(forge_root)
                     return False, "Не удалось найти точку вставки маршрута free-vram в api.py."
 
             # Б. Метод free_vram_api
             if "def free_vram_api(" not in api_text:
-                # Вставляем перед def reloadapi(self):
                 reload_anchor = "    def reloadapi(self):"
                 if reload_anchor in api_text:
                     api_text = api_text.replace(
@@ -376,24 +465,15 @@ class ForgePatcher:
                         f"{API_FREE_VRAM_METHOD}\n{reload_anchor}"
                     )
                 else:
+                    cls.restore_backup(forge_root)
                     return False, "Не удалось найти точку вставки метода free_vram_api в api.py."
 
             # В. refresh_model_loading_parameters() в set_config
-            if "refresh_model_loading_parameters" not in api_text:
-                save_opts_anchor = "        shared.opts.save(shared.config_filename)\n\n        return"
-                alt_save_anchor = "        shared.opts.save(shared.config_filename)\n        return"
-                if save_opts_anchor in api_text:
-                    api_text = api_text.replace(
-                        save_opts_anchor,
-                        f"        shared.opts.save(shared.config_filename)\n{API_REFRESH_BLOCK}\n        return"
-                    )
-                elif alt_save_anchor in api_text:
-                    api_text = api_text.replace(
-                        alt_save_anchor,
-                        f"        shared.opts.save(shared.config_filename)\n{API_REFRESH_BLOCK}\n        return"
-                    )
-                else:
-                    return False, "Не удалось найти точку вставки refresh_model_loading_parameters в set_config (api.py)."
+            new_api_text = cls._insert_refresh_in_set_config(api_text, API_REFRESH_BLOCK)
+            if new_api_text is None:
+                cls.restore_backup(forge_root)
+                return False, "Не удалось найти точку вставки refresh_model_loading_parameters в set_config (api.py)."
+            api_text = new_api_text
 
             # Г. "config": None в get_sd_models
             if '"config": None' not in api_text and "'config': None" not in api_text:
@@ -402,58 +482,62 @@ class ForgePatcher:
                 if pattern_old in api_text:
                     api_text = api_text.replace(pattern_old, pattern_new, 1)
 
-            api_path.write_text(api_text, encoding="utf-8")
-
-            # -------------------------------------------------------------
             # Модификация 2: modules/api/models.py
-            # -------------------------------------------------------------
-            models_text = models_path.read_text(encoding="utf-8")
             if MODELS_PATCHED_CONFIG not in models_text:
                 if MODELS_STOCK_CONFIG in models_text:
                     models_text = models_text.replace(MODELS_STOCK_CONFIG, MODELS_PATCHED_CONFIG, 1)
-                    models_path.write_text(models_text, encoding="utf-8")
                 else:
+                    cls.restore_backup(forge_root)
                     return False, "Не удалось найти поле config в SDModelItem (models.py)."
 
-            # -------------------------------------------------------------
             # Модификация 3: modules/sd_models.py
-            # -------------------------------------------------------------
-            sd_text = sd_path.read_text(encoding="utf-8")
             if "model_data.forge_hash = ''" not in sd_text:
-                # Ищем функцию unload_model_weights (как стоковую 'pass', так и ранее пропатченную без сброса sd_model)
                 pattern = re.compile(
                     r'(def unload_model_weights\(sd_model=None,\s*info=None\):\s*\n)(?:[ \t]+pass|[ \t]+from backend import memory_management[\s\S]*?gc\.collect\(\))',
                     re.MULTILINE
                 )
                 if pattern.search(sd_text):
                     sd_text = pattern.sub(rf'\1{SD_PATCHED_UNLOAD_BODY}', sd_text, count=1)
-                    sd_path.write_text(sd_text, encoding="utf-8")
                 else:
+                    cls.restore_backup(forge_root)
                     return False, "Не удалось найти тело unload_model_weights в sd_models.py."
 
             # -------------------------------------------------------------
-            # Модификация 4: webui-user.bat (если активен и требует адаптации)
+            # Запись модифицированных файлов на диск с гарантированным откатом
             # -------------------------------------------------------------
-            launcher_bat = cls.find_launcher_to_patch(forge_root)
-            if launcher_bat and not cls.is_webui_user_bat_patched(launcher_bat):
-                backup_dir = cls.get_backup_dir(forge_root)
-                if backup_dir:
-                    backup_dir.mkdir(parents=True, exist_ok=True)
-                    dst_bat = backup_dir / "webui-user.bat"
-                    if not dst_bat.is_file():
-                        shutil.copy2(launcher_bat, dst_bat)
-                cls._patch_webui_user_bat(launcher_bat)
+            try:
+                api_path.write_text(api_text, encoding="utf-8")
+                models_path.write_text(models_text, encoding="utf-8")
+                sd_path.write_text(sd_text, encoding="utf-8")
 
-            # Итоговая верификация
-            new_status, new_msg = cls.check_status(forge_root)
-            if new_status == ForgePatchStatus.PATCHED:
-                logger.info(f"[ForgePatcher] Патч успешно применен к {webui_dir}")
-                return True, "Патч совместимости успешно применен."
-            else:
-                return False, f"Патч был применен частично. Итоговый статус: {new_msg}"
+                # Модификация 4: webui-user.bat (если активен и требует адаптации)
+                launcher_bat = cls.find_launcher_to_patch(forge_root)
+                if launcher_bat and not cls.is_webui_user_bat_patched(launcher_bat):
+                    backup_dir = cls.get_backup_dir(forge_root)
+                    if backup_dir:
+                        backup_dir.mkdir(parents=True, exist_ok=True)
+                        dst_bat = backup_dir / "webui-user.bat"
+                        if not dst_bat.is_file():
+                            shutil.copy2(launcher_bat, dst_bat)
+                    cls._patch_webui_user_bat(launcher_bat)
+
+                # Итоговая верификация
+                new_status, new_msg = cls.check_status(forge_root)
+                if new_status == ForgePatchStatus.PATCHED:
+                    logger.info(f"[ForgePatcher] Патч успешно применен к {webui_dir}")
+                    return True, "Патч совместимости успешно применен."
+                else:
+                    cls.restore_backup(forge_root)
+                    return False, f"Патч был применен частично. Выполнен откат к резервной копии. Итоговый статус: {new_msg}"
+            except Exception as write_err:
+                logger.error(f"[ForgePatcher] Ошибка записи файлов или патча лаунчера: {write_err}", exc_info=True)
+                cls.restore_backup(forge_root)
+                return False, f"Ошибка применения патча (выполнен откат): {write_err}"
+
         except Exception as e:
             logger.error(f"[ForgePatcher] Ошибка применения патча: {e}", exc_info=True)
-            return False, f"Ошибка применения патча: {e}"
+            cls.restore_backup(forge_root)
+            return False, f"Ошибка применения патча (выполнен откат): {e}"
 
     @classmethod
     def _patch_webui_user_bat(cls, bat_path: Path) -> bool:

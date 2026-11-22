@@ -244,3 +244,112 @@ def test_forge_patcher_webui_user_bat_with_user_flags(tmp_path):
     assert ok_res is True
     assert bat_file.read_text(encoding="utf-8").strip() == CUSTOM_WEBUI_USER_BAT.strip()
 
+
+def test_forge_patcher_set_config_intermediate_lines_and_custom_indent(tmp_path):
+    """
+    Verifies that _insert_refresh_in_set_config correctly handles intermediate lines/comments
+    and aligns with a non-standard return indentation (e.g., 12 spaces inside 'if req:').
+    """
+    forge_dir = _create_synthetic_forge(tmp_path / "custom_set_config_forge", stock=True)
+    webui_dir = forge_dir / "webui"
+    api_path = webui_dir / "modules" / "api" / "api.py"
+
+    custom_api_py = STOCK_API_PY.replace(
+        """    def set_config(self, req: dict[str, Any]):
+        for k, v in req.items():
+            shared.opts.set(k, v, is_api=True)
+        shared.opts.save(shared.config_filename)
+
+        return""",
+        """    def set_config(self, req: dict[str, Any]):
+        for k, v in req.items():
+            shared.opts.set(k, v, is_api=True)
+        shared.opts.save(shared.config_filename)
+        # Custom logging hook and intermediate logic
+        logger.debug("Saved options to %s", shared.config_filename)
+        if req:
+            return {"status": "ok"}
+        return None"""
+    )
+    api_path.write_text(custom_api_py, encoding="utf-8")
+
+    status, msg = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.NEEDS_PATCH
+
+    ok, apply_msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is True
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.PATCHED
+
+    patched_api = api_path.read_text(encoding="utf-8")
+    assert "refresh_model_loading_parameters" in patched_api
+
+    # Refresh block must be indented with 12 spaces directly preceding 'return {"status": "ok"}'
+    assert "            if checkpoint_name is not None or \"sd_vae\" in req:" in patched_api
+    assert "                refresh_model_loading_parameters()" in patched_api
+    assert "            return {\"status\": \"ok\"}" in patched_api
+
+    # Clean restore
+    ok_res, _ = ForgePatcher.restore_backup(forge_dir)
+    assert ok_res is True
+    assert api_path.read_text(encoding="utf-8") == custom_api_py
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.NEEDS_PATCH
+
+
+def test_forge_patcher_atomic_protection_on_invalid_models_or_sd_models(tmp_path):
+    """
+    Verifies that apply_patch is atomic:
+    If api.py is valid but models.py or sd_models.py cannot be patched,
+    no files on disk remain in a partially patched state.
+    """
+    # 1. Test case: models.py is corrupt/unrecognized
+    forge_dir = _create_synthetic_forge(tmp_path / "corrupt_models_forge", stock=True)
+    webui_dir = forge_dir / "webui"
+    api_path = webui_dir / "modules" / "api" / "api.py"
+    models_path = webui_dir / "modules" / "api" / "models.py"
+    models_path.write_text("# Corrupt models.py without SDModelItem config field\n", encoding="utf-8")
+
+    orig_api = api_path.read_text(encoding="utf-8")
+    status, _ = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.INCOMPATIBLE
+
+    ok, msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is False
+    assert "Отклонено" in msg
+    # api.py on disk must remain pristine
+    assert api_path.read_text(encoding="utf-8") == orig_api
+    assert "/sdapi/v1/free-vram" not in api_path.read_text(encoding="utf-8")
+
+    # 2. Test case: check_status passes (header matches), but sd_models body cannot be matched
+    forge_dir2 = _create_synthetic_forge(tmp_path / "corrupt_sd_body_forge", stock=True)
+    webui_dir2 = forge_dir2 / "webui"
+    api_path2 = webui_dir2 / "modules" / "api" / "api.py"
+    models_path2 = webui_dir2 / "modules" / "api" / "models.py"
+    sd_path2 = webui_dir2 / "modules" / "sd_models.py"
+
+    # Header matches SD_UNLOAD_DEF, but body is custom/unrecognized
+    unrecognized_sd_py = """def reload_model_weights(sd_model=None, info=None, forced_reload=False):
+    pass
+
+def unload_model_weights(sd_model=None, info=None):
+    return foreign_function_call(sd_model)
+"""
+    sd_path2.write_text(unrecognized_sd_py, encoding="utf-8")
+
+    orig_api2 = api_path2.read_text(encoding="utf-8")
+    orig_models2 = models_path2.read_text(encoding="utf-8")
+
+    status2, _ = ForgePatcher.check_status(forge_dir2)
+    assert status2 == ForgePatchStatus.NEEDS_PATCH
+
+    ok2, msg2 = ForgePatcher.apply_patch(forge_dir2)
+    assert ok2 is False
+    assert "Не удалось найти тело unload_model_weights" in msg2
+
+    # None of the files on disk should be partially patched
+    assert api_path2.read_text(encoding="utf-8") == orig_api2
+    assert "/sdapi/v1/free-vram" not in api_path2.read_text(encoding="utf-8")
+    assert models_path2.read_text(encoding="utf-8") == orig_models2
+    assert "default=None" not in models_path2.read_text(encoding="utf-8")
+    assert sd_path2.read_text(encoding="utf-8") == unrecognized_sd_py
+
+
