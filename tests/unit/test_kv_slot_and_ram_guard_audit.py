@@ -384,3 +384,240 @@ def test_forge_client_options_disable_checkpoints_keep_in_cpu(monkeypatch):
     assert sent_options[0].get("sd_checkpoints_keep_in_cpu") is False
     assert sent_options[0].get("sd_checkpoint_cache") == 0
     assert sent_options[0].get("sd_checkpoints_limit") == 1
+
+
+# -------------------------------------------------------------------------
+# 7. End-to-End Smoke Tests: Forge Unload & Llama Host RAM Guard Cycle
+# -------------------------------------------------------------------------
+def test_e2e_smoke_forge_unload_and_ram_guard_cycle(monkeypatch):
+    """
+    E2E Smoke: Forge unload and RAM guard cycle with VRAMArbiter.
+
+    Verifies:
+    1. Checkpoint unload scenario with CPU RAM/cache control flags (<= 16.5 GB vs > 16.5 GB).
+    2. Dynamic wait for VRAM clear (_wait_for_vram_clear) with polling / retry check.
+    3. Resource ownership transition (GPUOwner.DIFFUSION -> GPUOwner.LLM).
+    4. Safe release of locks (_unload_lock).
+    """
+    import psutil
+    from services.forge_client import ForgeClient
+    from services.vram_arbiter import GPUOwner, VRAMArbiter
+
+    monkeypatch.setattr("services.forge_client.time.sleep", lambda s: None)
+    monkeypatch.setattr("services.vram_arbiter.time.sleep", lambda s: None)
+
+    # --- Сценарий 1: Система <= 16.5 GB RAM (8GB VRAM / 16GB RAM) ---
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: MagicMock(total=16.0 * (1024 ** 3), available=4.0 * (1024 ** 3)))
+
+    fc = ForgeClient()
+    arbiter = VRAMArbiter(forge_client=fc)
+    arbiter._current_owner = GPUOwner.DIFFUSION
+
+    posted_urls = []
+    sent_options = []
+
+    def mock_post(url, json=None, timeout=None):
+        posted_urls.append(url)
+        if "/options" in url and json:
+            sent_options.append(json)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"status": "ok"}
+        return resp
+
+    def mock_get(url, timeout=None):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "/options" in url:
+            resp.json.return_value = {"sd_model_checkpoint": "test_checkpoint.safetensors"}
+        elif "/sd-models" in url:
+            resp.json.return_value = [{"title": "test_checkpoint.safetensors", "model_name": "test_checkpoint", "filename": "test_checkpoint.safetensors"}]
+        return resp
+
+    monkeypatch.setattr("requests.post", mock_post)
+    monkeypatch.setattr("requests.get", mock_get)
+    monkeypatch.setattr(fc, "is_server_ready", lambda timeout=1.0: True)
+
+    # Имитируем кратковременное ожидание освобождения VRAM:
+    # 1-й замер: VRAM еще занята (1500 МБ < 3800 МБ), 2-й: VRAM освобождена (4500 МБ >= 3800 МБ)
+    vram_measurements = [1500, 4500, 4500, 4500]
+    mock_monitor = MagicMock()
+    mock_monitor.get_total_vram_mb.return_value = 8192
+    mock_monitor.get_free_vram_mb.side_effect = lambda: vram_measurements.pop(0) if vram_measurements else 4500
+    fc.system_monitor = mock_monitor
+
+    # Замокаем LayerBudgeter.get_current_used_vram_mb для стабилизации
+    monkeypatch.setattr("services.layer_budgeter.LayerBudgeter.get_current_used_vram_mb", lambda: 300.0)
+    monkeypatch.setattr(arbiter, "_wait_for_vram_stabilization", lambda: None)
+
+    # 1.1. Проверка установки опций кэша CPU для <= 16.5 GB RAM
+    ok_opts = fc.ensure_system_options(force=True)
+    assert ok_opts is True
+    assert len(sent_options) == 1
+    assert sent_options[0].get("sd_checkpoints_keep_in_cpu") is False
+    assert sent_options[0].get("sd_checkpoint_cache") == 0
+    assert sent_options[0].get("sd_checkpoints_limit") == 1
+
+    # 1.2. Проверка цикла _wait_for_vram_clear() напрямую с кратковременным ожиданием
+    fc._last_vram_wait_ts = 0.0
+    fc._wait_for_vram_clear()
+    assert fc.system_monitor.get_free_vram_mb.called
+
+    # 1.3. Выполнение переключения владельца под LLM через арбитр
+    assert arbiter._current_owner == GPUOwner.DIFFUSION
+    arbiter.prepare_for_task("llm")
+
+    # Проверка вызова эндпоинтов разгрузки Forge
+    assert any("/unload-checkpoint" in u for u in posted_urls)
+    assert any("/free-vram" in u for u in posted_urls)
+
+    # Проверка смены состояния арбитра и корректного освобождения блокировки
+    assert arbiter._current_owner == GPUOwner.LLM
+    assert fc._checkpoint_unloaded is True
+    assert not fc._unload_lock.locked()
+
+    # --- Сценарий 2: Система > 16.5 GB RAM (32GB RAM) ---
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: MagicMock(total=32.0 * (1024 ** 3), available=20.0 * (1024 ** 3)))
+    fc32 = ForgeClient()
+    sent_options_32 = []
+
+    def mock_post_32(url, json=None, timeout=None):
+        if "/options" in url and json:
+            sent_options_32.append(json)
+        return MagicMock(status_code=200)
+
+    monkeypatch.setattr("requests.post", mock_post_32)
+    ok_opts_32 = fc32.ensure_system_options(force=True)
+    assert ok_opts_32 is True
+    # На 32 GB RAM опции ограничения памяти не отправляются
+    assert len(sent_options_32) == 0
+
+
+def test_e2e_smoke_llama_server_bad_allocation_and_host_ram_protection(tmp_path, monkeypatch):
+    """
+    E2E Smoke: llama-server startup with bad allocation, host RAM OOM handling, and KV slot protection.
+
+    Verifies:
+    1. Error 'error loading model: bad allocation' classified as Host RAM OOM (is_host_ram_oom_failure=True, is_vram_oom_failure=False).
+    2. NGL is preserved (not decremented 46 -> 42).
+    3. Host RAM guard activates (GGML_CUDA_NO_PINNED=1, skip_kv_restore=True).
+    4. KV slot dump and metadata in tmp_path are cleaned up properly without leftover trash.
+    """
+    kv_dir = tmp_path / "kv_slots"
+    kv_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("services.process_manager.KV_SLOTS_DIR", kv_dir)
+    monkeypatch.setattr("services.process_manager.LOGS_DIR", logs_dir)
+
+    # Создаем фиктивный снимок KV-слота и файл метаданных в tmp_path
+    slot_file = kv_dir / "evicted_slot_0_deadbeef.bin"
+    slot_file.write_bytes(b"dummy_evicted_kv_data")
+    meta_file = kv_dir / "slot_metadata.json"
+    meta_file.write_text(json.dumps({
+        "filename": slot_file.name,
+        "model_path": "C:/models/test_model.gguf",
+        "gpu_layers": 46,
+        "context_length": 8192
+    }), encoding="utf-8")
+
+    pm = ProcessManager()
+    lms_client = LMStudioClient()
+    lms_client.set_process_manager(pm)
+
+    # Изолируем окружение и зависимости
+    model_file = tmp_path / "test_model.gguf"
+    model_file.write_text("gguf_test_bytes")
+
+    monkeypatch.setattr("services.server_config.ServerConfigResolver.resolve_model_path", lambda m: model_file)
+    monkeypatch.setattr("services.server_config.ServerConfigResolver.resolve_server_exe", lambda: Path("C:/llama/llama-server.exe"))
+    monkeypatch.setattr("services.server_config.ServerConfigResolver.load_ini", lambda: {"host": "127.0.0.1", "port": 1234, "gpu_layers": 46})
+    monkeypatch.setattr("services.layer_budgeter.LayerBudgeter.calculate_layer_offload", lambda **k: (46, True, "", {"total_layers": 48}))
+    monkeypatch.setattr(pm, "inspect_port_occupant", lambda port: (False, None, None))
+    monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: False)
+    monkeypatch.setattr(lms_client, "check_health", lambda: (False, ""))
+
+    llama_log = logs_dir / "llama_server.log"
+
+    attempts = []
+    recorded_first_host_oom = None
+    recorded_first_vram_oom = None
+
+    def mock_popen(cmd, env=None, **kwargs):
+        attempt_no = len(attempts) + 1
+        cuda_no_pinned = env.get("GGML_CUDA_NO_PINNED") if env else None
+        attempts.append({
+            "attempt": attempt_no,
+            "cmd": list(cmd),
+            "cuda_no_pinned": cuda_no_pinned,
+        })
+
+        mock_p = MagicMock()
+        mock_p.stdout = None
+        mock_p.stderr = None
+
+        if attempt_no == 1:
+            # Имитируем падение с bad allocation при первой попытке
+            mock_p.poll.return_value = 1
+            llama_log.write_text("error loading model: bad allocation\nllama_init_from_file: failed to load model\n", encoding="utf-8")
+        else:
+            # Второй запуск (с защитой хоста) успешен
+            mock_p.poll.return_value = None
+            llama_log.write_text("llama_server: ready to accept requests\n", encoding="utf-8")
+        return mock_p
+
+    monkeypatch.setattr("subprocess.Popen", mock_popen)
+    monkeypatch.setattr("services.process_manager.Win32JobManager.get_instance", lambda: MagicMock(assign_process=lambda p: True))
+
+    def mock_wait_ready(host="127.0.0.1", port=1234, timeout_s=60.0):
+        nonlocal recorded_first_host_oom, recorded_first_vram_oom
+        if len(attempts) == 1:
+            # Первый запуск упал
+            detail_msg, is_oom = pm._extract_llama_startup_error()
+            pm.is_oom_failure = is_oom
+            recorded_first_host_oom = pm.is_host_ram_oom_failure
+            recorded_first_vram_oom = pm.is_vram_oom_failure
+            pm._set_server_state(ServerState.ERROR, f"Process crashed: {detail_msg}")
+            return False
+        # Второй запуск готов
+        pm._set_server_state(ServerState.READY, "Model loaded")
+        return True
+
+    monkeypatch.setattr(pm, "_wait_for_server_ready", mock_wait_ready)
+
+    try:
+        # Запускаем сквозной сценарий через lms_client.ensure_model_loaded
+        res = lms_client.ensure_model_loaded(preferred_model="test_model", context_length=8192)
+        assert res is True
+
+        # Проверки попыток запуска
+        assert len(attempts) == 2
+
+        # 1. Первая попытка: обычный запуск без принудительного NO_PINNED
+        assert attempts[0]["cuda_no_pinned"] is None or attempts[0]["cuda_no_pinned"] != "1"
+
+        # 2. Ошибка bad allocation была классифицирована как Host RAM OOM (не VRAM OOM)
+        assert recorded_first_host_oom is True
+        assert recorded_first_vram_oom is False
+
+        # 3. Вторая попытка: NGL НЕ был снижен до 42, остался 46!
+        cmd1 = attempts[0]["cmd"]
+        cmd2 = attempts[1]["cmd"]
+        ngl1 = cmd1[cmd1.index("-ngl") + 1] if "-ngl" in cmd1 else None
+        ngl2 = cmd2[cmd2.index("-ngl") + 1] if "-ngl" in cmd2 else None
+        assert ngl1 == "46"
+        assert ngl2 == "46"
+        assert attempts[1]["cuda_no_pinned"] == "1"
+        assert pm._server_state == ServerState.READY
+
+        # 4. Проверка очистки KV слотов при skip_kv_restore=True
+        assert not slot_file.exists()
+        assert not meta_file.exists()
+
+    finally:
+        # Гарантированная очистка слотов
+        pm.clear_kv_slot_cache()
+        assert not list(kv_dir.glob("*.bin"))
+        assert not list(kv_dir.glob("*.json"))
+

@@ -174,9 +174,12 @@ class ProcessManager(QObject):
 
     @is_oom_failure.setter
     def is_oom_failure(self, value: bool) -> None:
-        self.is_vram_oom_failure = bool(value)
         if not value:
+            self.is_vram_oom_failure = False
             self.is_host_ram_oom_failure = False
+        else:
+            if not getattr(self, "is_host_ram_oom_failure", False):
+                self.is_vram_oom_failure = True
 
     @property
     def port(self) -> int:
