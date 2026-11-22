@@ -122,6 +122,8 @@ def test_forge_patcher_apply_backup_and_idempotency(tmp_path):
 
     sd_text = (webui_dir / "modules" / "sd_models.py").read_text(encoding="utf-8")
     assert "memory_management.unload_all_models()" in sd_text
+    assert "model_data.sd_model = None" in sd_text
+    assert "model_data.forge_hash = ''" in sd_text
 
     # 2. Idempotency test: calling apply_patch again
     backup_mtime_before = backup_api.stat().st_mtime

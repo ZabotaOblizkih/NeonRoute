@@ -76,6 +76,10 @@ MODELS_PATCHED_CONFIG = 'config: Optional[str] = Field(default=None, title="Conf
 # 3. modules/sd_models.py
 SD_UNLOAD_DEF = 'def unload_model_weights(sd_model=None, info=None):'
 SD_PATCHED_UNLOAD_BODY = '''    from backend import memory_management
+    from modules.sd_models import model_data
+    if hasattr(model_data, 'sd_model'):
+        model_data.sd_model = None
+        model_data.forge_hash = ''
     memory_management.unload_all_models()
     memory_management.soft_empty_cache()
     gc.collect()'''
@@ -229,6 +233,7 @@ class ForgePatcher:
             sd_patched = (
                 "backend import memory_management" in sd_text
                 and "memory_management.unload_all_models()" in sd_text
+                and "model_data.forge_hash = ''" in sd_text
             )
 
             # 2. Проверяем состояние лаунчера webui-user.bat
@@ -414,10 +419,10 @@ class ForgePatcher:
             # Модификация 3: modules/sd_models.py
             # -------------------------------------------------------------
             sd_text = sd_path.read_text(encoding="utf-8")
-            if "memory_management.unload_all_models()" not in sd_text:
-                # Ищем функцию unload_model_weights
+            if "model_data.forge_hash = ''" not in sd_text:
+                # Ищем функцию unload_model_weights (как стоковую 'pass', так и ранее пропатченную без сброса sd_model)
                 pattern = re.compile(
-                    r'(def unload_model_weights\(sd_model=None,\s*info=None\):\s*\n)(\s+pass)',
+                    r'(def unload_model_weights\(sd_model=None,\s*info=None\):\s*\n)(?:[ \t]+pass|[ \t]+from backend import memory_management[\s\S]*?gc\.collect\(\))',
                     re.MULTILINE
                 )
                 if pattern.search(sd_text):

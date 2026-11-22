@@ -772,6 +772,9 @@ class ProcessManager(QObject):
             "pagefile",
             "failed to allocate host",
             "unable to allocate cuda_host buffer",
+            "bad allocation",
+            "std::bad_alloc",
+            "bad_alloc",
         )
         vram_markers = (
             "cudamalloc failed",
@@ -782,7 +785,6 @@ class ProcessManager(QObject):
         generic_markers = (
             "out of memory",
             "failed to allocate",
-            "bad allocation",
         )
 
         for line in lines:

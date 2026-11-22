@@ -574,6 +574,7 @@ class ForgeClient(QObject):
                 if (psutil.virtual_memory().total / (1024.0 ** 3)) <= 16.5:
                     opt_payload["sd_checkpoint_cache"] = 0
                     opt_payload["sd_checkpoints_limit"] = 1
+                    opt_payload["sd_checkpoints_keep_in_cpu"] = False
                     self._system_options_ensured = True
             except Exception:
                 pass
@@ -624,7 +625,8 @@ class ForgeClient(QObject):
             if total_ram_gb <= 16.5:
                 ok = self.set_options({
                     "sd_checkpoint_cache": 0,
-                    "sd_checkpoints_limit": 1
+                    "sd_checkpoints_limit": 1,
+                    "sd_checkpoints_keep_in_cpu": False,
                 })
                 if ok:
                     self._system_options_ensured = True

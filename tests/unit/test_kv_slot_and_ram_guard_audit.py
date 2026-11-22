@@ -319,3 +319,68 @@ def test_host_ram_oom_retry_failure_terminates_with_clear_error(tmp_path, monkey
     err_str = str(exc_info.value)
     assert "Недостаточно системной памяти хоста" in err_str
     assert "GGML_CUDA_NO_PINNED=1" in err_str
+
+
+# -------------------------------------------------------------------------
+# 6. Bad allocation Host OOM classification & Forge sd_checkpoints_keep_in_cpu
+# -------------------------------------------------------------------------
+def test_bad_allocation_classified_as_host_ram_oom(tmp_path, monkeypatch):
+    """'error loading model: bad allocation' must be classified as Host RAM OOM, never VRAM OOM."""
+    pm = ProcessManager()
+    log_file = tmp_path / "llama_server.log"
+    log_file.write_text("error loading model: bad allocation\n", encoding="utf-8")
+    monkeypatch.setattr("services.process_manager.LOGS_DIR", tmp_path)
+
+    err_msg, is_oom = pm._extract_llama_startup_error()
+    assert is_oom is True
+    assert pm.is_host_ram_oom_failure is True
+    assert pm.is_vram_oom_failure is False
+    assert "Host RAM Out of Memory" in err_msg
+    assert "CUDA Out of Memory" not in err_msg
+
+
+def test_forge_client_options_disable_checkpoints_keep_in_cpu(monkeypatch):
+    """ForgeClient must pass sd_checkpoints_keep_in_cpu=False on systems <= 16.5 GB RAM."""
+    from services.forge_client import ForgeClient
+    fc = ForgeClient()
+
+    sent_options = []
+
+    def mock_post(url, json=None, timeout=None):
+        if "/options" in url:
+            sent_options.append(json)
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+        elif "/sd-models" in url:
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = [{"title": "test_ckpt.safetensors", "model_name": "test_ckpt", "filename": "test_ckpt.safetensors"}]
+            return resp
+        return MagicMock(status_code=200)
+
+    monkeypatch.setattr("requests.post", mock_post)
+    monkeypatch.setattr("requests.get", mock_post)
+    monkeypatch.setattr(fc, "is_server_ready", lambda timeout=1.0: True)
+    monkeypatch.setattr(fc, "get_current_model", lambda: "other_model.safetensors")
+
+    import psutil
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: MagicMock(total=16.0 * (1024 ** 3), available=4.0 * (1024 ** 3)))
+
+    # Test ensure_system_options
+    fc._system_options_ensured = False
+    ok = fc.ensure_system_options(force=True)
+    assert ok is True
+    assert len(sent_options) == 1
+    assert sent_options[0].get("sd_checkpoints_keep_in_cpu") is False
+    assert sent_options[0].get("sd_checkpoint_cache") == 0
+    assert sent_options[0].get("sd_checkpoints_limit") == 1
+
+    # Test set_model
+    sent_options.clear()
+    ok_set = fc.set_model("test_ckpt.safetensors")
+    assert ok_set is True
+    assert len(sent_options) == 1
+    assert sent_options[0].get("sd_checkpoints_keep_in_cpu") is False
+    assert sent_options[0].get("sd_checkpoint_cache") == 0
+    assert sent_options[0].get("sd_checkpoints_limit") == 1
