@@ -76,11 +76,12 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
         assert saved is True
 
         # Check request payload
-        mock_post.assert_called_once_with(
-            "http://127.0.0.1:1234/slots/0?action=save",
-            json={"filename": "evicted_slot_0.bin"},
-            timeout=5.0
-        )
+        assert mock_post.call_count == 1
+        call_args, call_kwargs = mock_post.call_args
+        assert call_args[0] == "http://127.0.0.1:1234/slots/0?action=save"
+        saved_filename = call_kwargs["json"]["filename"]
+        assert saved_filename.startswith("evicted_slot_0_")
+        assert call_kwargs["timeout"] >= 15.0
 
         # Check metadata file
         meta_file = mock_kv_dir / "slot_metadata.json"
@@ -88,6 +89,7 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
         with open(meta_file, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
+        assert meta["filename"] == saved_filename
         assert meta["context_length"] == 14336
         assert meta["gpu_layers"] == 48
         assert meta["kv_cache_type_k"] == "q8_0"
@@ -96,7 +98,7 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
         assert meta["model_mtime"] == fake_mtime
 
     # Simulate llama-server writing the slot file
-    slot_file = mock_kv_dir / "evicted_slot_0.bin"
+    slot_file = mock_kv_dir / saved_filename
     slot_file.write_bytes(b"llama_slot_kv_binary_content")
 
     # 2. Restore slot with matching parameters
@@ -112,17 +114,17 @@ def test_successful_kv_slot_save_and_restore_cycle(mock_kv_dir):
 
     mock_restore_resp = MagicMock()
     mock_restore_resp.status_code = 200
-    mock_restore_resp.json.return_value = {"id_slot": 0, "filename": "evicted_slot_0.bin"}
+    mock_restore_resp.json.return_value = {"id_slot": 0, "filename": saved_filename}
 
     with patch("requests.post", return_value=mock_restore_resp) as mock_post_restore:
         restored = pm._restore_kv_slot_after_start(expected_meta)
         assert restored is True
 
-        mock_post_restore.assert_called_once_with(
-            "http://127.0.0.1:1234/slots/0?action=restore",
-            json={"filename": "evicted_slot_0.bin"},
-            timeout=5.0
-        )
+        assert mock_post_restore.call_count == 1
+        restore_args, restore_kwargs = mock_post_restore.call_args
+        assert restore_args[0] == "http://127.0.0.1:1234/slots/0?action=restore"
+        assert restore_kwargs["json"]["filename"] == saved_filename
+        assert restore_kwargs["timeout"] >= 15.0
 
     # 3. Verify single-use hygiene: both files are cleared
     assert not slot_file.exists()

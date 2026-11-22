@@ -392,7 +392,12 @@ class LMStudioClient(QObject):
                 )
 
                 # Безопасный OOM step-down снаружи _process_lock
-                if not ok and getattr(self.process_manager, "is_oom_failure", False):
+                is_vram_oom = bool(getattr(self.process_manager, "is_vram_oom_failure", False) is True)
+                is_host_oom = bool(getattr(self.process_manager, "is_host_ram_oom_failure", False) is True)
+                if not is_vram_oom and not is_host_oom and (getattr(self.process_manager, "is_oom_failure", False) is True):
+                    is_vram_oom = True
+
+                if not ok and is_vram_oom:
                     attempted_ngl = getattr(self.process_manager, "_last_attempted_ngl", None)
                     if attempted_ngl is None:
                         attempted_ngl = ngl
@@ -416,6 +421,21 @@ class LMStudioClient(QObject):
                             context_length=target_ctx,
                             gpu_layers=retry_ngl
                         )
+                elif not ok and is_host_oom:
+                    logger.warning(
+                        f"[LMStudio] Обнаружен дефицит Host RAM / CUDA_Host buffer -> "
+                        f"повторный запуск с GGML_CUDA_NO_PINNED=1 и пропуском восстановления KV-слота (без снижения NGL)"
+                    )
+                    setattr(self.process_manager, "_force_cuda_no_pinned", True)
+                    try:
+                        ok = self.process_manager.start_llama_server_sync(
+                            model_identifier=model_name,
+                            context_length=target_ctx,
+                            gpu_layers=ngl,
+                            skip_kv_restore=True
+                        )
+                    finally:
+                        setattr(self.process_manager, "_force_cuda_no_pinned", False)
 
                 if not ok:
                     err_msg = getattr(self.process_manager, "last_error", "") or f"Headless сервер не смог запустить модель '{model_name}'"
@@ -986,13 +1006,44 @@ class LMStudioClient(QObject):
         except requests.exceptions.ConnectionError:
             self._is_model_unloaded = True
             self._last_loaded_model_id = None
+
+            is_headless = (
+                self.process_manager is not None
+                and hasattr(self.process_manager, "has_headless_server")
+                and self.process_manager.has_headless_server()
+            )
+
+            is_evicted = False
+            if self.process_manager is not None:
+                state = getattr(self.process_manager, "_server_state", None)
+                state_val = getattr(state, "value", state)
+                if state_val in ("EVICTED_FOR_FORGE",):
+                    is_evicted = True
+
+            if is_headless and not is_evicted:
+                proc = getattr(self.process_manager, "_llama_process", None)
+                if proc is not None and proc.poll() is not None:
+                    rc = proc.poll()
+                    detail_msg = ""
+                    if hasattr(self.process_manager, "_extract_llama_startup_error"):
+                        try:
+                            detail_msg, _ = self.process_manager._extract_llama_startup_error()
+                        except Exception:
+                            pass
+                    last_err = getattr(self.process_manager, "last_error", "") or ""
+                    err_desc = detail_msg or last_err or f"код завершения {rc}"
+                    err_msg = f"Локальный процесс llama-server аварийно завершился (код {rc}): {err_desc}"
+                    logger.error(f"[LMStudio] {err_msg}")
+                    self.error_occurred.emit(err_msg)
+                    raise ConnectionError(err_msg)
+
             if self.process_manager is not None:
                 try:
                     self.process_manager.is_lm_studio_running()
                 except Exception:
                     pass
             err_msg = (
-                f"Не удалось подключиться к LM Studio на {self.base_url}.\n"
+                f"Не удалось подключиться к LM Studio / серверу LLM на {self.base_url}.\n"
                 f"Убедитесь, что сервер запущен в LM Studio на порту 1234."
             )
             logger.error(err_msg)

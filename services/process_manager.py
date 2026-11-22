@@ -133,7 +133,9 @@ class ProcessManager(QObject):
         self._is_loading_lms: bool = False
         self._lm_client: Optional[Any] = None
         self.last_error: str = ""
-        self.is_oom_failure: bool = False
+        self.is_vram_oom_failure: bool = False
+        self.is_host_ram_oom_failure: bool = False
+        self._force_cuda_no_pinned: bool = False
         self._last_attempted_ngl: Optional[int] = None
         self._current_running_ngl: Optional[int] = None
         self._current_total_layers: Optional[int] = None
@@ -165,6 +167,16 @@ class ProcessManager(QObject):
     @property
     def server_state(self) -> ServerState:
         return self._server_state
+
+    @property
+    def is_oom_failure(self) -> bool:
+        return bool(getattr(self, "is_vram_oom_failure", False) or getattr(self, "is_host_ram_oom_failure", False))
+
+    @is_oom_failure.setter
+    def is_oom_failure(self, value: bool) -> None:
+        self.is_vram_oom_failure = bool(value)
+        if not value:
+            self.is_host_ram_oom_failure = False
 
     @property
     def port(self) -> int:
@@ -398,29 +410,81 @@ class ProcessManager(QObject):
             if not for_forge_eviction:
                 self._safe_emit("lms_status_changed", False, msg)
 
+            # 5. Пост-стоп очистка дампов KV-слотов (дескрипторы ОС освобождены)
+            if for_forge_eviction:
+                active_fn = None
+                meta_path = KV_SLOTS_DIR / "slot_metadata.json"
+                if meta_path.exists():
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            active_fn = json.load(f).get("filename")
+                    except Exception:
+                        pass
+                self.clear_kv_slot_cache(keep_filename=active_fn)
+            else:
+                self.clear_kv_slot_cache()
+
     # =========================================================================
     # KV Slot Cache Management (Save / Restore across Forge eviction)
     # =========================================================================
 
-    def clear_kv_slot_cache(self) -> None:
+    def clear_kv_slot_cache(self, keep_filename: Optional[str] = None) -> None:
         """
         Публичный потокобезопасный метод безопасного удаления файлов дампов KV-слотов
-        (evicted_slot_0.bin, slot_metadata.json) из KV_SLOTS_DIR.
+        из KV_SLOTS_DIR.
+        Если передан keep_filename, удаляются все .bin файлы, кроме keep_filename.
+        Если keep_filename is None, удаляются все .bin файлы и slot_metadata.json.
         """
         with self._process_lock:
-            for filename in ("evicted_slot_0.bin", "slot_metadata.json"):
-                file_path = KV_SLOTS_DIR / filename
+            try:
+                if not KV_SLOTS_DIR.exists():
+                    return
+            except OSError:
+                return
+
+            bin_files = list(KV_SLOTS_DIR.glob("evicted_slot_*.bin"))
+            for file_path in bin_files:
+                if keep_filename and file_path.name == keep_filename:
+                    continue
                 try:
                     if file_path.exists():
                         file_path.unlink()
                 except OSError as e:
-                    logger.debug(f"[ProcessManager] clear_kv_slot_cache не удалось удалить {file_path}: {e}")
+                    logger.warning(f"[ProcessManager] clear_kv_slot_cache не удалось удалить {file_path.name}: {e}")
+
+            if not keep_filename:
+                meta_path = KV_SLOTS_DIR / "slot_metadata.json"
+                try:
+                    if meta_path.exists():
+                        meta_path.unlink()
+                except OSError as e:
+                    logger.warning(f"[ProcessManager] clear_kv_slot_cache не удалось удалить slot_metadata.json: {e}")
+
+    def erase_kv_slot_sync(self, slot_id: int = 0) -> bool:
+        """
+        Сбрасывает состояние KV-слота на сервере llama-server (POST /slots/{slot_id}?action=erase).
+        Вызывается безопасно только при живом процессе.
+        """
+        if self._llama_process is None or self._llama_process.poll() is not None:
+            return False
+        port = getattr(self, "_current_running_port", None) or 1234
+        if not self.is_port_open("127.0.0.1", port, timeout=0.2):
+            return False
+        url = f"http://127.0.0.1:{port}/slots/{slot_id}?action=erase"
+        try:
+            logger.info(f"[ProcessManager] Отправка action=erase для слота {slot_id}...")
+            resp = requests.post(url, json={}, timeout=5.0)
+            return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"[ProcessManager] Не удалось сбросить KV-слот {slot_id} через action=erase: {e}")
+            return False
 
     def _save_kv_slot_for_eviction(self) -> bool:
         """
         Сохраняет снимок KV-кэша слота 0 и метаданные перед выгрузкой llama-server в пользу SD Forge.
         Вызывается внутри evict_llm_for_forge_sync() непосредственно перед остановкой процесса.
         """
+        import uuid
         with self._process_lock:
             # Если процесс не запущен и порт закрыт, сохранять нечего
             if self._llama_process is None and not self.is_port_open(port=1234, timeout=0.1):
@@ -477,7 +541,20 @@ class ProcessManager(QObject):
             else:
                 saved_gpu_layers = 99
 
+            # Оценка размера KV-кэша для адаптивного таймаута
+            try:
+                from services.layer_budgeter import LayerBudgeter
+                expected_kv_mb = LayerBudgeter.estimate_kv_cache_mb(int(ctx), cache_type=str(ctk))
+            except Exception:
+                expected_kv_mb = 500.0
+
+            save_timeout = max(15.0, float(expected_kv_mb) / 50.0)
+
+            # Формируем уникальное имя файла дампа для исключения гонок WinError 32
+            unique_filename = f"evicted_slot_0_{uuid.uuid4().hex[:8]}.bin"
+
             meta = {
+                "filename": unique_filename,
                 "model_path": norm_path,
                 "model_mtime": model_mtime,
                 "context_length": int(ctx),
@@ -487,20 +564,17 @@ class ProcessManager(QObject):
                 "flash_attn": str(fa),
             }
 
-            # Перед сохранением зачищаем старые дампы
-            self.clear_kv_slot_cache()
-
             t0 = time.time()
             url = f"http://127.0.0.1:{port}/slots/0?action=save"
             try:
-                logger.info(f"[ProcessManager] Сохранение KV-слота 0 в {KV_SLOTS_DIR / 'evicted_slot_0.bin'}...")
-                resp = requests.post(url, json={"filename": "evicted_slot_0.bin"}, timeout=5.0)
+                logger.info(f"[ProcessManager] Сохранение KV-слота 0 в {KV_SLOTS_DIR / unique_filename} (timeout={save_timeout:.1f}с)...")
+                resp = requests.post(url, json={"filename": unique_filename}, timeout=save_timeout)
                 elapsed_ms = (time.time() - t0) * 1000.0
                 if resp.status_code == 200:
                     meta_path = KV_SLOTS_DIR / "slot_metadata.json"
                     with open(meta_path, "w", encoding="utf-8") as f:
                         json.dump(meta, f, indent=2, ensure_ascii=False)
-                    slot_file = KV_SLOTS_DIR / "evicted_slot_0.bin"
+                    slot_file = KV_SLOTS_DIR / unique_filename
                     size_mb = 0.0
                     try:
                         if slot_file.exists():
@@ -515,11 +589,9 @@ class ProcessManager(QObject):
                     logger.warning(
                         f"[ProcessManager] Ошибка сервера при сохранении KV-слота 0 (HTTP {resp.status_code}): {resp.text[:100]}"
                     )
-                    self.clear_kv_slot_cache()
                     return False
             except Exception as e:
                 logger.warning(f"[ProcessManager] Исключение при сохранении KV-слота 0: {e}")
-                self.clear_kv_slot_cache()
                 return False
 
     def _restore_kv_slot_after_start(self, expected_meta: Dict[str, Any]) -> bool:
@@ -527,10 +599,8 @@ class ProcessManager(QObject):
         Восстанавливает снимок KV-слота 0 после перезапуска llama-server, если снимок совместим.
         Всегда очищает дамп после попытки восстановления (одноразовый дамп).
         """
-        slot_file = KV_SLOTS_DIR / "evicted_slot_0.bin"
         meta_file = KV_SLOTS_DIR / "slot_metadata.json"
-
-        if not slot_file.exists() or not meta_file.exists():
+        if not meta_file.exists():
             return False
 
         try:
@@ -538,6 +608,12 @@ class ProcessManager(QObject):
                 saved_meta = json.load(f)
         except Exception as e:
             logger.warning(f"[ProcessManager] Не удалось прочитать метаданные KV-слота {meta_file}: {e}")
+            self.clear_kv_slot_cache()
+            return False
+
+        slot_filename = saved_meta.get("filename") or "evicted_slot_0.bin"
+        slot_file = KV_SLOTS_DIR / slot_filename
+        if not slot_file.exists():
             self.clear_kv_slot_cache()
             return False
 
@@ -577,18 +653,52 @@ class ProcessManager(QObject):
             self.clear_kv_slot_cache()
             return False
 
-        port = getattr(self, "_current_running_port", None) or 1234
-        url = f"http://127.0.0.1:{port}/slots/0?action=restore"
+        # Проверка аномального размера дампа перед restore
         size_mb = 0.0
         try:
-            if slot_file.exists():
-                size_mb = round(slot_file.stat().st_size / 1048576, 1)
+            size_mb = round(slot_file.stat().st_size / 1048576, 2)
         except OSError:
             pass
+
+        try:
+            from services.layer_budgeter import LayerBudgeter
+            exp_ctx = int(expected_meta.get("context_length", 8192))
+            eff_k = str(expected_meta.get("kv_cache_type_k", "q8_0"))
+            expected_kv_mb = LayerBudgeter.estimate_kv_cache_mb(exp_ctx, cache_type=eff_k)
+        except Exception:
+            expected_kv_mb = 500.0
+
+        import psutil
+        try:
+            avail_ram_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
+        except Exception:
+            avail_ram_mb = 8192.0
+
+        is_anomalous = False
+        anomaly_reason = ""
+        if expected_kv_mb > 0 and size_mb > 1.5 * expected_kv_mb:
+            is_anomalous = True
+            anomaly_reason = f"размер дампа {size_mb:.1f} МБ превышает 1.5x расчетного KV-кэша ({expected_kv_mb:.1f} МБ)"
+        elif avail_ram_mb > 0 and size_mb > 0.40 * avail_ram_mb:
+            is_anomalous = True
+            anomaly_reason = f"размер дампа {size_mb:.1f} МБ превышает 40% доступной RAM ({avail_ram_mb:.1f} МБ)"
+
+        if is_anomalous:
+            logger.warning(
+                f"[ProcessManager] ⚠️ Аномальный размер дампа KV-слота ({anomaly_reason}). "
+                f"Восстановление пропущено во избежание OOM. Слот будет очищен."
+            )
+            self.clear_kv_slot_cache()
+            return False
+
+        port = getattr(self, "_current_running_port", None) or 1234
+        url = f"http://127.0.0.1:{port}/slots/0?action=restore"
+        restore_timeout = max(15.0, size_mb / 50.0)
+
         t0 = time.time()
         try:
-            logger.info(f"[ProcessManager] Восстановление KV-слота 0 из {slot_file}...")
-            resp = requests.post(url, json={"filename": "evicted_slot_0.bin"}, timeout=5.0)
+            logger.info(f"[ProcessManager] Восстановление KV-слота 0 из {slot_filename} ({size_mb} MB, timeout={restore_timeout:.1f}с)...")
+            resp = requests.post(url, json={"filename": slot_filename}, timeout=restore_timeout)
             elapsed_ms = (time.time() - t0) * 1000.0
             if resp.status_code == 200:
                 logger.info(f"[ProcessManager] KV-слот 0 успешно восстановлен ({size_mb} MB за {elapsed_ms:.1f} мс).")
@@ -597,9 +707,11 @@ class ProcessManager(QObject):
                 logger.warning(
                     f"[ProcessManager] Ошибка восстановления KV-слота 0 (HTTP {resp.status_code}): {resp.text[:100]}"
                 )
+                self.erase_kv_slot_sync(slot_id=0)
                 return False
         except Exception as e:
             logger.warning(f"[ProcessManager] Исключение при восстановлении KV-слота 0: {e}")
+            self.erase_kv_slot_sync(slot_id=0)
             return False
         finally:
             self.clear_kv_slot_cache()
@@ -608,7 +720,7 @@ class ProcessManager(QObject):
         """
         При падении процесса llama-server читает последние 30 строк logs/llama_server.log:
         - парсит JSON из LMSTUDIO_STARTUP_ERROR:{...} при наличии;
-        - детектирует индикаторы OOM (cudaMalloc failed, out of memory, failed to allocate);
+        - раздельно классифицирует VRAM OOM и Host RAM OOM;
         - возвращает (читаемое описание ошибки, флаг_oom).
         """
         log_path = LOGS_DIR / "llama_server.log"
@@ -621,14 +733,44 @@ class ProcessManager(QObject):
                 logger.debug(f"[ProcessManager] Не удалось прочитать logs/llama_server.log: {e}")
 
         parsed_message = ""
-        is_oom = False
-        oom_markers = ("cudamalloc failed", "out of memory", "failed to allocate", "bad allocation")
+        is_vram_oom = False
+        is_host_oom = False
+
+        host_markers = (
+            "cuda_host",
+            "cudahostalloc",
+            "host buffer",
+            "virtualalloc",
+            "commit limit",
+            "pagefile",
+            "failed to allocate host",
+            "unable to allocate cuda_host buffer",
+        )
+        vram_markers = (
+            "cudamalloc failed",
+            "out of device memory",
+            "cuda out of memory",
+            "failed to allocate cuda",
+        )
+        generic_markers = (
+            "out of memory",
+            "failed to allocate",
+            "bad allocation",
+        )
 
         for line in lines:
             line_stripped = line.strip()
             line_lower = line_stripped.lower()
-            if any(marker in line_lower for marker in oom_markers):
-                is_oom = True
+
+            if any(m in line_lower for m in host_markers):
+                is_host_oom = True
+            elif any(m in line_lower for m in vram_markers):
+                is_vram_oom = True
+            elif any(m in line_lower for m in generic_markers):
+                if any(hm in line_lower for hm in ("host", "system", "ram", "cpu", "virtual")):
+                    is_host_oom = True
+                else:
+                    is_vram_oom = True
 
             if "LMSTUDIO_STARTUP_ERROR:" in line_stripped:
                 try:
@@ -642,14 +784,19 @@ class ProcessManager(QObject):
                     pass
 
         if not parsed_message:
+            all_markers = host_markers + vram_markers + generic_markers
             for line in reversed(lines):
                 l_s = line.strip()
                 l_lower = l_s.lower()
-                if any(marker in l_lower for marker in oom_markers) or "error" in l_lower:
+                if any(marker in l_lower for marker in all_markers) or "error" in l_lower:
                     parsed_message = l_s
                     break
 
-        if is_oom:
+        if is_host_oom and is_vram_oom:
+            final_msg = f"Out of Memory (VRAM + Host RAM): {parsed_message}" if parsed_message else "OOM (VRAM + Host RAM) при инициализации модели"
+        elif is_host_oom:
+            final_msg = f"Host RAM Out of Memory: {parsed_message}" if parsed_message else "Host RAM Out of Memory (CUDA_Host buffer / Commit Limit)"
+        elif is_vram_oom:
             final_msg = f"CUDA Out of Memory: {parsed_message}" if parsed_message else "CUDA Out of Memory при инициализации модели"
         elif parsed_message:
             final_msg = f"Ошибка запуска модели: {parsed_message}"
@@ -657,7 +804,9 @@ class ProcessManager(QObject):
             final_msg = "Процесс llama-server завершился с ошибкой"
 
         self.last_error = final_msg
-        self.is_oom_failure = is_oom
+        self.is_vram_oom_failure = is_vram_oom
+        self.is_host_ram_oom_failure = is_host_oom
+        is_oom = is_vram_oom or is_host_oom
         return final_msg, is_oom
 
     def _wait_for_server_ready(
@@ -725,7 +874,8 @@ class ProcessManager(QObject):
         model_identifier: Optional[str] = None,
         context_length: Optional[int] = None,
         gpu_layers: Optional[int] = None,
-        is_restore: bool = False
+        is_restore: bool = False,
+        skip_kv_restore: bool = False,
     ) -> bool:
         """
         Synchronously launches headless llama-server.exe:
@@ -995,6 +1145,19 @@ class ProcessManager(QObject):
                 if cuda_dir:
                     env["PATH"] = f"{str(cuda_dir)}{os.pathsep}{env.get('PATH', '')}"
 
+                # Защита от сбоев аллокации Host RAM (CUDA_Host buffer) при низкой доступной памяти
+                try:
+                    import psutil
+                    avail_sys_ram_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
+                except Exception:
+                    avail_sys_ram_mb = 8192.0
+
+                if avail_sys_ram_mb < 4096.0 or getattr(self, "_force_cuda_no_pinned", False):
+                    env["GGML_CUDA_NO_PINNED"] = "1"
+                    logger.info("[ProcessManager] Установлена переменная GGML_CUDA_NO_PINNED=1 (защита от дефицита Host RAM).")
+                else:
+                    env.pop("GGML_CUDA_NO_PINNED", None)
+
                 # 8. Setup log file
                 logs_dir = LOGS_DIR
                 logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1133,7 +1296,11 @@ class ProcessManager(QObject):
                         "kv_cache_type_v": str(ctv),
                         "flash_attn": str(fa_str),
                     }
-                    self._restore_kv_slot_after_start(expected_meta)
+                    if skip_kv_restore:
+                        logger.info("[ProcessManager] Восстановление KV-слота пропущено (skip_kv_restore=True). Кэш очищен.")
+                        self.clear_kv_slot_cache()
+                    else:
+                        self._restore_kv_slot_after_start(expected_meta)
                     if hasattr(self, "lm_client") and self.lm_client:
                         self.lm_client._is_model_unloaded = False
                         self.lm_client._last_loaded_model_id = model_path.stem

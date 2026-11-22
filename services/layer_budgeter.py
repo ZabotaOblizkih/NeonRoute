@@ -40,6 +40,53 @@ class LayerBudgeter:
     и расчета баланса слоев между GPU и RAM.
     """
 
+    OS_HEADROOM_RAM_MB: float = 1500.0
+    CUDA_HOST_PINNED_RAM_MB: float = 400.0
+    SLOT_RESTORE_HEADROOM_MB: float = 600.0
+
+    @classmethod
+    def get_available_host_memory_mb(cls) -> float:
+        """
+        Оценивает доступную системную память хоста:
+        - В Windows опрашивает GlobalMemoryStatusEx для получения ullAvailPageFile
+          (лимит незакоммиченной виртуальной памяти) и psutil.virtual_memory().available,
+          выбирая безопасный минимум между свободной физической RAM и доступным коммитом.
+        - На других платформах возвращает psutil.virtual_memory().available.
+        """
+        import psutil
+        try:
+            avail_ram_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
+        except Exception:
+            avail_ram_mb = 4096.0
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                    ]
+
+                stat = MEMORYSTATUSEX()
+                stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+                if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                    avail_pagefile_mb = stat.ullAvailPageFile / (1024.0 * 1024.0)
+                    avail_phys_mb = stat.ullAvailPhys / (1024.0 * 1024.0)
+                    return max(0.0, min(avail_phys_mb, avail_pagefile_mb))
+            except Exception as e:
+                logger.debug(f"[LayerBudgeter] GlobalMemoryStatusEx fallback to psutil: {e}")
+
+        return max(0.0, avail_ram_mb)
+
     # -------------------------------------------------------------------------
     # 1. Аудит топологии GPU (Pure Compute vs Primary Display)
     # -------------------------------------------------------------------------
@@ -1033,9 +1080,14 @@ class LayerBudgeter:
         reason = "OK: расчет распределения слоев завершен успешно"
 
         if available_ram_mb is None or available_ram_mb <= 0:
-            available_ram_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
+            available_ram_mb = cls.get_available_host_memory_mb()
 
-        min_os_headroom_mb = 1500.0  # Минимальный буфер для дыхания Windows и Python
+        # Базовый запас памяти хоста под рантайм, WDDM paging, CUDA_Host pinned buffer и восстановление KV-слота
+        base_host_required_mb = (
+            cls.OS_HEADROOM_RAM_MB +
+            cls.CUDA_HOST_PINNED_RAM_MB +
+            (cls.SLOT_RESTORE_HEADROOM_MB if is_arbiter_managed else 0.0)
+        )
 
         cpu_weights_mb = 0.0
         if calculated_ngl < total_layers:
@@ -1045,56 +1097,64 @@ class LayerBudgeter:
             else:
                 cpu_weights_mb = model_size_mb
 
-            # Пропорциональный буфер: при is_arbiter_managed=True headroom_mb = 1024 МБ для cpu_weights_mb <= 1024 МБ (4-6 слоев),
-            # иначе 1500 МБ для тяжелого оффлоада
+            # Пропорциональный буфер под нагрузку CPU слоев
             if is_arbiter_managed:
-                headroom_mb = 1024.0 if cpu_weights_mb <= 1024.0 else min_os_headroom_mb
+                headroom_mb = 1024.0 if cpu_weights_mb <= 1024.0 else cls.OS_HEADROOM_RAM_MB
             else:
-                headroom_mb = 1024.0 if cpu_weights_mb <= 500.0 else min_os_headroom_mb
-            usable_ram_mb = max(0.0, available_ram_mb - headroom_mb)
-
-            if available_ram_mb < (cpu_weights_mb + headroom_mb):
-                can_run = False
-                reason = f"OOM Guard: недостаточно VRAM + RAM для безопасного запуска (CPU слои={int(cpu_weights_mb)} MB | Свободно RAM={int(available_ram_mb)} MB)"
-                logger.warning(f"[LayerBudgeter] 🛑 Pre-flight RAM Guard: блокировка запуска! {reason}")
-                audit_data = {
-                    "model_path": str(p),
-                    "target_context": target_context,
-                    "total_vram_mb": total_vram,
-                    "os_reserve_mb": os_reserve_mb,
-                    "effective_os_reserve_mb": effective_os_reserve,
-                    "used_vram_mb": round(used_vram, 2),
-                    "compute_buffer_mb": compute_mb,
-                    "logits_buffer_mb": logits_mb,
-                    "ubatch_size": eff_ubatch,
-                    "vocab_size": vocab_size,
-                    "is_pure_compute": is_pure_compute,
-                    "is_arbiter_managed": is_arbiter_managed,
-                    "forge_reserve_mb": forge_res,
-                    "safety_margin_mb": safety_res,
-                    "kv_cache_mb": kv_cache_mb,
-                    "usable_vram_mb": usable_vram_mb,
-                    "model_size_mb": model_size_mb,
-                    "total_layers": total_layers,
-                    "base_overhead_mb": round(base_overhead_mb, 2),
-                    "blocks_weight_mb": round(blocks_weight_mb, 2),
-                    "layer_weight_mb": round(layer_weight_mb, 2),
-                    "available_for_blocks_mb": round(available_for_blocks_mb, 2),
-                    "raw_ngl": raw_ngl,
-                    "calculated_ngl": 0,
-                    "current_running_ngl": current_running_ngl,
-                    "hysteresis_applied": hysteresis_applied,
-                    "final_ngl": 0,
-                    "cpu_weights_mb": round(cpu_weights_mb, 2),
-                    "available_ram_mb": round(available_ram_mb, 2),
-                    "usable_ram_mb": round(usable_ram_mb, 2),
-                    "can_run": False,
-                    "reason": reason,
-                }
-                cls.log_audit_report(audit_data)
-                return (0, can_run, reason, audit_data)
+                headroom_mb = 1024.0 if cpu_weights_mb <= 500.0 else cls.OS_HEADROOM_RAM_MB
+            total_required_host_mb = cpu_weights_mb + headroom_mb
         else:
-            usable_ram_mb = max(0.0, available_ram_mb - min_os_headroom_mb)
+            total_required_host_mb = base_host_required_mb
+            headroom_mb = cls.OS_HEADROOM_RAM_MB
+
+        usable_ram_mb = max(0.0, available_ram_mb - headroom_mb)
+
+        if available_ram_mb < total_required_host_mb:
+            can_run = False
+            reason = (
+                f"OOM Guard: недостаточно системной памяти хоста для безопасного запуска "
+                f"(требуется {int(total_required_host_mb)} MB [CPU слои={int(cpu_weights_mb)} MB, хост-буферы={int(total_required_host_mb - cpu_weights_mb)} MB] | "
+                f"доступно RAM/Commit={int(available_ram_mb)} MB)"
+            )
+            logger.warning(f"[LayerBudgeter] 🛑 Pre-flight RAM Guard: блокировка запуска! {reason}")
+            audit_data = {
+                "model_path": str(p),
+                "target_context": target_context,
+                "total_vram_mb": total_vram,
+                "os_reserve_mb": os_reserve_mb,
+                "effective_os_reserve_mb": effective_os_reserve,
+                "used_vram_mb": round(used_vram, 2),
+                "compute_buffer_mb": compute_mb,
+                "logits_buffer_mb": logits_mb,
+                "ubatch_size": eff_ubatch,
+                "vocab_size": vocab_size,
+                "is_pure_compute": is_pure_compute,
+                "is_arbiter_managed": is_arbiter_managed,
+                "forge_reserve_mb": forge_res,
+                "safety_margin_mb": safety_res,
+                "kv_cache_mb": kv_cache_mb,
+                "usable_vram_mb": usable_vram_mb,
+                "model_size_mb": model_size_mb,
+                "total_layers": total_layers,
+                "base_overhead_mb": round(base_overhead_mb, 2),
+                "blocks_weight_mb": round(blocks_weight_mb, 2),
+                "layer_weight_mb": round(layer_weight_mb, 2),
+                "available_for_blocks_mb": round(available_for_blocks_mb, 2),
+                "raw_ngl": raw_ngl,
+                "calculated_ngl": 0,
+                "current_running_ngl": current_running_ngl,
+                "hysteresis_applied": hysteresis_applied,
+                "final_ngl": 0,
+                "cpu_weights_mb": round(cpu_weights_mb, 2),
+                "available_ram_mb": round(available_ram_mb, 2),
+                "usable_ram_mb": round(usable_ram_mb, 2),
+                "can_run": False,
+                "reason": reason,
+            }
+            cls.log_audit_report(audit_data)
+            return (0, can_run, reason, audit_data)
+        else:
+            usable_ram_mb = max(0.0, available_ram_mb - headroom_mb)
 
         # 8. Итоговый аудит-паспорт
         audit_data = {
