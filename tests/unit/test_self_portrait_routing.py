@@ -178,4 +178,4 @@ def test_gallery_directives_preserve_structure_and_include_self_rule():
         architecture="sdxl",
     )
     assert "--self" in built_sdxl
-    assert "--model juggernaut_xl" in built_sdxl
+    assert '"suggested_model": "juggernaut_xl"' in built_sdxl

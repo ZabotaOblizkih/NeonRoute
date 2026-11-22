@@ -82,7 +82,7 @@ def test_build_gallery_art_prompt_sdxl():
     assert "medium shot" in prompt
     assert "Avoid booru/SD1.5 tags like" in prompt
     assert "hands on hips" in prompt
-    assert "--model juggernaut_xl" in prompt
+    assert '"suggested_model": "juggernaut_xl"' in prompt
     assert "девушка у окна" in prompt
     assert "cowboy shot" not in prompt.lower()
 
@@ -99,7 +99,7 @@ def test_build_gallery_art_prompt_sd15():
     assert "12 to 26 comma-separated English keyword tags" in prompt
     assert "Hand Anchor" in prompt
     assert "hands on hips" in prompt
-    assert "--model dreamshaper_8" in prompt
+    assert '"suggested_model": "dreamshaper_8"' in prompt
     assert "пейзаж заката" in prompt
     assert "thigh-up shot" in prompt
     assert "cowboy shot" not in prompt.lower()
@@ -151,11 +151,11 @@ def test_get_gallery_directive_formatting():
     """Проверяет корректное форматирование плейсхолдеров без исключений KeyError."""
     d_sdxl = get_gallery_directive("sdxl", model_hint="XL Hint", target_model_id="xl_test")
     assert "XL Hint" in d_sdxl
-    assert "--model xl_test" in d_sdxl
+    assert '"suggested_model": "xl_test"' in d_sdxl
 
     d_sd15 = get_gallery_directive("sd15", model_hint="15 Hint", target_model_id="15_test")
     assert "15 Hint" in d_sd15
-    assert "--model 15_test" in d_sd15
+    assert '"suggested_model": "15_test"' in d_sd15
 
 
 def test_cinematic_directive_sd15_default():
@@ -364,10 +364,10 @@ def test_cinematic_directives_compilation_and_sections():
     assert "### Style & Syntax Rules" in d_xl
     assert "### Camera & Framing Priority" in d_xl
     assert "### Lighting & Atmosphere" in d_xl
-    assert "### Negative, Self-Portrait & Widescreen Aspect Ratio (`--ar`)" in d_xl
+    assert "### Negative Phrases, Self-Portrait & Widescreen Aspect Ratio Fields" in d_xl
     assert "Blade Runner style" in d_xl
-    assert "--model xl_cyber" in d_xl
-    assert "--ar <cinematic|ultrawide|portrait|square|wide>" in d_xl
+    assert '"suggested_model": "xl_cyber"' in d_xl
+    assert '"aspect_ratio": "cinematic"' in d_xl
 
     # SD 1.5 Cinematic
     d_15 = get_cinematic_directive("sd15", model_hint="vintage 35mm film", target_model_id="sd15_vintage")
@@ -375,7 +375,7 @@ def test_cinematic_directives_compilation_and_sections():
     assert "### Camera & Framing Priority" in d_15
     assert "### Lighting & Atmosphere" in d_15
     assert "vintage 35mm film" in d_15
-    assert "--model sd15_vintage" in d_15
+    assert '"suggested_model": "sd15_vintage"' in d_15
 
     # get_art_directive полиморфная диспетчеризация
     assert "[SYSTEM DIRECTIVE: SDXL Cinematic Frame Director]" in get_art_directive("cinematic", "sdxl")
@@ -392,7 +392,7 @@ def test_cinematic_directives_compilation_and_sections():
         skill_name="cinematic"
     )
     assert "[SYSTEM DIRECTIVE: SDXL Cinematic Frame Director]" in p_xl
-    assert "--model xl_film" in p_xl
+    assert '"suggested_model": "xl_film"' in p_xl
     assert "киберпанк улица ночью" in p_xl
 
 

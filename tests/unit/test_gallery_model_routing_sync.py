@@ -58,7 +58,7 @@ def test_auto_mode_preserves_routing_description_when_llm_guidance_present(monke
 
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in built
     assert "Prompt using dense Danbooru anime tags, cel shaded." in built
-    assert "--model sd15_anime" in built
+    assert '"suggested_model": "sd15_anime"' in built
     assert "anime-background-style-v2" not in built
 
 
@@ -100,7 +100,7 @@ def test_manual_header_selection_propagates_through_deferred_rag_to_llm(monkeypa
 
     assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in turn_msg
     assert "Prompt as cinematic dark fantasy art, tactile fabric textures." in turn_msg
-    assert "--model sdxl_fantasy" in turn_msg
+    assert '"suggested_model": "sdxl_fantasy"' in turn_msg
 
 
 def test_enqueue_gallery_art_pass_respects_manual_and_auto_style_description(monkeypatch):
@@ -123,7 +123,7 @@ def test_enqueue_gallery_art_pass_respects_manual_and_auto_style_description(mon
     auto_task = ctrl.task_queue.enqueue.call_args[0][0]
     auto_prompt = auto_task.kwargs["messages"][0]["content"]
     assert "Prompt using dense Danbooru anime tags, cel shaded." in auto_prompt
-    assert "--model sd15_anime" in auto_prompt
+    assert '"suggested_model": "sd15_anime"' in auto_prompt
 
     # 2. Ручной выбор -> выбирает DreamShaperXL (SDXL) и его routing_description
     ctrl.selected_forge_checkpoint = "DreamShaperXL"
@@ -132,4 +132,4 @@ def test_enqueue_gallery_art_pass_respects_manual_and_auto_style_description(mon
     manual_prompt = manual_task.kwargs["messages"][0]["content"]
     assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in manual_prompt
     assert "Prompt as cinematic dark fantasy art, tactile fabric textures." in manual_prompt
-    assert "--model sdxl_fantasy" in manual_prompt
+    assert '"suggested_model": "sdxl_fantasy"' in manual_prompt
