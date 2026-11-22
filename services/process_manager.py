@@ -1076,6 +1076,7 @@ class ProcessManager(QObject):
                 )
 
                 total_model_layers = None
+                audit_data: Dict[str, Any] = {}
                 if is_manual_override:
                     try:
                         effective_ngl = int(gpu_layers)

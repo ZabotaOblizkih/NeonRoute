@@ -535,6 +535,7 @@ def test_e2e_smoke_llama_server_bad_allocation_and_host_ram_protection(tmp_path,
     monkeypatch.setattr("services.server_config.ServerConfigResolver.load_ini", lambda: {"host": "127.0.0.1", "port": 1234, "gpu_layers": 46})
     monkeypatch.setattr("services.layer_budgeter.LayerBudgeter.calculate_layer_offload", lambda **k: (46, True, "", {"total_layers": 48}))
     monkeypatch.setattr(pm, "inspect_port_occupant", lambda port: (False, None, None))
+    monkeypatch.setattr(pm, "is_port_open", lambda h, p, timeout=0.1: False)
     monkeypatch.setattr(lms_client, "is_model_loaded", lambda m: False)
     monkeypatch.setattr(lms_client, "check_health", lambda: (False, ""))
 
@@ -573,12 +574,22 @@ def test_e2e_smoke_llama_server_bad_allocation_and_host_ram_protection(tmp_path,
     def mock_wait_ready(host="127.0.0.1", port=1234, timeout_s=60.0):
         nonlocal recorded_first_host_oom, recorded_first_vram_oom
         if len(attempts) == 1:
-            # Первый запуск упал
+            # Первый запуск упал с ошибкой bad allocation
             detail_msg, is_oom = pm._extract_llama_startup_error()
             pm.is_oom_failure = is_oom
             recorded_first_host_oom = pm.is_host_ram_oom_failure
             recorded_first_vram_oom = pm.is_vram_oom_failure
             pm._set_server_state(ServerState.ERROR, f"Process crashed: {detail_msg}")
+
+            # Симулируем наличие сохраненного дампа KV-слота перед ретраем
+            slot_file.write_bytes(b"dummy_evicted_kv_data")
+            meta_file.write_text(json.dumps({
+                "filename": slot_file.name,
+                "model_path": "C:/models/test_model.gguf",
+                "gpu_layers": 46,
+                "context_length": 8192
+            }), encoding="utf-8")
+
             return False
         # Второй запуск готов
         pm._set_server_state(ServerState.READY, "Model loaded")
