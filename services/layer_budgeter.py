@@ -1022,6 +1022,11 @@ class LayerBudgeter:
                 if can_apply_hysteresis:
                     calculated_ngl = current_running_ngl
                     hysteresis_applied = True
+                else:
+                    logger.info(
+                        f"[LayerBudgeter] Сброс гистерезиса NGL: текущий {current_running_ngl} отклонен "
+                        f"(недостаточно свободного бюджета блоков VRAM). NGL пересчитан в {calculated_ngl}."
+                    )
 
         # 7. Pre-flight RAM Guard
         can_run = True
@@ -1051,6 +1056,7 @@ class LayerBudgeter:
             if available_ram_mb < (cpu_weights_mb + headroom_mb):
                 can_run = False
                 reason = f"OOM Guard: недостаточно VRAM + RAM для безопасного запуска (CPU слои={int(cpu_weights_mb)} MB | Свободно RAM={int(available_ram_mb)} MB)"
+                logger.warning(f"[LayerBudgeter] 🛑 Pre-flight RAM Guard: блокировка запуска! {reason}")
                 audit_data = {
                     "model_path": str(p),
                     "target_context": target_context,

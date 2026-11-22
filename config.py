@@ -47,6 +47,23 @@ KV_SLOTS_DIR = DATA_DIR / "kv_slots"
 for folder in [BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR, CHARACTERS_DIR, HISTORY_DIR, BACKGROUNDS_DIR, DATA_DIR, CONFIG_DIR, WORKSPACE_DIR, ASSETS_DIR, AVATARS_DIR, LOCAL_BIN_DIR, LOCAL_MODELS_DIR, KNOWLEDGE_BASE_DIR, KV_SLOTS_DIR]:
     folder.mkdir(parents=True, exist_ok=True)
 
+
+def _rotate_if_oversized(path: Path, max_bytes: int = 15 * 1024 * 1024) -> bool:
+    """Безопасная атомарная ротация лог-файла на Windows до открытия дескрипторов."""
+    try:
+        if path.is_file() and path.stat().st_size > max_bytes:
+            backup_path = path.with_suffix(path.suffix + ".old")
+            if backup_path.exists():
+                try:
+                    backup_path.unlink()
+                except Exception:
+                    pass
+            os.replace(path, backup_path)
+            return True
+    except Exception:
+        pass
+    return False
+
 # Network Endpoints for Local AI Backends
 DEFAULT_LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
 DEFAULT_FORGE_URL = "http://127.0.0.1:7860"

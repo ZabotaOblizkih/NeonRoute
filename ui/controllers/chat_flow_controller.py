@@ -471,6 +471,7 @@ class ChatFlowControllerMixin:
             len(self.attached_files) if hasattr(self, "attached_files") and self.attached_files else 0,
         )
 
+        self._send_click_ts = time.perf_counter()
         self._last_llm_msg_text = None
 
         # Гарантированный детерминированный перехват установки напоминаний
@@ -1058,6 +1059,11 @@ class ChatFlowControllerMixin:
                     is_loop, clean_text = self._detect_repetition_loop(raw)
                     if is_loop:
                         self._antiloop_aborted = True
+                        loop_preview = raw[-120:].replace('\n', ' ') if len(raw) > 120 else raw.replace('\n', ' ')
+                        logger.warning(
+                            f"[AntiLoopGuard] Обнаружено зацикливание текста ({len(raw)} симв.). "
+                            f"Поток прерван, ответ усечен до {len(clean_text)} симв. Хвост: '{loop_preview}'"
+                        )
                         if hasattr(self, "task_queue") and hasattr(self.task_queue, "abort_current"):
                             self.task_queue.abort_current()
                         elif hasattr(self, "lm_client") and hasattr(self.lm_client, "abort"):
@@ -1082,6 +1088,10 @@ class ChatFlowControllerMixin:
         if getattr(self, "_turn_bubble", None) is None:
             if not chunk.strip():
                 return
+            if getattr(self, "_send_click_ts", None) is not None:
+                e2e_ttft = time.perf_counter() - self._send_click_ts
+                self._send_click_ts = None
+                logger.info(f"[UI-TELEMETRY] End-to-End TTFT: {e2e_ttft:.2f} сек (Send -> UI First Token)")
             if self.typing_loader is not None:
                 self._remove_typing_loader()
 

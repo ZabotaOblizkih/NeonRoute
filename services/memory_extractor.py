@@ -96,10 +96,12 @@ class MemoryExtractor:
 
             # Защита от извлечения в инженерном режиме
             if getattr(context, "_engineering_mode_active", False):
+                logger.debug("[MemoryExtractor] Пропуск: инженерный режим активен.")
                 return
 
             # Проверка наличия сообщений: извлекать факты можно только если есть реальный диалог пользователя
             if not getattr(context, "chat_history", None) or len(context.chat_history) < 2:
+                logger.debug("[MemoryExtractor] Пропуск: недостаточно сообщений в истории (<2).")
                 return
 
         if not messages_history or len(messages_history) < min_messages:
@@ -123,14 +125,17 @@ class MemoryExtractor:
         # Игнорируем команды генерации арта — они не содержат фундаментальных фактов о пользователе
         art_cmd_prefixes = ("нарисуй", "покажи", "изобрази", "визуализируй", "сгенерируй", "сделай арт", "сделай картинку", "!art", "!арт")
         if any(last_user_text.lower().startswith(p) for p in art_cmd_prefixes):
+            logger.debug(f"[MemoryExtractor] Пропуск: арт-команда '{last_user_text[:40]}'.")
             return
 
         # Игнорируем сервисные команды управления памятью (Забудь, Запомни, Очисти память и т.д.)
         from services.memory_db import handle_memory_command
         if handle_memory_command(last_user_text)[0]:
+            logger.debug(f"[MemoryExtractor] Пропуск: сервисная команда памяти '{last_user_text[:40]}'.")
             return
 
         if not MemoryExtractor._has_user_fact_potential(last_user_text):
+            logger.debug(f"[MemoryExtractor] Пропуск: реплика не содержит маркеров фактов о пользователе: '{last_user_text[:40]}'.")
             return
 
         turn_sig = f"{len(messages_history)}:{last_user_text[:80]}"

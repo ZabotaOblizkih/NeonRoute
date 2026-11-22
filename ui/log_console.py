@@ -375,6 +375,15 @@ class LogConsoleDialog(FramelessDialog):
         matches_query = (not query or query in text.lower())
 
         if matches_filter and matches_query:
+            # Защита от зависания QTextDocument при рендере гигантских строк (base64, дампы)
+            render_text = text
+            if len(render_text) > 8000:
+                render_text = (
+                    render_text[:4000]
+                    + f"\n... [Текст обрезан в UI-консоли: {len(render_text)} симв.] ...\n"
+                    + render_text[-4000:]
+                )
+
             color_map = {
                 "INFO": "#38BDF8",
                 "WARNING": "#FBBF24",
@@ -383,7 +392,7 @@ class LogConsoleDialog(FramelessDialog):
                 "DEBUG": "#94A3B8"
             }
             color = color_map.get(lvl_upper, "#CBD5E1")
-            escaped = html.escape(text)
+            escaped = html.escape(render_text)
             colored_html = f"<div style='color: {color}; margin: 1px 0; white-space: pre-wrap;'>{escaped}</div>"
             self.text_edit.appendHtml(colored_html)
             self.text_edit.moveCursor(QTextCursor.MoveOperation.End)

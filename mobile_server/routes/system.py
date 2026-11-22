@@ -27,6 +27,12 @@ from services.vram_arbiter import VRAMArbiter
 router = APIRouter()
 
 
+@router.get("/health")
+async def system_health():
+    """Быстрый L7-хэндшейк проверки жизнеспособности сервиса."""
+    return {"status": "ok", "service": "NeonRoute Mobile Gateway"}
+
+
 @router.get("/status", response_model=SystemStatusResponse)
 async def get_system_status(
     health_checker: HealthChecker = Depends(get_health_checker),

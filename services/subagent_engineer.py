@@ -344,7 +344,9 @@ class SubagentEngineer:
                 f"Исходный запрос: «{task_prompt}».\n"
                 f"Требование: обязательно сохрани требуемую бизнес-логику и новые поля из задачи, не откатывая код."
             )
-            return f"{extra_instruction}\n{anchor}" if extra_instruction else anchor
+            res = f"{extra_instruction}\n{anchor}" if extra_instruction else anchor
+            logger.debug(f"[Инженер.Anchor] Внедрен Bottom Error Anchor ({len(res)} симв.).")
+            return res
 
         # (Удалена мёртвая функция _get_compact_assistant_code)
 
@@ -540,6 +542,10 @@ class SubagentEngineer:
             stall_steps = max(consecutive_same_error_count, consecutive_no_action_turns)
             if stall_steps > 0:
                 current_temp = min(0.50, round(worker_temp + 0.15 * stall_steps, 2))
+                logger.info(
+                    f"[Инженер.АнтиСтупор] Эскалация температуры сэмплера: {worker_temp:.2f} -> {current_temp:.2f} "
+                    f"(шаг ступора={stall_steps}, повторных ошибок={consecutive_same_error_count})"
+                )
             else:
                 current_temp = worker_temp
 

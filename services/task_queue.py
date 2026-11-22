@@ -5,6 +5,7 @@ task runs at a time. Supports priority scheduling and immediate abort/cancellati
 """
 
 import uuid
+import time
 import logging
 import threading
 from queue import PriorityQueue, Empty
@@ -53,6 +54,7 @@ class InferenceTask:
         self.metadata = metadata or {}
         self.keep_llm_unloaded: bool = bool(self.metadata.get('keep_llm_unloaded', False))
         self.is_aborted = threading.Event()
+        self.created_at = time.perf_counter()
 
         # Автоматическое определение приоритета, если не задан явно
         if priority is not None:
@@ -102,7 +104,10 @@ class TaskQueueWorker(QThread):
             self._seq_counter += 1
             seq = self._seq_counter
         self._queue.put((task.priority, seq, task))
-        logger.info(f"Enqueued task: {task.name} ({task.task_type}, prio={task.priority}) [ID: {task.id}]")
+        if task.priority < PRIORITY_LOW:
+            logger.info(f"[TaskQueue] Enqueued task: {task.name} ({task.task_type}, prio={task.priority}) [ID: {task.id}]")
+        else:
+            logger.debug(f"[TaskQueue] Enqueued task: {task.name} ({task.task_type}, prio={task.priority}) [ID: {task.id}]")
 
     @property
     def current_task(self) -> Optional[InferenceTask]:
@@ -134,7 +139,7 @@ class TaskQueueWorker(QThread):
                         t_name = getattr(task_obj, "name", str(task_obj))
                         if hasattr(task_obj, "abort"):
                             task_obj.abort()
-                        logger.debug(f"[TaskQueue.Preemption] Удалена из очереди задача '{t_name}' ({task_type})")
+                        logger.info(f"[TaskQueue.Preemption] Удалена из очереди задача '{t_name}' ({task_type})")
                         continue
                     temp_list.append(item)
                 except Exception:
@@ -191,33 +196,48 @@ class TaskQueueWorker(QThread):
                         self._current_task = None
                     continue
 
-                self.task_started.emit(task.id, task.name, task.task_type)
-                logger.info(f"Started task execution: {task.name}")
+                queue_wait_ms = (time.perf_counter() - getattr(task, "created_at", time.perf_counter())) * 1000
+                log_as_info = (task.priority < PRIORITY_LOW) or (queue_wait_ms > 200.0)
 
+                start_msg = f"[TaskQueue] Запуск: '{task.name}' ({task.task_type}, wait={queue_wait_ms:.1f}мс, prio={task.priority}) [ID: {task.id}]"
+                if log_as_info:
+                    logger.info(start_msg)
+                else:
+                    logger.debug(start_msg)
+
+                self.task_started.emit(task.id, task.name, task.task_type)
+
+                t_exec_start = time.perf_counter()
                 try:
                     # Детерминированная координация VRAM перед инференсом
                     VRAMArbiter.get_instance().prepare_for_task(task.task_type, metadata=task.metadata)
                     result = task.func(*task.args, **task.kwargs)
+                    exec_duration_ms = (time.perf_counter() - t_exec_start) * 1000
                     if task.is_aborted.is_set():
-                        logger.info(f"Task completed but was aborted: {task.name}")
+                        logger.info(f"[TaskQueue] Task completed but was aborted: {task.name} ({exec_duration_ms:.1f}мс)")
                         self.task_aborted.emit(task.id)
                     else:
                         if isinstance(result, dict) and result.get("success") is False:
                             err_summary = result.get("summary") or result.get("stderr") or "ошибка выполнения"
-                            logger.warning(f"[NeonRoute.TaskQueue] Задача завершена с ошибкой: {task.name} ({str(err_summary)[:100]})")
+                            logger.warning(f"[TaskQueue] Задача завершена с ошибкой ({exec_duration_ms:.1f}мс): {task.name} ({str(err_summary)[:100]})")
                         else:
-                            logger.info(f"[NeonRoute.TaskQueue] Task completed successfully: {task.name}")
+                            finish_msg = f"[TaskQueue] Задача '{task.name}' успешно выполнена за {exec_duration_ms:.1f}мс"
+                            if log_as_info:
+                                logger.info(finish_msg)
+                            else:
+                                logger.debug(finish_msg)
                         self.task_finished.emit(task.id, result)
                 except Exception as e:
+                    exec_duration_ms = (time.perf_counter() - t_exec_start) * 1000
                     if task.is_aborted.is_set() or isinstance(e, InterruptedError):
-                        logger.info(f"Task aborted with exception (expected): {e}")
+                        logger.info(f"[TaskQueue] Task aborted with exception (expected, {exec_duration_ms:.1f}мс): {e}")
                         self.task_aborted.emit(task.id)
                     else:
                         err_str = str(e)
                         if "Вы сменили модель, начните новый диалог, чтобы продолжить" in err_str:
-                            logger.warning(f"Task stopped (model switched): {task.name} - {err_str}")
+                            logger.warning(f"[TaskQueue] Task stopped (model switched, {exec_duration_ms:.1f}мс): {task.name} - {err_str}")
                         else:
-                            logger.error(f"Task failed: {task.name} - Error: {e}", exc_info=True)
+                            logger.error(f"[TaskQueue] Task failed ({exec_duration_ms:.1f}мс): {task.name} - Error: {e}", exc_info=True)
                         self.task_failed.emit(task.id, err_str)
                 finally:
                     with self._lock:

@@ -11,8 +11,11 @@ Features:
 
 import re
 import time
+import logging
 from enum import Enum
 from typing import List, Tuple, Dict, Any, Optional
+
+logger = logging.getLogger("NeonRoute.ThoughtParser")
 
 
 class ThinkParserState(str, Enum):
@@ -101,6 +104,7 @@ class ThoughtStreamParser:
                     and close_match
                     and (not open_match or close_match.start() < open_match.start())
                 ):
+                    logger.debug("[ThoughtParser] Обнаружен висячий тег </think> без явного открытия. Восстановлен блок рассуждений.")
                     pre_thought = self.normal_text + combined[:close_match.start()]
                     if not pre_thought.strip():
                         # Одинокий закрывающий тег в самом начале ответа (без мыслей) — вырезаем до передачи в UI-стрим
@@ -212,6 +216,10 @@ class ThoughtStreamParser:
                             self.thought_text += th_part
                             events.append(("thought_chunk", th_part))
 
+                        logger.warning(
+                            f"[ThoughtParser] Превышен лимит {self.MAX_THINK_CHARS} символов рассуждений. "
+                            f"Принудительное закрытие блока <think> и переключение в чистовой режим."
+                        )
                         self._failsafe_triggered = True
                         self._finalize_timing()
                         events.append(("end_think", ""))
@@ -264,6 +272,7 @@ class ThoughtStreamParser:
                 events.append(("normal_chunk", self.buffer))
             self.buffer = ""
         elif self.state == ThinkParserState.IN_THINK:
+            logger.debug(f"[ThoughtParser] finalize: поток завершен до закрытия <think>. Принудительный сброс рассуждений ({len(self.thought_text)} симв.).")
             self._finalize_timing()
             events.append(("end_think", ""))
             self.state = ThinkParserState.THINK_FINISHED

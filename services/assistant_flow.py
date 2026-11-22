@@ -8,6 +8,7 @@ Headless service layer for Assistant Flow operations:
 """
 import re
 import json
+import time
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -290,7 +291,12 @@ def assemble_assistant_context(
 
     from services.knowledge_manager import KnowledgeManager
 
+    t_rag_start = time.perf_counter()
+    t_km_ms = 0.0
+    t_mem_ms = 0.0
+
     if actual_prompt:
+        t_km_start = time.perf_counter()
         try:
             matched_knowledge_docs = KnowledgeManager.find_relevant_documents(
                 actual_prompt, threshold=0.3, previous_query=prev_user_query
@@ -307,10 +313,13 @@ def assemble_assistant_context(
                 logger.info(f"[AssistantFlow.Deferred] База знаний: найдено {len(matched_knowledge_docs)} релевантных док.: {matched_names}")
         except Exception as e_km:
             logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска по базе знаний: {e_km}")
+        finally:
+            t_km_ms = (time.perf_counter() - t_km_start) * 1000
 
     include_memory = kwargs.get("include_memory", True)
     relevant_memory_facts: List[str] = []
     if include_memory and actual_prompt:
+        t_mem_start = time.perf_counter()
         try:
             from services.memory_db import memory_db
             relevant_memory_facts = memory_db.search_relevant_facts(actual_prompt, top_k=5)
@@ -324,6 +333,14 @@ def assemble_assistant_context(
                 )
         except Exception as e_mem_search:
             logger.warning(f"[AssistantFlow.Deferred] Ошибка поиска фактов памяти: {e_mem_search}")
+        finally:
+            t_mem_ms = (time.perf_counter() - t_mem_start) * 1000
+
+    total_rag_ms = (time.perf_counter() - t_rag_start) * 1000
+    logger.info(
+        f"[AssistantFlow.Deferred] Сборка контекста RAG завершена за {total_rag_ms:.1f}мс "
+        f"(KM: {t_km_ms:.1f}мс, Память: {t_mem_ms:.1f}мс, Документов: {len(matched_knowledge_docs)}, Фактов: {len(relevant_memory_facts)})"
+    )
 
     if curr_sess is None and controller is not None:
         curr_sess = getattr(controller, "current_session", None)

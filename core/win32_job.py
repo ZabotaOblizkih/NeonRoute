@@ -8,7 +8,10 @@ JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000).
 
 import sys
 import ctypes
+import logging
 from typing import Optional, Any
+
+logger = logging.getLogger("NeonRoute.Win32Job")
 
 # Константы Win32 Job Object
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
@@ -73,6 +76,9 @@ class Win32JobManager:
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.CreateJobObjectW(None, None)
             if not handle:
+                err = kernel32.GetLastError()
+                err_str = f" (GetLastError={err})" if err else ""
+                logger.warning(f"[Win32Job] Не удалось создать Job Object via CreateJobObjectW{err_str}.")
                 self._job_handle = None
                 return
 
@@ -86,28 +92,43 @@ class Win32JobManager:
                 ctypes.sizeof(info),
             )
             if not success:
+                err = kernel32.GetLastError()
+                err_str = f" (GetLastError={err})" if err else ""
+                logger.warning(f"[Win32Job] Не удалось настроить SetInformationJobObject{err_str}.")
                 kernel32.CloseHandle(handle)
                 self._job_handle = None
                 return
 
             self._job_handle = handle
-        except Exception:
+            logger.info("[Win32Job] Windows Job Object успешно инициализирован (KILL_ON_JOB_CLOSE).")
+        except Exception as e:
+            logger.warning(f"[Win32Job] Исключение при инициализации Job Object: {e}")
             self._job_handle = None
 
     def assign_process(self, process_handle: Any) -> bool:
         """Привязывает процесс (дескриптор или объект subprocess.Popen) к объекту задания."""
-        if sys.platform != "win32" or not self._job_handle:
+        if sys.platform != "win32":
+            return False
+        if not self._job_handle:
+            logger.warning("[Win32Job] Невозможно привязать процесс: Job Object не инициализирован.")
             return False
         try:
             kernel32 = ctypes.windll.kernel32
             # Если передан subprocess.Popen, берем его _handle
             raw_handle = getattr(process_handle, "_handle", process_handle)
+            pid = getattr(process_handle, "pid", "unknown")
             if raw_handle:
                 try:
                     handle_val = int(raw_handle)
                 except (ValueError, TypeError):
                     handle_val = raw_handle
-                return bool(kernel32.AssignProcessToJobObject(self._job_handle, handle_val))
-        except Exception:
-            pass
+                res = kernel32.AssignProcessToJobObject(self._job_handle, handle_val)
+                if not res:
+                    err = kernel32.GetLastError()
+                    err_str = f" (GetLastError={err})" if err else ""
+                    logger.warning(f"[Win32Job] Не удалось привязать процесс PID={pid} к Job Object{err_str}.")
+                    return False
+                return True
+        except Exception as e:
+            logger.warning(f"[Win32Job] Исключение при привязке процесса к Job Object: {e}")
         return False

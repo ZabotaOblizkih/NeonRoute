@@ -411,7 +411,7 @@ class SessionManager:
                         rows_to_insert,
                     )
         except Exception as e:
-            logger.debug(f"[SessionManager] SQLite write warning for {session.get('id')}: {e}")
+            logger.error(f"[SessionManager] Ошибка записи сессии {session.get('id')} в SQLite WAL: {e}", exc_info=True)
 
     @staticmethod
     def _load_session_from_sqlite(session_id: str, disk_mtime: Optional[float] = None) -> Optional[Dict[str, Any]]:
@@ -423,6 +423,11 @@ class SessionManager:
                 if not row:
                     return None
                 if disk_mtime is not None and abs(float(disk_mtime) - float(row["file_mtime"] or 0.0)) > 1.0:
+                    row_mtime = float(row["file_mtime"] or 0.0)
+                    logger.warning(
+                        f"[SessionManager] Десинхрон mtime для {session_id} (диск: {float(disk_mtime):.2f}, sqlite: {row_mtime:.2f}). "
+                        f"Чтение перенаправлено на диск."
+                    )
                     return None
                 data = json.loads(row["header_json"])
                 data["chat_history"] = json.loads(row["chat_history_json"]) if row["chat_history_json"] else []
@@ -522,7 +527,7 @@ class SessionManager:
                         except PermissionError:
                             time.sleep(0.03)
             except Exception as se:
-                logger.debug(f"[SessionManager] Ошибка дублирования session.json: {se}")
+                logger.warning(f"[SessionManager] Ошибка дублирования {session_id} в session.json: {se}")
 
             return file_path
         except Exception as e:

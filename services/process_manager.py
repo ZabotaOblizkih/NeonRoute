@@ -32,6 +32,7 @@ from config import (
     DEFAULT_LLAMA_UBATCH_SIZE,
     DEFAULT_LLAMA_BATCH_SIZE,
     KV_SLOTS_DIR,
+    _rotate_if_oversized,
 )
 from core.forge_locator import get_clean_forge_env
 from core.win32_job import Win32JobManager
@@ -383,6 +384,12 @@ class ProcessManager(QObject):
                 if not self.is_port_open("127.0.0.1", port, timeout=0.1):
                     break
                 time.sleep(0.1)
+
+            if self.is_port_open("127.0.0.1", port, timeout=0.2):
+                logger.error(
+                    f"[ProcessManager] Порт {port} остался ЗАНЯТ после 3.0с принудительного завершения! "
+                    f"Процесс llama-server не освободил дескриптор сокета."
+                )
 
             # 4. Set state
             next_state = ServerState.EVICTED_FOR_FORGE if for_forge_eviction else ServerState.STOPPED
@@ -999,6 +1006,7 @@ class ProcessManager(QObject):
                     except Exception:
                         pass
 
+                _rotate_if_oversized(log_file_path)
                 self._llama_log_file = open(log_file_path, "a", encoding="utf-8", errors="replace", buffering=1)
 
                 # 9. Popen with hidden flags
@@ -1032,7 +1040,9 @@ class ProcessManager(QObject):
                     )
                     assigned = Win32JobManager.get_instance().assign_process(self._llama_process)
                     if assigned:
-                        logger.info("[NeonRoute.ProcessManager] Процесс привязан к Windows Job Object (KILL_ON_JOB_CLOSE).")
+                        logger.info("[ProcessManager] Процесс llama-server привязан к Windows Job Object (KILL_ON_JOB_CLOSE).")
+                    else:
+                        logger.warning("[ProcessManager] ⚠️ Процесс llama-server НЕ привязан к Windows Job Object! Защита от сиротских процессов не активна.")
                 except Exception as popen_err:
                     logger.error(f"Failed to spawn llama-server.exe: {popen_err}")
                     if self._llama_log_file:
@@ -1657,9 +1667,11 @@ class ProcessManager(QObject):
         from unittest.mock import MagicMock
         if not (isinstance(getattr(self, "is_port_open", None), MagicMock)) and self.is_port_open(port=7860, timeout=0.3):
             if not verify_forge_http_handshake(port=7860, timeout=0.8):
+                is_occ, occ_pid, occ_name = self.inspect_port_occupant(7860)
+                occ_desc = f" (PID {occ_pid}: '{occ_name}')" if is_occ and occ_pid else ""
                 logger.warning(
-                    "[NeonRoute.ProcessManager] Конфликт портов! Порт 7860 занят посторонним сервисом "
-                    "(HTTP handshake не пройден). Gradio может переключиться на порт 7861."
+                    f"[ProcessManager] Конфликт портов! Порт 7860 занят посторонним сервисом{occ_desc} "
+                    f"(HTTP handshake не пройден). Gradio может переключиться на порт 7861."
                 )
 
         # Запуск быстрого pre-flight аудита ассетов перед стартом демона
@@ -1739,7 +1751,9 @@ class ProcessManager(QObject):
                 )
                 assigned = Win32JobManager.get_instance().assign_process(self._forge_process)
                 if assigned:
-                    logger.info("[NeonRoute.ProcessManager] Процесс привязан к Windows Job Object (KILL_ON_JOB_CLOSE).")
+                    logger.info("[ProcessManager] Процесс Forge привязан к Windows Job Object (KILL_ON_JOB_CLOSE).")
+                else:
+                    logger.warning("[ProcessManager] ⚠️ Процесс Forge НЕ привязан к Windows Job Object! Защита от сиротских процессов не активна.")
             except Exception as popen_err:
                 if self._forge_log_file:
                     self._forge_log_file.close()

@@ -148,7 +148,26 @@ def start_mobile_server_thread(timeout: float = 3.0) -> Tuple[bool, str]:
             return True, f"Мобильный сервер уже запущен (порт {settings.PORT})."
 
         if _is_port_listening(settings.PORT):
-            return True, f"Мобильный сервер уже доступен на порту {settings.PORT}."
+            # Быстрый L7-хэндшейк (timeout=0.3s) для проверки, что это именно наш сервер
+            is_our_server = False
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"http://127.0.0.1:{settings.PORT}/api/system/health")
+                with urllib.request.urlopen(req, timeout=0.3) as resp:
+                    if resp.status == 200:
+                        is_our_server = True
+            except Exception:
+                is_our_server = False
+
+            if is_our_server:
+                return True, f"Мобильный сервер уже доступен на порту {settings.PORT}."
+            else:
+                from services.process_manager import inspect_port_occupant
+                is_occ, occ_pid, occ_name = inspect_port_occupant(settings.PORT)
+                occ_desc = f"процессом '{occ_name}' (PID: {occ_pid})" if is_occ and occ_pid else "посторонней службой"
+                err_msg = f"Порт {settings.PORT} занят {occ_desc}, не являющимся NeonRoute Mobile Gateway."
+                logger.error(f"[MobileServer] {err_msg}")
+                return False, err_msg
 
         import uvicorn
         _server_error = None

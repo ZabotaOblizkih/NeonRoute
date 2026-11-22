@@ -771,7 +771,9 @@ class RoleplayFlowControllerMixin:
             logger.error(f"[RoleplayFlow] Ошибка генерации эфемерного арт-промпта РП: {e}")
             raw_text = ""
 
-        logger.info(f"\n[RoleplayFlow.CinemaPrompt] <<< СЫРОЙ ВЫХОД LLM:\n{raw_text}\n")
+        raw_preview = (raw_text.strip()[:140] + "...") if len(raw_text.strip()) > 140 else raw_text.strip()
+        logger.info(f"[RoleplayFlow.CinemaPrompt] Выход LLM получен ({len(raw_text)} симв.): {raw_preview}")
+        logger.debug(f"[RoleplayFlow.CinemaPrompt] <<< СЫРОЙ ВЫХОД LLM:\n{raw_text}\n")
 
         raw_text_clean = TextRegexFilter.strip_thought_blocks(raw_text, mask_code=True).strip()
         parsed_json = parse_structured_art_response(raw_text_clean)

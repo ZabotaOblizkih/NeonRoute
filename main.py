@@ -17,7 +17,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from config import (
     BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR,
-    CHARACTERS_DIR, APP_NAME, APP_VERSION, SPLASH_PATH, APP_ICON_PATH
+    CHARACTERS_DIR, APP_NAME, APP_VERSION, SPLASH_PATH, APP_ICON_PATH,
+    _rotate_if_oversized
 )
 # NOTE: ui.main_window is intentionally NOT imported here at module level.
 # It is deferred inside main() so the splash screen can show and animate
@@ -94,7 +95,13 @@ def setup_environment_and_logging():
     for directory in [BASE_DIR, EXPORTS_DIR, OUTPUTS_DIR, AUDIO_DIR, LOGS_DIR, CHARACTERS_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
 
-    # 0. Гигиена потоков в pythonw.exe: перенаправление sys.stdout и sys.stderr, если они None
+    # 0. Безопасная атомарная ротация логов до открытия дескрипторов (защита от WinError 32)
+    _rotate_if_oversized(LOGS_DIR / "stdout.log")
+    _rotate_if_oversized(LOGS_DIR / "stderr.log")
+    _rotate_if_oversized(LOGS_DIR / "crash.log")
+    _rotate_if_oversized(LOGS_DIR / "llama_server.log")
+
+    # 1. Гигиена потоков в pythonw.exe: перенаправление sys.stdout и sys.stderr, если они None
     if sys.stdout is None:
         try:
             sys.stdout = open(LOGS_DIR / "stdout.log", "a", encoding="utf-8", buffering=1)
@@ -107,7 +114,7 @@ def setup_environment_and_logging():
         except Exception:
             sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
-    # 1. Активация faulthandler в logs/crash.log для отлова фатальных сбоев C++ / SEH / abort()
+    # 2. Активация faulthandler в logs/crash.log для отлова фатальных сбоев C++ / SEH / abort()
     global _FAULTHANDLER_FILE
     if _FAULTHANDLER_FILE is None:
         try:
@@ -116,10 +123,10 @@ def setup_environment_and_logging():
         except Exception as fh_err:
             logging.debug(f"Failed to enable faulthandler: {fh_err}")
 
-    # 2. Startup cleanup: remove log archives older than 7 days (7 * 86400 sec)
+    # 3. Startup cleanup: remove log archives older than 7 days (7 * 86400 sec)
     now = time.time()
     cutoff_seconds = 7 * 86400
-    preserve_logs = {"crash.log", "stdout.log", "stderr.log", "neonroute.log"}
+    preserve_logs = {"crash.log", "stdout.log", "stderr.log", "neonroute.log", "llama_server.log"}
     try:
         for p in LOGS_DIR.glob("*.log*"):
             if p.is_file() and p.name not in preserve_logs and (now - p.stat().st_mtime) > cutoff_seconds:

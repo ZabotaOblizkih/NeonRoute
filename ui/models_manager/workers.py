@@ -109,7 +109,8 @@ class ForgeScanWorker(QThread):
             return
         try:
             raw_models = self.forge_client.get_models() or []
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[ForgeModelsWorker] Сбой получения моделей Forge: {e}")
             raw_models = []
 
         if self._is_aborted or self.isInterruptionRequested():
@@ -117,7 +118,8 @@ class ForgeScanWorker(QThread):
 
         try:
             installed = self.forge_client.get_installed_checkpoints() or []
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[ForgeModelsWorker] Сбой получения чекпоинтов Forge: {e}")
             installed = []
 
         if self._is_aborted or self.isInterruptionRequested():
@@ -125,7 +127,8 @@ class ForgeScanWorker(QThread):
 
         try:
             upscalers = self.forge_client.get_upscalers() or []
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[ForgeModelsWorker] Сбой получения апскейлеров Forge: {e}")
             upscalers = []
 
         if not (self._is_aborted or self.isInterruptionRequested()):

@@ -128,7 +128,10 @@ class CodeValidator:
                     return err
             return None
 
-        return scan_scope(st)
+        err = scan_scope(st)
+        if err:
+            logger.info(f"[CodeValidator] Неопределенная переменная в '{filename}': {err[:120]}")
+        return err
 
     @classmethod
     def check_unreferenced_methods(cls, content: str, filename: str) -> Optional[str]:
@@ -210,6 +213,7 @@ class CodeValidator:
             msg = f"SyntaxError на строке {err_line}: {e.msg}"
             if err_text:
                 msg += f"\nСтрока с ошибкой: {err_text}"
+            logger.info(f"[CodeValidator] {filename}: {msg}")
             return False, msg
 
         # 1.5. AST Safety Guard (VULN-02): блокировка опасных модулей
@@ -526,10 +530,12 @@ class CodeValidator:
         is_explicit_delete = task_prompt and any(k in task_prompt.lower() for k in deletion_keywords)
 
         if not is_explicit_delete and orig_len > 300 and new_len < (orig_len * 0.25):
-            return False, (
+            err_msg = (
                 f"Аномальное сокращение объёма {filename}: размер уменьшился с {orig_len} до {new_len} символов (более чем на 75%). "
                 f"Похоже на обрыв генерации. Если удаление кода не планировалось, верни полную реализацию."
             )
+            logger.warning(f"[CodeValidator] {err_msg}")
+            return False, err_msg
 
         # Все эвристические сравнения dropped_classes и dropped_funcs УДАЛЕНЫ. 
         # Дальнейшую проверку работоспособности проводит песочница через реальный запуск (Execution-First).

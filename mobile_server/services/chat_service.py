@@ -200,6 +200,7 @@ async def subscribe_session_events(session_id: str) -> AsyncIterator[Dict[str, s
     entry = (loop, queue)
     with _session_events_lock:
         _session_event_subscribers.setdefault(session_id, []).append(entry)
+    logger.info(f"[MobileServer] Клиент подключился к SSE потоку сессии: {session_id}")
     try:
         yield {"event": "connected", "data": json.dumps({"session_id": session_id})}
         while True:
@@ -209,6 +210,7 @@ async def subscribe_session_events(session_id: str) -> AsyncIterator[Dict[str, s
             except asyncio.TimeoutError:
                 yield {"event": "ping", "data": "{}"}
     finally:
+        logger.info(f"[MobileServer] Клиент отключился от SSE потока сессии: {session_id}")
         with _session_events_lock:
             subs = _session_event_subscribers.get(session_id)
             if subs and entry in subs:
@@ -553,7 +555,7 @@ async def stream_chat_sse(
         func=_run_inference_task,
         abort_fn=getattr(lm_client, "abort", None),
         priority=PRIORITY_HIGH,
-        metadata={"session_id": session_id},
+        metadata={"session_id": session_id, "source": "mobile"},
     )
     task_queue.enqueue(inference_task)
 

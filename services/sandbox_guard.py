@@ -15,6 +15,21 @@ from config import WORKSPACE_DIR
 logger = logging.getLogger("NeonRoute.SandboxGuard")
 
 _GUARD_INSTALLED = False
+_in_audit_log = False
+
+
+def _log_security_alarm(msg: str) -> None:
+    """Потокобезопасная и реентерабельная запись тревоги безопасности без рекурсии в аудит-хуке."""
+    global _in_audit_log
+    if _in_audit_log:
+        return
+    _in_audit_log = True
+    try:
+        logger.warning(msg)
+    except Exception:
+        pass
+    finally:
+        _in_audit_log = False
 
 BANNED_MODULES = {
     "socket", "requests", "ctypes", "winreg", "subprocess"
@@ -113,10 +128,13 @@ def install_guard() -> None:
         is_workspace_file = "/workspace/" in caller_file or caller_file.endswith("/workspace")
         if (caller_name == "__main__" or is_workspace_file):
             if mod_root in BANNED_MODULES:
+                _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирован опасный импорт: module='{name}' из '{caller_file}'")
                 raise PermissionError(f"Ошибка безопасности (Sandbox Guard): Импорт модуля '{name}' запрещен политикой песочницы.")
             if name.lower() in ("urllib.request", "urllib.robotparser") or name.lower().startswith("urllib.request."):
+                _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирован сетевой импорт: module='{name}' из '{caller_file}'")
                 raise PermissionError(f"Ошибка безопасности (Sandbox Guard): Сетевой импорт '{name}' запрещен политикой песочницы.")
             if mod_root == "urllib" and fromlist and any(isinstance(f, str) and f.lower() in ("request", "robotparser") for f in fromlist):
+                _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирован сетевой импорт: module='{name}.{fromlist}' из '{caller_file}'")
                 raise PermissionError(f"Ошибка безопасности (Sandbox Guard): Сетевой импорт '{name}.{fromlist}' запрещен политикой песочницы.")
         return orig_import(name, globals, locals, fromlist, level)
 
@@ -125,6 +143,7 @@ def install_guard() -> None:
     # 3. Аудит-хук рантайма Python для предотвращения эскалации привилегий
     def _audit_hook(event: str, args: tuple) -> None:
         if event == "os.system" or event.startswith("os.spawn") or event.startswith("os.posix_spawn"):
+            _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирован системный вызов: {event}")
             raise PermissionError(f"Ошибка безопасности: системный вызов {event} запрещен политикой песочницы.")
 
         elif event.startswith("subprocess."):
@@ -137,12 +156,15 @@ def install_guard() -> None:
                     frame = frame.f_back
             except Exception:
                 pass
+            _log_security_alarm("🚨 [SandboxGuard ALARM] Заблокирован запуск дочернего процесса из песочницы.")
             raise PermissionError("Ошибка безопасности: запуск дочерних процессов из песочницы запрещен.")
 
         elif event in ("socket.connect", "socket.bind", "socket.listen", "socket.socket"):
+            _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирована попытка сетевого соединения: {event}")
             raise PermissionError("Ошибка безопасности: сетевые соединения из песочницы запрещены.")
 
         elif event.startswith("winreg.") and any(w in event for w in ("Create", "Delete", "Set", "Save")):
+            _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирована попытка модификации реестра: {event}")
             raise PermissionError("Ошибка безопасности: модификация системного реестра запрещена.")
 
         elif event == "os.chdir":
@@ -164,6 +186,7 @@ def install_guard() -> None:
                 try:
                     resolved_target.relative_to(resolved_ws)
                 except ValueError:
+                    _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирована смена директории вне workspace: {p_str}")
                     raise PermissionError("Смена директории за пределы workspace запрещена")
 
         elif event in ("os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "shutil.rmtree"):
@@ -191,6 +214,7 @@ def install_guard() -> None:
 
                 # Удалять можно файлы внутри workspace и temp, но не сам корень workspace
                 if not _is_safe_path(resolved_target, resolved_ws, allow_ws_root=False):
+                    _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокировано удаление/перемещение вне workspace: {p_str}")
                     raise PermissionError(
                         f"Удаление или перемещение вне рабочей директории workspace запрещено политикой безопасности: {p_str}"
                     )
@@ -210,6 +234,7 @@ def install_guard() -> None:
             if is_write and path is not None:
                 if isinstance(path, (int, float)):
                     if path not in (0, 1, 2):
+                        _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирована запись через fd {path}")
                         raise PermissionError(f"Запись через файловый дескриптор {path} запрещена.")
                 elif isinstance(path, (str, bytes, os.PathLike)):
                     p_str = os.fspath(path) if hasattr(os, "fspath") else str(path)
@@ -220,12 +245,14 @@ def install_guard() -> None:
                     if ".pytest_cache" in p_clean or "pytest-" in p_clean or ("pytest" in sys.modules and ("/history/" in p_clean or "/history" in p_clean or "/data/" in p_clean or "cast_test_" in p_clean)):
                         return
                     if any(p_clean.startswith(b) for b in SYSTEM_BLACKLIST) or "/windows/" in p_clean:
+                        _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирована запись в системную директорию: {p_str}")
                         raise PermissionError(f"Запись в системную директорию запрещена политикой безопасности: {p_str}")
 
                     resolved_target = Path(p_str).resolve()
                     resolved_ws = _get_workspace_dir()
 
                     if not _is_safe_path(resolved_target, resolved_ws, allow_ws_root=True):
+                        _log_security_alarm(f"🚨 [SandboxGuard ALARM] Заблокирована запись вне workspace: {p_str}")
                         raise PermissionError(f"Запись вне рабочей директории workspace запрещена политикой безопасности: {p_str}")
 
     try:

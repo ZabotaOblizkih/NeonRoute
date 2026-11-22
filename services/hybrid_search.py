@@ -14,6 +14,8 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional, Set
 import numpy as np
 
+logger = logging.getLogger("NeonRoute.HybridSearch")
+
 from services.search_tokenizer import SearchTokenizer
 from services.markdown_chunker import MarkdownChunker
 
@@ -448,7 +450,11 @@ class HybridSearchEngine:
         self.alpha = alpha  # Вес Dense (1 - alpha для Sparse)
         self.rrf_k = rrf_k
         self.bm25 = BM25Index(k1=k1, b=b)
-        self.dense_vectorizer = dense_vectorizer or BuiltinDenseVectorizer()
+        if dense_vectorizer is None:
+            logger.warning("[HybridSearch] FastEmbed недоступен! Активирован fallback 'BuiltinDenseVectorizer' (точность семантического поиска снижена).")
+            self.dense_vectorizer = BuiltinDenseVectorizer()
+        else:
+            self.dense_vectorizer = dense_vectorizer
         self.chunks: List[Dict[str, Any]] = []
         self.dense_matrix: Optional[np.ndarray] = None
 

@@ -47,9 +47,17 @@ class VRAMArbiter:
         # ── 1. ЗАДАЧИ ЯЗЫКОВОЙ МОДЕЛИ (LLM, Текстовый диалог, Перевод, Инженер) ──
         if task_type in ("llm", "translation", "file") or meta.get("is_ephemeral_doc"):
             if self._current_owner != GPUOwner.LLM:
+                old_owner = self._current_owner
+                t0 = time.monotonic()
                 self._release_forge_vram()
                 self._current_owner = GPUOwner.LLM
-                logger.info("[VRAMArbiter] GPU монопольно передан под LLM/Текст/Инженер.")
+                dt_ms = (time.monotonic() - t0) * 1000
+                from services.layer_budgeter import LayerBudgeter
+                used_vram = LayerBudgeter.get_current_used_vram_mb()
+                logger.info(
+                    f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
+                    f"Инициатор: task_type='{task_type}' | VRAM used={used_vram:.1f} MB | Время переключения: {dt_ms:.1f}мс"
+                )
 
         # ── 2. ЗАДАЧИ ДИФФУЗИИ (Forge txt2img, scene_art, scene_background) ──
         elif task_type in ("image", "scene_art", "scene_background"):
@@ -78,6 +86,8 @@ class VRAMArbiter:
                 logger.debug("[VRAMArbiter] LLM уже выгружен и GPU принадлежит DIFFUSION — пропуск повторной выгрузки.")
                 return True
 
+        old_owner = self._current_owner
+        t0 = time.monotonic()
         if self.lm_client and hasattr(self.lm_client, "unload_models_cli"):
             logger.info("[VRAMArbiter] Синхронная выгрузка LLM перед стартом диффузии...")
             self.lm_client.unload_models_cli()
@@ -86,6 +96,13 @@ class VRAMArbiter:
             if hasattr(self.forge_client, "_wait_for_vram_clear"):
                 self.forge_client._wait_for_vram_clear()
         self._current_owner = GPUOwner.DIFFUSION
+        dt_ms = (time.monotonic() - t0) * 1000
+        from services.layer_budgeter import LayerBudgeter
+        used_vram = LayerBudgeter.get_current_used_vram_mb()
+        logger.info(
+            f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
+            f"Инициатор: release_llm_for_diffusion | VRAM used={used_vram:.1f} MB | Время: {dt_ms:.1f}мс"
+        )
         return True
 
     def _release_forge_vram(self, force: bool = False):
@@ -108,7 +125,7 @@ class VRAMArbiter:
                     self.forge_client.free_vram(unload_models=True, force=True)
                 logger.info("[VRAMArbiter] Чекпоинт Forge успешно выгружен в RAM.")
             except Exception as e:
-                logger.debug(f"[VRAMArbiter] Ошибка выгрузки Forge: {e}")
+                logger.error(f"[VRAMArbiter] Критический сбой выгрузки Forge VRAM: {e}. Риск OOM при запуске LLM!")
 
         # Цикл стабилизации VRAM перед передачей GPU под LLM (до 1.5 с с шагом 0.1 с)
         self._wait_for_vram_stabilization()
@@ -150,11 +167,27 @@ class VRAMArbiter:
             prev_used = curr_used
             time.sleep(step_s)
 
+        if (time.monotonic() - start_t) >= timeout_s:
+            curr_used = LayerBudgeter.get_current_used_vram_mb()
+            logger.warning(
+                f"[VRAMArbiter] Таймаут стабилизации VRAM ({timeout_s}с). "
+                f"Текущая занятость: {curr_used:.1f} MB (порог 1500 MB не достигнут)."
+            )
+
     def release_diffusion_for_llm(self, force: bool = True) -> bool:
         """Освобождает VRAM от диффузии и сбрасывает владельца GPU перед последующим запуском LLM."""
+        old_owner = self._current_owner
+        t0 = time.monotonic()
         self._release_forge_vram(force=force)
         self._last_diffusion_release_ts = time.monotonic()
         self._current_owner = GPUOwner.NONE
+        dt_ms = (time.monotonic() - t0) * 1000
+        from services.layer_budgeter import LayerBudgeter
+        used_vram = LayerBudgeter.get_current_used_vram_mb()
+        logger.info(
+            f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
+            f"Инициатор: release_diffusion_for_llm | VRAM used={used_vram:.1f} MB | Время: {dt_ms:.1f}мс"
+        )
         return True
 
     def release_all(self) -> Dict[str, str]:
