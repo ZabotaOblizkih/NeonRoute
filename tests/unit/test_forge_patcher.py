@@ -500,4 +500,76 @@ def test_forge_patcher_prepatched_config_fields(tmp_path):
     assert models_file.read_text(encoding="utf-8").strip() == prepatched_models.strip()
 
 
+def test_forge_patcher_get_sd_models_getattr_config_and_delegated_set_config(tmp_path):
+    """
+    Verifies support for Forge 2.0 builds where:
+    1. get_sd_models() already contains "config": getattr(x, 'config', None) instead of literal None.
+    2. set_config delegates to modules.sysinfo.set_config(req).
+    3. unload_model_weights contains unload_all_models() and return.
+    Flow: NEEDS_PATCH -> apply_patch() == True -> PATCHED -> idempotent -> clean restore.
+    """
+    forge_dir = tmp_path / "forge_getattr_config"
+    webui_dir = forge_dir / "webui"
+    (webui_dir / "modules" / "api").mkdir(parents=True, exist_ok=True)
+
+    api_file = webui_dir / "modules" / "api" / "api.py"
+    models_file = webui_dir / "modules" / "api" / "models.py"
+    sd_file = webui_dir / "modules" / "sd_models.py"
+
+    getattr_api_py = SYSINFO_DELEGATED_API_PY.replace(
+        '"filename": x.filename}',
+        '"filename": x.filename, "config": getattr(x, \'config\', None)}'
+    )
+
+    api_file.write_text(getattr_api_py, encoding="utf-8")
+    models_file.write_text(STOCK_MODELS_PY, encoding="utf-8")
+    sd_file.write_text(EXISTING_UNLOAD_SD_MODELS_PY, encoding="utf-8")
+
+    # 1. Detection: needs patch (missing free-vram route, refresh_block in set_config, models.py, sd_models.py)
+    status, msg = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.NEEDS_PATCH
+    assert "API free-vram/refresh" in msg
+    assert "sd_models unload" in msg
+    assert "models config=None" in msg
+
+    # 2. Apply patch
+    ok, apply_msg = ForgePatcher.apply_patch(forge_dir)
+    assert ok is True, f"apply_patch failed: {apply_msg}"
+    assert ForgePatcher.has_backup(forge_dir) is True
+
+    # 3. Verify status PATCHED and patched files
+    status_after, _ = ForgePatcher.check_status(forge_dir)
+    assert status_after == ForgePatchStatus.PATCHED
+
+    patched_api = api_file.read_text(encoding="utf-8")
+    assert "/sdapi/v1/free-vram" in patched_api
+    assert "def free_vram_api(" in patched_api
+    assert "refresh_model_loading_parameters" in patched_api
+    # Existing getattr was preserved without error or duplicate keys
+    assert '"config": getattr(x, \'config\', None)' in patched_api
+
+    patched_models = models_file.read_text(encoding="utf-8")
+    assert 'config: Optional[str] = Field(default=None, title="Config file")' in patched_models
+
+    patched_sd = sd_file.read_text(encoding="utf-8")
+    assert "model_data.forge_hash = ''" in patched_sd
+    assert "memory_management.soft_empty_cache()" in patched_sd
+
+    # 4. Idempotency test
+    backup_api = webui_dir / ".neonroute_backup" / "original" / "modules" / "api" / "api.py"
+    backup_mtime = backup_api.stat().st_mtime
+    ok2, _ = ForgePatcher.apply_patch(forge_dir)
+    assert ok2 is True
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.PATCHED
+    assert backup_api.stat().st_mtime == backup_mtime
+
+    # 5. Clean restore
+    ok_res, res_msg = ForgePatcher.restore_backup(forge_dir)
+    assert ok_res is True
+    assert api_file.read_text(encoding="utf-8").strip() == getattr_api_py.strip()
+    assert models_file.read_text(encoding="utf-8").strip() == STOCK_MODELS_PY.strip()
+    assert sd_file.read_text(encoding="utf-8").strip() == EXISTING_UNLOAD_SD_MODELS_PY.strip()
+    assert ForgePatcher.check_status(forge_dir)[0] == ForgePatchStatus.NEEDS_PATCH
+
+
 

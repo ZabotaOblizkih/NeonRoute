@@ -301,6 +301,22 @@ class ForgePatcher:
             return "".join(result_lines)
 
     @classmethod
+    def _has_get_models_config(cls, api_text: str) -> bool:
+        """
+        Проверяет наличие поля 'config' в get_sd_models:
+        - Литерал '"config": None' или "'config': None"
+        - Либо присутствие ключа "config" в теле метода get_sd_models (например, getattr(x, 'config', None)).
+        """
+        if '"config": None' in api_text or "'config': None" in api_text:
+            return True
+        match = re.search(r'def\s+get_sd_models\b[\s\S]*?(?=(?:\n[ \t]*(?:def|class)\b)|\Z)', api_text)
+        if match:
+            body = match.group(0)
+            if re.search(r'["\']config["\']\s*:', body):
+                return True
+        return False
+
+    @classmethod
     def get_backup_dir(cls, forge_root: Path | str) -> Optional[Path]:
         """Возвращает путь к директории оригиналов .neonroute_backup/original/."""
         webui_dir = cls.find_forge_webui_dir(forge_root)
@@ -405,7 +421,7 @@ class ForgePatcher:
             has_free_vram_route = API_ROUTE_FREE_VRAM in api_text
             has_free_vram_method = "def free_vram_api(" in api_text
             has_refresh_opts = "refresh_model_loading_parameters" in api_text
-            has_get_models_config = '"config": None' in api_text or "'config': None" in api_text
+            has_get_models_config = cls._has_get_models_config(api_text)
             api_patched = has_free_vram_route and has_free_vram_method and has_refresh_opts and has_get_models_config
 
             models_patched = (
@@ -576,12 +592,16 @@ class ForgePatcher:
                 return False, "Не удалось найти точку вставки refresh_model_loading_parameters в set_config (api.py)."
             api_text = new_api_text
 
-            # Г. "config": None в get_sd_models
+            # Г. "config" в get_sd_models
             if '"config": None' not in api_text and "'config': None" not in api_text:
                 pattern_old = '"filename": x.filename}'
                 pattern_new = '"filename": x.filename, "config": None}'
                 if pattern_old in api_text:
                     api_text = api_text.replace(pattern_old, pattern_new, 1)
+                elif "'filename': x.filename}" in api_text:
+                    api_text = api_text.replace("'filename': x.filename}", "'filename': x.filename, 'config': None}", 1)
+                # Если pattern_old не найден, но метод get_sd_models уже содержит поле "config"
+                # (например, "config": getattr(x, 'config', None)), не блокируем применение патча.
 
             # Модификация 2: modules/api/models.py
             if not (
