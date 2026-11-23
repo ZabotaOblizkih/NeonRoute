@@ -4,7 +4,7 @@
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
 > **Метрики кодовой базы**: 335 файлов Python, ~132 500 строк кода  
-> **Статус верификации**: 940 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
+> **Статус верификации**: 948 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
 
 ---
 
@@ -56,7 +56,7 @@
 | **Хранение данных** | SQLite 3 (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), LanceDB (`table.optimize()`), Zero-Fsync JSON-зеркала |
 | **Сетевые контракты** | FastAPI / Uvicorn (Mobile BFF Gateway REST + Server-Sent Events), Gradio/Automatic1111 REST API, HTTP Keep-Alive |
 | **Управление ОС и процессами** | Win32 API (`kernel32.dll`: Windows Job Objects `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`, дескрипторы скрытых процессов `CREATE_NO_WINDOW`) |
-| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (940 тестов) |
+| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (948 тестов) |
 
 ---
 
@@ -1674,21 +1674,21 @@ flowchart TD
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (940 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (948 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 940 автоматических тестов в 99 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 948 автоматических тестов в 99 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
 | **`tests/smoke/`** | 16 | 113 | Быстрые сквозные смоук-тесты: контракт синхронизации закрытия диалога моделей (`test_dialog_sync_smoke.py`, 5 тестов: async reload, неблокирующий save_all, дедупликация ModelRouter, фоновый refresh_checkpoints, сброс WaitCursor), единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`), гигиена batch-файлов, проброс ADetailer, матрица профилей VRAM/RAM Forge, Layer Budgeter, жизненный цикл MainWindow, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` |
-| **`tests/unit/`** | 68 | 640 | Изолированное модульное тестирование: жизненный цикл `MobileServerDialog` и безопасность превью (`test_mobile_server_dialog.py`, 5 тестов), синхронизация геометрии QLineEdit в спинбоксах (`test_spinbox_geometry.py`, 6 тестов), динамический каскад ассетов и моделей Forge (`test_asset_validator.py`, 10 тестов), аудит игнорирования патчей Forge и нормализация путей (`test_forge_patch_ignored.py`, 6 тестов), гигиена pythonw.exe, перенаправление stdout/stderr и crash.log (`test_logging_hygiene.py`), встроенный загрузчик Forge (`test_forge_downloader.py`), сквозные тесты ModelsManagerDialog (`test_models_manager_dialog.py`), 3-слойный ADetailer и Structured JSON (`test_adetailer_dialog.py`), 5-уровневый каскад локатора Forge, динамический поиск интерпретатора `find_forge_python` и аудит зависимостей `check_forge_environment_ready` (`test_forge_locator.py`, 18 тестов), адаптивная политика VRAM и автоинжекция `--skip-install` (`test_forge_vram_policy.py`, 28 тестов), автозагрузчик llama-server, клиенты Forge и LM Studio, патчер Forge, память MemoryDB, FastEmbed ONNX, Deferred RAG |
+| **`tests/unit/`** | 68 | 648 | Изолированное модульное тестирование: жизненный цикл `MobileServerDialog` и безопасность превью (`test_mobile_server_dialog.py`, 5 тестов), синхронизация геометрии QLineEdit в спинбоксах (`test_spinbox_geometry.py`, 6 тестов), динамический каскад ассетов и моделей Forge (`test_asset_validator.py`, 10 тестов), аудит игнорирования патчей Forge и нормализация путей (`test_forge_patch_ignored.py`, 6 тестов), гигиена pythonw.exe, перенаправление stdout/stderr и crash.log (`test_logging_hygiene.py`), встроенный загрузчик Forge (`test_forge_downloader.py`), сквозные тесты ModelsManagerDialog (`test_models_manager_dialog.py`), 3-слойный ADetailer и Structured JSON (`test_adetailer_dialog.py`), 5-уровневый каскад локатора Forge, динамический поиск интерпретатора `find_forge_python` и аудит зависимостей `check_forge_environment_ready` (`test_forge_locator.py`, 18 тестов), адаптивная политика VRAM и автоинжекция `--skip-install` (`test_forge_vram_policy.py`, 28 тестов), защита отката и аудит коммитов git HEAD (`test_forge_patcher.py`, 17 тестов), гейт ADetailer, fallback чекпоинтов и различение keep-alive сброса от оффлайна (`test_forge_client.py`, 104 теста), предотвращение запуска второго процесса на занятом порту 7860 (`test_forge_handshake.py`, 7 тестов), автозагрузчик llama-server, клиенты Forge и LM Studio, патчер Forge, память MemoryDB, FastEmbed ONNX, Deferred RAG |
 | **`tests/integration/`** | 3 | 13 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`), отказоустойчивости e2e (`test_e2e_fault_tolerance.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
 | **`tests/` (root)** | 12 | 174 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer, Chat Flow & Gallery Override (`test_chat.py`) |
-| **ИТОГО** | **99** | **940** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **ИТОГО** | **99** | **948** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Правила верификации для ИИ-агента
 
-- **Команда полного прогона**: `pytest -q` (гарантирует прохождение всех 940 тестов).
+- **Команда полного прогона**: `pytest -q` (гарантирует прохождение всех 948 тестов).
 - **Автоматическая изоляция окружения**: флаг `PYTEST_CURRENT_TEST` и airgap-фикстуры в `conftest.py` изолируют сеть, файловую систему и системный реестр Windows.
 - **Блокировка побочных эффектов**: фоновые daemon-потоки `ProcessManager`, модальные диалоги онбординга Forge и фоновые таймеры автоматически подавляются в тестовом режиме.
 - **Безопасная эмуляция процессов**: вместо запуска реальных внешних дочерних процессов (Forge, llama-server) используются легковесные in-process заставки и моки.
