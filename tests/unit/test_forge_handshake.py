@@ -90,3 +90,53 @@ def test_is_forge_running_requires_http_handshake():
     with patch("services.process_manager.verify_forge_http_handshake", return_value=True) as mock_handshake:
         assert pm.is_forge_running() is True
         assert mock_handshake.called
+
+
+def test_forge_startup_timeout_terminates_process_tree(monkeypatch, tmp_path):
+    """
+    Проверяет, что при превышении startup_timeout во время запуска Forge
+    ProcessManager гарантированно вызывает _run_forge_stop() для завершения дерева процессов,
+    сбрасывает ссылку на процесс в None и отправляет сигналы об ошибке.
+    """
+    import config
+    fake_bat = tmp_path / "forge_launcher.bat"
+    fake_bat.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(config, "FORGE_LAUNCHER_PATH", fake_bat)
+
+    pm = ProcessManager()
+    pm.is_port_open = MagicMock(return_value=False)
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 4321
+    mock_proc.poll.return_value = None
+    mock_proc.stdout = None
+
+    stop_called = False
+    def fake_stop():
+        nonlocal stop_called
+        stop_called = True
+        pm._forge_process = None
+
+    pm._run_forge_stop = MagicMock(side_effect=fake_stop)
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: mock_proc)
+    monkeypatch.setattr("services.process_manager.Win32JobManager.get_instance", lambda: MagicMock(assign_process=MagicMock(return_value=True)))
+    monkeypatch.setattr("services.process_manager.verify_forge_http_handshake", lambda *a, **kw: False)
+
+    # Симулируем истечение таймаута (перескок времени)
+    times = [100.0, 100.0, 300.0, 300.0]
+    monkeypatch.setattr("time.time", lambda: times.pop(0) if times else 500.0)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    status_signals = []
+    action_signals = []
+    pm.forge_status_changed.connect(lambda ok, msg: status_signals.append((ok, msg)))
+    pm.action_completed.connect(lambda action, ok, msg: action_signals.append((action, ok, msg)))
+
+    pm._run_forge_start()
+
+    assert stop_called is True
+    assert pm._forge_process is None
+    assert any(not ok and "Превышено время ожидания" in msg for ok, msg in status_signals)
+    assert any(action == "forge_start" and not ok for action, ok, msg in action_signals)
+

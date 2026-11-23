@@ -312,6 +312,9 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
     """
     Формирует изолированную копию переменных окружения для запуска Forge.
     - Удаляет переменные окружения Python NeonRoute: VIRTUAL_ENV, PYTHONPATH, PYTHONHOME.
+    - Удаляет прокси-переменные (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, FTP_PROXY, AG_LS_PROXY
+      и их варианты в нижнем регистре), препятствующие внутренним loopback-запросам Gradio/Uvicorn.
+    - Задает NO_PROXY / no_proxy ("localhost,127.0.0.1,0.0.0.0") и PYTHONUNBUFFERED="1".
     - Очищает активное виртуальное окружение и директорию интерпретатора NeonRoute
       (включая runtime\\python, sys.executable parent и Scripts) из PATH, предотвращая
       подтягивание DLL и site-packages NeonRoute во встроенный Python Forge.
@@ -324,7 +327,20 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
 
-    # 2. Очищаем PATH от записей активного venv и собственного Python NeonRoute
+    # 2. Очищаем прокси-переменные, мешающие внутренним loopback-запросам Gradio/Uvicorn
+    proxy_vars = [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "AG_LS_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "ag_ls_proxy",
+    ]
+    for p_var in proxy_vars:
+        env.pop(p_var, None)
+
+    # Гарантируем прямой доступ к localhost и небуферизованный вывод логов
+    env["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
+    env["no_proxy"] = "localhost,127.0.0.1,0.0.0.0"
+    env["PYTHONUNBUFFERED"] = "1"
+
+    # 3. Очищаем PATH от записей активного venv и собственного Python NeonRoute
     raw_path = env.get("PATH", "")
     if raw_path:
         parts = raw_path.split(os.pathsep)

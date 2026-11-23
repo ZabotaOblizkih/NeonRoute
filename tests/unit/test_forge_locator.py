@@ -220,6 +220,39 @@ def test_get_clean_forge_env():
     assert "C:\\Windows\\System32" in cleaned_path
     assert "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.1\\bin" in cleaned_path
 
+    # 4. Прокси-переменные удалены, NO_PROXY и PYTHONUNBUFFERED заданы
+    assert cleaned.get("NO_PROXY") == "localhost,127.0.0.1,0.0.0.0"
+    assert cleaned.get("no_proxy") == "localhost,127.0.0.1,0.0.0.0"
+    assert cleaned.get("PYTHONUNBUFFERED") == "1"
+
+
+def test_get_clean_forge_env_purges_proxy_variables():
+    """Проверяет полное удаление прокси-переменных верхнего и нижнего регистра."""
+    mock_env = {
+        "HTTP_PROXY": "http://127.0.0.1:8080",
+        "HTTPS_PROXY": "http://127.0.0.1:8080",
+        "ALL_PROXY": "socks5://127.0.0.1:1080",
+        "FTP_PROXY": "http://127.0.0.1:2121",
+        "AG_LS_PROXY": "http://127.0.0.1:53129",
+        "http_proxy": "http://127.0.0.1:8080",
+        "https_proxy": "http://127.0.0.1:8080",
+        "all_proxy": "socks5://127.0.0.1:1080",
+        "ftp_proxy": "http://127.0.0.1:2121",
+        "ag_ls_proxy": "http://127.0.0.1:53129",
+        "PATH": "C:\\Windows\\System32",
+    }
+    cleaned = get_clean_forge_env(mock_env)
+    for proxy_key in [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "AG_LS_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "ag_ls_proxy"
+    ]:
+        assert proxy_key not in cleaned
+
+    assert cleaned["NO_PROXY"] == "localhost,127.0.0.1,0.0.0.0"
+    assert cleaned["no_proxy"] == "localhost,127.0.0.1,0.0.0.0"
+    assert cleaned["PYTHONUNBUFFERED"] == "1"
+    assert "C:\\Windows\\System32" in cleaned["PATH"]
+
 
 def test_get_clean_forge_env_purges_runtime_python_and_sys_executable(monkeypatch, tmp_path):
     """

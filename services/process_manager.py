@@ -2038,6 +2038,17 @@ class ProcessManager(QObject):
             else:
                 err_msg = f"Превышено время ожидания запуска Forge ({startup_timeout} с). Порт 7860 не отвечает."
                 logger.warning(err_msg)
+                try:
+                    self._run_forge_stop()
+                except Exception as stop_err:
+                    logger.warning(f"Ошибка при очистке процесса Forge после таймаута: {stop_err}")
+                self._forge_process = None
+                if self._forge_log_file and not self._forge_log_file.closed:
+                    try:
+                        self._forge_log_file.close()
+                    except Exception:
+                        pass
+                    self._forge_log_file = None
                 self.forge_status_changed.emit(False, err_msg)
                 self.action_completed.emit("forge_start", False, err_msg)
         except Exception as e:
