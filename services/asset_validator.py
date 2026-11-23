@@ -431,6 +431,8 @@ class AssetValidator:
         report: Dict[str, Any] = {
             "forge_installed": forge_installed,
             "resolved_paths": paths,
+            "checkpoints_count": 0,
+            "checkpoints_files": [],
             "checkpoints_found": {},
             "checkpoints_missing": [],
             "adetailer_found": {},
@@ -438,24 +440,35 @@ class AssetValidator:
             "all_critical_present": True
         }
 
-        # 1. Проверка директории чекпоинтов
-        existing_sd_files = []
+        # 1. Динамическая проверка чекпоинтов SD
+        valid_checkpoint_files = []
         if sd_models_dir and sd_models_dir.exists():
             try:
-                existing_sd_files = [
-                    f.name.lower()
-                    for f in sd_models_dir.iterdir()
-                    if f.is_file() and f.suffix.lower() in (".safetensors", ".ckpt")
-                ]
-            except Exception as e:
+                for f in sd_models_dir.iterdir():
+                    try:
+                        if f.is_file() and f.suffix.lower() in (".safetensors", ".ckpt"):
+                            try:
+                                if f.stat().st_size > 0:
+                                    valid_checkpoint_files.append(f)
+                            except (OSError, PermissionError):
+                                pass
+                    except (OSError, PermissionError):
+                        pass
+            except (FileNotFoundError, PermissionError, OSError) as e:
                 logger.debug(f"[AssetValidator] Ошибка чтения директории чекпоинтов {sd_models_dir}: {e}")
 
+        report["checkpoints_count"] = len(valid_checkpoint_files)
+        report["checkpoints_files"] = [f.name for f in valid_checkpoint_files]
+
+        # Обратная совместимость для checkpoints_found / checkpoints_missing
+        existing_sd_filenames = [f.name.lower() for f in valid_checkpoint_files]
         for title, match_keys in REQUIRED_CHECKPOINTS:
-            found = any(all(k in fn for k in match_keys) for fn in existing_sd_files)
+            found = any(all(k in fn for k in match_keys) for fn in existing_sd_filenames)
             report["checkpoints_found"][title] = found
-            if not found:
-                report["checkpoints_missing"].append(title)
-                report["all_critical_present"] = False
+
+        if not forge_installed or report["checkpoints_count"] == 0:
+            report["checkpoints_missing"].append("No valid SD checkpoints found (.safetensors / .ckpt)")
+            report["all_critical_present"] = False
 
         # 2. Проверка моделей ADetailer
         for ad_model in REQUIRED_ADETAILER_MODELS:
@@ -463,6 +476,10 @@ class AssetValidator:
             report["adetailer_found"][ad_model] = found
             if not found:
                 report["adetailer_missing"].append(ad_model)
+
+        # Если отсутствуют модели ADetailer или Forge не установлен, all_critical_present = False
+        if not forge_installed or report["adetailer_missing"]:
+            report["all_critical_present"] = False
 
         return report
 
@@ -476,15 +493,18 @@ class AssetValidator:
             logger.warning(f"[AssetValidator] Директория Forge не обнаружена: {display_path}")
             return
 
-        ckpt_total = len(REQUIRED_CHECKPOINTS)
-        ckpt_ok = ckpt_total - len(report["checkpoints_missing"])
+        ckpt_count = report.get("checkpoints_count", 0)
         ad_total = len(REQUIRED_ADETAILER_MODELS)
         ad_ok = ad_total - len(report["adetailer_missing"])
 
-        logger.info(f"[AssetValidator] Pre-flight аудит ассетов: Чекпоинты SD [{ckpt_ok}/{ckpt_total}], ADetailer [{ad_ok}/{ad_total}]")
+        if ckpt_count >= 1:
+            logger.info(f"[AssetValidator] Pre-flight аудит ассетов: найдено {ckpt_count} чекпоинтов SD, ADetailer [{ad_ok}/{ad_total}]")
+        else:
+            logger.warning(
+                f"[AssetValidator] Pre-flight аудит ассетов: не найдено ни одного чекпоинта SD (0), ADetailer [{ad_ok}/{ad_total}]"
+            )
+            logger.warning("[AssetValidator] В директории моделей SD отсутствуют валидные чекпоинты (.safetensors / .ckpt)")
 
-        if report["checkpoints_missing"]:
-            logger.warning(f"[AssetValidator] Отсутствуют чекпоинты: {', '.join(report['checkpoints_missing'])}")
         if report["adetailer_missing"]:
             try:
                 from utils.config_manager import ConfigManager

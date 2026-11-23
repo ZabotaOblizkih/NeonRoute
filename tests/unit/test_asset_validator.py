@@ -97,9 +97,13 @@ def test_asset_validator_legacy_cu121_package_structure(tmp_path, monkeypatch):
     assert report["forge_installed"] is True
     assert report["resolved_paths"]["webui_dir"] == webui_dir.resolve()
     assert report["resolved_paths"]["sd_models_dir"] == sd_dir.resolve()
+    assert report["checkpoints_count"] == 1
+    assert "dreamshaper_8_99.safetensors" in report["checkpoints_files"]
     assert report["checkpoints_found"]["DreamShaper 8"] is True
     assert report["checkpoints_found"]["Realistic Vision v6.0"] is False
+    # Чекпоинты найдены, но веса ADetailer отсутствуют -> all_critical_present is False
     assert report["all_critical_present"] is False
+    assert len(report["adetailer_missing"]) == len(REQUIRED_ADETAILER_MODELS)
 
 
 def test_asset_validator_launcher_custom_arguments(tmp_path, monkeypatch):
@@ -187,7 +191,8 @@ def test_asset_validator_missing_paths_resilience(tmp_path, monkeypatch, caplog)
         report = AssetValidator.validate_all_assets()
         assert report["forge_installed"] is False
         assert report["all_critical_present"] is False
-        assert len(report["checkpoints_missing"]) == len(REQUIRED_CHECKPOINTS)
+        assert report["checkpoints_count"] == 0
+        assert len(report["checkpoints_missing"]) > 0
         assert len(report["adetailer_missing"]) == len(REQUIRED_ADETAILER_MODELS)
 
         AssetValidator.log_validation_summary()
@@ -196,7 +201,8 @@ def test_asset_validator_missing_paths_resilience(tmp_path, monkeypatch, caplog)
 
 def test_asset_validator_log_summary_with_missing_models(tmp_path, monkeypatch, caplog):
     """
-    Проверяет информативное логирование summary при частично отсутствующих ассетах.
+    Проверяет информативное логирование summary при наличии чекпоинтов и отсутствии весов ADetailer.
+    При наличии хотя бы 1 чекпоинта не должно быть предупреждения об отсутствующих чекпоинтах.
     """
     forge_root = tmp_path / "PartialForge"
     webui_dir = forge_root / "webui"
@@ -216,9 +222,51 @@ def test_asset_validator_log_summary_with_missing_models(tmp_path, monkeypatch, 
     with caplog.at_level(logging.INFO, logger="NeonRoute.AssetValidator"):
         AssetValidator.log_validation_summary()
 
-        assert any("Pre-flight аудит ассетов" in record.message for record in caplog.records)
-        assert any("Отсутствуют чекпоинты" in record.message for record in caplog.records)
+        # Должен быть лог "найдено 1 чекпоинтов SD"
+        assert any("Pre-flight аудит ассетов: найдено 1 чекпоинтов SD" in record.message for record in caplog.records)
+        # Ложного WARNING об отсутствующих чекпоинтах быть НЕ должно
+        assert not any("Отсутствуют чекпоинты" in record.message for record in caplog.records)
         assert any("отсутствуют веса ADetailer" in record.message for record in caplog.records)
+
+
+def test_asset_validator_empty_and_zero_byte_checkpoints(tmp_path, monkeypatch, caplog):
+    """
+    Проверяет поведение при пустой папке чекпоинтов и при наличии только 0-байтовых файлов.
+    В этом случае checkpoints_count == 0 и должен выводиться WARNING.
+    """
+    forge_root = tmp_path / "EmptyForge"
+    webui_dir = forge_root / "webui"
+    sd_dir = forge_root / "models" / "Stable-diffusion"
+    ad_dir = forge_root / "models" / "adetailer"
+    webui_dir.mkdir(parents=True)
+    sd_dir.mkdir(parents=True)
+    ad_dir.mkdir(parents=True)
+    (webui_dir / "webui.py").write_text("# webui", encoding="utf-8")
+
+    # Создаём 0-байтовый файл
+    zero_byte_ckpt = sd_dir / "corrupted_model.safetensors"
+    zero_byte_ckpt.touch()
+    assert zero_byte_ckpt.stat().st_size == 0
+
+    # Создаём веса ADetailer
+    (ad_dir / "face_yolov8n.pt").write_text("weights", encoding="utf-8")
+    (ad_dir / "hand_yolov8n.pt").write_text("weights", encoding="utf-8")
+
+    monkeypatch.setattr("services.asset_validator.FORGE_ROOT_DIR", forge_root)
+    monkeypatch.setattr("services.asset_validator.FORGE_BASE_DIR", None)
+    monkeypatch.setattr("services.asset_validator.MODELS_SD_DIR", None)
+    monkeypatch.setattr("services.asset_validator.MODELS_ADETAILER_DIR", None)
+
+    report = AssetValidator.validate_all_assets()
+    assert report["forge_installed"] is True
+    assert report["checkpoints_count"] == 0
+    assert report["all_critical_present"] is False
+    assert len(report["checkpoints_missing"]) > 0
+
+    with caplog.at_level(logging.WARNING, logger="NeonRoute.AssetValidator"):
+        AssetValidator.log_validation_summary()
+        assert any("не найдено ни одного чекпоинта SD (0)" in record.message for record in caplog.records)
+        assert any("отсутствуют валидные чекпоинты" in record.message for record in caplog.records)
 
 
 def test_asset_validator_ad_no_huggingface_branching(tmp_path, monkeypatch, caplog):
