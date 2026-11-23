@@ -394,9 +394,12 @@ class ForgeClient(QObject):
 
         # Local directory fallback scan (discovers files instantly if Forge is offline or booting)
         import config
-        curr_root = getattr(config, "FORGE_ROOT_DIR", FORGE_ROOT_DIR)
+        mod_root = globals().get("FORGE_ROOT_DIR")
+        cfg_root = getattr(config, "FORGE_ROOT_DIR", None)
+        curr_root = mod_root if (mod_root is not None and mod_root != cfg_root) else (cfg_root or mod_root)
+
         candidate_dirs = []
-        if hasattr(config, "get_forge_models_dir"):
+        if (mod_root is None or mod_root == cfg_root) and hasattr(config, "get_forge_models_dir"):
             try:
                 candidate_dirs.append(config.get_forge_models_dir())
             except Exception:

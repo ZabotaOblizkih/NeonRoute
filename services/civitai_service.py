@@ -66,9 +66,12 @@ def clean_civitai_description(raw_html: Optional[str]) -> str:
 def get_forge_search_dirs() -> List[Path]:
     """Динамически возвращает список существующих каталогов чекпоинтов Forge."""
     import config
-    curr_forge_root = getattr(config, "FORGE_ROOT_DIR", FORGE_ROOT_DIR)
+    mod_root = globals().get("FORGE_ROOT_DIR")
+    cfg_root = getattr(config, "FORGE_ROOT_DIR", None)
+    curr_forge_root = mod_root if (mod_root is not None and mod_root != cfg_root) else (cfg_root or mod_root)
+
     candidate_dirs: List[Path] = []
-    if hasattr(config, "get_forge_models_dir"):
+    if (mod_root is None or mod_root == cfg_root) and hasattr(config, "get_forge_models_dir"):
         try:
             candidate_dirs.append(config.get_forge_models_dir())
         except Exception:
@@ -87,7 +90,7 @@ def get_forge_search_dirs() -> List[Path]:
     result = []
     for d in candidate_dirs:
         try:
-            r = d.resolve()
+            r = Path(d).resolve()
             if r not in seen:
                 seen.add(r)
                 result.append(r)
