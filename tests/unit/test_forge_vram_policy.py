@@ -750,3 +750,59 @@ def test_fast_model_civitai_heuristic():
     )
     assert "adetailer_face_denoise" not in params_std
 
+
+def test_resolve_forge_startup_flags_ad_no_huggingface_default():
+    """По умолчанию forge_ad_no_huggingface=False: флаг --ad-no-huggingface НЕ передается."""
+    flags, meta = resolve_forge_startup_flags(ad_no_huggingface=False)
+    assert "--ad-no-huggingface" not in flags
+    assert meta["ad_no_huggingface"] is False
+
+
+def test_resolve_forge_startup_flags_ad_no_huggingface_enabled():
+    """При ad_no_huggingface=True: флаг --ad-no-huggingface передается в CLI и meta."""
+    flags, meta = resolve_forge_startup_flags(ad_no_huggingface=True)
+    assert "--ad-no-huggingface" in flags
+    assert meta["ad_no_huggingface"] is True
+
+
+def test_resolve_forge_startup_flags_ad_no_huggingface_from_config(monkeypatch):
+    """Считывание forge_ad_no_huggingface из ConfigManager, если параметр не передан явно."""
+    monkeypatch.setattr(
+        "utils.config_manager.ConfigManager.load_config",
+        lambda: {"forge_ad_no_huggingface": True}
+    )
+    flags, meta = resolve_forge_startup_flags()
+    assert "--ad-no-huggingface" in flags
+    assert meta["ad_no_huggingface"] is True
+
+    monkeypatch.setattr(
+        "utils.config_manager.ConfigManager.load_config",
+        lambda: {"forge_ad_no_huggingface": False}
+    )
+    flags_off, meta_off = resolve_forge_startup_flags()
+    assert "--ad-no-huggingface" not in flags_off
+    assert meta_off["ad_no_huggingface"] is False
+
+
+def test_config_manager_thread_safety_concurrency(tmp_path, monkeypatch):
+    """Параллельные вызовы update_setting из нескольких потоков не создают гонки данных."""
+    import concurrent.futures
+    from utils.config_manager import ConfigManager
+
+    test_cfg = tmp_path / "concurrent_config.json"
+    test_cfg.write_text('{"initial": 0}', encoding="utf-8")
+    monkeypatch.setattr("utils.config_manager.CONFIG_PATH", test_cfg)
+
+    def worker(idx):
+        ConfigManager.update_setting(f"key_{idx}", idx)
+        return idx
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(worker, i) for i in range(20)]
+        results = [f.result() for f in futures]
+
+    assert len(results) == 20
+    final_cfg = ConfigManager.load_config()
+    for i in range(20):
+        assert final_cfg[f"key_{i}"] == i
+

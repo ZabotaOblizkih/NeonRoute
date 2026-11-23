@@ -591,6 +591,7 @@ def resolve_forge_startup_flags(
     system_monitor: Optional[Any] = None,
     total_ram_gb: Optional[float] = None,
     avail_ram_mb: Optional[float] = None,
+    ad_no_huggingface: Optional[bool] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Формирует стартовые CLI-флаги Forge без принудительного --always-offload-from-vram на 8 ГБ.
 
@@ -604,12 +605,21 @@ def resolve_forge_startup_flags(
         "--listen",
         "--cuda-malloc",
         "--opt-sdp-attention",
-        "--ad-no-huggingface",
         "--no-download-sd-model",
         "--skip-torch-cuda-test",
         "--no-hashing",
         "--disable-nan-check",
     ]
+
+    if ad_no_huggingface is None:
+        try:
+            from utils.config_manager import ConfigManager
+            ad_no_huggingface = bool(ConfigManager.load_config().get("forge_ad_no_huggingface", False))
+        except Exception:
+            ad_no_huggingface = False
+
+    if ad_no_huggingface:
+        flags.append("--ad-no-huggingface")
 
     vae_precision = "fp32"
     try:
@@ -652,6 +662,7 @@ def resolve_forge_startup_flags(
         "pin_reason": pin_reason,
         "startup_always_offload": force_startup_offload,
         "vae_precision": vae_precision,
+        "ad_no_huggingface": bool(ad_no_huggingface),
     }
     return flags, meta
 

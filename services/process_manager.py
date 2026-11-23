@@ -1926,11 +1926,15 @@ class ProcessManager(QObject):
                     extra_args=list(FORGE_EXTRA_ARGS) if FORGE_EXTRA_ARGS else None,
                 )
                 cmd.extend(startup_flags)
+                ad_no_hf_val = startup_meta.get("ad_no_huggingface", False)
                 logger.info(
                     f"[ProcessManager] Стартовые флаги Forge: VRAM={startup_meta['total_vram_gb']:.1f}GB | "
+                    f"ad_no_huggingface={ad_no_hf_val} | "
                     f"pin_shared_memory={startup_meta['pin_shared_memory']} ({startup_meta['pin_reason']}) | "
                     f"startup_offload={startup_meta['startup_always_offload']}"
                 )
+                if not ad_no_hf_val:
+                    logger.info("[ProcessManager] 🌐 Флаг --ad-no-huggingface выключен (снят): автоскачивание моделей ADetailer с Hugging Face разрешено.")
             except Exception as _e_pm:
                 logger.debug(f"[ProcessManager] Проверка стартового бюджета Forge: {_e_pm}")
 

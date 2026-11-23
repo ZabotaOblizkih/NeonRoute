@@ -279,6 +279,7 @@ class ForgeSettingsDialog(FramelessDialog):
         else:
             self.current_forge_root = str(get_default_forge_install_dir())
         self.current_sdxl_fp8 = bool(self.app_cfg.get("forge_sdxl_fp8_enabled", True))
+        self.current_ad_no_hf = bool(self.app_cfg.get("forge_ad_no_huggingface", False))
         self.current_auto_art = bool(self.app_cfg.get("auto_generate_art", False))
 
     def _init_ui(self):
@@ -463,14 +464,54 @@ class ForgeSettingsDialog(FramelessDialog):
         fp8_row.addWidget(self.switch_fp8)
         opt_layout.addLayout(fp8_row)
 
-        # Разделитель внутри группы
-        sub_sep = QFrame(self.card_opt)
-        sub_sep.setFrameShape(QFrame.Shape.HLine)
-        sub_sep.setStyleSheet("background-color: rgba(255, 255, 255, 0.05);")
-        sub_sep.setFixedHeight(1)
-        opt_layout.addWidget(sub_sep)
+        # 4.2. Switch ADetailer No HuggingFace
+        sub_sep1 = QFrame(self.card_opt)
+        sub_sep1.setFrameShape(QFrame.Shape.HLine)
+        sub_sep1.setStyleSheet("background-color: rgba(255, 255, 255, 0.05);")
+        sub_sep1.setFixedHeight(1)
+        opt_layout.addWidget(sub_sep1)
 
-        # 4.2. Автогенерация артов
+        ad_row = QHBoxLayout()
+        ad_row.setSpacing(12)
+        ad_text_box = QVBoxLayout()
+        ad_text_box.setSpacing(2)
+        ad_title = BodyLabel("Запрет автоскачивания ADetailer (--ad-no-huggingface)", self.card_opt)
+        ad_title.setStyleSheet("font-weight: 600; color: #E2E8F0;")
+        ad_text_box.addWidget(ad_title)
+
+        ad_desc = CaptionLabel("Блокирует онлайн-обращения к Hugging Face. По умолчанию ВЫКЛ (автозагрузка разрешена).", self.card_opt)
+        ad_desc.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        ad_text_box.addWidget(ad_desc)
+        ad_row.addLayout(ad_text_box)
+        ad_row.addStretch()
+
+        self.switch_ad_no_hf = SwitchButton(self.card_opt)
+        self.switch_ad_no_hf.setOnText("ВКЛ")
+        self.switch_ad_no_hf.setOffText("ВЫКЛ")
+
+        ad_tooltip = (
+            "Управление флагом запуска --ad-no-huggingface для SD WebUI Forge:\n"
+            "• ВЫКЛ (по умолчанию): флаг не передаётся — ADetailer может автоматически скачать недостающие модели (например, детекторы лиц или рук) с Hugging Face.\n"
+            "• ВКЛ: добавляется флаг --ad-no-huggingface — обращения к Hugging Face запрещены, используются только локально скачанные веса в папке adetailer (удобно при офлайн-работе или проблемах с сетью/доступом)."
+        )
+        self.switch_ad_no_hf.setToolTip(ad_tooltip)
+        ad_title.setToolTip(ad_tooltip)
+        ad_desc.setToolTip(ad_tooltip)
+        ad_row.addWidget(self.switch_ad_no_hf)
+        opt_layout.addLayout(ad_row)
+
+        # Разделитель перед блоком автогенерации
+        sub_sep2 = QFrame(self.card_opt)
+        sub_sep2.setFrameShape(QFrame.Shape.HLine)
+        sub_sep2.setStyleSheet("background-color: rgba(255, 255, 255, 0.05);")
+        sub_sep2.setFixedHeight(1)
+        opt_layout.addWidget(sub_sep2)
+
+        # Мгновенное сохранение при переключении тумблеров
+        self.switch_fp8.checkedChanged.connect(self._on_switch_fp8_changed)
+        self.switch_ad_no_hf.checkedChanged.connect(self._on_switch_ad_no_hf_changed)
+
+        # 4.3. Автогенерация артов
         art_row = QHBoxLayout()
         art_row.setSpacing(12)
         art_text_box = QVBoxLayout()
@@ -511,12 +552,44 @@ class ForgeSettingsDialog(FramelessDialog):
         main_layout.addLayout(btn_layout)
         root_layout.addWidget(self.body_widget)
 
+    def _on_switch_fp8_changed(self, checked: bool):
+        """Мгновенное сохранение флага FP8-квантования при клике."""
+        try:
+            ConfigManager.update_setting("forge_sdxl_fp8_enabled", checked)
+            parent_win = self._parent_ref or self.parent()
+            if parent_win and hasattr(parent_win, "app_config") and isinstance(parent_win.app_config, dict):
+                parent_win.app_config["forge_sdxl_fp8_enabled"] = checked
+            status_text = "ВКЛ (fp8e4)" if checked else "ВЫКЛ (fp16/Auto)"
+            logger.info(f"[ForgeSettingsDialog] Квантование SDXL UNet в FP8 (Квантомания): {status_text}")
+        except Exception as e:
+            logger.error(f"[ForgeSettingsDialog] Ошибка мгновенного сохранения FP8: {e}")
+
+    def _on_switch_ad_no_hf_changed(self, checked: bool):
+        """Мгновенное сохранение флага --ad-no-huggingface при клике."""
+        try:
+            ConfigManager.update_setting("forge_ad_no_huggingface", checked)
+            parent_win = self._parent_ref or self.parent()
+            if parent_win and hasattr(parent_win, "app_config") and isinstance(parent_win.app_config, dict):
+                parent_win.app_config["forge_ad_no_huggingface"] = checked
+            status_text = "ВКЛ (запрет HF, только локальные веса)" if checked else "ВЫКЛ (разрешено автоскачивание с HF)"
+            logger.info(f"[ForgeSettingsDialog] Флаг --ad-no-huggingface изменён: {status_text}")
+        except Exception as e:
+            logger.error(f"[ForgeSettingsDialog] Ошибка мгновенного сохранения ad_no_huggingface: {e}")
+
     def _sync_with_current_config(self):
         """Синхронизирует элементы интерфейса с текущими параметрами."""
         self.line_path.setText(self.current_forge_root)
         self._update_path_and_patch_status(self.current_forge_root)
 
-        self.switch_fp8.setChecked(self.current_sdxl_fp8)
+        self.switch_fp8.blockSignals(True)
+        self.switch_ad_no_hf.blockSignals(True)
+        try:
+            self.switch_fp8.setChecked(self.current_sdxl_fp8)
+            self.switch_ad_no_hf.setChecked(self.current_ad_no_hf)
+        finally:
+            self.switch_fp8.blockSignals(False)
+            self.switch_ad_no_hf.blockSignals(False)
+
         self.segmented_art.setCurrentItem("auto" if self.current_auto_art else "manual")
 
     def _resolve_launcher_info(self, dir_path_str: str) -> Tuple[Optional[Path], str]:
@@ -908,19 +981,25 @@ class ForgeSettingsDialog(FramelessDialog):
 
         # 2. Сохранение конфигурации
         sdxl_fp8 = self.switch_fp8.isChecked()
+        ad_no_hf = self.switch_ad_no_hf.isChecked()
         auto_art = (self.segmented_art.currentRouteKey() == "auto")
 
         try:
             cfg = ConfigManager.load_config()
             cfg["forge_sdxl_fp8_enabled"] = sdxl_fp8
+            cfg["forge_ad_no_huggingface"] = ad_no_hf
             cfg["auto_generate_art"] = auto_art
             ConfigManager.save_config(cfg)
 
             if parent_win and hasattr(parent_win, "app_config") and isinstance(parent_win.app_config, dict):
                 parent_win.app_config["forge_sdxl_fp8_enabled"] = sdxl_fp8
+                parent_win.app_config["forge_ad_no_huggingface"] = ad_no_hf
                 parent_win.app_config["auto_generate_art"] = auto_art
 
-            logger.info(f"[ForgeSettingsDialog] Сохранено: forge_sdxl_fp8_enabled={sdxl_fp8}, auto_generate_art={auto_art}")
+            logger.info(
+                f"[ForgeSettingsDialog] Сохранено: forge_sdxl_fp8_enabled={sdxl_fp8}, "
+                f"forge_ad_no_huggingface={ad_no_hf}, auto_generate_art={auto_art}"
+            )
 
             toast_success(
                 parent_win or self,

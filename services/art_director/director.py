@@ -795,11 +795,12 @@ class ArtDirector:
         ratio = max(width / height, height / width) if (height > 0 and width > 0) else 1.0
         hr_area = hr_w * hr_h
         arch_str = "SDXL" if is_xl else "SD15"
+        fp8_str = "ВКЛ (fp8e4)" if is_fp8 else "ВЫКЛ"
 
         logger.info(
             f"[Forge VRAM Policy Diagnostic Passport]\n"
             f"  ├── 1. Аппаратный профиль : Total VRAM = {total_vram_gb:.1f} GB | Резерв ОС = {os_reserve_mb} MB | Usable = {usable_vram_mb} MB\n"
-            f"  ├── 2. Пайплайн и модель  : Arch = {arch_str} | FP8 = {is_fp8} ({model_mb} MB) | ADetailer = {ad_label} | VAETile = {vae_tile}\n"
+            f"  ├── 2. Пайплайн и модель  : Arch = {arch_str} | FP8 (Квантомания) = {fp8_str} ({model_mb} MB) | ADetailer = {ad_label} | VAETile = {vae_tile}\n"
             f"  ├── 3. Базовый холст      : {width}x{height} ({base_area:,} px) | Ratio = {ratio:.2f} | Потолок Hires = {max_area:,} px\n"
             f"  └── 4. Вердикт Hires.fix  : Allowed = {allowed} | Scale: {req_scale:.2f}x -> {eff_scale:.2f}x ({hr_w}x{hr_h}, {hr_area:,} px) | Причина: {reason}"
         )

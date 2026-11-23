@@ -34,25 +34,35 @@ def test_forge_settings_dialog_initialization_and_ui_elements(qapp, tmp_path, mo
         assert dlg.lbl_launcher_status is not None
         assert dlg.lbl_patch_status is not None
         assert dlg.switch_fp8 is not None
+        assert dlg.switch_ad_no_hf is not None
         assert dlg.segmented_art is not None
         assert dlg.btn_save is not None
         assert dlg.btn_cancel is not None
 
         # Verify initial values from config
         assert dlg.switch_fp8.isChecked() is True
+        assert dlg.switch_ad_no_hf.isChecked() is False
         assert dlg.segmented_art.currentRouteKey() == "manual"
+        assert "--ad-no-huggingface" in dlg.switch_ad_no_hf.toolTip()
 
         # Test patch checking button slot
         dlg._on_check_patch_clicked()
 
-        # Test changing values and saving
+        # Test instant auto-save on toggle (without clicking _on_save_clicked)
+        dlg.switch_ad_no_hf.setChecked(True)
+        assert ConfigManager.load_config()["forge_ad_no_huggingface"] is True
+
         dlg.switch_fp8.setChecked(False)
+        assert ConfigManager.load_config()["forge_sdxl_fp8_enabled"] is False
+
+        # Test changing values and saving via dialog accept
         dlg.segmented_art.setCurrentItem("auto")
         dlg._on_save_clicked()
 
         # Verify config saved correctly
         saved = ConfigManager.load_config()
         assert saved["forge_sdxl_fp8_enabled"] is False
+        assert saved["forge_ad_no_huggingface"] is True
         assert saved["auto_generate_art"] is True
 
         # Test selecting a new valid Forge path

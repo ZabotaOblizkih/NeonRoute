@@ -124,6 +124,7 @@ LM_STUDIO_CLI_CMD = "lms"
 FORGE_EXTRA_ARGS = []
 FORGE_ENABLE_VAE_TILING = False
 FORGE_SDXL_FP8_ENABLED = True
+FORGE_AD_NO_HUGGINGFACE = False
 
 # Reasoning & Thinking Model Configuration
 DEFAULT_THINKING_MODE = "auto"

@@ -6,6 +6,7 @@ and visualizer settings persisted to C:\\NeonRoute\\config.json
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -103,6 +104,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 4. SD WebUI Forge / Art Director Defaults
     "auto_generate_art": False,
     "forge_sdxl_fp8_enabled": True,
+    "forge_ad_no_huggingface": False,
     "forge_onboarding_shown": False,
     "forge_patch_ignored_paths": [],
     "visualizer_settings": {
@@ -144,6 +146,7 @@ def _deep_merge_dicts(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
 
 class ConfigManager:
     CONFIG_PATH: Optional[Path] = None
+    _lock = threading.RLock()
 
     @classmethod
     def get_config_path(cls) -> Path:
@@ -155,29 +158,32 @@ class ConfigManager:
     @classmethod
     def load_config(cls) -> Dict[str, Any]:
         """Loads configuration from config.json with recursive fallback to default settings."""
-        config = dict(DEFAULT_SETTINGS)
-        target_path = cls.get_config_path()
-        if target_path.exists():
-            try:
-                with open(target_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    config = _deep_merge_dicts(config, data)
-            except Exception as e:
-                logger.warning(f"Could not load {target_path.name}: {e}")
-        return config
+        with cls._lock:
+            config = dict(DEFAULT_SETTINGS)
+            target_path = cls.get_config_path()
+            if target_path.exists():
+                try:
+                    with open(target_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        config = _deep_merge_dicts(config, data)
+                except Exception as e:
+                    logger.warning(f"Could not load {target_path.name}: {e}")
+            return config
 
     @classmethod
     def save_config(cls, config_data: Dict[str, Any]):
         """Saves configuration dict to config.json safely."""
-        from utils.file_utils import atomic_write_json
-        target_path = cls.get_config_path()
-        atomic_write_json(target_path, config_data)
+        with cls._lock:
+            from utils.file_utils import atomic_write_json
+            target_path = cls.get_config_path()
+            atomic_write_json(target_path, config_data)
 
     @classmethod
     def update_setting(cls, key: str, value: Any) -> Dict[str, Any]:
         """Обновляет единичный параметр в config.json и сохраняет файл."""
-        cfg = cls.load_config()
-        cfg[key] = value
-        cls.save_config(cfg)
-        return cfg
+        with cls._lock:
+            cfg = cls.load_config()
+            cfg[key] = value
+            cls.save_config(cfg)
+            return cfg

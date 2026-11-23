@@ -449,10 +449,14 @@ class ForgeClient(QObject):
                 extra_args=list(FORGE_EXTRA_ARGS) if FORGE_EXTRA_ARGS else None,
             )
             cmd.extend(startup_flags)
+            ad_no_hf_val = startup_meta.get("ad_no_huggingface", False)
             logger.info(
                 f"[ForgeClient] Стартовые флаги Forge: VRAM={startup_meta['total_vram_gb']:.1f}GB | "
+                f"ad_no_huggingface={ad_no_hf_val} | "
                 f"pin_shared_memory={startup_meta['pin_shared_memory']} ({startup_meta['pin_reason']})"
             )
+            if not ad_no_hf_val:
+                logger.info("[ForgeClient] 🌐 Флаг --ad-no-huggingface выключен (снят): автоскачивание моделей ADetailer с Hugging Face разрешено.")
         except Exception:
             pass
 
@@ -579,7 +583,8 @@ class ForgeClient(QObject):
             except Exception:
                 pass
 
-            logger.info(f"[ForgeClient] Чекпоинт '{target_title}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
+            fp8_note = "ВКЛ (fp8e4, экономия ~2.5ГБ VRAM)" if target_dtype == "fp8e4" else "ВЫКЛ (Auto/fp16)"
+            logger.info(f"[ForgeClient] Чекпоинт '{target_title}' запрошен с forge_unet_storage_dtype='{target_dtype}' [Квантомания: {fp8_note}]")
 
             ok = self.set_options(opt_payload, timeout=30.0)
             if not ok:
@@ -963,7 +968,8 @@ class ForgeClient(QObject):
             if checkpoint:
                 override_dict["sd_model_checkpoint"] = target_model_title
             override_dict["forge_unet_storage_dtype"] = target_dtype
-            logger.info(f"[ForgeClient] Чекпоинт '{active_target}' запрошен с forge_unet_storage_dtype='{target_dtype}'")
+            fp8_note = "ВКЛ (fp8e4, экономия ~2.5ГБ VRAM)" if target_dtype == "fp8e4" else "ВЫКЛ (Auto/fp16)"
+            logger.info(f"[ForgeClient] Чекпоинт '{active_target}' запрошен с forge_unet_storage_dtype='{target_dtype}' [Квантомания: {fp8_note}]")
             self._last_requested_checkpoint = target_model_title if checkpoint else getattr(self, "_last_requested_checkpoint", None)
             self._last_requested_dtype = target_dtype
 

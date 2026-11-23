@@ -21,7 +21,7 @@
 7. **Детерминизм геометрии кадра**: Явный флаг `--ar` напрямую задает разрешение холста без эвристики `has_human`. ADetailer отвязан от геометрии (`force_ad: True` во всех бакетах).
 8. **Чистые миксины UI и модальная безопасность**: Контроллеры в `ui/controllers/` — чистые Python-классы без наследования от `QObject`/`QWidget`. Фоновые `QThread` создаются с `parent=None` и очищаются при закрытии. Дочерние диалоги создаются на базе `FramelessDialog` с собственным `FluentTitleBar` (запрет вложенных `MaskDialogBase`/`MessageBoxBase` поверх других модальных окон во избежание блокировки главного окна). Открытие модалок из превью баблов выполняется асинхронно через `QTimer.singleShot(0, ...)`, а при закрытии гарантированно сбрасываются все `overrideCursor` и вызывается `unsetCursor()`.
 9. **Контракты Инженера (`interface_spec`)**: Режим `strict_contract=True` (Hard Contract) применяется только при наличии `verification_script` (TDD). Для самодостаточных GUI/CLI/игр (`strict_contract=False`) действует Structural Blueprint без принуждения к процедурным оберткам.
-10. **CWD-независимость и Zero-Fsync**: Запись JSON выполняется атомарно через `atomic_write_json` (`os.replace`), динамический путь к конфигу разрешается через `get_config_path()`, а сессии пишутся в SQLite WAL (`data/memory.db`) с зеркалированием.
+10. **CWD-независимость, потокобезопасный конфиг и Zero-Fsync**: Запись JSON выполняется атомарно через `atomic_write_json` (`os.replace`), динамический путь к конфигу разрешается через `get_config_path()`, операции `ConfigManager` (`load_config`, `save_config`, `update_setting`) защищены реентрантным мьютексом `threading.RLock()` от гонок `Read-Modify-Write` между UI и фоновыми потоками, а сессии пишутся в SQLite WAL (`data/memory.db`) с зеркалированием.
 
 ---
 
@@ -450,7 +450,7 @@ NeonRoute/
     │   ├── test_dialog_sync_smoke.py    # Синхронизация при закрытии ModelsManagerDialog через reject()
     │   ├── test_forge_baseline.py       # Базовые пути Forge, аргументы запуска, фильтрация процессов
     │   ├── test_forge_edge_cases.py     # Краевые случаи: пробелы/кавычки, битый INI, directory-trap
-    │   ├── test_forge_settings_dialog_smoke.py # Создание, ленивый импорт, UI-биндинги и жизненный цикл патча в ForgeSettingsDialog
+    │   ├── test_forge_settings_dialog_smoke.py # Создание, ленивый импорт, мгновенный автосейв тумблеров (FP8, ad-no-huggingface) и жизненный цикл патча в ForgeSettingsDialog
     │   ├── test_forge_vram_profiles_smoke.py # Матрица профилей памяти (2–12 ГБ VRAM x 3 класса моделей), 4 ГБ RAM Guard
     │   ├── test_isolated_core_smoke.py  # Изолированное тестирование SessionManager и ContextBuilder
     │   ├── test_layer_budgeter_profiles_smoke.py # Смоук-тестирование NGL профилей Layer Budgeter (2–16 ГБ VRAM)
@@ -734,8 +734,21 @@ flowchart TD
    - **Лаунчер (`resolve_forge_launcher`)**: каскад кандидатов (`forge_launcher.bat`, `webui-user.bat`, `run.bat`, `launch.py`) с раскрытием NTFS Junctions через `.resolve()`.
    - **Каталог webui (`resolve_forge_webui_dir`)**: `forge_root / "webui"` -> резервный поиск `forge_root.glob("webui*")`.
    - **Чекпоинты SD (`resolve_sd_checkpoints_dir`)**: каскад флагов лаунчера (`--ckpt-dir` > `--models-dir` / `Stable-diffusion`) через `resolve_forge_models_directory`.
-   - **Модели ADetailer (`resolve_adetailer_models_dir`)**: `--models-dir / adetailer` -> `forge_root / models / adetailer` -> `webui / models / adetailer`.
+   - **Модели ADetailer (`resolve_adetailer_models_dir`)**: `--models-dir / adetailer` -> `forge_root / models / adetailer` -> `webui / models / adetailer`. При отсутствии локальных моделей статус `forge_ad_no_huggingface` определяет диагностический вердикт: при `False` (по умолчанию) система информирует о запланированной автодогрузке весов с Hugging Face при первом рендере, при `True` — предупреждает о мягкой деградации детекции.
    - **Апскейлеры ESRGAN (`resolve_esrgan_models_dir`)**: `--models-dir / ESRGAN` -> `forge_root / models / ESRGAN` -> `webui / models / ESRGAN`.
+
+### 3.2.4. Архитектура настроек Forge и карточки оптимизации (`ForgeSettingsDialog`)
+
+Диалог управления Forge (`ui/dialogs/forge_settings_dialog.py`) разделен на модульные карточки, центральной из которых является карточка оптимизации рантайма `card_opt` («Оптимизация VRAM и генерации»):
+
+1. **Тройной контур управления параметрами**:
+   - **«Квантомания» (`switch_fp8`)**: управляет ключом `forge_sdxl_fp8_enabled` (по умолчанию `True`). Переводит веса UNet SDXL в формат `fp8e4` через REST API Forge (`forge_unet_storage_dtype='fp8e4'`), высвобождая до 2.5 ГБ VRAM без потери качества рендера. В логах генерации `ArtDirector` и клиента `ForgeClient` статус отображается как `[Квантомания: ВКЛ (fp8e4) / ВЫКЛ]`.
+   - **Запрет автоскачивания ADetailer (`switch_ad_no_hf`)**: управляет ключом `forge_ad_no_huggingface` (по умолчанию `False` — онлайн-загрузка недостающих детекторов лиц/рук с Hugging Face разрешена). При активации (`True`) передает флаг `--ad-no-huggingface` в аргументы запуска процесса Forge, гарантируя автономную работу строго по локальным весам из `models/adetailer`.
+   - **Режим генерации иллюстраций (`segmented_art`)**: выбор между ручным рендером по кнопке в чате (`"manual"`) и сквозной фоновой генерацией сразу при получении промпта (`"auto"`).
+2. **Контракт мгновенного бесколлизионного сохранения (Zero-Click AutoSave)**:
+   - Переключение тумблеров `switch_fp8` и `switch_ad_no_hf` мгновенно фиксирует изменения на диске через `ConfigManager.update_setting(key, value)` и обновляет in-memory словарь `parent_win.app_config` без необходимости нажатия кнопки «Сохранить». Изменения не теряются при закрытии диалога крестиком, клавишей Esc или кнопкой «Отмена».
+   - Защита от паразитного дребезга: метод синхронизации UI `_sync_with_current_config()` изолирует установку начальных состояний тумблеров через `blockSignals(True) ... finally: blockSignals(False)`, предотвращая холостые операции ввода-вывода при каждом открытии окна.
+   - Кнопка «Сохранить» сохраняет узкую валидационную ответственность за строковый путь `line_path` к корню Forge и обновление `server_config.ini`.
 
 ### 3.3. Защита от процессов-сирот через Windows Job Objects (`core/win32_job.py`)
 
@@ -815,6 +828,8 @@ sequenceDiagram
 Вместо жёсткой блокировки в оффлоад на $\le 8$ ГБ система динамически подбирает политику памяти для каждого кадра через `services/art_director/vram_policy.py`, `services/process_manager.py`, `services/art_director/director.py` и `services/forge_client.py`:
 1. **Стартовые флаги Forge (`resolve_forge_startup_flags`)**:
    - Принудительный `--always-offload-from-vram` при старте добавляется **только** при `total_vram_gb < 6.0`. На системах с $\ge 6$ ГБ VRAM стартовый оффлоад снят.
+   - **Динамическое управление флагом `--ad-no-huggingface`**: управляется через `ConfigManager` (`"forge_ad_no_huggingface"`). По умолчанию флаг **ВЫКЛ (`False`)** — автоскачивание недостающих моделей ADetailer (детекторы лиц/рук) с Hugging Face разрешено. При переключении пользователем в **ВКЛ (`True`)** флаг `--ad-no-huggingface` инжектируется в команду запуска и `COMMANDLINE_ARGS`, запрещая сетевые запросы и фиксируя работу строго с локальными весами из `models/adetailer`.
+   - **Диагностическое логирование флагов**: `ProcessManager` и `ForgeClient` логируют полный статус флагов (`ad_no_huggingface={status}`), при этом при выключенном состоянии выводится явное уведомление о доступности онлайн-загрузки с Hugging Face.
    - **Динамическое управление точностью VAE**: через `LayerBudgeter.detect_hardware_kv_profile()` определяется архитектура GPU. Для NVIDIA GPU с `compute_cap >= (8, 0)` (RTX 30xx/40xx/50xx, архитектуры Ampere, Ada, Blackwell) передаётся флаг `"--vae-in-bf16"` (убирая легаси `--no-half-vae` и `--vae-in-fp32`), что обеспечивает нативный инференс VAE в bfloat16 и экономит до 300+ МБ VRAM без риска NaN-артефактов. Для GPU с `compute_cap < (8, 0)` или не-NVIDIA сохраняется безопасная пара `["--no-half-vae", "--vae-in-fp32"]`.
    - `should_enable_pin_shared_memory()` отключает `--pin-shared-memory` при дефиците свободной ОЗУ (порог $7500$ МБ при активной LLM, $6000$ МБ без неё или $< 9000$ МБ при отключённом `forge_sdxl_fp8_enabled` на $\le 16.5$ ГБ RAM; $< 4096$ МБ на $> 16.5$ ГБ RAM), предотвращая Host RAM OOM от page-locked буферов.
 2. **Трёхуровневый планировщик кадра (`resolve_forge_offload_policy`) и адаптивный VAE Tiling**:

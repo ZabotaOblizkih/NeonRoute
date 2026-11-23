@@ -219,3 +219,32 @@ def test_asset_validator_log_summary_with_missing_models(tmp_path, monkeypatch, 
         assert any("Pre-flight аудит ассетов" in record.message for record in caplog.records)
         assert any("Отсутствуют чекпоинты" in record.message for record in caplog.records)
         assert any("отсутствуют веса ADetailer" in record.message for record in caplog.records)
+
+
+def test_asset_validator_ad_no_huggingface_branching(tmp_path, monkeypatch, caplog):
+    """
+    Проверяет ветвление логов при отсутствии весов ADetailer в зависимости от флага forge_ad_no_huggingface.
+    """
+    forge_root = tmp_path / "BranchForge"
+    webui_dir = forge_root / "webui"
+    webui_dir.mkdir(parents=True)
+    (webui_dir / "webui.py").write_text("# webui", encoding="utf-8")
+
+    monkeypatch.setattr("services.asset_validator.FORGE_ROOT_DIR", forge_root)
+    monkeypatch.setattr("services.asset_validator.FORGE_BASE_DIR", None)
+    monkeypatch.setattr("services.asset_validator.MODELS_SD_DIR", None)
+    monkeypatch.setattr("services.asset_validator.MODELS_ADETAILER_DIR", None)
+
+    # Ветка 1: флаг выключен (False, дефолт) -> информационный лог о попытке скачивания с HF
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: {"forge_ad_no_huggingface": False})
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="NeonRoute.AssetValidator"):
+        AssetValidator.log_validation_summary()
+        assert any("автоматически загрузить их с Hugging Face" in record.message for record in caplog.records)
+
+    # Ветка 2: флаг включен (True) -> предупреждение о запрете автоскачивания
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: {"forge_ad_no_huggingface": True})
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="NeonRoute.AssetValidator"):
+        AssetValidator.log_validation_summary()
+        assert any("запрещает автоскачивание" in record.message for record in caplog.records)

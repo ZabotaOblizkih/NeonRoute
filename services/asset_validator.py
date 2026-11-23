@@ -486,7 +486,19 @@ class AssetValidator:
         if report["checkpoints_missing"]:
             logger.warning(f"[AssetValidator] Отсутствуют чекпоинты: {', '.join(report['checkpoints_missing'])}")
         if report["adetailer_missing"]:
-            logger.warning(
-                f"[AssetValidator] Внимание: отсутствуют веса ADetailer ({', '.join(report['adetailer_missing'])}). "
-                f"Флаг --ad-no-huggingface запрещает автоскачивание. При их вызове будет применена мягкая деградация."
-            )
+            try:
+                from utils.config_manager import ConfigManager
+                ad_no_hf = bool(ConfigManager.load_config().get("forge_ad_no_huggingface", False))
+            except Exception:
+                ad_no_hf = False
+
+            if ad_no_hf:
+                logger.warning(
+                    f"[AssetValidator] Внимание: отсутствуют веса ADetailer ({', '.join(report['adetailer_missing'])}). "
+                    f"Флаг --ad-no-huggingface запрещает автоскачивание. При их вызове будет применена мягкая деградация."
+                )
+            else:
+                logger.info(
+                    f"[AssetValidator] Внимание: отсутствуют веса ADetailer ({', '.join(report['adetailer_missing'])}). "
+                    f"Флаг --ad-no-huggingface выключен (снят): Forge попытается автоматически загрузить их с Hugging Face при рендере."
+                )
