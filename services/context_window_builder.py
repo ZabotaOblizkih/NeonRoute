@@ -6,6 +6,7 @@ and context injection for Assistant, Roleplay, and Engineer modes.
 
 import re
 import json
+import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
@@ -186,9 +187,10 @@ class ContextWindowBuilder:
                 world_facts=world_facts,
                 scene_memory=scene_memory,
                 active_cast_block=active_cast_block or "",
-                recalled_lore_block=recalled_lore_block or "",
+                recalled_lore_block="",
                 meta_context_block=meta_context_block or "",
-                custom_system_prompt=custom_system_prompt
+                custom_system_prompt=custom_system_prompt,
+                include_dynamic_lore=False
             )
 
         # -------------------------------------------------------------
@@ -1101,6 +1103,59 @@ class ContextWindowBuilder:
                         final_messages[idx] = last_u
                         messages = final_messages
                         break
+
+        # ── Dynamic Context Injection для режима Roleplay ──
+        # Прикрепляет динамический контекст сцены и лорбука (<RecalledLore>, <SceneContext>)
+        # исключительно к временной поверхностной копии последнего сообщения пользователя (messages[-1]),
+        # сохраняя messages[0] и историю в БД статичными для стабильности префикса KV-кэша.
+        if is_roleplay and messages:
+            rp_turn_blocks = []
+            if recalled_lore_block and recalled_lore_block.strip():
+                rp_turn_blocks.append(recalled_lore_block.strip())
+            if meta_context_block and meta_context_block.strip():
+                rp_turn_blocks.append(meta_context_block.strip())
+            if scene_memory and scene_memory.strip():
+                rp_turn_blocks.append(f"<SceneMemory>\n{scene_memory.strip()}\n</SceneMemory>")
+
+            if rp_turn_blocks:
+                rp_context_str = "\n\n".join(rp_turn_blocks)
+                for idx in range(len(messages) - 1, -1, -1):
+                    if messages[idx].get("role") == "user":
+                        final_messages = list(messages)
+                        last_u = dict(final_messages[idx])
+                        c = last_u.get("content", "")
+                        if isinstance(c, str):
+                            last_u["content"] = f"{rp_context_str}\n\n{c}".strip()
+                        elif isinstance(c, list):
+                            new_parts = []
+                            text_prepended = False
+                            for part in c:
+                                if isinstance(part, dict) and part.get("type") == "text" and not text_prepended:
+                                    p_copy = dict(part)
+                                    p_copy["text"] = f"{rp_context_str}\n\n{p_copy.get('text', '')}".strip()
+                                    new_parts.append(p_copy)
+                                    text_prepended = True
+                                else:
+                                    new_parts.append(part)
+                            if not text_prepended:
+                                new_parts.insert(0, {"type": "text", "text": f"{rp_context_str}\n\n"})
+                            last_u["content"] = new_parts
+                        final_messages[idx] = last_u
+                        messages = final_messages
+                        break
+
+        # [KV-DIAG] Диагностический замер стабильности префикса промпта
+        try:
+            m0 = str(messages[0].get("content", "")) if len(messages) > 0 else ""
+            m1 = str(messages[1].get("content", "")) if len(messages) > 1 else ""
+            prefix_blob = (m0[:300] + "|||" + m1[:300]).encode("utf-8", errors="replace")
+            prefix_hash = hashlib.md5(prefix_blob).hexdigest()[:8]
+            logger.info(
+                f"[KV-DIAG] Prompt prefix hash={prefix_hash}, messages_count={len(messages)}, "
+                f"m0_prefix_len={len(m0)}, m1_prefix_len={len(m1)}"
+            )
+        except Exception as _e_diag:
+            logger.debug(f"[KV-DIAG] Prefix hash log error: {_e_diag}")
 
         return messages
 

@@ -384,7 +384,8 @@ class RoleplayPromptBuilder:
         active_cast_block: str = "",
         recalled_lore_block: str = "",
         meta_context_block: str = "",
-        custom_system_prompt: Optional[str] = None
+        custom_system_prompt: Optional[str] = None,
+        include_dynamic_lore: bool = False
     ) -> str:
         card = RoleplayPromptBuilder._normalize_card(character_card)
         u_name = user_name or "Игрок"
@@ -544,7 +545,9 @@ class RoleplayPromptBuilder:
         prompt_parts.append(user_info_block)
         prompt_parts.append(engine_guardrails)
 
-        if recalled_lore_block and recalled_lore_block.strip():
+        # Динамические статьи лорбука вынесены в контекст текущего хода (get_lm_studio_messages),
+        # сохраняя messages[0] стабильным якорем для KV-кэша. Включаются в messages[0] только при явном флаге.
+        if include_dynamic_lore and recalled_lore_block and recalled_lore_block.strip():
             prompt_parts.append(recalled_lore_block.strip())
 
         assembled_prompt = "\n\n".join(p for p in prompt_parts if p.strip())

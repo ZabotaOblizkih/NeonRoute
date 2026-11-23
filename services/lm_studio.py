@@ -8,6 +8,7 @@ and Structured Outputs (response_format).
 
 import re
 import json
+import inspect
 import queue
 import logging
 import threading
@@ -671,6 +672,15 @@ class LMStudioClient(QObject):
                 payload["id_slot"] = int(kwargs["id_slot"])
         elif has_pm_headless:
             payload["id_slot"] = 0
+
+        # [KV-DIAG] Диагностический замер вызова chat_completion
+        try:
+            caller_fn = inspect.stack()[1].function
+        except Exception:
+            caller_fn = "unknown"
+        logger.info(
+            f"[KV-DIAG] chat_completion: id_slot={payload.get('id_slot')}, caller={caller_fn}, messages_count={len(req_messages)}"
+        )
 
         if stream:
             payload["stream_options"] = {"include_usage": True}

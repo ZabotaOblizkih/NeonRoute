@@ -667,6 +667,21 @@ class ProcessManager(QObject):
                 if str(saved_val) != str(exp_val):
                     mismatch_reasons.append(f"{key}: saved={saved_val} != expected={exp_val}")
 
+        # [KV-DIAG] Диагностический замер валидации метаданных слота
+        try:
+            s_ngl_val = saved_meta.get("gpu_layers")
+            e_ngl_val = expected_meta.get("gpu_layers")
+            s_mtime_val = float(saved_meta.get("model_mtime") or 0.0)
+            e_mtime_val = float(expected_meta.get("model_mtime") or 0.0)
+            mtime_diff_sec = abs(s_mtime_val - e_mtime_val)
+            chk_res = f"INVALIDATED ({'; '.join(mismatch_reasons)})" if mismatch_reasons else "MATCH (proceeding to restore)"
+            logger.info(
+                f"[KV-DIAG] Slot restore check: saved_ngl={s_ngl_val}, expected_ngl={e_ngl_val}, "
+                f"mtime_diff={mtime_diff_sec:.4f}s, result={chk_res}"
+            )
+        except Exception as _e_diag:
+            logger.debug(f"[KV-DIAG] Slot check log error: {_e_diag}")
+
         if mismatch_reasons:
             logger.info(
                 f"[ProcessManager] Инвалидация KV-слота: параметры запуска не совпадают ({'; '.join(mismatch_reasons)}). "

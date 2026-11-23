@@ -189,3 +189,57 @@ def test_three_anchors_warning_on_extreme_overflow(caplog):
 
     # Предупреждение залогировано
     assert any("[RoleplayEviction]" in record.message for record in caplog.records)
+
+
+def test_roleplay_recalled_lore_prefix_stability():
+    """
+    Проверяет стабильность префикса KV-кэша в Roleplay:
+    - messages[0] остается строго идентичным независимо от того,
+      пуст ли recalled_lore_block или заполнен динамическим лором.
+    - Динамический лор инжектируется в последнее сообщение пользователя,
+      не загрязняя системный промпт и исходную историю.
+    """
+    card = CharacterCard(
+        name="Алиса",
+        description="Верная спутница.",
+        personality="Спокойная.",
+        scenario="Киберпанк.",
+        first_mes="*Приветствует пользователя.*"
+    )
+
+    history = [
+        {"role": "assistant", "content": "*Приветствует пользователя.*"},
+        {"role": "user", "content": "Расскажи о таверне."}
+    ]
+
+    # Шаг 1: без лора
+    messages_turn1 = SessionManager.get_lm_studio_messages(
+        history=history,
+        is_roleplay=True,
+        character_card=card,
+        user_name="Иван",
+        recalled_lore_block=""
+    )
+
+    # Шаг 2: с динамическим лором
+    lore_text = "<RecalledLore>Таверна 'Неон': старое убежище в трущобах.</RecalledLore>"
+    messages_turn2 = SessionManager.get_lm_studio_messages(
+        history=history,
+        is_roleplay=True,
+        character_card=card,
+        user_name="Иван",
+        recalled_lore_block=lore_text
+    )
+
+    # messages[0] должен быть абсолютно идентичен (100% KV cache hit для системного промпта)
+    assert messages_turn1[0]["content"] == messages_turn2[0]["content"]
+
+    # В turn 1 реплика пользователя чистая
+    assert messages_turn1[-1]["content"] == "Расскажи о таверне."
+
+    # В turn 2 динамический лор прикреплен к реплике пользователя
+    assert lore_text in messages_turn2[-1]["content"]
+    assert "Расскажи о таверне." in messages_turn2[-1]["content"]
+
+    # Исходная история не мутирована
+    assert history[-1]["content"] == "Расскажи о таверне."
