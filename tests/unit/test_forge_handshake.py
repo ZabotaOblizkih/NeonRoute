@@ -140,3 +140,60 @@ def test_forge_startup_timeout_terminates_process_tree(monkeypatch, tmp_path):
     assert any(not ok and "Превышено время ожидания" in msg for ok, msg in status_signals)
     assert any(action == "forge_start" and not ok for action, ok, msg in action_signals)
 
+
+def test_forge_start_aborts_when_port_occupied_by_foreign_service(monkeypatch):
+    """
+    Проверяет, что если порт 7860 занят, но HTTP-handshake не проходит (чужой процесс),
+    ProcessManager НЕ запускает второй экземпляр Forge на том же порту и отправляет отказ.
+    """
+    pm = ProcessManager()
+    # is_forge_running -> False
+    monkeypatch.setattr(pm, "is_forge_running", lambda: False)
+    # is_port_open -> True
+    monkeypatch.setattr(pm, "is_port_open", lambda port=7860, timeout=0.3: True)
+    # handshake -> False
+    monkeypatch.setattr("services.process_manager.verify_forge_http_handshake", lambda *a, **kw: False)
+    # inspect_port_occupant -> occupier found
+    monkeypatch.setattr(pm, "inspect_port_occupant", lambda port: (True, 9999, "foreign_app.exe"))
+
+    popen_called = False
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: setattr(popen_called, "val", True))
+
+    status_signals = []
+    pm.forge_status_changed.connect(lambda ok, msg: status_signals.append((ok, msg)))
+
+    pm._run_forge_start()
+
+    assert popen_called is False
+    assert len(status_signals) == 1
+    ok, msg = status_signals[0]
+    assert ok is False
+    assert "Порт 7860 уже занят" in msg
+    assert "foreign_app.exe" in msg
+
+
+def test_forge_start_reuses_when_port_occupied_by_alive_forge(monkeypatch):
+    """
+    Проверяет, что если порт 7860 открыт и handshake успешен,
+    ProcessManager фиксирует готовность Forge и не производит повторный запуск.
+    """
+    pm = ProcessManager()
+    monkeypatch.setattr(pm, "is_forge_running", lambda: False)
+    monkeypatch.setattr(pm, "is_port_open", lambda port=7860, timeout=0.3: True)
+    monkeypatch.setattr("services.process_manager.verify_forge_http_handshake", lambda *a, **kw: True)
+
+    popen_called = False
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: setattr(popen_called, "val", True))
+
+    status_signals = []
+    pm.forge_status_changed.connect(lambda ok, msg: status_signals.append((ok, msg)))
+
+    pm._run_forge_start()
+
+    assert popen_called is False
+    assert len(status_signals) == 1
+    ok, msg = status_signals[0]
+    assert ok is True
+    assert "Forge уже запущен" in msg
+
+

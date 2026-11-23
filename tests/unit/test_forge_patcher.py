@@ -712,5 +712,59 @@ def test_forge_patcher_recognizes_reference_forge_without_constraints_file(tmp_p
     assert "Патч совместимости активен" in msg
 
 
+def test_forge_patcher_backup_metadata_and_stale_detection(tmp_path, monkeypatch):
+    """Verifies backup_info.json records git_head and file_hashes, and archives stale backup when HEAD changes."""
+    import json
+    import services.forge_patcher as fp
+    forge_dir = _create_synthetic_forge(tmp_path / "git_forge", stock=True)
+
+    # 1. First backup with commit 1111111
+    monkeypatch.setattr(fp, "_get_forge_git_head", lambda webui_dir: "1111111222222233333334444444555555566666")
+    ok = ForgePatcher.create_backup(forge_dir)
+    assert ok is True
+
+    webui_dir = ForgePatcher.find_forge_webui_dir(forge_dir)
+    info_file = webui_dir / ".neonroute_backup" / "backup_info.json"
+    assert info_file.is_file()
+    data = json.loads(info_file.read_text(encoding="utf-8"))
+    assert data["git_head"] == "1111111222222233333334444444555555566666"
+    assert "file_hashes" in data
+    assert "modules/sd_models.py" in data["file_hashes"]
+
+    # 2. Forge updates to commit 2222222
+    monkeypatch.setattr(fp, "_get_forge_git_head", lambda webui_dir: "2222222333333344444445555555666666677777")
+
+    # Calling create_backup detects stale backup, moves it to stale_<ts>, and recreates fresh backup
+    ok2 = ForgePatcher.create_backup(forge_dir)
+    assert ok2 is True
+    stale_dirs = list((webui_dir / ".neonroute_backup").glob("stale_*"))
+    assert len(stale_dirs) == 1
+    new_data = json.loads(info_file.read_text(encoding="utf-8"))
+    assert new_data["git_head"] == "2222222333333344444445555555666666677777"
+
+
+def test_forge_patcher_restore_backup_blocked_on_head_change(tmp_path, monkeypatch):
+    """Verifies restore_backup refuses to overwrite updated core files when HEAD has changed."""
+    import json
+    import services.forge_patcher as fp
+    forge_dir = _create_synthetic_forge(tmp_path / "restore_git_forge", stock=True)
+    webui_dir = ForgePatcher.find_forge_webui_dir(forge_dir)
+
+    monkeypatch.setattr(fp, "_get_forge_git_head", lambda w: "old_head_1234567890")
+    ForgePatcher.create_backup(forge_dir)
+
+    # Core updates to new head
+    monkeypatch.setattr(fp, "_get_forge_git_head", lambda w: "new_head_abcdef1234")
+
+    # Attempting to restore must fail and archive stale backup
+    ok, msg = ForgePatcher.restore_backup(forge_dir)
+    assert ok is False
+    assert "Обнаружено обновление ядра Forge" in msg
+    assert "заблокирован" in msg
+    stale_dirs = list((webui_dir / ".neonroute_backup").glob("stale_*"))
+    assert len(stale_dirs) == 1
+
+
+
 
 

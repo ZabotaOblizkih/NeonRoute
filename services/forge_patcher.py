@@ -16,10 +16,13 @@ services/forge_patcher.py
 - Полный откат к заводскому состоянию через restore_backup().
 """
 
+import hashlib
 import json
 import logging
 import re
 import shutil
+import subprocess
+import sys
 import textwrap
 import time
 from enum import Enum
@@ -27,6 +30,50 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
 logger = logging.getLogger("NeonRoute.ForgePatcher")
+
+
+def _get_forge_git_head(webui_dir: Optional[Path]) -> Optional[str]:
+    """
+    Возвращает текущий commit hash (HEAD) репозитория Forge, если webui_dir находится в git.
+    Безопасен к отсутствию git в PATH или отсутствию каталога .git.
+    """
+    if not webui_dir:
+        return None
+    try:
+        w_path = Path(webui_dir).resolve()
+        git_dir = w_path / ".git"
+        if not git_dir.exists() and (w_path.parent / ".git").exists():
+            git_dir = w_path.parent / ".git"
+            w_path = w_path.parent
+        if not git_dir.exists():
+            return None
+        proc = subprocess.run(
+            ["git", "-C", str(w_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if proc.returncode == 0:
+            commit = proc.stdout.strip()
+            if commit and len(commit) >= 7:
+                return commit
+    except Exception:
+        pass
+    return None
+
+
+def _calculate_file_sha256(file_path: Path) -> Optional[str]:
+    """Вычисляет контрольную сумму sha256 файла."""
+    if not file_path:
+        return None
+    try:
+        p = Path(file_path)
+        if not p.is_file():
+            return None
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except Exception:
+        return None
 
 
 class ForgePatchStatus(str, Enum):
@@ -787,19 +834,50 @@ class ForgePatcher:
             return ForgePatchStatus.INCOMPATIBLE, f"Ошибка чтения файлов Forge: {e}"
 
     @classmethod
-    def create_backup(cls, forge_root: Path | str) -> bool:
+    def create_backup(cls, forge_root: Path | str, force_refresh: bool = False) -> bool:
         """
         Сохраняет исходные оригиналы файлов Forge в <forge_webui>/.neonroute_backup/original/.
-        Если резервная копия уже существует — НЕ перезаписывает её.
+        Если резервная копия уже существует и актуальна по git HEAD — сохраняет её.
+        Если ядро Forge обновилось (сменился git commit HEAD) — архивирует устаревший бэкап
+        в .neonroute_backup/stale_<timestamp>/ и пересоздаёт свежий снимок актуального ядра.
         """
         webui_dir = cls.find_forge_webui_dir(forge_root)
         if not webui_dir:
             return False
 
         backup_dir = webui_dir / ".neonroute_backup" / "original"
+        info_file = backup_dir.parent / "backup_info.json"
+
         if cls.has_backup(forge_root):
-            logger.info(f"[ForgePatcher] Резервная копия уже существует: {backup_dir}")
-            return True
+            current_head = _get_forge_git_head(webui_dir)
+            is_stale = False
+            stale_reason = ""
+            if current_head and info_file.is_file():
+                try:
+                    info = json.loads(info_file.read_text(encoding="utf-8"))
+                    saved_head = info.get("git_head")
+                    if saved_head and saved_head != current_head:
+                        is_stale = True
+                        stale_reason = f"сменился git commit Forge (бэкап: {saved_head[:8]} != текущий: {current_head[:8]})"
+                except Exception:
+                    pass
+
+            if not is_stale and not force_refresh:
+                logger.info(f"[ForgePatcher] Резервная копия уже существует и актуальна: {backup_dir}")
+                return True
+
+            # Архивируем устаревший бэкап
+            ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+            stale_dir = backup_dir.parent / f"stale_{ts}"
+            try:
+                if backup_dir.is_dir():
+                    shutil.move(str(backup_dir), str(stale_dir))
+                    logger.warning(
+                        f"[ForgePatcher] Устаревший бэкап Forge ({stale_reason or 'принудительное обновление'}) "
+                        f"перенесён в {stale_dir.name}"
+                    )
+            except Exception as e:
+                logger.error(f"[ForgePatcher] Не удалось архивировать устаревший бэкап: {e}")
 
         try:
             backup_dir.mkdir(parents=True, exist_ok=True)
@@ -834,6 +912,12 @@ class ForgePatcher:
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "source_webui": str(webui_dir),
                 "files": backup_files,
+                "git_head": _get_forge_git_head(webui_dir),
+                "file_hashes": {
+                    rel: _calculate_file_sha256(webui_dir / rel)
+                    for rel in backup_files
+                    if (webui_dir / rel).is_file()
+                },
             }
             if launcher_bat:
                 meta["webui_user_bat_path"] = str(launcher_bat)
@@ -1116,6 +1200,38 @@ class ForgePatcher:
             return False, "Не удалось разрешить пути к резервной копии."
 
         try:
+            # Читаем метаданные резервной копии
+            meta = {}
+            info_file = backup_dir.parent / "backup_info.json"
+            if info_file.is_file():
+                try:
+                    meta = json.loads(info_file.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+
+            # Проверка актуальности бэкапа перед восстановлением:
+            # Если репозиторий Forge обновился (сменился git commit HEAD),
+            # ни в коем случае не затираем новое ядро старыми файлами!
+            current_head = _get_forge_git_head(webui_dir)
+            saved_head = meta.get("git_head")
+            if current_head and saved_head and saved_head != current_head:
+                msg = (
+                    f"Обнаружено обновление ядра Forge после создания резервной копии "
+                    f"(бэкап: {saved_head[:8]} != текущий HEAD: {current_head[:8]}). "
+                    f"Откат к устаревшей резервной копии заблокирован во избежание повреждения файлов ядра Forge."
+                )
+                logger.error(f"[ForgePatcher] {msg}")
+                # Архивируем устаревший бэкап
+                ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+                stale_dir = backup_dir.parent / f"stale_{ts}"
+                try:
+                    if backup_dir.is_dir():
+                        shutil.move(str(backup_dir), str(stale_dir))
+                        logger.warning(f"[ForgePatcher] Устаревший бэкап архивирован в {stale_dir.name}")
+                except Exception:
+                    pass
+                return False, msg
+
             src_api = backup_dir / "modules" / "api" / "api.py"
             src_models = backup_dir / "modules" / "api" / "models.py"
             src_sd = backup_dir / "modules" / "sd_models.py"
@@ -1139,14 +1255,6 @@ class ForgePatcher:
                     shutil.copy2(src_bat, dst_bat)
                     restored_files.append("webui-user.bat")
 
-            # Читаем метаданные резервной копии
-            meta = {}
-            info_file = backup_dir.parent / "backup_info.json"
-            if info_file.is_file():
-                try:
-                    meta = json.loads(info_file.read_text(encoding="utf-8"))
-                except Exception:
-                    meta = {}
             original_backed_files = meta.get("files", [])
 
             # Восстанавливаем requirements_versions.txt если он был в оригинальном бэкапе

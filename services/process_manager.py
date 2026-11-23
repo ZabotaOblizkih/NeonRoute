@@ -1880,13 +1880,31 @@ class ProcessManager(QObject):
 
         from unittest.mock import MagicMock
         if not (isinstance(getattr(self, "is_port_open", None), MagicMock)) and self.is_port_open(port=7860, timeout=0.3):
-            if not verify_forge_http_handshake(port=7860, timeout=0.8):
-                is_occ, occ_pid, occ_name = self.inspect_port_occupant(7860)
-                occ_desc = f" (PID {occ_pid}: '{occ_name}')" if is_occ and occ_pid else ""
-                logger.warning(
-                    f"[ProcessManager] Конфликт портов! Порт 7860 занят посторонним сервисом{occ_desc} "
-                    f"(HTTP handshake не пройден). Gradio может переключиться на порт 7861."
-                )
+            # Порт 7860 уже открыт. Проверяем, отвечает ли это Forge API (/sdapi/v1/options)
+            handshake_ok = verify_forge_http_handshake(port=7860, timeout=2.0)
+            for _attempt in range(2):
+                if handshake_ok:
+                    break
+                time.sleep(1.0)
+                handshake_ok = verify_forge_http_handshake(port=7860, timeout=3.0)
+
+            if handshake_ok:
+                logger.info("[ProcessManager] Порт 7860 уже обслуживает API Forge (handshake успешен) — повторный запуск не требуется.")
+                self.forge_status_changed.emit(True, "Forge уже запущен.")
+                self.action_completed.emit("forge_start", True, "Forge уже работает.")
+                return
+
+            is_occ, occ_pid, occ_name = self.inspect_port_occupant(7860)
+            occ_desc = f" (PID {occ_pid}: '{occ_name}')" if is_occ and occ_pid else ""
+            err_msg = (
+                f"Порт 7860 уже занят{occ_desc}, и это не API Forge. "
+                f"Второй экземпляр Forge не запущен во избежание конфликта (--port 7860). "
+                f"Освободите порт 7860 или завершите зависший процесс и повторите запуск."
+            )
+            logger.error(f"[ProcessManager] {err_msg}")
+            self.forge_status_changed.emit(False, err_msg)
+            self.action_completed.emit("forge_start", False, err_msg)
+            return
 
         # Запуск быстрого pre-flight аудита ассетов перед стартом демона
         try:
@@ -1963,7 +1981,18 @@ class ProcessManager(QObject):
             self._forge_log_file = open(forge_log_path, "w", encoding="utf-8", errors="replace", buffering=1)
 
             clean_env = get_clean_forge_env()
-            if "startup_flags" in locals() and startup_flags:
+            # Проверяем, пробрасывает ли лаунчер аргументы командной строки через %* или %~1
+            try:
+                _launcher_txt = Path(launcher_path).read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                _launcher_txt = ""
+
+            forwards_cli_args = ("%*" in _launcher_txt or "%~1" in _launcher_txt)
+            if forwards_cli_args:
+                # Лаунчер пробрасывает аргументы через %* в sys.argv.
+                # Очищаем COMMANDLINE_ARGS из env, чтобы Forge (modules/paths_internal.py) не дублировал их.
+                clean_env.pop("COMMANDLINE_ARGS", None)
+            elif "startup_flags" in locals() and startup_flags:
                 clean_env["COMMANDLINE_ARGS"] = " ".join(startup_flags)
             try:
                 self._forge_process = subprocess.Popen(

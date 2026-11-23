@@ -1061,12 +1061,103 @@ class TestTextToImageGeneration:
     def test_txt2img_connection_error_raises_forge_offline_error(self, forge_client, monkeypatch):
         def _err(*a, **k):
             raise requests.exceptions.ConnectionError("offline")
-        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        # 1-й вызов: preflight (True), 2-й вызов: проверка живости сервера в обработчике ошибки (False)
+        ready_calls = [True, False]
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: ready_calls.pop(0) if ready_calls else False)
         self._patch_session_post(monkeypatch, _err)
 
         with pytest.raises(ForgeOfflineError) as exc:
             forge_client.text_to_image(prompt="test")
         assert "SD WebUI Forge не запущен" in str(exc.value)
+
+    def test_txt2img_connection_reset_when_server_alive_raises_runtime_error(self, forge_client, monkeypatch):
+        def _err(*a, **k):
+            raise requests.exceptions.ConnectionError("Connection reset by peer [WinError 10054]")
+        # Сервер всегда отвечает True на is_server_ready (жив, но сбросил keep-alive)
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        self._patch_session_post(monkeypatch, _err)
+
+        with pytest.raises(RuntimeError) as exc:
+            forge_client.text_to_image(prompt="test")
+        assert "сброс keep-alive сессии" in str(exc.value)
+
+    def test_txt2img_adetailer_stripped_when_not_installed(self, forge_client, tmp_path, monkeypatch):
+        """Проверяет вырезание ADetailer из запроса, если скрипт достоверно отсутствует в /sdapi/v1/scripts."""
+        img_b64 = _create_valid_png_b64(64, 64)
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"images": [img_b64], "info": "{}"}
+        
+        posted_payload = {}
+        def _post(url, *args, **kwargs):
+            nonlocal posted_payload
+            posted_payload = kwargs.get("json", {})
+            return mock_resp
+        
+        self._patch_session_post(monkeypatch, _post)
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        # Достоверно полученный список скриптов без ADetailer
+        forge_client._cached_scripts = {"txt2img": ["never oom integrated", "controlnet"]}
+
+        forge_client.text_to_image(
+            prompt="portrait",
+            alwayson_scripts={"ADetailer": {"args": [True, False]}},
+            output_dir=str(tmp_path),
+        )
+        assert "alwayson_scripts" not in posted_payload or "ADetailer" not in posted_payload.get("alwayson_scripts", {})
+
+    def test_txt2img_adetailer_preserved_when_scripts_fetch_fails(self, forge_client, tmp_path, monkeypatch):
+        """Проверяет сохранение ADetailer, если список скриптов от сервера не удалось получить (_cached_scripts is None)."""
+        img_b64 = _create_valid_png_b64(64, 64)
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"images": [img_b64], "info": "{}"}
+        
+        posted_payload = {}
+        def _post(url, *args, **kwargs):
+            nonlocal posted_payload
+            posted_payload = kwargs.get("json", {})
+            return mock_resp
+        
+        self._patch_session_post(monkeypatch, _post)
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        # Скрипты не получены (None)
+        forge_client._cached_scripts = None
+        monkeypatch.setattr("requests.get", lambda *a, **k: MagicMock(status_code=500))
+
+        forge_client.text_to_image(
+            prompt="portrait",
+            alwayson_scripts={"ADetailer": {"args": [True, False]}},
+            output_dir=str(tmp_path),
+        )
+        assert "alwayson_scripts" in posted_payload
+        assert "ADetailer" in posted_payload["alwayson_scripts"]
+
+    def test_set_model_fallback_when_checkpoint_missing(self, forge_client, monkeypatch):
+        """Проверяет выбор безопасного fallback, если запрошенный чекпоинт отсутствует в Forge."""
+        models = [
+            {"title": "dreamshaper_8.safetensors", "model_name": "dreamshaper_8", "filename": "dreamshaper_8.safetensors"},
+            {"title": "animagineXLV31_fp8e4.safetensors", "model_name": "animagineXLV31", "filename": "animagineXLV31_fp8e4.safetensors"},
+        ]
+        monkeypatch.setattr(forge_client, "get_models", lambda: models)
+        monkeypatch.setattr(forge_client, "get_current_model", lambda: "dreamshaper_8.safetensors")
+
+        opt_payloads = []
+        def _set_opt(opt, timeout=30.0):
+            opt_payloads.append(opt)
+            return True
+        monkeypatch.setattr(forge_client, "set_options", _set_opt)
+
+        # 1. Запрос несуществующей SD 1.5 модели: fallback на текущую SD 1.5 модель (dreamshaper_8)
+        # Так как dreamshaper_8 уже активна, set_model возвращает True без повторной отправки опций
+        res = forge_client.set_model("nonexistent_sd15_model.safetensors")
+        assert res is True
+        assert len(opt_payloads) == 0  # Уже активна!
+
+        # 2. Запрос несуществующей SDXL модели: fallback на доступную SDXL модель (animagineXLV31_fp8e4)
+        res_xl = forge_client.set_model("nonexistent_sdxl_model_xl.safetensors")
+        assert res_xl is True
+        assert len(opt_payloads) == 1
+        assert opt_payloads[0]["sd_model_checkpoint"] == "animagineXLV31_fp8e4.safetensors"
+
 
     def test_progress_poller_stage_detection_signals(self, forge_client):
         """Simulates progress poller loop execution and checks emitted stage labels."""

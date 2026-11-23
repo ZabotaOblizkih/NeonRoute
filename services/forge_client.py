@@ -201,7 +201,7 @@ class ForgeClient(QObject):
                 resp = requests.get(f"{self.base_url}/sdapi/v1/scripts", timeout=1.5)
                 if getattr(resp, "status_code", None) == 200:
                     data = resp.json()
-                    if isinstance(data, dict):
+                    if isinstance(data, dict) and any(isinstance(v, list) for v in data.values()):
                         self._cached_scripts = {
                             str(k): [str(s).strip().lower() for s in v]
                             for k, v in data.items()
@@ -539,6 +539,7 @@ class ForgeClient(QObject):
             target_title = checkpoint_title
             models = self.get_models()
             search_str = checkpoint_title.lower().replace(".safetensors", "").replace(".ckpt", "")
+            matched = False
             for m in models:
                 m_title = m.get("title", "")
                 m_name = m.get("model_name", "")
@@ -550,7 +551,36 @@ class ForgeClient(QObject):
                     search_str in m_name.lower() or 
                     search_str in m_fn):
                     target_title = m_title
+                    matched = True
                     break
+
+            # Если список моделей доступен, но запрошенный чекпоинт отсутствует:
+            # Не отправляем заведомо несуществующее имя в POST /options (вызывающее HTTP 500).
+            # Выбираем безопасный fallback той же архитектуры или текущую активную модель.
+            if models and not matched:
+                is_req_xl = is_sdxl_checkpoint(checkpoint_title)
+                same_arch_model = next(
+                    (m.get("title") for m in models if m.get("title") and is_sdxl_checkpoint(m.get("title")) == is_req_xl),
+                    None
+                )
+                current = self.get_current_model()
+                current_valid = bool(current and any(m.get("title") == current for m in models))
+
+                if current_valid and (is_sdxl_checkpoint(current) == is_req_xl or not same_arch_model):
+                    fallback_title = current
+                elif same_arch_model:
+                    fallback_title = same_arch_model
+                elif current_valid:
+                    fallback_title = current
+                else:
+                    fallback_title = models[0].get("title", "")
+
+                if fallback_title:
+                    logger.warning(
+                        f"[ForgeClient] Запрошенный чекпоинт '{checkpoint_title}' не найден среди моделей Forge ({len(models)} доступно). "
+                        f"Выбран безопасный fallback: '{fallback_title}'."
+                    )
+                    target_title = fallback_title
 
             current = self.get_current_model()
             if current and (current == target_title or target_title in current):
@@ -988,6 +1018,20 @@ class ForgeClient(QObject):
 
         if "alwayson_scripts" in kwargs and kwargs["alwayson_scripts"]:
             payload["alwayson_scripts"] = copy.deepcopy(kwargs["alwayson_scripts"])
+
+        # ADetailer отправляем только если расширение реально установлено в Forge (/sdapi/v1/scripts).
+        # Если скрипта нет, Forge отклоняет весь запрос: HTTP 422 {"detail":"Script 'ADetailer' not found"}.
+        # Вырезаем ADetailer только при достоверно полученном ответе от /sdapi/v1/scripts.
+        if isinstance(payload.get("alwayson_scripts"), dict) and "ADetailer" in payload["alwayson_scripts"]:
+            _ = self.has_script("ADetailer", tab="txt2img")
+            if isinstance(self._cached_scripts, dict) and not self.has_script("ADetailer", tab="txt2img"):
+                logger.warning(
+                    "[ForgeClient] ADetailer запрошен, но расширение не установлено в Forge (/sdapi/v1/scripts). "
+                    "Скрипт удалён из запроса, генерация продолжится без прохода по лицу/рукам."
+                )
+                payload["alwayson_scripts"].pop("ADetailer", None)
+                if not payload["alwayson_scripts"]:
+                    payload.pop("alwayson_scripts", None)
 
         has_ad = bool("alwayson_scripts" in payload and "ADetailer" in payload["alwayson_scripts"])
 
@@ -1440,7 +1484,23 @@ class ForgeClient(QObject):
             logger.info(f"Successfully saved original full-resolution PNG to {file_path} ({len(image_bytes)} bytes, {actual_w}x{actual_h})")
             return file_path
 
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as conn_err:
+            # Различаем два случая: сервер реально оффлайн ИЛИ сорвалось keep-alive соединение
+            # после ответа сервера с ошибкой (HTTP 5xx / ConnectionResetError [WinError 10054]).
+            server_alive = False
+            try:
+                server_alive = self.is_server_ready(timeout=2.0)
+            except Exception:
+                server_alive = False
+
+            if server_alive:
+                err_msg = (
+                    "Соединение с Forge прервано после ответа с ошибкой (сброс keep-alive сессии). "
+                    "Forge запущен и отвечает — повторите генерацию."
+                )
+                logger.error(f"[ForgeClient] {err_msg} Причина: {conn_err}")
+                raise RuntimeError(err_msg) from conn_err
+
             err_msg = (
                 "⚠️ SD WebUI Forge не запущен или еще загружается. "
                 "Запустите Forge через кнопку в нижней панели и дождитесь зеленого индикатора."
