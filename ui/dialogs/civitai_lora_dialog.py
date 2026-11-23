@@ -17,8 +17,10 @@ from PyQt6.QtWidgets import (
 )
 
 from services.art_director.lora_manager import LoraManager, DEFAULT_FORGE_LORA_DIR
+from services.civitai_service import clean_civitai_description
 from ui.dialogs.civitai_catalog_dialog import (
     render_civitai_poster,
+    resolve_civitai_target_dir,
     CivitaiSearchWorker,
     CivitaiThumbnailsBatchWorker,
     CivitaiDownloadWorker
@@ -499,10 +501,11 @@ class CivitaiLoraDialog(QDialog):
         steps = meta.get("steps") or 25
         cfg = meta.get("cfgScale") or 6.0
 
+        clean_desc = clean_civitai_description(c.get("description", ""))
         desc_parts = [
             f"⚙️ Рекомендованные автором параметры:\n• Сэмплер: {sampler}\n• Шаги: {steps}\n• CFG Scale: {cfg}",
             f"📄 Имя файла: {c['filename']}",
-            f"📖 Описание:\n{c.get('description', '')}"
+            f"📖 Описание:\n{clean_desc}" if clean_desc else "📖 Описание:\n(описание не указано автором)"
         ]
         self.text_preview.setPlainText("\n\n".join(desc_parts).strip())
 
@@ -533,8 +536,9 @@ class CivitaiLoraDialog(QDialog):
                 return
 
         filename = c["filename"]
-        dest_file = DEFAULT_FORGE_LORA_DIR / filename
-        DEFAULT_FORGE_LORA_DIR.mkdir(parents=True, exist_ok=True)
+        save_dir = resolve_civitai_target_dir("LORA")
+        save_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = (save_dir / filename).resolve()
 
         self.btn_download.setEnabled(False)
         self.btn_cancel_dl.setVisible(True)

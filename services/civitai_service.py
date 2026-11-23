@@ -6,10 +6,11 @@ with robust name-based fallback and image metadata extraction.
 
 import os
 import re
+import html
 import hashlib
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import requests
 
@@ -19,6 +20,80 @@ logger = logging.getLogger("NeonRoute.CivitaiService")
 
 CIVITAI_API_URL = "https://civitai.com/api/v1/model-versions/by-hash/{hash}"
 FORGE_SD_MODELS_DIR = FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
+
+
+def clean_civitai_description(raw_html: Optional[str]) -> str:
+    """
+    Нормализует HTML-описание модели с Civitai в чистый форматированный текст:
+    - Конвертирует блочные элементы (<p>, <br>, <li>, <tr>, <pre>, заголовки) в читаемые переносы строк и маркеры списка;
+    - Полностью удаляет остальные HTML-теги;
+    - Декодирует HTML-сущности (html.unescape);
+    - Вычищает невидимые/мусорные символы (\\u3164 Hangul Filler, zero-width spaces \\u200b, \\u200c, \\u200d, \\ufeff, \\u2060);
+    - Нормализует пробелы и сжимает избыточные пустые строки.
+    """
+    if not raw_html:
+        return ""
+
+    text = str(raw_html)
+
+    # 1. Заменяем блочные разделители на переносы строк
+    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+    text = re.sub(r'(?i)</?(?:p|div|h[1-6]|tr|blockquote|pre)[^>]*>', '\n', text)
+    text = re.sub(r'(?i)<li[^>]*>', '\n• ', text)
+    text = re.sub(r'(?i)</li>', '', text)
+
+    # 2. Удаляем все оставшиеся теги (<a>, <strong>, <span>, <code>, <ul>, <ol>, <table> и т.д.)
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # 3. Декодируем HTML-сущности (&quot;, &#39;, &amp;, &nbsp;, &gt;, &lt; и т.д.)
+    text = html.unescape(text)
+
+    # 4. Удаляем мусорные невидимые символы и Hangul filler
+    text = text.replace('\u00a0', ' ')
+    text = re.sub(r'[\u3164\u200b\u200c\u200d\ufeff\u2060]', '', text)
+
+    # 5. Нормализация строк и пробелов
+    lines = []
+    for line in text.splitlines():
+        cleaned_line = re.sub(r'[ \t]+', ' ', line).strip()
+        lines.append(cleaned_line)
+
+    result = '\n'.join(lines)
+    # Сжимаем 3+ переноса строк до максимум двух (пустая строка между абзацами)
+    return re.sub(r'\n{3,}', '\n\n', result).strip()
+
+
+def get_forge_search_dirs() -> List[Path]:
+    """Динамически возвращает список существующих каталогов чекпоинтов Forge."""
+    import config
+    curr_forge_root = getattr(config, "FORGE_ROOT_DIR", FORGE_ROOT_DIR)
+    candidate_dirs: List[Path] = []
+    if hasattr(config, "get_forge_models_dir"):
+        try:
+            candidate_dirs.append(config.get_forge_models_dir())
+        except Exception:
+            pass
+    if curr_forge_root:
+        p_root = Path(curr_forge_root).resolve()
+        candidate_dirs.extend([
+            p_root / "models" / "Stable-diffusion",
+            p_root / "webui" / "models" / "Stable-diffusion",
+            p_root / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
+        ])
+    if FORGE_SD_MODELS_DIR not in candidate_dirs:
+        candidate_dirs.append(FORGE_SD_MODELS_DIR)
+
+    seen = set()
+    result = []
+    for d in candidate_dirs:
+        try:
+            r = d.resolve()
+            if r not in seen:
+                seen.add(r)
+                result.append(r)
+        except Exception:
+            pass
+    return result
 
 CIVITAI_HEADERS = {
     "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) NeonRoute/{APP_VERSION}",
@@ -237,12 +312,22 @@ def fetch_civitai_parameters(checkpoint_name: str) -> Dict[str, Any]:
     result = dict(DEFAULT_PIPELINE_PARAMS)
     checkpoint_file = Path(checkpoint_name)
     if not checkpoint_file.is_absolute() or not checkpoint_file.exists():
-        checkpoint_file = FORGE_SD_MODELS_DIR / checkpoint_name
-
-    if not checkpoint_file.exists():
-        matches = list(FORGE_SD_MODELS_DIR.rglob(Path(checkpoint_name).name))
-        if matches:
-            checkpoint_file = matches[0]
+        search_dirs = get_forge_search_dirs()
+        found = False
+        for s_dir in search_dirs:
+            candidate = s_dir / checkpoint_name
+            if candidate.exists():
+                checkpoint_file = candidate
+                found = True
+                break
+        if not found:
+            for s_dir in search_dirs:
+                if s_dir.exists():
+                    matches = list(s_dir.rglob(Path(checkpoint_name).name))
+                    if matches:
+                        checkpoint_file = matches[0]
+                        found = True
+                        break
 
     model_hash = None
     if checkpoint_file.exists():

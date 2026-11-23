@@ -442,3 +442,36 @@ def test_models_manager_safe_shutdown_and_worker_cleanup(qapp, isolated_storage)
     assert mock_test_worker.abort.called or mock_test_worker.quit.called
     assert dialog._scan_worker is None
     assert dialog._test_worker is None
+
+
+def test_models_manager_civitai_model_installed_html_cleaning(qapp, isolated_storage):
+    """Проверяет очистку HTML-тегов и Hangul filler при авторегистрации скачанной с Civitai модели."""
+    with patch.object(ModelsManagerDialog, "_start_forge_scan"):
+        dialog = ModelsManagerDialog()
+
+    model_info = {
+        "id": "9988",
+        "name": "Civitai Anime Master",
+        "filename": "civitai_anime_v1.safetensors",
+        "description": "<p>Ultra anime model with <strong>sharp</strong> details.</p>ᅠ",
+        "triggers": ["masterpiece", "anime"],
+        "sampler": "Euler a",
+        "steps": 28,
+        "cfg_scale": 7.0
+    }
+
+    dialog._on_civitai_model_installed(model_info)
+
+    # Модель должна добавиться в row_widgets
+    added = [r for r in dialog.row_widgets if r.get("checkpoint") == "civitai_anime_v1.safetensors"]
+    assert len(added) == 1
+    routing_desc = added[0].get("routing_description", "")
+
+    # Проверка, что сырой HTML и \u3164 вычищены
+    assert "<p>" not in routing_desc
+    assert "<strong>" not in routing_desc
+    assert "\u3164" not in routing_desc
+    assert "Ultra anime model with sharp details." in routing_desc
+
+    dialog.reject()
+

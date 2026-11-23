@@ -1019,12 +1019,9 @@ class ForgeCivitaiSyncMixin:
     def _open_civitai_catalog(self):
         """Открывает нативный браузер каталога Civitai."""
         from ui.dialogs.civitai_catalog_dialog import CivitaiCatalogDialog
-        target_dir = None
-        if self.available_checkpoints:
-            installed_list = self.forge_client.get_installed_checkpoints()
-            if installed_list:
-                target_dir = Path(installed_list[0]).parent
-        dlg = CivitaiCatalogDialog(target_dir=target_dir, parent=self)
+        # Передаем target_dir=None, чтобы CivitaiCatalogDialog динамически разрешал целевой каталог
+        # чекпоинтов через config.get_forge_models_dir() / AssetValidator (без бага Path('.')).
+        dlg = CivitaiCatalogDialog(target_dir=None, parent=self)
         dlg.model_installed.connect(self._on_civitai_model_installed)
         try:
             dlg.exec()
@@ -1036,6 +1033,7 @@ class ForgeCivitaiSyncMixin:
 
     def _on_civitai_model_installed(self, model_info: dict):
         """Автоматически регистрирует скачанную с Civitai модель в списке роутера."""
+        from services.civitai_service import clean_civitai_description
         ckpt_name = model_info.get("filename", "")
         if ckpt_name and ckpt_name not in self.available_checkpoints:
             self.available_checkpoints.append(ckpt_name)
@@ -1043,12 +1041,14 @@ class ForgeCivitaiSyncMixin:
 
         is_xl = is_xl_model(ckpt_name)
         arch = "sdxl" if is_xl else "sd15"
+        raw_desc = model_info.get("description", "")
+        cleaned_desc = clean_civitai_description(raw_desc) or raw_desc
         new_data = {
             "id": f"civitai_{model_info.get('id', uuid.uuid4().hex[:6])}",
             "name": model_info.get("name", "Новая модель"),
             "architecture": arch,
             "checkpoint": ckpt_name,
-            "routing_description": model_info.get("description", ""),
+            "routing_description": cleaned_desc,
             "llm_guidance": model_info.get("guidance", ""),
             "negative_prompt": get_default_negative_prompt(ckpt_name, model_info.get("name", "")),
             "active": True,

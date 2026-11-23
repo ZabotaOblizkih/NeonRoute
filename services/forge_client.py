@@ -393,15 +393,35 @@ class ForgeClient(QObject):
                 logger.debug(f"Failed to fetch installed checkpoints from Forge API: {e}")
 
         # Local directory fallback scan (discovers files instantly if Forge is offline or booting)
-        local_models_dir = FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
-        if local_models_dir.exists():
+        import config
+        curr_root = getattr(config, "FORGE_ROOT_DIR", FORGE_ROOT_DIR)
+        candidate_dirs = []
+        if hasattr(config, "get_forge_models_dir"):
             try:
-                for f in local_models_dir.iterdir():
+                candidate_dirs.append(config.get_forge_models_dir())
+            except Exception:
+                pass
+        if curr_root:
+            p_root = Path(curr_root).resolve()
+            candidate_dirs.extend([
+                p_root / "models" / "Stable-diffusion",
+                p_root / "webui" / "models" / "Stable-diffusion",
+                p_root / "webui_forge_cu121_torch231" / "webui" / "models" / "Stable-diffusion"
+            ])
+
+        seen_dirs = set()
+        for cand_dir in candidate_dirs:
+            try:
+                r_dir = Path(cand_dir).resolve()
+                if r_dir in seen_dirs or not r_dir.is_dir():
+                    continue
+                seen_dirs.add(r_dir)
+                for f in r_dir.iterdir():
                     if f.is_file() and f.suffix.lower() in (".safetensors", ".ckpt"):
                         if f.name not in checkpoints:
                             checkpoints.append(f.name)
             except Exception as e:
-                logger.debug(f"Failed to scan local Forge models dir: {e}")
+                logger.debug(f"Failed to scan local Forge models dir {cand_dir}: {e}")
 
         return checkpoints
 

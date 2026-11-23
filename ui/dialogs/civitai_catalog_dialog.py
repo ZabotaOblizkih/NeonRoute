@@ -24,12 +24,82 @@ from PyQt6.QtWidgets import (
 )
 
 from config import DATA_DIR, FORGE_ROOT_DIR
+from services.civitai_service import clean_civitai_description
 
 CIVITAI_CACHE_DIR = DATA_DIR / "cache" / "civitai_thumbs"
 CIVITAI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 CIVITAI_API_BASE = "https://civitai.com/api/v1"
 _CIVITAI_ORPHANED_WORKERS: List[QThread] = []
+
+
+def resolve_civitai_target_dir(
+    model_type: str = "Checkpoint",
+    custom_target_dir: Optional[Path] = None
+) -> Path:
+    """
+    Разрешает целевую директорию для скачивания ресурса с Civitai по его типу:
+    - Checkpoint -> models/Stable-diffusion (или custom_target_dir)
+    - LORA -> models/Lora
+    - VAE -> models/VAE
+    - TextualInversion / Embedding -> embeddings (или models/embeddings)
+    Динамически считывает актуальные пути из config/лаунчера с раскрытием (.resolve()).
+    """
+    import config
+
+    # 1. Базовая папка чекпоинтов
+    base_ckpt: Optional[Path] = None
+    if custom_target_dir is not None:
+        try:
+            p = Path(custom_target_dir)
+            if p.is_absolute() and p != Path("."):
+                base_ckpt = p.resolve()
+        except Exception:
+            pass
+
+    if base_ckpt is None:
+        if hasattr(config, "get_forge_models_dir"):
+            try:
+                base_ckpt = config.get_forge_models_dir().resolve()
+            except Exception:
+                pass
+        if base_ckpt is None:
+            curr_root = getattr(config, "FORGE_ROOT_DIR", FORGE_ROOT_DIR)
+            base_ckpt = (Path(curr_root).resolve() / "models" / "Stable-diffusion")
+
+    m_type = str(model_type or "").strip().upper()
+
+    # Чекпоинты
+    if m_type in ("CHECKPOINT", "CHECKPOINTS", "MODEL", ""):
+        return base_ckpt
+
+    # LoRA
+    if m_type in ("LORA", "LOCON", "DORA"):
+        if hasattr(config, "DEFAULT_FORGE_LORA_DIR") and config.DEFAULT_FORGE_LORA_DIR:
+            return Path(config.DEFAULT_FORGE_LORA_DIR).resolve()
+        models_root = base_ckpt.parent
+        return (models_root / "Lora").resolve()
+
+    # VAE
+    if m_type == "VAE":
+        models_root = base_ckpt.parent
+        return (models_root / "VAE").resolve()
+
+    # Textual Inversion / Embeddings
+    if m_type in ("TEXTUALINVERSION", "EMBEDDING", "EMBEDDINGS"):
+        models_root = base_ckpt.parent
+        candidates = [
+            models_root / "embeddings",
+            models_root.parent / "embeddings",
+            models_root / "TextualInversion",
+        ]
+        for cand in candidates:
+            if cand.exists():
+                return cand.resolve()
+        return (models_root.parent / "embeddings").resolve() if (models_root.parent / "webui.py").exists() else (models_root / "embeddings").resolve()
+
+    # Фоллбек для прочих типов
+    return base_ckpt
 
 
 def render_civitai_poster(
@@ -453,7 +523,17 @@ class CivitaiCatalogDialog(QDialog):
         self.setMinimumSize(980, 600)
 
         import config
-        self.target_dir = target_dir or getattr(config, "get_forge_models_dir", lambda: FORGE_ROOT_DIR / "models" / "Stable-diffusion")()
+        valid_target = None
+        if target_dir is not None:
+            try:
+                p = Path(target_dir)
+                if p.is_absolute() and p != Path("."):
+                    valid_target = p
+            except Exception:
+                pass
+        self.target_dir = valid_target if valid_target is not None else getattr(
+            config, "get_forge_models_dir", lambda: FORGE_ROOT_DIR / "models" / "Stable-diffusion"
+        )()
         self.cards_data: List[Dict[str, Any]] = []
         self.current_page: int = 1
         self.total_pages: int = 1
@@ -874,10 +954,11 @@ class CivitaiCatalogDialog(QDialog):
         steps = meta.get("steps") or 25
         cfg = meta.get("cfgScale") or 6.0
 
+        clean_desc = clean_civitai_description(c.get("description", ""))
         desc_parts = [
             f"⚙️ Рекомендованные автором параметры:\n• Сэмплер: {sampler}\n• Шаги: {steps}\n• CFG Scale: {cfg}",
             f"📄 Имя файла: {c['filename']}",
-            f"📖 Описание:\n{c.get('description', '')}"
+            f"📖 Описание:\n{clean_desc}" if clean_desc else "📖 Описание:\n(описание не указано автором)"
         ]
         self.text_preview.setPlainText("\n\n".join(desc_parts).strip())
 
@@ -896,15 +977,10 @@ class CivitaiCatalogDialog(QDialog):
         c = self.cards_data[row]
         filename = c["filename"]
 
-        # Папка назначения: checkpoints или lora
-        target_resolved = self.target_dir.resolve() if self.target_dir else getattr(config, "get_forge_models_dir", lambda: (FORGE_ROOT_DIR / "models" / "Stable-diffusion").resolve())()
-        if c["type"] == "LORA":
-            base_dir = target_resolved.parent
-            save_dir = (base_dir / "Lora").resolve()
-        else:
-            save_dir = target_resolved
-
-        dest_file = save_dir / filename
+        # Папка назначения определяется динамически по типу модели
+        save_dir = resolve_civitai_target_dir(c.get("type", "Checkpoint"), custom_target_dir=self.target_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = (save_dir / filename).resolve()
 
         if dest_file.suffix.lower() != ".safetensors":
             QMessageBox.critical(
@@ -968,6 +1044,9 @@ class CivitaiCatalogDialog(QDialog):
         triggers = c.get("trained_words") or []
         desc_text = f"{c.get('name', '')}. Теги: {', '.join(triggers[:8])}" if triggers else c.get('name', '')
 
+        cleaned_c_desc = clean_civitai_description(c.get("description", ""))
+        final_desc = cleaned_c_desc if cleaned_c_desc else desc_text
+
         model_payload = {
             "id": c.get("id"),
             "name": c.get("name"),
@@ -975,7 +1054,7 @@ class CivitaiCatalogDialog(QDialog):
             "path": str(saved_path),
             "type": c.get("type"),
             "triggers": triggers,
-            "description": desc_text,
+            "description": final_desc,
             "guidance": f"Trigger words: {', '.join(triggers[:5])}" if triggers else "",
             "sampler": meta.get("sampler", "DPM++ 2M Karras"),
             "steps": int(meta.get("steps", 25)),
