@@ -1,8 +1,9 @@
 from pathlib import Path
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List, Tuple
 import configparser
 import logging
 import os
+import subprocess
 import sys
 import re
 import string
@@ -415,5 +416,225 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
         env["PATH"] = os.pathsep.join(cleaned_parts)
 
     return env
+
+
+FORGE_REQUIRED_PACKAGES: Tuple[str, ...] = ("clip", "tqdm", "ftfy", "regex", "torch", "torchvision")
+
+
+def find_forge_python(
+    forge_root: Optional[Path | str] = None,
+    launcher_path: Optional[Path | str] = None,
+) -> Optional[Path]:
+    """
+    Динамически находит исполняемый файл Python целевого окружения Forge (без хардкода путей).
+    Каскад поиска:
+    1. Парсинг строки 'set PYTHON=' из файла лаунчера launcher_path.
+    2. Относительные каталоги рядом с launcher_path (system/python/python.exe, python/python.exe, venv/Scripts/python.exe).
+    3. Относительные каталоги в forge_root и подкаталогах 1-го уровня (webui_forge_*, system/python/python.exe).
+    4. Раскрытие NTFS Junctions и симлинков через Path.resolve().
+    """
+    # 1. Проверка через явно переданный launcher_path
+    resolved_launcher: Optional[Path] = None
+    if launcher_path:
+        try:
+            resolved_launcher = Path(launcher_path).resolve()
+        except Exception:
+            resolved_launcher = None
+
+    if resolved_launcher and resolved_launcher.is_file():
+        launcher_dir = resolved_launcher.parent
+        # Попытка парсинга переменной PYTHON из bat-файла лаунчера
+        try:
+            content = ""
+            for enc in ("utf-8", "cp1251", "latin-1"):
+                try:
+                    content = resolved_launcher.read_text(encoding=enc)
+                    break
+                except Exception:
+                    continue
+            for line in content.splitlines():
+                s = line.strip()
+                if s.lower().startswith("set python="):
+                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val and not val.startswith("%"):
+                        # Заменяем базовые bat-переменные
+                        val_exp = val.replace("%~dp0", str(launcher_dir) + os.sep)
+                        val_exp = val_exp.replace("%ROOT%", str(launcher_dir))
+                        val_exp = val_exp.replace("%BASE_DIR%", str(launcher_dir) + os.sep)
+                        val_exp = val_exp.replace("%SYSTEM%", str(launcher_dir / "system"))
+                        val_exp = val_exp.replace("%FORGE%", str(launcher_dir))
+                        try:
+                            cand = Path(val_exp).resolve()
+                            if cand.is_file():
+                                return cand
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Стандартные относительные папки лаунчера
+        for cand in [
+            launcher_dir / "system" / "python" / "python.exe",
+            launcher_dir / "python" / "python.exe",
+            launcher_dir / "venv" / "Scripts" / "python.exe",
+        ]:
+            try:
+                if cand.is_file():
+                    return cand.resolve()
+            except Exception:
+                pass
+
+        # Подпапки 1-го уровня лаунчера (например, webui_forge_cu121_torch231/system/python/python.exe)
+        try:
+            for child in launcher_dir.iterdir():
+                if child.is_dir():
+                    for sub in [
+                        child / "system" / "python" / "python.exe",
+                        child / "python" / "python.exe",
+                        child / "venv" / "Scripts" / "python.exe",
+                    ]:
+                        if sub.is_file():
+                            return sub.resolve()
+        except Exception:
+            pass
+
+    # 2. Проверка через forge_root
+    resolved_root: Optional[Path] = None
+    if forge_root:
+        try:
+            resolved_root = Path(forge_root).resolve()
+        except Exception:
+            resolved_root = None
+    elif not launcher_path:
+        try:
+            import config
+            rc = getattr(config, "FORGE_ROOT_DIR", None)
+            if rc:
+                resolved_root = Path(rc).resolve()
+        except Exception:
+            pass
+        if not resolved_root or not resolved_root.is_dir():
+            try:
+                import config
+                lp_cand = getattr(config, "FORGE_LAUNCHER_PATH", None)
+                if lp_cand:
+                    lp_resolved = Path(lp_cand).resolve()
+                    if lp_resolved.is_file():
+                        found_from_lp = find_forge_python(launcher_path=lp_resolved)
+                        if found_from_lp:
+                            return found_from_lp
+            except Exception:
+                pass
+
+    if resolved_root and resolved_root.is_dir():
+        for cand in [
+            resolved_root / "system" / "python" / "python.exe",
+            resolved_root / "python" / "python.exe",
+            resolved_root / "venv" / "Scripts" / "python.exe",
+        ]:
+            try:
+                if cand.is_file():
+                    return cand.resolve()
+            except Exception:
+                pass
+
+        try:
+            for child in resolved_root.iterdir():
+                if child.is_dir():
+                    for sub in [
+                        child / "system" / "python" / "python.exe",
+                        child / "python" / "python.exe",
+                        child / "venv" / "Scripts" / "python.exe",
+                    ]:
+                        if sub.is_file():
+                            return sub.resolve()
+        except Exception:
+            pass
+
+    return None
+
+
+def check_forge_environment_ready(
+    python_exe: Optional[Path | str] = None,
+    forge_root: Optional[Path | str] = None,
+    launcher_path: Optional[Path | str] = None,
+    required_packages: Tuple[str, ...] = FORGE_REQUIRED_PACKAGES,
+    timeout: float = 3.0,
+) -> Tuple[bool, str, List[str]]:
+    """
+    Проверяет готовность Python-окружения Forge к автономному запуску (--skip-install).
+    Проверяет наличие ключевых библиотек (clip, tqdm, ftfy, regex, torch, torchvision) без сетевых запросов.
+    Возвращает: (is_ready, reason, missing_packages).
+    """
+    py_path: Optional[Path] = None
+    if python_exe:
+        try:
+            py_path = Path(python_exe).resolve()
+        except Exception:
+            py_path = None
+    else:
+        py_path = find_forge_python(forge_root=forge_root, launcher_path=launcher_path)
+
+    pkgs_list = list(required_packages)
+
+    if not py_path or not py_path.is_file():
+        return False, "Интерпретатор Python Forge не найден", pkgs_list
+
+    # 1. Попытка быстрой проверки через подпроцесс Python (find_spec без импорта тяжелых библиотек)
+    code = (
+        "import importlib.util, sys; "
+        f"pkgs = {pkgs_list!r}; "
+        "missing = [p for p in pkgs if importlib.util.find_spec(p) is None]; "
+        "print(','.join(missing)); "
+        "sys.exit(1 if missing else 0)"
+    )
+    clean_env = get_clean_forge_env()
+    try:
+        proc = subprocess.run(
+            [str(py_path), "-c", code],
+            env=clean_env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if proc.returncode == 0:
+            return True, "Окружение Forge полностью укомплектовано", []
+        missing = [p.strip() for p in proc.stdout.strip().split(",") if p.strip()]
+        if not missing and proc.stderr:
+            missing = pkgs_list
+        return False, f"Отсутствуют пакеты в окружении: {missing}", missing
+    except subprocess.TimeoutExpired:
+        return False, f"Таймаут проверки окружения ({timeout} с)", []
+    except Exception as e:
+        # 2. Фолбэк на файловую инспекцию site-packages (для синтетических тестов / mock)
+        try:
+            py_dir = py_path.parent
+            site_pkgs_candidates = [
+                py_dir / "lib" / "site-packages",
+                py_dir / "Lib" / "site-packages",
+                py_dir.parent / "lib" / "site-packages",
+                py_dir.parent / "Lib" / "site-packages",
+            ]
+            site_pkgs = next((d for d in site_pkgs_candidates if d.is_dir()), None)
+            if site_pkgs:
+                missing = []
+                for p in pkgs_list:
+                    p_norm = p.replace("-", "_")
+                    has_dir = (site_pkgs / p).is_dir() or (site_pkgs / p_norm).is_dir()
+                    has_dist = any(
+                        d.name.lower().startswith((f"{p}-", f"{p_norm}-"))
+                        for d in site_pkgs.iterdir()
+                        if d.is_dir()
+                    )
+                    if not (has_dir or has_dist):
+                        missing.append(p)
+                if not missing:
+                    return True, "Окружение Forge укомплектовано (по файловой проверке site-packages)", []
+                return False, f"Отсутствуют пакеты в site-packages: {missing}", missing
+        except Exception:
+            pass
+
+        return False, f"Ошибка проверки интерпретатора: {e}", pkgs_list
 
 

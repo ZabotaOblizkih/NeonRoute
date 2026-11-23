@@ -447,6 +447,7 @@ class ForgeClient(QObject):
             startup_flags, startup_meta = resolve_forge_startup_flags(
                 llm_active=False,
                 extra_args=list(FORGE_EXTRA_ARGS) if FORGE_EXTRA_ARGS else None,
+                launcher_path=target,
             )
             cmd.extend(startup_flags)
             ad_no_hf_val = startup_meta.get("ad_no_huggingface", False)

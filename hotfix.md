@@ -1,7 +1,93 @@
 # История изменений и релизов NeonRoute
-## v0.9.8.6-beta (2026-11-23)
 
 ## v0.9.8.6-beta (2026-11-23)
+
+> **Ключевое обновление:** исправление полноэкранного превью картинок и залипания курсора, неблокирующее модальное окно мобильного сервера, нормализация геометрии спинбоксов, обратимая фиксация версий библиотек SD Forge через `PIP_CONSTRAINT`, диагностика запуска/handshake (`HTTP 404`), управление флагом `--ad-no-huggingface` и мгновенное автосохранение настроек.
+
+### Что изменилось
+
+#### Интерфейс, превью изображений и мобильный сервер
+
+- **Исправлено открытие превью сгенерированных картинок:** устранена ошибка развёртки окна при клике на изображение в чате, а также падение обработчика нажатия мыши в интерфейсе.
+- **Стабильная работа окна просмотра и гигиена курсора:** диалог полноэкранного просмотра теперь корректно привязывается к главному окну программы и гарантированно освобождает ресурсы после закрытия. Устранено залипание курсора («палец вверх») во всём окне после закрытия превью.
+- **Стабильный запуск мобильного сервера без блокировки интерфейса:** диалог мобильного сервера переведён на полноценное модальное окно с собственным заголовком, что полностью исключило намертво блокирующий оверлей поверх главного окна. Сам запуск сервера больше не подвешивает интерфейс.
+- **Нормальное отображение цифр в спинбоксах:** текстовые поля числовых счётчиков больше не сжимаются до 1 пикселя из-за стилей интерфейса.
+
+#### Стабильность SD WebUI Forge, защита зависимостей и диагностика запуска
+
+- **Обратимая фиксация версий библиотек SD Forge (`PIP_CONSTRAINT`):** при применении патча программа фиксирует эталонные версии ключевых пакетов (`fastapi==0.104.1`, `starlette==0.27.0`, `pydantic==2.8.2`, `pydantic-core==2.20.1`, `gradio==4.40.0`, `gradio-client==1.2.0`, `anyio==3.7.1`, `typing-extensions==4.16.0`) через `neonroute_constraints.txt` и `webui-user.bat`. Это защищает окружение от поломки при ручном запуске или установке сторонних расширений, при этом откат патча полностью возвращает исходное состояние.
+- **Умная проверка эталонного SD Forge:** если установлена эталонная сборка с правильными версиями библиотек, программа больше не предлагает навязчиво применить патч при каждом открытии настроек. Добавлен чекбокс, позволяющий запомнить выбор для конкретной папки.
+- **Чистое окружение запуска и понятная диагностика ошибок Forge:** при старте Forge гарантированно очищаются системные прокси-переменные, выставляется `NO_PROXY` для локального хоста и подхватывается `PIP_CONSTRAINT`. Если веб-сервер Gradio поднялся, но API `/sdapi/v1/*` не успел зарегистрироваться (`HTTP 404`) или порт недоступен, в лог пишется точная диагностическая причина, а процесс штатно завершается без висящих дескрипторов.
+- **Гибкий поиск папок Forge и поддержка NTFS Junctions:** валидатор ассетов избавлен от жёсткой привязки к папке `webui_forge_cu121_torch231`, поддерживает разные структуры папок Forge, аргументы лаунчера (`--ckpt-dir`, `--models-dir`) и симлинки / NTFS Junctions при переносе моделей на другие диски.
+- **Переключатель для флага `--ad-no-huggingface`:** в меню настроек SD Forge появился тумблер управления запретом автоскачивания моделей ADetailer с Hugging Face. По умолчанию он выключен — при отсутствии модели лица или рук Forge спокойно докачает её сам; при включении флаг запрещает обращения в сеть, и работа идёт строго по локальным файлам.
+- **Мгновенное сохранение тумблеров без кнопки «Сохранить»:** переключение «Квантомании» (FP8) и запрета скачивания с Hugging Face сохраняется сразу в момент клика. Настройки больше не теряются, если закрыть окно крестиком, кнопкой «Отмена» или клавишей `Esc`.
+- **Защита от ложных срабатываний и гонки потоков:** открытие окна настроек больше не дёргает диск вхолостую благодаря блокировке сигналов при инициализации, а чтение и запись конфига защищены реентрантным мьютексом от одновременных обращений фоновых процессов и интерфейса.
+- **Прозрачное логирование и актуализация документации:** в логах запуска Forge теперь чётко отражается состояние `--ad-no-huggingface` и статус «Квантомании» (`ВКЛ fp8e4` / `ВЫКЛ`); документ `ARCHITECTURE.md` обновлён под все изменения и актуальный тестовый сьют (`926 тестов`, `100% Pass Rate`).
+
+---
+
+### Технический список изменений (Changelog)
+
+- **Превью изображений и гигиена курсоров (`ui/components/chat_bubble.py`):**
+  - В `_open_image_preview` добавлена привязка к родительскому окну `parent=self.window()`, опциональный параметр `generation_params` с фолбэком на `self.generation_params`, а вызов `dlg.exec()` обёрнут в `try...finally` со строгим `dlg.deleteLater()` и сбросом override-курсоров через `QApplication.restoreOverrideCursor()` и `parent_win.unsetCursor()`.
+  - В `_create_image_thumbnail` прямая лямбда с вызовом `ImagePreviewDialog(...).exec()` заменена на централизованный вызов `_open_image_preview` через `QTimer.singleShot(0, ...)`.
+  - В `_setup_ui` лямбда-обработчик `mousePressEvent` заменён на явную функцию `_on_preview_mouse_press` с возвратом `None` при клике ЛКМ (исключает `TypeError: invalid argument to sipBadCatcherResult()` в PyQt6).
+- **Диалог и запуск мобильного сервера (`ui/dialogs/mobile_server_dialog.py`, `ui/dialogs/__init__.py`, `mobile_server/api.py`):**
+  - `MobileServerDialog` переведён с дочерней маски `MessageBoxBase` (`MaskDialogBase`) на `FramelessDialog` с `FluentTitleBar`, селектором IP через `ComboBox`, динамическим QR-кодом и безопасным жизненным циклом; добавлена регистрация в `ui/dialogs/_LAZY_EXPORTS`.
+  - В `start_mobile_server_thread` во время ожидания порта внедрена прокачка очереди событий через `qapp.processEvents()` вместо блокирующего сна `time.sleep(0.05)`.
+- **Синхронизация геометрии спинбоксов (`ui/common/spinbox_utils.py`):**
+  - Реализованы функция `sync_spinbox_lineedit_geometry`, миксин `SpinBoxGeometrySyncMixin` и фильтр событий `SpinBoxGeometryEventFilter`, гарантирующие `lineEdit().width() >= 24` под QSS `qfluentwidgets`.
+- **Обратимая фиксация библиотек и инспекция Forge (`services/forge_patcher.py`, `ui/dialogs/forge_settings_dialog.py`):**
+  - Введён словарь `PINNED_FORGE_LIBRARIES` (8 пакетов: `fastapi==0.104.1`, `starlette==0.27.0`, `pydantic==2.8.2`, `pydantic-core==2.20.1`, `gradio==4.40.0`, `gradio-client==1.2.0`, `anyio==3.7.1`, `typing-extensions==4.16.0`).
+  - В `apply_patch()` добавлены сохранение оригинального `requirements_versions.txt` в `.neonroute_backup/original/` (`create_backup()`), генерация `neonroute_constraints.txt`, обновление `requirements_versions.txt` и инъекция `set "PIP_CONSTRAINT=%~dp0neonroute_constraints.txt"` в `webui-user.bat` (`pin_libraries()`).
+  - В `restore_backup()` реализован полный обратимый откат `requirements_versions.txt`, `webui-user.bat` и удаление `neonroute_constraints.txt`.
+  - В `check_status()` добавлена проверка `are_libraries_pinned()` и распознавание эталонных сборок по `.dist-info` в `site-packages`; добавлено единое логирование этапов с префиксом `[ForgePatcher]`.
+  - В `ForgeSettingsDialog` добавлен чекбокс игнорирования повторных уведомлений о патче для конкретной папки, внедрён тумблер `switch_ad_no_hf` с мгновенным автосохранением (`switch_fp8` и `switch_ad_no_hf` пишут напрямую через `ConfigManager.update_setting` и `parent_win.app_config`) и изоляцией сигналов через `blockSignals(True/False)` в `_sync_with_current_config`.
+- **Изоляция окружения и диагностика запуска Forge (`core/forge_locator.py`, `services/process_manager.py`):**
+  - В `get_clean_forge_env()` подтверждена полная очистка прокси-переменных (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `AG_LS_PROXY` в обоих регистрах), установка `NO_PROXY`/`no_proxy="localhost,127.0.0.1,0.0.0.0"`, `PYTHONUNBUFFERED="1"`, очистка путей Python NeonRoute из `PATH` и передача `PIP_CONSTRAINT` при наличии `neonroute_constraints.txt`.
+  - В `verify_forge_http_handshake()` добавлено диагностическое логирование `[ForgeHandshake]` при `HTTP 404 Not Found` (веб-сервер активен, но API-роутер `/sdapi/v1/*` не зарегистрирован) и недоступности порта; при истечении `startup_timeout` выполняется зондирующий опрос с записью точной причины в `neonroute.log` (`WARNING`), передачей в сигналы `forge_status_changed` / `action_completed`, штатным вызовом `self._run_forge_stop()`, закрытием `_forge_log_file` и сбросом `_forge_process` в `None`.
+- **Каскадный валидатор ассетов и разрешение путей (`services/asset_validator.py`):**
+  - Удалена жёсткая привязка к `webui_forge_cu121_torch231`; внедрён каскадный поиск корня Forge (`resolve_forge_root()`), рабочей директории `webui` (5 уровней фоллбэка, включая `webui*/webui`), лаунчера (`resolve_forge_launcher()`) и парсинг CLI-аргументов `--ckpt-dir` / `--models-dir` (`parse_forge_launcher_args`).
+  - Добавлена нормализация путей через `.resolve()` для корректной работы с симлинками и NTFS Junctions; добавлен метод `find_adetailer_model(model_name)` и ключ `resolved_paths` в `validate_all_assets()` при сохранении обратной совместимости публичного API и ветвлении отчёта по `forge_ad_no_huggingface`.
+- **Потокобезопасность конфига, флаги и логирование (`utils/config_manager.py`, `config.py`, `ui/dialogs/dependency_dialog.py`, `services/art_director/vram_policy.py`, `director.py`, `services/forge_client.py`):**
+  - Класс `ConfigManager` оснащён реентрантным мьютексом `threading.RLock()` для `load_config`, `save_config` и `update_setting`; добавлены `forge_ad_no_huggingface: False`, `forge_patch_ignored_paths` и `check_dependencies_on_startup`; в `dependency_dialog.py` добавлен динамический `get_config_path()` и сохранение `cb_dont_show`.
+  - Из `resolve_forge_startup_flags` удалён статический хардкод `--ad-no-huggingface`, добавлен параметр `ad_no_huggingface` с фолбэком на `ConfigManager` и фиксацией в `startup_meta`.
+  - В `process_manager.py`, `forge_client.py` и `art_director/director.py` добавлено логирование состояния `ad_no_huggingface` и статуса `[Квантомания: ВКЛ (fp8e4) / ВЫКЛ]`.
+- **Тестирование и документация (`tests/`, `ARCHITECTURE.md`):**
+  - Добавлены и расширены модульные и смоук-тесты (`tests/unit/test_asset_validator.py`, `tests/smoke/test_forge_settings_dialog_smoke.py`, `tests/unit/test_forge_vram_policy.py`).
+  - Полный прогон `pytest -q`: **926 passed в 99 модулях (100% Pass Rate)**; актуализированы разделы `3.2.4`, `4.4.1`, системный инвариант 10 и метрики тестов в `ARCHITECTURE.md`.
+---
+
+### Технический список изменений (Changelog)
+
+- **Превью изображений и гигиена курсоров (`ui/components/chat_bubble.py`):**
+  - В `_open_image_preview` добавлена привязка к родительскому окну `parent=self.window()`, опциональный параметр `generation_params` с фолбэком на `self.generation_params`, а вызов `dlg.exec()` обёрнут в `try...finally` со строгим `dlg.deleteLater()` и сбросом override-курсоров через `QApplication.restoreOverrideCursor()` и `parent_win.unsetCursor()`.
+  - В `_create_image_thumbnail` прямая лямбда с вызовом `ImagePreviewDialog(...).exec()` заменена на централизованный вызов `_open_image_preview` через `QTimer.singleShot(0, ...)`.
+  - В `_setup_ui` лямбда-обработчик `mousePressEvent` заменён на явную функцию `_on_preview_mouse_press` с возвратом `None` при клике ЛКМ (исключает `TypeError: invalid argument to sipBadCatcherResult()` в PyQt6).
+- **Диалог и запуск мобильного сервера (`ui/dialogs/mobile_server_dialog.py`, `ui/dialogs/__init__.py`, `mobile_server/api.py`):**
+  - `MobileServerDialog` переведён с дочерней маски `MessageBoxBase` (`MaskDialogBase`) на `FramelessDialog` с `FluentTitleBar`, селектором IP через `ComboBox`, динамическим QR-кодом и безопасным жизненным циклом; добавлена регистрация в `ui/dialogs/_LAZY_EXPORTS`.
+  - В `start_mobile_server_thread` во время ожидания порта внедрена прокачка очереди событий через `qapp.processEvents()` вместо блокирующего сна `time.sleep(0.05)`.
+- **Синхронизация геометрии спинбоксов (`ui/common/spinbox_utils.py`):**
+  - Реализованы функция `sync_spinbox_lineedit_geometry`, миксин `SpinBoxGeometrySyncMixin` и фильтр событий `SpinBoxGeometryEventFilter`, гарантирующие `lineEdit().width() >= 24` под QSS `qfluentwidgets`.
+- **Обратимая фиксация библиотек и инспекция Forge (`services/forge_patcher.py`, `ui/dialogs/forge_settings_dialog.py`):**
+  - Введён словарь `PINNED_FORGE_LIBRARIES` (8 пакетов: `fastapi==0.104.1`, `starlette==0.27.0`, `pydantic==2.8.2`, `pydantic-core==2.20.1`, `gradio==4.40.0`, `gradio-client==1.2.0`, `anyio==3.7.1`, `typing-extensions==4.16.0`).
+  - В `apply_patch()` добавлены сохранение оригинального `requirements_versions.txt` в `.neonroute_backup/original/` (`create_backup()`), генерация `neonroute_constraints.txt`, обновление `requirements_versions.txt` и инъекция `set "PIP_CONSTRAINT=%~dp0neonroute_constraints.txt"` в `webui-user.bat` (`pin_libraries()`).
+  - В `restore_backup()` реализован полный обратимый откат `requirements_versions.txt`, `webui-user.bat` и удаление `neonroute_constraints.txt`.
+  - В `check_status()` добавлена проверка `are_libraries_pinned()` и распознавание эталонных сборок по `.dist-info` в `site-packages`; добавлено единое логирование этапов с префиксом `[ForgePatcher]`.
+  - В `ForgeSettingsDialog` добавлен чекбокс игнорирования повторных уведомлений о патче для конкретной папки, внедрён тумблер `switch_ad_no_hf` с мгновенным автосохранением (`switch_fp8` и `switch_ad_no_hf` пишут напрямую через `ConfigManager.update_setting` и `parent_win.app_config`) и изоляцией сигналов через `blockSignals(True/False)` в `_sync_with_current_config`.
+- **Изоляция окружения и диагностика запуска Forge (`core/forge_locator.py`, `services/process_manager.py`):**
+  - В `get_clean_forge_env()` подтверждена полная очистка прокси-переменных (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `AG_LS_PROXY` в обоих регистрах), установка `NO_PROXY`/`no_proxy="localhost,127.0.0.1,0.0.0.0"`, `PYTHONUNBUFFERED="1"`, очистка путей Python NeonRoute из `PATH` и передача `PIP_CONSTRAINT` при наличии `neonroute_constraints.txt`.
+  - В `verify_forge_http_handshake()` добавлено диагностическое логирование `[ForgeHandshake]` при `HTTP 404 Not Found` (веб-сервер активен, но API-роутер `/sdapi/v1/*` не зарегистрирован) и недоступности порта; при истечении `startup_timeout` выполняется зондирующий опрос с записью точной причины в `neonroute.log` (`WARNING`), передачей в сигналы `forge_status_changed` / `action_completed`, штатным вызовом `self._run_forge_stop()`, закрытием `_forge_log_file` и сбросом `_forge_process` в `None`.
+- **Каскадный валидатор ассетов и разрешение путей (`services/asset_validator.py`):**
+  - Удалена жёсткая привязка к `webui_forge_cu121_torch231`; внедрён каскадный поиск корня Forge (`resolve_forge_root()`), рабочей директории `webui` (5 уровней фоллбэка, включая `webui*/webui`), лаунчера (`resolve_forge_launcher()`) и парсинг CLI-аргументов `--ckpt-dir` / `--models-dir` (`parse_forge_launcher_args`).
+  - Добавлена нормализация путей через `.resolve()` для корректной работы с симлинками и NTFS Junctions; добавлен метод `find_adetailer_model(model_name)` и ключ `resolved_paths` в `validate_all_assets()` при сохранении обратной совместимости публичного API и ветвлении отчёта по `forge_ad_no_huggingface`.
+- **Потокобезопасность конфига, флаги и логирование (`utils/config_manager.py`, `config.py`, `ui/dialogs/dependency_dialog.py`, `services/art_director/vram_policy.py`, `director.py`, `services/forge_client.py`):**
+  - Класс `ConfigManager` оснащён реентрантным мьютексом `threading.RLock()` для `load_config`, `save_config` и `update_setting`; добавлены `forge_ad_no_huggingface: False`, `forge_patch_ignored_paths` и `check_dependencies_on_startup`; в `dependency_dialog.py` добавлен динамический `get_config_path()` и сохранение `cb_dont_show`.
+  - Из `resolve_forge_startup_flags` удалён статический хардкод `--ad-no-huggingface`, добавлен параметр `ad_no_huggingface` с фолбэком на `ConfigManager` и фиксацией в `startup_meta`.
+  - В `process_manager.py`, `forge_client.py` и `art_director/director.py` добавлено логирование состояния `ad_no_huggingface` и статуса `[Квантомания: ВКЛ (fp8e4) / ВЫКЛ]`.
+- **Тестирование и документация (`tests/`, `ARCHITECTURE.md`):**
+  - Добавлены и расширены модульные и смоук-тесты (`tests/unit/test_asset_validator.py`, `tests/smoke/test_forge_settings_dialog_smoke.py`, `tests/unit/test_forge_vram_policy.py`).
+  - Полный прогон `pytest -q`: **926 passed в 99 модулях (100% Pass Rate)**; актуализированы разделы `3.2.4`, `4.4.1`, системный инвариант 10 и метрики тестов в `ARCHITECTURE.md`.
 
 ## v0.9.8.5-beta (2026-11-21)
 

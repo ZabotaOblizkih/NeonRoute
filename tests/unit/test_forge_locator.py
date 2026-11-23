@@ -299,3 +299,94 @@ def test_get_python_cli_executable_resolves_python_from_pythonw(monkeypatch, tmp
     assert Path(resolved).resolve() == fake_python.resolve()
     assert Path(resolved).name.lower() == "python.exe"
 
+
+def test_find_forge_python_from_launcher_bat(tmp_path):
+    """Проверяет динамическое обнаружение Python через парсинг переменной set PYTHON= в лаунчере."""
+    from core.forge_locator import find_forge_python
+
+    forge_dir = tmp_path / "forge_test"
+    system_py_dir = forge_dir / "system" / "python"
+    system_py_dir.mkdir(parents=True, exist_ok=True)
+    fake_py = system_py_dir / "python.exe"
+    fake_py.touch()
+
+    launcher = forge_dir / "forge_launcher.bat"
+    launcher.write_text(
+        "@echo off\n"
+        "set ROOT=%~dp0\n"
+        "set PYTHON=%ROOT%system\\python\\python.exe\n"
+        "call \"%PYTHON%\" launch.py %*\n",
+        encoding="utf-8"
+    )
+
+    found = find_forge_python(launcher_path=launcher)
+    assert found is not None
+    assert found.resolve() == fake_py.resolve()
+
+
+def test_find_forge_python_from_root_subfolders(tmp_path):
+    """Проверяет обнаружение Python в подпапках дистрибутива 1-го уровня (например, webui_forge_*/system/python)."""
+    from core.forge_locator import find_forge_python
+
+    root = tmp_path / "custom_forge_dist"
+    nested_py = root / "webui_forge_cu121_torch231" / "system" / "python" / "python.exe"
+    nested_py.parent.mkdir(parents=True, exist_ok=True)
+    nested_py.touch()
+
+    found = find_forge_python(forge_root=root)
+    assert found is not None
+    assert found.resolve() == nested_py.resolve()
+
+
+def test_check_forge_environment_ready_missing_python(tmp_path):
+    """Проверяет обработку отсутствующего интерпретатора Python."""
+    from core.forge_locator import check_forge_environment_ready
+
+    non_existent = tmp_path / "system" / "python" / "python.exe"
+    ready, reason, missing = check_forge_environment_ready(python_exe=non_existent)
+    assert ready is False
+    assert "не найден" in reason
+    assert len(missing) > 0
+
+
+def test_check_forge_environment_ready_site_packages_fallback_success(tmp_path):
+    """Проверяет фолбэк-проверку окружения по содержимому каталога site-packages (успешный случай)."""
+    from core.forge_locator import check_forge_environment_ready, FORGE_REQUIRED_PACKAGES
+
+    fake_py = tmp_path / "system" / "python" / "python.exe"
+    fake_py.parent.mkdir(parents=True, exist_ok=True)
+    fake_py.touch()
+
+    site_pkgs = tmp_path / "system" / "python" / "lib" / "site-packages"
+    site_pkgs.mkdir(parents=True, exist_ok=True)
+
+    # Создаем папки всех требуемых пакетов
+    for pkg in FORGE_REQUIRED_PACKAGES:
+        (site_pkgs / pkg).mkdir(parents=True, exist_ok=True)
+
+    ready, reason, missing = check_forge_environment_ready(python_exe=fake_py)
+    assert ready is True
+    assert missing == []
+
+
+def test_check_forge_environment_ready_site_packages_fallback_missing_packages(tmp_path):
+    """Проверяет фолбэк-проверку окружения при отсутствии части пакетов (например, clip и tqdm)."""
+    from core.forge_locator import check_forge_environment_ready
+
+    fake_py = tmp_path / "system" / "python" / "python.exe"
+    fake_py.parent.mkdir(parents=True, exist_ok=True)
+    fake_py.touch()
+
+    site_pkgs = tmp_path / "system" / "python" / "lib" / "site-packages"
+    site_pkgs.mkdir(parents=True, exist_ok=True)
+
+    # Создаем только torch и regex, опуская clip, tqdm, ftfy, torchvision
+    (site_pkgs / "torch").mkdir(parents=True, exist_ok=True)
+    (site_pkgs / "regex").mkdir(parents=True, exist_ok=True)
+
+    ready, reason, missing = check_forge_environment_ready(python_exe=fake_py)
+    assert ready is False
+    assert "clip" in missing
+    assert "tqdm" in missing
+
+

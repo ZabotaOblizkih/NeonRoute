@@ -308,6 +308,13 @@ def create_forge_launcher_bat(forge_root: Path) -> Path:
             f"set PATH={py_prefix}\\python;{py_prefix}\\python\\Scripts;{py_prefix}\\git\\bin;%PATH%"
         )
 
+    lines.append("set FALLBACK_ARGS=--api --port 7860 --listen --cuda-malloc --opt-sdp-attention --no-download-sd-model --skip-torch-cuda-test --no-hashing --disable-nan-check --skip-install")
+    lines.append('if "%~1"=="" (')
+    lines.append("    set COMMANDLINE_ARGS=%FALLBACK_ARGS%")
+    lines.append(") else (")
+    lines.append("    set COMMANDLINE_ARGS=%*")
+    lines.append(")")
+
     if has_sub_webui:
         lines.append('cd /d "%BASE_DIR%webui"')
     elif has_local_launch:

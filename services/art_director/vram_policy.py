@@ -592,6 +592,10 @@ def resolve_forge_startup_flags(
     total_ram_gb: Optional[float] = None,
     avail_ram_mb: Optional[float] = None,
     ad_no_huggingface: Optional[bool] = None,
+    skip_install: Optional[bool] = None,
+    forge_python: Optional[Path | str] = None,
+    forge_root: Optional[Path | str] = None,
+    launcher_path: Optional[Path | str] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Формирует стартовые CLI-флаги Forge без принудительного --always-offload-from-vram на 8 ГБ.
 
@@ -610,6 +614,40 @@ def resolve_forge_startup_flags(
         "--no-hashing",
         "--disable-nan-check",
     ]
+
+    # Автономный режим запуска (--skip-install): предотвращает зависание pip на pypi.org
+    missing_pkgs: List[str] = []
+    skip_install_reason: str = ""
+    skip_install_val: bool = False
+
+    if skip_install is True:
+        skip_install_val = True
+        skip_install_reason = "Принудительно включен через аргумент"
+        if "--skip-install" not in flags:
+            flags.append("--skip-install")
+    elif skip_install is False:
+        skip_install_val = False
+        skip_install_reason = "Принудительно выключен через аргумент"
+    else:
+        try:
+            from core.forge_locator import check_forge_environment_ready
+            ready, reason, missing = check_forge_environment_ready(
+                python_exe=forge_python,
+                forge_root=forge_root,
+                launcher_path=launcher_path,
+            )
+            if ready:
+                skip_install_val = True
+                skip_install_reason = f"Автономный режим: {reason}"
+                if "--skip-install" not in flags:
+                    flags.append("--skip-install")
+            else:
+                skip_install_val = False
+                skip_install_reason = f"Окружение не готово ({reason})"
+                missing_pkgs = missing
+        except Exception as e:
+            skip_install_val = False
+            skip_install_reason = f"Ошибка проверки готовности окружения: {e}"
 
     if ad_no_huggingface is None:
         try:
@@ -663,6 +701,9 @@ def resolve_forge_startup_flags(
         "startup_always_offload": force_startup_offload,
         "vae_precision": vae_precision,
         "ad_no_huggingface": bool(ad_no_huggingface),
+        "skip_install": skip_install_val,
+        "skip_install_reason": skip_install_reason,
+        "missing_packages": missing_pkgs,
     }
     return flags, meta
 

@@ -69,7 +69,7 @@ echo [2/5] Checking and upgrading pip...
 if exist "wheels\" (
     "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels --upgrade pip 2>nul
 ) else (
-    "%PYTHON_BIN%" -m pip install --upgrade pip 2>nul
+    "%PYTHON_BIN%" -m pip install --default-timeout 60 --retries 3 --upgrade pip 2>nul
 )
 if %ERRORLEVEL% NEQ 0 (
     echo [WARNING] Pip upgrade skipped or warning encountered, continuing...
@@ -93,7 +93,7 @@ if not defined SKIP_PIP (
         "%PYTHON_BIN%" -m pip install --no-index --find-links=wheels -r requirements.txt
     ) else (
         echo [ONLINE] Installing dependencies from PyPI...
-        "%PYTHON_BIN%" -m pip install -r requirements.txt
+        "%PYTHON_BIN%" -m pip install --default-timeout 60 --retries 3 -r requirements.txt
     )
 
     if !ERRORLEVEL! NEQ 0 (

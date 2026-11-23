@@ -67,7 +67,7 @@ class PipInstallWorker(QThread):
         for pkg in self.packages:
             logger.info(f"[EnvironmentDoctor] Запуск установки pip: {pkg}...")
             self.progress.emit(f"Установка {pkg}...")
-            cmd = [get_python_cli_executable(), "-m", "pip", "install", pkg]
+            cmd = [get_python_cli_executable(), "-m", "pip", "install", "--default-timeout", "60", "--retries", "3", pkg]
             try:
                 proc = subprocess.Popen(
                     cmd,

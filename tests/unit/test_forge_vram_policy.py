@@ -806,3 +806,60 @@ def test_config_manager_thread_safety_concurrency(tmp_path, monkeypatch):
     for i in range(20):
         assert final_cfg[f"key_{i}"] == i
 
+
+def test_resolve_forge_startup_flags_skip_install_auto_detected(monkeypatch):
+    """При успешной проверке окружения Forge флаг --skip-install автоматически добавляется в список аргументов."""
+    monkeypatch.setattr(
+        "core.forge_locator.check_forge_environment_ready",
+        lambda **kwargs: (True, "все пакеты на месте", [])
+    )
+    flags, meta = resolve_forge_startup_flags()
+    assert "--skip-install" in flags
+    assert meta["skip_install"] is True
+    assert meta["missing_packages"] == []
+
+
+def test_resolve_forge_startup_flags_skip_install_missing_packages(monkeypatch):
+    """При неполном окружении Forge флаг --skip-install НЕ добавляется, а отсутствующие пакеты фиксируются в meta."""
+    monkeypatch.setattr(
+        "core.forge_locator.check_forge_environment_ready",
+        lambda **kwargs: (False, "не хватает библиотек", ["clip", "tqdm"])
+    )
+    flags, meta = resolve_forge_startup_flags()
+    assert "--skip-install" not in flags
+    assert meta["skip_install"] is False
+    assert meta["missing_packages"] == ["clip", "tqdm"]
+
+
+def test_resolve_forge_startup_flags_skip_install_explicit_override(monkeypatch):
+    """Явная передача skip_install=True или False имеет приоритет над автодетекцией."""
+    # Даже если окружение не готово, явный skip_install=True принудительно включает флаг
+    monkeypatch.setattr(
+        "core.forge_locator.check_forge_environment_ready",
+        lambda **kwargs: (False, "не хватает библиотек", ["tqdm"])
+    )
+    flags_forced, meta_forced = resolve_forge_startup_flags(skip_install=True)
+    assert "--skip-install" in flags_forced
+    assert meta_forced["skip_install"] is True
+
+    # И наоборот: если окружение готово, но передан skip_install=False, флаг не ставится
+    monkeypatch.setattr(
+        "core.forge_locator.check_forge_environment_ready",
+        lambda **kwargs: (True, "все пакеты готовы", [])
+    )
+    flags_disabled, meta_disabled = resolve_forge_startup_flags(skip_install=False)
+    assert "--skip-install" not in flags_disabled
+    assert meta_disabled["skip_install"] is False
+
+
+def test_resolve_forge_startup_flags_no_duplicate_skip_install(monkeypatch):
+    """Флаг --skip-install не дублируется при повторной передаче через extra_args."""
+    monkeypatch.setattr(
+        "core.forge_locator.check_forge_environment_ready",
+        lambda **kwargs: (True, "все пакеты готовы", [])
+    )
+    flags, meta = resolve_forge_startup_flags(extra_args=["--skip-install"])
+    assert flags.count("--skip-install") == 1
+    assert len(flags) == len(set(flags))
+
+

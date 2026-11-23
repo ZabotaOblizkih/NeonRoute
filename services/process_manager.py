@@ -1924,15 +1924,27 @@ class ProcessManager(QObject):
                 startup_flags, startup_meta = resolve_forge_startup_flags(
                     llm_active=llm_active,
                     extra_args=list(FORGE_EXTRA_ARGS) if FORGE_EXTRA_ARGS else None,
+                    launcher_path=launcher_path,
+                    forge_root=getattr(config, "FORGE_ROOT_DIR", None),
                 )
                 cmd.extend(startup_flags)
                 ad_no_hf_val = startup_meta.get("ad_no_huggingface", False)
+                skip_inst_val = startup_meta.get("skip_install", False)
+                skip_inst_reason = startup_meta.get("skip_install_reason", "")
                 logger.info(
                     f"[ProcessManager] Стартовые флаги Forge: VRAM={startup_meta['total_vram_gb']:.1f}GB | "
                     f"ad_no_huggingface={ad_no_hf_val} | "
+                    f"skip_install={skip_inst_val} ({skip_inst_reason}) | "
                     f"pin_shared_memory={startup_meta['pin_shared_memory']} ({startup_meta['pin_reason']}) | "
                     f"startup_offload={startup_meta['startup_always_offload']}"
                 )
+                if skip_inst_val:
+                    logger.info(f"[ProcessManager] 🛡️ Автономный запуск Forge: --skip-install включен ({skip_inst_reason}).")
+                else:
+                    logger.warning(
+                        f"[ProcessManager] ⚠️ Запуск Forge БЕЗ --skip-install ({skip_inst_reason}). "
+                        f"При отсутствии доступа к PyPI возможен сбой при проверке зависимостей."
+                    )
                 if not ad_no_hf_val:
                     logger.info("[ProcessManager] 🌐 Флаг --ad-no-huggingface выключен (снят): автоскачивание моделей ADetailer с Hugging Face разрешено.")
             except Exception as _e_pm:
@@ -2025,7 +2037,10 @@ class ProcessManager(QObject):
             while time.time() - start_time < startup_timeout:
                 if self._forge_process and self._forge_process.poll() is not None:
                     exit_code = self._forge_process.poll()
-                    err_msg = f"Процесс Forge неожиданно завершился до открытия порта (код {exit_code}). Проверьте logs/forge.log"
+                    missing_info = ""
+                    if "startup_meta" in locals() and startup_meta.get("missing_packages"):
+                        missing_info = f" Возможно, не установлены обязательные пакеты: {', '.join(startup_meta['missing_packages'])}."
+                    err_msg = f"Процесс Forge неожиданно завершился до открытия порта (код {exit_code}).{missing_info} Проверьте logs/forge.log"
                     logger.error(err_msg)
                     self._forge_process = None
                     if self._forge_log_file and not self._forge_log_file.closed:
