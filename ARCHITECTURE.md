@@ -4,7 +4,7 @@
 > **Целевая платформа**: Windows 10/11 x64, Python 3.10+, PyQt6, QFramelessWindow, QFluentWidgets, FastAPI (Mobile Gateway)  
 > **Аппаратный профиль**: 8 ГБ VRAM (NVIDIA GeForce RTX 4060 / RTX 5050 Laptop GPU / 16 ГБ RAM)  
 > **Метрики кодовой базы**: 335 файлов Python, ~132 500 строк кода  
-> **Статус верификации**: 926 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
+> **Статус верификации**: 940 тестов собрано и пройдено (100% Pass Rate на полном прогоне `pytest -q`)
 
 ---
 
@@ -15,7 +15,7 @@
 1. **Mutual Exclusion VRAM (8 ГБ)**: LLM и SD Forge никогда не загружаются в VRAM одновременно. Любое переключение выполняется строго через `VRAMArbiter` с предварительной проверкой доступности Forge (Anti-Thrashing Guard).
 2. **Static Prefix Anchoring**: Системный промпт `messages[0]` в режиме Ассистента должен оставаться побитово статичным (без timestamps, RAG и памяти) для 100% KV-cache hit. Весь динамический контекст хода (`<PassiveMemory>`, `<KnowledgeBase>`, скиллы, время) инжектируется только в `<TurnContext>` в эфемерную копию `messages[-1]`.
 3. **Запрет хардкода путей Forge и артефактов**: Запрещены жесткие пути к диску `C:\` (включая `C:\neyroGPD`) и статическая привязка к конкретным папкам дистрибутивов (например, `webui_forge_cu121_torch231`). Все пути к Forge, webui, чекпоинтам SD, моделям ADetailer и апскейлерам ESRGAN разрешаются динамически через каскад `core/forge_locator.py` и `config.py` с раскрытием NTFS Junctions.
-4. **Изоляция окружения Forge**: Запуск Forge обязан использовать `get_clean_forge_env()` с очисткой `VIRTUAL_ENV`, `PYTHONPATH`, прокси-переменных (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `AG_LS_PROXY` и их lowercase-вариантов), принудительным заданием `NO_PROXY`/`no_proxy="localhost,127.0.0.1,0.0.0.0"`, `PYTHONUNBUFFERED="1"` и удалением путей Python NeonRoute из `PATH`.
+4. **Изоляция окружения Forge и Offline Startup Guard**: Запуск Forge обязан использовать `get_clean_forge_env()` с очисткой `VIRTUAL_ENV`, `PYTHONPATH`, прокси-переменных (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `AG_LS_PROXY` и их lowercase-вариантов), принудительным заданием `NO_PROXY`/`no_proxy="localhost,127.0.0.1,0.0.0.0"`, `PYTHONUNBUFFERED="1"` и удалением путей Python NeonRoute из `PATH`. При укомплектованном локальном окружении Python Forge (проверяемом через `check_forge_environment_ready`) в запуск обязательно инжектируется `--skip-install`, гарантирующий 100% автономный офлайн-старт без зависаний `launch.py` на `pypi.org`.
 5. **Изоляция служебных вызовов LLM**: Вторичные вызовы (экстракция каста, генерация арт-промптов) обязаны передавать `enable_thinking=False`, `id_slot=None` (не вытеснять слот 0 диалога) и не передавать `assistant` prefill при активном `response_format` (JSON Schema).
 6. **Раздельные слоты ADetailer**: Промпты лица (`face_slot`) и рук (`hand_slot`) изолированы в `VisualIntent` и `ArtDirector`. Неиспользуемые слоты получают маркер `[SKIP]` -> `ad_model = "None"`.
 7. **Детерминизм геометрии кадра**: Явный флаг `--ar` напрямую задает разрешение холста без эвристики `has_human`. ADetailer отвязан от геометрии (`force_ad: True` во всех бакетах).
@@ -56,7 +56,7 @@
 | **Хранение данных** | SQLite 3 (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), LanceDB (`table.optimize()`), Zero-Fsync JSON-зеркала |
 | **Сетевые контракты** | FastAPI / Uvicorn (Mobile BFF Gateway REST + Server-Sent Events), Gradio/Automatic1111 REST API, HTTP Keep-Alive |
 | **Управление ОС и процессами** | Win32 API (`kernel32.dll`: Windows Job Objects `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000`, дескрипторы скрытых процессов `CREATE_NO_WINDOW`) |
-| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (926 тестов) |
+| **Контроль качества** | Pytest, pytest-mock, pytest-cov, Headless GUI Smoke Harness, AST CodeValidator, SubstanceGuard (940 тестов) |
 
 ---
 
@@ -133,11 +133,11 @@ flowchart TD
 ```
 
 1. **Core Domain (`core/`)**:
-   - `core/forge_locator.py`: 5-уровневый каскад обнаружения директории Forge, парсинг аргументов лаунчера (`--models-dir`, `--ckpt-dir`, `--lora-dir`), разрешение NTFS-симлинков и Junctions, изоляция окружения `get_clean_forge_env`, запись в `server_config.ini`.
+   - `core/forge_locator.py`: 5-уровневый каскад обнаружения директории Forge, парсинг аргументов лаунчера (`--models-dir`, `--ckpt-dir`, `--lora-dir`), разрешение NTFS-симлинков и Junctions, изоляция окружения `get_clean_forge_env`, каскадный поиск интерпретатора `find_forge_python`, неблокирующий аудит зависимостей `check_forge_environment_ready`, запись в `server_config.ini`.
    - `core/win32_job.py`: `Win32JobManager` (Singleton) на чистом `ctypes` — привязка дочерних процессов к Windows Job Object с флагом `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000)`.
    - `core/session_manager.py`: фасад совместимости для SessionManager.
 2. **Application Services (`services/`)**:
-   - `services/process_manager.py`: оркестратор жизненного цикла внешних процессов (`llama-server.exe`, LM Studio CLI, SD WebUI Forge) с двухфакторной проверкой сокетов (L4 TCP + L7 HTTP Handshake), изоляцией daemon-потоков в тестах и гардами от удаленных QObject.
+   - `services/process_manager.py`: оркестратор жизненного цикла внешних процессов (`llama-server.exe`, LM Studio CLI, SD WebUI Forge) с двухфакторной проверкой сокетов (L4 TCP + L7 HTTP Handshake), динамическим расчётом стартовых флагов с автоинжекцией `--skip-install` для полностью укомплектованных окружений и диагностикой недостающих пакетов при сбоях (exit code 1), изоляцией daemon-потоков в тестах и гардами от удаленных QObject.
    - `services/vram_arbiter.py`: арбитраж монопольного владения GPU (`GPUOwner.NONE`, `GPUOwner.LLM`, `GPUOwner.DIFFUSION`).
    - `services/layer_budgeter.py`: топологический аудитор GPU, парсер бинарных заголовков GGUF и калькулятор слоев `-ngl` с Pre-flight RAM Guard.
    - `services/forge_client.py`: асинхронный REST-клиент SD Forge API с Watchdog, автоочисткой VRAM, глубоким копированием payload (`deepcopy`), неблокирующим выходом поллера (0.05 с) и корректной перезагрузкой чекпоинта.
@@ -180,7 +180,7 @@ NeonRoute/
 │
 ├── core/                                # Ядро и системные привязки Windows
 │   ├── __init__.py                      # Инициализация пакета core
-│   ├── forge_locator.py                 # 5-уровневый каскад поиска Forge, парсер аргументов, изоляция env
+│   ├── forge_locator.py                 # 5-уровневый каскад поиска Forge, парсер аргументов, изоляция env, find_forge_python, check_forge_environment_ready
 │   ├── session_manager.py               # Фасад совместимости SessionManager
 │   └── win32_job.py                     # Win32JobManager: привязка к Job Object (KILL_ON_JOB_CLOSE = 0x2000)
 │
@@ -223,9 +223,10 @@ NeonRoute/
 │   ├── engineer_stream.py               # Потоковый парсинг токенов LLM (CodeStreamExtractor)
 │   ├── engineer_tdd.py                  # Code-First TDD пайплайн (защита эталонных тестов, детектор зацикливания TEST_FAIL, worker_temp=0.20)
 │   ├── entity_mapper.py                 # Детерминированный конвертер кириллических сущностей в теги SD 1.5
-│   ├── environment_doctor.py            # Аудит окружения и фоновая установка пакетов через PipInstallWorker
+│   ├── environment_doctor.py            # Аудит окружения и фоновая установка пакетов через PipInstallWorker (--default-timeout 60 --retries 3)
 │   ├── file_generator.py                # Генератор стилизованных документов Excel (.xlsx) и Word (.docx)
 │   ├── forge_client.py                  # REST-клиент SD Forge API (динамический VRAM-план, VAE Tiling/Never OOM, адаптивный wait, дедупликация set_model)
+│   ├── forge_downloader.py              # Автоустановка Forge/DreamShaper/ADetailer, генератор forge_launcher.bat (FALLBACK_ARGS с --skip-install)
 │   ├── forge_models.py                  # Реестр паспортов моделей SD (MODEL_REGISTRY, Capabilities)
 │   ├── forge_patcher.py                 # Аудит пакетов Forge (.dist-info), фиксация constraints, лог [ForgePatcher], игнорирование путей
 │   ├── git_sandbox.py                   # GitSandboxManager: локальный Git репозиторий песочницы
@@ -483,9 +484,9 @@ NeonRoute/
         ├── test_forge_client.py         # 50+ тестов: Watchdog, deepcopy payload, 1.5s poller, reload fix, 404 free-vram fallback
         ├── test_forge_custom_paths.py   # Парсинг --models-dir, --ckpt-dir, пробелов, кавычек, симлинков
         ├── test_forge_handshake.py      # Двухфакторная проверка: L4 TCP сокет + L7 HTTP handshake
-        ├── test_forge_locator.py        # 10 тестов: 5 уровней каскада локатора, INI, get_clean_forge_env
+        ├── test_forge_locator.py        # 18 тестов: 5 уровней каскада локатора, INI, get_clean_forge_env, find_forge_python, check_forge_environment_ready
         ├── test_forge_patcher.py        # Инспекция статусов, бэкап в .neonroute_backup, автопатч, откат, webui-user.bat
-        ├── test_forge_vram_policy.py    # 3-уровневая политика VRAM, RAM-гард --pin-shared-memory, TTL-кэш бюджета
+        ├── test_forge_vram_policy.py    # 28 тестов: 3-уровневая политика VRAM, RAM-гард --pin-shared-memory, TTL-кэш бюджета, автоинжекция --skip-install
         ├── test_gallery_model_routing_sync.py # Синхронизация шапки Forge (Авто/Ручной) и сохранение routing_description
         ├── test_hybrid_fastembed_rag.py # FastEmbed ONNX, BM25 TF, стоп-слова, непрерывность чанков
         ├── test_lm_studio.py            # 30+ тестов: SSE reasoning_content, default filter, HTTP 400 guard
@@ -582,19 +583,25 @@ flowchart TD
         CLEAN_PATH --> CLEAN_ENV["Изолированный словарь env"]
     end
 
-    subgraph Verification ["4. Двухфакторная проверка доступности"]
+    subgraph OfflineGuard ["4. Аудит окружения и --skip-install Guard"]
+        FIND_PY["find_forge_python(launcher_path, forge_root)"] --> CHECK_ENV["check_forge_environment_ready(find_spec / site-packages)"]
+        CHECK_ENV -->|Укомплектовано| INJECT_SKIP["Инжекция --skip-install в flags и FALLBACK_ARGS"]
+        CHECK_ENV -->|Отсутствуют пакеты| LOG_WARN["Предупреждение в лог + диагностика недостающих пакетов"]
+    end
+
+    subgraph Verification ["5. Двухфакторная проверка доступности"]
         L4["Фаза 1: L4 Сокет (is_port_open, timeout=0.3s)"] -->|Открыт| L7["Фаза 2: L7 HTTP Handshake (verify_forge_http_handshake, timeout=0.8s)"]
         L7 -->|HTTP 200 на /sdapi/v1/options| READY["Сервер готов к инференсу"]
         L7 -->|Таймаут или 404/502| PORT_CONFLICT["Конфликт портов! Gradio -> порт 7861"]
     end
 
-    subgraph ClientHardening ["5. Защита клиента (services/forge_client.py)"]
+    subgraph ClientHardening ["6. Защита клиента (services/forge_client.py)"]
         MUTATION["Защита от мутации: deepcopy(params)"]
         POLL["Неблокирующий выход поллера: join(0.05s)"]
         RELOAD["Корректный сброс _checkpoint_unloaded"]
     end
 
-    subgraph Hardening ["6. Защита процессов (Win32JobManager)"]
+    subgraph Hardening ["7. Защита процессов (Win32JobManager)"]
         JOB["CreateJobObjectW(KILL_ON_JOB_CLOSE = 0x2000)"]
         PROC["subprocess.Popen(env=clean_env)"] --> ASSIGN["AssignProcessToJobObject(job, proc._handle)"]
         JOB -.->|Авто-уничтожение при аварии родителя| KILLED["Уничтожение cmd.exe / python.exe"]
@@ -623,6 +630,21 @@ flowchart TD
 - Безусловная очистка сетевых прокси-переменных: удаляются `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `AG_LS_PROXY` и их варианты в нижнем регистре (`http_proxy`, `https_proxy`, `all_proxy`, `ftp_proxy`, `ag_ls_proxy`), что предотвращает сбои локального HTTP handshake (`/sdapi/v1/options`) из-за перехвата трафика системными или корпоративными прокси.
 - Явно задаются локальные исключения: `NO_PROXY="localhost,127.0.0.1,0.0.0.0"`, `no_proxy="localhost,127.0.0.1,0.0.0.0"` и флаг немедленного сброса потоков вывода `PYTHONUNBUFFERED="1"`.
 - Сохраняются критические системные каталоги Windows (`System32`, `SystemRoot`, `ComSpec`, `TEMP`) и пути к NVIDIA CUDA Toolkit (`CUDA 12.1\bin`).
+
+#### Автономный оффлайн-запуск и защита от зависаний pip (`--skip-install` Guard)
+- **Проблема**: В чистом изолированном окружении (`get_clean_forge_env`) сброс сетевых прокси блокирует доступ `pip` к внешним индексам `pypi.org` (что критически необходимо для защиты локальных HTTP-сокетов Gradio/Uvicorn). Если Forge запускается без флага `--skip-install`, фаза `prepare_environment()` в `modules/launch_utils.py` выполняет `run_pip("install clip==1.0")`, пытается разрешить `tqdm` через интернет, зависает по таймауту `ReadTimeoutError` (15 с x 5 попыток) и процесс падает с `exit code: 1`.
+- **Динамический локатор Python (`find_forge_python`)**:
+  - Каскадно обнаруживает интерпретатор целевого Forge: парсит директиву `set PYTHON=` в bat-файлах с раскрытием bat-переменных (`%~dp0`, `%ROOT%`, `%BASE_DIR%`, `%SYSTEM%`, `%FORGE%`), сканирует каталоги `system/python/python.exe`, `python/python.exe`, `venv/Scripts/python.exe` и подкаталоги 1-го уровня корня Forge.
+- **Предстартовый аудит готовности (`check_forge_environment_ready`)**:
+  - Выполняет быструю ($< 0.2$ с) проверку наличия обязательных библиотек (`clip`, `tqdm`, `ftfy`, `regex`, `torch`, `torchvision`) через `importlib.util.find_spec` в изолированном подпроцессе под управлением `get_clean_forge_env()` с жестким таймаутом `3.0` с (без импорта тяжелых весов).
+  - Предусматривает резервный файловый анализ директорий `site-packages` (для сред тестирования и бестелесных mock-окружений).
+- **Автоматическая инжекция `--skip-install`**:
+  - Если окружение укомплектовано, `services/art_director/vram_policy.py` (`resolve_forge_startup_flags`) автоматически включает флаг `--skip-install` в параметры запуска и `COMMANDLINE_ARGS` (с дедупликацией относительно пользовательских `extra_args`). `ProcessManager` логирует статус `🛡️ Автономный запуск Forge: --skip-install включен`, и `launch.py` стартует мгновенно в 100% оффлайн-режиме без обращения к `pypi.org`.
+  - Если библиотеки реально отсутствуют, `--skip-install` опускается, в лог пишется предупреждение `⚠️ Запуск Forge БЕЗ --skip-install`, а при крахе процесса (код 1) в текст ошибки включаются имена конкретных отсутствующих пакетов.
+- **Шаблоны лаунчеров и защита fallback-запуска**:
+  - В генераторе лаунчера `services/forge_downloader.py` (`create_forge_launcher_bat`) и в дистрибутивном скрипте `forge_launcher.bat` флаг `--skip-install` добавлен в `FALLBACK_ARGS`, гарантируя офлайн-запуск Forge даже при ручном запуске пользователем через Проводник без аргументов.
+- **Сетевая защита pip при штатной установке (`environment_doctor.py`, `install.bat`)**:
+  - Там, где `pip install` вызывается санкционированно (при первичной установке NeonRoute или лечении зависимостей через `EnvironmentDoctor`), во все команды добавлены параметры `--default-timeout 60 --retries 3` для устойчивости к медленному интернет-соединению.
 
 #### Двухфакторная верификация доступности (L4 TCP + L7 HTTP Handshake)
 - Функция `verify_forge_http_handshake(host="127.0.0.1", port=7860, timeout=0.8) -> bool` на базе стандартной библиотеки `urllib.request` выполняет легковесный GET-запрос к эндпоинту `/sdapi/v1/options` с заголовком `User-Agent: NeonRoute-Handshake/1.0`.
@@ -828,6 +850,7 @@ sequenceDiagram
 Вместо жёсткой блокировки в оффлоад на $\le 8$ ГБ система динамически подбирает политику памяти для каждого кадра через `services/art_director/vram_policy.py`, `services/process_manager.py`, `services/art_director/director.py` и `services/forge_client.py`:
 1. **Стартовые флаги Forge (`resolve_forge_startup_flags`)**:
    - Принудительный `--always-offload-from-vram` при старте добавляется **только** при `total_vram_gb < 6.0`. На системах с $\ge 6$ ГБ VRAM стартовый оффлоад снят.
+   - **Автономный оффлайн-запуск (`--skip-install`)**: автоматический аудит окружения через `check_forge_environment_ready(python_exe, forge_root, launcher_path)`. При наличии обязательных пакетов (`clip`, `tqdm`, `ftfy`, `regex`, `torch`, `torchvision`) флаг `--skip-install` инжектируется в команду запуска и `COMMANDLINE_ARGS` (с дедупликацией относительно `extra_args`), обеспечивая 100% автономный офлайн-старт без зависаний `launch.py` на `pypi.org`. При отсутствии пакетов флаг не добавляется, логируется предупреждение и формируется детальная диагностика недостающих зависимостей.
    - **Динамическое управление флагом `--ad-no-huggingface`**: управляется через `ConfigManager` (`"forge_ad_no_huggingface"`). По умолчанию флаг **ВЫКЛ (`False`)** — автоскачивание недостающих моделей ADetailer (детекторы лиц/рук) с Hugging Face разрешено. При переключении пользователем в **ВКЛ (`True`)** флаг `--ad-no-huggingface` инжектируется в команду запуска и `COMMANDLINE_ARGS`, запрещая сетевые запросы и фиксируя работу строго с локальными весами из `models/adetailer`.
    - **Диагностическое логирование флагов**: `ProcessManager` и `ForgeClient` логируют полный статус флагов (`ad_no_huggingface={status}`), при этом при выключенном состоянии выводится явное уведомление о доступности онлайн-загрузки с Hugging Face.
    - **Динамическое управление точностью VAE**: через `LayerBudgeter.detect_hardware_kv_profile()` определяется архитектура GPU. Для NVIDIA GPU с `compute_cap >= (8, 0)` (RTX 30xx/40xx/50xx, архитектуры Ampere, Ada, Blackwell) передаётся флаг `"--vae-in-bf16"` (убирая легаси `--no-half-vae` и `--vae-in-fp32`), что обеспечивает нативный инференс VAE в bfloat16 и экономит до 300+ МБ VRAM без риска NaN-артефактов. Для GPU с `compute_cap < (8, 0)` или не-NVIDIA сохраняется безопасная пара `["--no-half-vae", "--vae-in-fp32"]`.
@@ -1651,21 +1674,21 @@ flowchart TD
 
 ## 7. Контроль качества и тестовая инфраструктура (Testing & Quality Gates)
 
-### 7.1. Структура тестового сьюта (926 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
+### 7.1. Структура тестового сьюта (940 тестов, 100% Pass Rate на полном прогоне `pytest -q`)
 
-Пирамида тестирования NeonRoute состоит из 926 автоматических тестов в 99 тестовых модулях, разделенных на четыре изолированных контура:
+Пирамида тестирования NeonRoute состоит из 940 автоматических тестов в 99 тестовых модулях, разделенных на четыре изолированных контура:
 
 | Контур | Модулей | Тестов | Область покрытия |
 | :--- | :---: | :---: | :--- |
 | **`tests/smoke/`** | 16 | 113 | Быстрые сквозные смоук-тесты: контракт синхронизации закрытия диалога моделей (`test_dialog_sync_smoke.py`, 5 тестов: async reload, неблокирующий save_all, дедупликация ModelRouter, фоновый refresh_checkpoints, сброс WaitCursor), единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`), гигиена batch-файлов, проброс ADetailer, матрица профилей VRAM/RAM Forge, Layer Budgeter, жизненный цикл MainWindow, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` |
-| **`tests/unit/`** | 68 | 626 | Изолированное модульное тестирование: жизненный цикл `MobileServerDialog` и безопасность превью (`test_mobile_server_dialog.py`, 5 тестов), синхронизация геометрии QLineEdit в спинбоксах (`test_spinbox_geometry.py`, 6 тестов), динамический каскад ассетов и моделей Forge (`test_asset_validator.py`, 10 тестов), аудит игнорирования патчей Forge и нормализация путей (`test_forge_patch_ignored.py`, 6 тестов), гигиена pythonw.exe, перенаправление stdout/stderr и crash.log (`test_logging_hygiene.py`), встроенный загрузчик Forge (`test_forge_downloader.py`), сквозные тесты ModelsManagerDialog (`test_models_manager_dialog.py`), 3-слойный ADetailer и Structured JSON (`test_adetailer_dialog.py`), автозагрузчик llama-server, клиенты Forge и LM Studio, патчер Forge, память MemoryDB, FastEmbed ONNX, Deferred RAG |
+| **`tests/unit/`** | 68 | 640 | Изолированное модульное тестирование: жизненный цикл `MobileServerDialog` и безопасность превью (`test_mobile_server_dialog.py`, 5 тестов), синхронизация геометрии QLineEdit в спинбоксах (`test_spinbox_geometry.py`, 6 тестов), динамический каскад ассетов и моделей Forge (`test_asset_validator.py`, 10 тестов), аудит игнорирования патчей Forge и нормализация путей (`test_forge_patch_ignored.py`, 6 тестов), гигиена pythonw.exe, перенаправление stdout/stderr и crash.log (`test_logging_hygiene.py`), встроенный загрузчик Forge (`test_forge_downloader.py`), сквозные тесты ModelsManagerDialog (`test_models_manager_dialog.py`), 3-слойный ADetailer и Structured JSON (`test_adetailer_dialog.py`), 5-уровневый каскад локатора Forge, динамический поиск интерпретатора `find_forge_python` и аудит зависимостей `check_forge_environment_ready` (`test_forge_locator.py`, 18 тестов), адаптивная политика VRAM и автоинжекция `--skip-install` (`test_forge_vram_policy.py`, 28 тестов), автозагрузчик llama-server, клиенты Forge и LM Studio, патчер Forge, память MemoryDB, FastEmbed ONNX, Deferred RAG |
 | **`tests/integration/`** | 3 | 13 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`), отказоустойчивости e2e (`test_e2e_fault_tolerance.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
 | **`tests/` (root)** | 12 | 174 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors, FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer, Chat Flow & Gallery Override (`test_chat.py`) |
-| **ИТОГО** | **99** | **926** | **100% Pass Rate на полном прогоне `pytest -q`** |
+| **ИТОГО** | **99** | **940** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
 ### 7.2. Правила верификации для ИИ-агента
 
-- **Команда полного прогона**: `pytest -q` (гарантирует прохождение всех 926 тестов).
+- **Команда полного прогона**: `pytest -q` (гарантирует прохождение всех 940 тестов).
 - **Автоматическая изоляция окружения**: флаг `PYTEST_CURRENT_TEST` и airgap-фикстуры в `conftest.py` изолируют сеть, файловую систему и системный реестр Windows.
 - **Блокировка побочных эффектов**: фоновые daemon-потоки `ProcessManager`, модальные диалоги онбординга Forge и фоновые таймеры автоматически подавляются в тестовом режиме.
 - **Безопасная эмуляция процессов**: вместо запуска реальных внешних дочерних процессов (Forge, llama-server) используются легковесные in-process заставки и моки.
