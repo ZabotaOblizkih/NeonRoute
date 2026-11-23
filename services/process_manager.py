@@ -44,9 +44,9 @@ logger = logging.getLogger("NeonRoute.ProcessManager")
 def verify_forge_http_handshake(host: str = "127.0.0.1", port: int = 7860, timeout: float = 0.8) -> bool:
     """
     Выполняет легковесный HTTP-handshake с API SD WebUI Forge.
-    Проверяет доступность эндпоинта /sdapi/v1/options или /docs.
+    Проверяет доступность эндпоинта /sdapi/v1/options.
     Возвращает True только при подтверждении сигнатуры Forge/Automatic1111 API (HTTP 200).
-    При таймауте, ошибке соединения или кодах 404/502 (чужой сервис) возвращает False.
+    При таймауте, ошибке соединения или кодах 404/502 (чужой сервис) возвращает False с диагностическим логированием.
     """
     url = f"http://{host}:{port}/sdapi/v1/options"
     req = urllib.request.Request(
@@ -56,8 +56,22 @@ def verify_forge_http_handshake(host: str = "127.0.0.1", port: int = 7860, timeo
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            return getattr(response, "status", getattr(response, "code", None)) == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+            status = getattr(response, "status", getattr(response, "code", None))
+            if status == 200:
+                return True
+            logger.debug(f"[ForgeHandshake] Статус HTTP {status} на {url} (ожидался 200).")
+            return False
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            logger.debug(
+                f"[ForgeHandshake] HTTP 404 Not Found на {url}: "
+                f"сервер Gradio/Uvicorn активен, но API-роутер /sdapi/v1/* ещё не зарегистрирован."
+            )
+        else:
+            logger.debug(f"[ForgeHandshake] HTTP {e.code} ({e.reason}) на {url}.")
+        return False
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        logger.debug(f"[ForgeHandshake] Порт {port} недоступен ({type(e).__name__}): {e}")
         return False
 
 
@@ -2036,12 +2050,37 @@ class ProcessManager(QObject):
                 self.forge_status_changed.emit(True, "Forge активен и готов к генерации.")
                 self.action_completed.emit("forge_start", True, f"SD WebUI Forge готов к работе ({elapsed} с).")
             else:
-                err_msg = f"Превышено время ожидания запуска Forge ({startup_timeout} с). Порт 7860 не отвечает."
-                logger.warning(err_msg)
+                # Детальная диагностика причины недоступности Forge
+                diag_reason = "порт 7860 не открыт или процесс не отвечает"
                 try:
+                    test_req = urllib.request.Request(
+                        "http://127.0.0.1:7860/sdapi/v1/options",
+                        headers={"User-Agent": "NeonRoute-Handshake/1.0"}
+                    )
+                    with urllib.request.urlopen(test_req, timeout=1.0) as test_resp:
+                        code = getattr(test_resp, "status", getattr(test_resp, "code", None))
+                        if code == 200:
+                            diag_reason = "сервер ответил HTTP 200 в момент таймаута"
+                        else:
+                            diag_reason = f"сервер отвечает HTTP {code}"
+                except urllib.error.HTTPError as he:
+                    if he.code == 404:
+                        diag_reason = (
+                            "HTTP 404 Not Found: корневой веб-сервер активен, но API /sdapi/v1/options не зарегистрирован "
+                            "(поток инициализации Forge заблокирован)"
+                        )
+                    else:
+                        diag_reason = f"HTTP {he.code} ({he.reason})"
+                except Exception as ex:
+                    diag_reason = f"соединение не установлено ({type(ex).__name__}: {ex})"
+
+                err_msg = f"Превышено время ожидания запуска Forge ({startup_timeout} с). Причина: {diag_reason}."
+                logger.warning(f"[ProcessManager] {err_msg}")
+                try:
+                    logger.info("[ProcessManager] Штатная остановка дерева процессов Forge после таймаута...")
                     self._run_forge_stop()
                 except Exception as stop_err:
-                    logger.warning(f"Ошибка при очистке процесса Forge после таймаута: {stop_err}")
+                    logger.warning(f"[ProcessManager] Ошибка при очистке процесса Forge после таймаута: {stop_err}")
                 self._forge_process = None
                 if self._forge_log_file and not self._forge_log_file.closed:
                     try:

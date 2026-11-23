@@ -7,7 +7,12 @@ backup creation in .neonroute_backup/original/, idempotency, and clean restore.
 import logging
 import pytest
 from pathlib import Path
-from services.forge_patcher import ForgePatcher, ForgePatchStatus
+from services.forge_patcher import (
+    ForgePatcher,
+    ForgePatchStatus,
+    PINNED_FORGE_LIBRARIES,
+    CONSTRAINTS_FILENAME,
+)
 
 STOCK_API_PY = '''
 class Api:
@@ -657,6 +662,55 @@ def test_forge_patcher_logging_failure_and_rollback_trace(tmp_path, caplog):
     ok, msg = ForgePatcher.apply_patch(forge_dir)
     assert ok is False
     assert "[ForgePatcher] Шаг 3 (sd_models.py) откат: не удалось найти тело unload_model_weights" in caplog.text
+
+
+def test_forge_patcher_recognizes_reference_forge_without_constraints_file(tmp_path):
+    """
+    Проверяет, что ForgePatcher корректно определяет эталонный Forge (уже содержащий
+    целевые методы в коде и целевые версии в site-packages) со статусом PATCHED,
+    даже если neonroute_constraints.txt изначально не был создан.
+    """
+    import shutil
+    forge_dir = tmp_path / "ref_forge"
+    webui_dir = forge_dir / "webui_forge_cu121_torch231" / "webui"
+    (webui_dir / "modules" / "api").mkdir(parents=True, exist_ok=True)
+
+    # 1. Записываем stock код и лаунчер
+    (webui_dir / "modules" / "api" / "api.py").write_text(STOCK_API_PY, encoding="utf-8")
+    (webui_dir / "modules" / "api" / "models.py").write_text(STOCK_MODELS_PY, encoding="utf-8")
+    (webui_dir / "modules" / "sd_models.py").write_text(STOCK_SD_MODELS_PY, encoding="utf-8")
+    (forge_dir / "forge_launcher.bat").write_text("@echo off\npython launch.py --api %*\n", encoding="utf-8")
+    (webui_dir / "requirements_versions.txt").write_text("fastapi==0.104.1\ngradio==4.40.0\n", encoding="utf-8")
+
+    # 2. Применяем патч, чтобы получить эталонные модификации в коде
+    ok, _ = ForgePatcher.apply_patch(forge_dir)
+    assert ok is True
+
+    # 3. Удаляем neonroute_constraints.txt и бэкапы, чтобы сымитировать "чистый" эталонный Forge
+    (webui_dir / CONSTRAINTS_FILENAME).unlink(missing_ok=True)
+    (forge_dir / CONSTRAINTS_FILENAME).unlink(missing_ok=True)
+    if (webui_dir / ".neonroute_backup").exists():
+        shutil.rmtree(webui_dir / ".neonroute_backup", ignore_errors=True)
+
+    # 4. Создаем встроенный site-packages с .dist-info всех 8 библиотек
+    sp_dir = forge_dir / "webui_forge_cu121_torch231" / "system" / "python" / "Lib" / "site-packages"
+    sp_dir.mkdir(parents=True, exist_ok=True)
+    for pkg, ver in PINNED_FORGE_LIBRARIES.items():
+        norm_pkg = pkg.replace("-", "_")
+        (sp_dir / f"{norm_pkg}-{ver}.dist-info").mkdir(parents=True, exist_ok=True)
+
+    # Убеждаемся, что neonroute_constraints.txt отсутствует до проверки
+    constraints_p = webui_dir / CONSTRAINTS_FILENAME
+    assert not constraints_p.exists()
+
+    # Проверяем библиотеки
+    assert ForgePatcher.are_libraries_pinned(forge_dir) is True
+
+    # Проверяем итоговый статус: должен быть PATCHED
+    status, msg = ForgePatcher.check_status(forge_dir)
+    assert status == ForgePatchStatus.PATCHED
+    assert "Патч совместимости активен" in msg
+
 
 
 

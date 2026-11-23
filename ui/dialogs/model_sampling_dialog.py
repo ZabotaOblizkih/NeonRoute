@@ -30,6 +30,11 @@ from qfluentwidgets import (
 
 from services.session_manager import get_default_sampling_params
 from ui.common.palette_utils import extract_adaptive_palette
+from ui.common.spinbox_utils import (
+    SamplingDoubleSpinBox,
+    SamplingSpinBox,
+    sync_spinbox_lineedit_geometry,
+)
 
 
 class SamplingSlider(Slider):
@@ -98,74 +103,6 @@ class SamplingSlider(Slider):
 
     def wheelEvent(self, e):
         # Отключаем случайное изменение значений колесиком мыши
-        e.ignore()
-
-
-class SamplingDoubleSpinBox(DoubleSpinBox):
-    """
-    Поле числового ввода с плавающей точкой (Temperature, Min-P, Repetition Penalty, etc.):
-    - Стрелки вверх/вниз гарантированно инкрементируют/декрементируют значение с точным шагом
-    - Границы minimum / singleStep строго соблюдаются
-    - Отключение wheelEvent во избежание случайного скролла значений
-    - ClickFocus
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        try:
-            self.downButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.downButton.clicked.connect(self.stepDown)
-        try:
-            self.upButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.upButton.clicked.connect(self.stepUp)
-
-    def stepDown(self):
-        new_val = max(self.minimum(), self.value() - self.singleStep())
-        self.setValue(round(new_val, self.decimals()))
-
-    def stepUp(self):
-        new_val = min(self.maximum(), self.value() + self.singleStep())
-        self.setValue(round(new_val, self.decimals()))
-
-    def wheelEvent(self, e):
-        e.ignore()
-
-
-class SamplingSpinBox(SpinBox):
-    """
-    Поле целочисленного ввода (Max Tokens):
-    - Стрелки вверх/вниз гарантированно инкрементируют/декрементируют значение с точным шагом (64)
-    - Нижняя граница minimum (256) и верхняя maximum (4096) строго соблюдаются
-    - Отключение wheelEvent
-    - ClickFocus
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        try:
-            self.downButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.downButton.clicked.connect(self.stepDown)
-        try:
-            self.upButton.clicked.disconnect()
-        except Exception:
-            pass
-        self.upButton.clicked.connect(self.stepUp)
-
-    def stepDown(self):
-        new_val = max(self.minimum(), self.value() - self.singleStep())
-        self.setValue(int(new_val))
-
-    def stepUp(self):
-        new_val = min(self.maximum(), self.value() + self.singleStep())
-        self.setValue(int(new_val))
-
-    def wheelEvent(self, e):
         e.ignore()
 
 
@@ -316,7 +253,7 @@ class ModelSamplingDialog(FramelessDialog):
                 font-family: 'Segoe UI', -apple-system, sans-serif;
                 font-size: 12px;
                 font-weight: 600;
-                min-width: 90px;
+                min-width: 105px;
             }}
             DoubleSpinBox:focus, SpinBox:focus, SamplingDoubleSpinBox:focus, SamplingSpinBox:focus {{
                 border-color: {palette['accent']};

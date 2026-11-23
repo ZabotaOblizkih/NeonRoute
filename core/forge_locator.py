@@ -340,6 +340,23 @@ def get_clean_forge_env(base_env: Optional[dict] = None) -> dict:
     env["no_proxy"] = "localhost,127.0.0.1,0.0.0.0"
     env["PYTHONUNBUFFERED"] = "1"
 
+    # Защита зафиксированных версий зависимостей Forge через PIP_CONSTRAINT
+    try:
+        import config
+        root_cand = getattr(config, "FORGE_ROOT_DIR", None)
+        if root_cand:
+            root_p = Path(root_cand).resolve()
+            for cand in [
+                root_p / "neonroute_constraints.txt",
+                root_p / "webui" / "neonroute_constraints.txt",
+                root_p / "webui_forge_cu121_torch231" / "webui" / "neonroute_constraints.txt",
+            ]:
+                if cand.is_file():
+                    env["PIP_CONSTRAINT"] = str(cand.resolve())
+                    break
+    except Exception:
+        pass
+
     # 3. Очищаем PATH от записей активного venv и собственного Python NeonRoute
     raw_path = env.get("PATH", "")
     if raw_path:

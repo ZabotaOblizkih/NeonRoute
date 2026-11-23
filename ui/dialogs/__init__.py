@@ -34,6 +34,7 @@ _LAZY_EXPORTS = {
     "CardVisualSetupDialog": (".card_visual_setup_dialog", "CardVisualSetupDialog"),
     "CampaignInfoDialog": (".campaign_info_dialog", "CampaignInfoDialog"),
     "SettingsDialog": (".settings_dialog", "SettingsDialog"),
+    "MobileServerDialog": (".mobile_server_dialog", "MobileServerDialog"),
 }
 
 if TYPE_CHECKING:

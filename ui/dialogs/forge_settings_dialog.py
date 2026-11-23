@@ -272,7 +272,7 @@ class ForgeSettingsDialog(FramelessDialog):
     def _load_current_settings(self):
         """Загрузка сохраненных параметров Forge с проверкой доступности диска."""
         self.app_cfg = ConfigManager.load_config()
-        raw_root = str(config.FORGE_ROOT_DIR.resolve()) if config.FORGE_ROOT_DIR else ""
+        raw_root = str(Path(config.FORGE_ROOT_DIR).resolve()) if config.FORGE_ROOT_DIR else ""
         if raw_root:
             valid_root, _ = validate_or_fallback_forge_dir(raw_root)
             self.current_forge_root = str(valid_root)
@@ -575,7 +575,17 @@ class ForgeSettingsDialog(FramelessDialog):
             self.lbl_patch_status.setStyleSheet("color: #10B981; font-size: 11px;")
 
         elif status == ForgePatchStatus.NEEDS_PATCH:
-            self.lbl_patch_status.setText(f"🟡 {patch_msg}\n💡 Резервная копия оригиналов будет сохранена автоматически перед изменением.")
+            note = "💡 Резервная копия оригиналов будет сохранена автоматически перед изменением."
+            try:
+                cfg = ConfigManager.load_config()
+                raw_ign = cfg.get("forge_patch_ignored_paths", []) or []
+                norm_curr = os.path.normcase(os.path.abspath(dir_path_str)) if dir_path_str else ""
+                if any(os.path.normcase(os.path.abspath(str(p))) == norm_curr for p in raw_ign if p):
+                    note = "ℹ️ Вы выбрали «Больше не предлагать» при запуске. При желании вы можете применить патч кнопкой справа."
+            except Exception:
+                pass
+
+            self.lbl_patch_status.setText(f"🟡 {patch_msg}\n{note}")
             self.lbl_patch_status.setStyleSheet("color: #F59E0B; font-size: 11px;")
             self.btn_check_patch.setText("Применить патч")
             self.btn_check_patch.setIcon(FIF.ACCEPT)
@@ -824,17 +834,6 @@ class ForgeSettingsDialog(FramelessDialog):
         if selected:
             self.line_path.setText(selected)
             self._update_path_and_patch_status(selected)
-            # Сброс флага игнорирования для нового пути
-            try:
-                cfg = ConfigManager.load_config()
-                ignored = cfg.get("forge_patch_ignored_paths", [])
-                norm_sel = str(Path(selected).resolve())
-                if norm_sel in ignored:
-                    ignored.remove(norm_sel)
-                    cfg["forge_patch_ignored_paths"] = ignored
-                    ConfigManager.save_config(cfg)
-            except Exception as e:
-                logger.debug(f"[ForgeSettingsDialog] Ошибка сброса флага игнорирования: {e}")
 
     def _on_check_patch_clicked(self):
         """Обработчик кнопки действия над патчем (Применить / Откатить)."""
@@ -846,6 +845,16 @@ class ForgeSettingsDialog(FramelessDialog):
             ok, res_msg = ForgePatcher.apply_patch(curr_path)
             self._update_path_and_patch_status(curr_path)
             if ok:
+                try:
+                    cfg = ConfigManager.load_config()
+                    raw_ign = cfg.get("forge_patch_ignored_paths", []) or []
+                    norm_curr = os.path.normcase(os.path.abspath(curr_path)) if curr_path else ""
+                    new_ign = [p for p in raw_ign if os.path.normcase(os.path.abspath(str(p))) != norm_curr]
+                    if len(new_ign) != len(raw_ign):
+                        cfg["forge_patch_ignored_paths"] = new_ign
+                        ConfigManager.save_config(cfg)
+                except Exception:
+                    pass
                 toast_success(self, "Патч применён", "Патчи совместимости успешно установлены. Создан бэкап в .neonroute_backup/original/.")
             else:
                 toast_error(self, "Ошибка патчинга", res_msg)

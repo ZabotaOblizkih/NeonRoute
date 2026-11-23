@@ -5,6 +5,7 @@ and external tools required by the Engineer Mode.
 Refactored to Windows 11 Fluent Design (FramelessDialog, FluentTitleBar, Adaptive Palette).
 """
 
+import logging
 from typing import Optional, Dict
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QCursor
@@ -32,6 +33,8 @@ from services.environment_doctor import EnvironmentDoctor, PipInstallWorker
 from utils.config_manager import ConfigManager
 from ui.common.palette_utils import extract_adaptive_palette
 
+logger = logging.getLogger("NeonRoute.DependencyDialog")
+
 
 class DependencyDialog(FramelessDialog):
     """
@@ -41,6 +44,7 @@ class DependencyDialog(FramelessDialog):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.window = parent
+        self._preference_saved = False
         self.setWindowTitle("Проверка компонентов — NeonRoute")
         self.resize(680, 560)
         self.setMinimumSize(580, 460)
@@ -334,11 +338,39 @@ class DependencyDialog(FramelessDialog):
         root_layout.addWidget(self.titleBar)
         root_layout.addWidget(body_widget, 1)
 
+    def _save_dont_show_preference_if_checked(self):
+        """
+        Сохраняет настройку check_dependencies_on_startup = False в config.json,
+        если пользователь отметил чекбокс 'Больше не показывать это окно при запуске'.
+        Метод идемпотентен, защищен от повторных вызовов и рекурсии, не вызывает accept/reject.
+        """
+        if getattr(self, "_preference_saved", False):
+            return
+        if hasattr(self, "cb_dont_show") and self.cb_dont_show and self.cb_dont_show.isChecked():
+            try:
+                cfg = ConfigManager.load_config()
+                if cfg.get("check_dependencies_on_startup", True) is not False:
+                    cfg["check_dependencies_on_startup"] = False
+                    ConfigManager.save_config(cfg)
+                    logger.info("[DependencyDialog] Флаг check_dependencies_on_startup установлен в False.")
+                self._preference_saved = True
+            except Exception as e:
+                logger.warning(f"[DependencyDialog] Ошибка сохранения настройки check_dependencies_on_startup: {e}")
+
+    def accept(self):
+        self._save_dont_show_preference_if_checked()
+        super().accept()
+
+    def reject(self):
+        self._save_dont_show_preference_if_checked()
+        super().reject()
+
+    def closeEvent(self, event):
+        self._save_dont_show_preference_if_checked()
+        super().closeEvent(event)
+
     def _on_skip(self):
-        if self.cb_dont_show.isChecked():
-            cfg = ConfigManager.load_config()
-            cfg["check_dependencies_on_startup"] = False
-            ConfigManager.save_config(cfg)
+        self._save_dont_show_preference_if_checked()
         self.reject()
 
     def _on_install(self):
@@ -369,6 +401,7 @@ class DependencyDialog(FramelessDialog):
             self.btn_install.setEnabled(True)
 
         if success:
+            self._save_dont_show_preference_if_checked()
             QMessageBox.information(self, "Успех", msg)
             self.accept()
         else:

@@ -194,15 +194,23 @@ def start_mobile_server_thread(timeout: float = 3.0) -> Tuple[bool, str]:
         _server_thread = thread
         thread.start()
 
+    try:
+        from PyQt6.QtWidgets import QApplication
+        qapp = QApplication.instance()
+    except Exception:
+        qapp = None
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if qapp is not None:
+            qapp.processEvents()
         if _server_error:
             return False, f"Ошибка запуска мобильного сервера: {_server_error}"
-        if getattr(_uvicorn_server, "started", False) or _is_port_listening(settings.PORT, timeout=0.15):
+        if getattr(_uvicorn_server, "started", False) or _is_port_listening(settings.PORT, timeout=0.1):
             return True, f"Мобильный сервер запущен на порту {settings.PORT}."
         if _server_thread is None or not _server_thread.is_alive():
             return False, f"Сервер завершился при запуске ({_server_error or 'порт занят'})."
-        time.sleep(0.05)
+        time.sleep(0.02)
 
     return _is_port_listening(settings.PORT), (
         f"Мобильный сервер запущен на порту {settings.PORT}."

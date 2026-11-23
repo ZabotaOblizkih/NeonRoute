@@ -432,6 +432,21 @@ class ImagePreviewDialog(FramelessDialog):
                 geo.moveCenter(avail_rect.center())
                 self.move(geo.topLeft())
 
+    def reject(self):
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
+        super().reject()
+
+    def accept(self):
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
+        super().accept()
+
+    def closeEvent(self, event):
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
+        super().closeEvent(event)
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self.reject()

@@ -669,8 +669,9 @@ class HardwareEngineMixin:
 
             # Проверяем, не добавлен ли путь в список игнорируемых
             cfg = ConfigManager.load_config()
-            ignored_paths = [str(Path(p).resolve()) for p in cfg.get("forge_patch_ignored_paths", [])]
-            norm_target = str(Path(target_root).resolve())
+            raw_ignored = cfg.get("forge_patch_ignored_paths", []) or []
+            ignored_paths = {os.path.normcase(os.path.abspath(str(p))) for p in raw_ignored if p}
+            norm_target = os.path.normcase(os.path.abspath(str(target_root)))
             if norm_target in ignored_paths:
                 return False
 
@@ -713,11 +714,12 @@ class HardwareEngineMixin:
                     )
                     return True
             else:
-                if dlg.cb_never.isChecked():
+                if hasattr(dlg, "cb_never") and dlg.cb_never and dlg.cb_never.isChecked():
                     if norm_target not in ignored_paths:
-                        ignored_paths.append(norm_target)
-                        cfg["forge_patch_ignored_paths"] = ignored_paths
+                        raw_ignored.append(str(Path(target_root).resolve()))
+                        cfg["forge_patch_ignored_paths"] = raw_ignored
                         ConfigManager.save_config(cfg)
+                        ignored_paths.add(norm_target)
                     toast_info(
                         self,
                         title="Патч Forge отложен",
@@ -1253,102 +1255,21 @@ class HardwareEngineMixin:
 
     def _show_mobile_server_qr_dialog(self):
         """Отображает по центру окна Fluent-диалог с QR-кодом для подключения телефона."""
-        from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
-        from qfluentwidgets import (
-            BodyLabel,
-            ComboBox,
-            FluentIcon as FIF,
-            InfoBar,
-            InfoBarPosition,
-            MessageBoxBase,
-            PushButton,
-            SubtitleLabel,
-        )
-        from mobile_server.api import get_mobile_server_urls, stop_mobile_server_thread
-        from ui.common.icon_utils import render_qr_pixmap
-
-        urls = get_mobile_server_urls()
-        active_url = urls[0]
+        from PyQt6.QtWidgets import QWidget
+        from ui.dialogs.mobile_server_dialog import MobileServerDialog
+        from mobile_server.api import stop_mobile_server_thread
 
         parent_win = self if isinstance(self, QWidget) else None
-        dialog = MessageBoxBase(parent_win)
-        dialog.widget.setMinimumWidth(380)
-
-        title_lbl = SubtitleLabel("Мобильный сервер активен", dialog)
-        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        dialog.viewLayout.addWidget(title_lbl)
-
-        hint_lbl = BodyLabel(
-            "Отсканируйте QR-код камерой телефона (в одной сети Wi-Fi или VPN), "
-            "чтобы открыть NeonRoute в браузере:",
-            dialog,
-        )
-        hint_lbl.setWordWrap(True)
-        hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint_lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
-        dialog.viewLayout.addWidget(hint_lbl)
-
-        qr_frame = QFrame(dialog)
-        qr_frame.setStyleSheet(
-            "QFrame { background-color: #FFFFFF; border-radius: 14px; padding: 10px; }"
-        )
-        qr_layout = QVBoxLayout(qr_frame)
-        qr_layout.setContentsMargins(12, 12, 12, 12)
-        qr_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        qr_label = QLabel(qr_frame)
-        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        qr_label.setPixmap(render_qr_pixmap(active_url, module_px=7, quiet_modules=3))
-        qr_layout.addWidget(qr_label)
-
-        qr_row = QHBoxLayout()
-        qr_row.addStretch(1)
-        qr_row.addWidget(qr_frame)
-        qr_row.addStretch(1)
-        dialog.viewLayout.addLayout(qr_row)
-
-        url_lbl = BodyLabel(active_url, dialog)
-        url_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        url_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        url_lbl.setStyleSheet("color: #00F0FF; font-weight: 600; font-size: 14px;")
-        dialog.viewLayout.addWidget(url_lbl)
-
-        if len(urls) > 1:
-            addr_combo = ComboBox(dialog)
-            addr_combo.addItems(urls)
-            addr_combo.setCurrentIndex(0)
-
-            def _on_addr_changed(new_url: str):
-                url_lbl.setText(new_url)
-                qr_label.setPixmap(render_qr_pixmap(new_url, module_px=7, quiet_modules=3))
-
-            addr_combo.currentTextChanged.connect(_on_addr_changed)
-            dialog.viewLayout.addWidget(addr_combo)
-
-        btn_copy = PushButton(FIF.COPY, "Копировать ссылку", dialog)
-
-        def _copy_url():
-            cb = QApplication.clipboard()
-            if cb is not None:
-                cb.setText(url_lbl.text())
-            from ui.common.toast_helper import toast_success
-            toast_success(
-                parent_win,
-                title="Скопировано",
-                content=url_lbl.text(),
-            )
-
-        btn_copy.clicked.connect(_copy_url)
-        dialog.viewLayout.addWidget(btn_copy)
-
-        dialog.yesButton.setText("Готово")
-        dialog.cancelButton.setText("Остановить сервер")
-
-        if not dialog.exec():
-            stop_mobile_server_thread()
-            self._sync_mobile_server_button(False)
-            if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
-                self.statusBar().showMessage("Мобильный сервер остановлен.", 3000)
+        dialog = MobileServerDialog(parent=parent_win)
+        try:
+            dialog.exec()
+            if dialog.stop_server_requested:
+                stop_mobile_server_thread()
+                self._sync_mobile_server_button(False)
+                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                    self.statusBar().showMessage("Мобильный сервер остановлен.", 3000)
+        finally:
+            dialog.deleteLater()
 
 
 def __getattr__(name: str):

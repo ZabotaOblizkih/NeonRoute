@@ -47,6 +47,12 @@ from qfluentwidgets import (
     Theme
 )
 
+from ui.common.spinbox_utils import (
+    CompactSamplingDoubleSpinBox,
+    CompactSamplingSpinBox,
+    sync_spinbox_lineedit_geometry,
+)
+
 from services.model_router import ModelRouter
 from services.art_director_config import (
     load_art_director_models,
@@ -124,16 +130,16 @@ class SamplingSlider(Slider):
         e.ignore()
 
 
-class SamplingDoubleSpinBox(CompactDoubleSpinBox):
+class SamplingDoubleSpinBox(CompactSamplingDoubleSpinBox):
     """
     Числовой счетчик с плавающей точкой (CFG Scale, Денойз Hires):
     - Компактные вертикальные стрелки
     - Белые цифры
+    - Защита от сжатия lineEdit до 1 px (авто-синхронизация геометрии)
     - Отключение wheelEvent во избежание случайного скролла
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setStyleSheet("""
             SamplingDoubleSpinBox, CompactDoubleSpinBox {
                 background-color: rgba(255, 255, 255, 0.06);
@@ -160,20 +166,17 @@ class SamplingDoubleSpinBox(CompactDoubleSpinBox):
             }
         """)
 
-    def wheelEvent(self, e):
-        e.ignore()
 
-
-class SamplingSpinBox(CompactSpinBox):
+class SamplingSpinBox(CompactSamplingSpinBox):
     """
     Целочисленный счетчик (Шаги, Clip Skip):
     - Компактные вертикальные стрелки
     - Белые цифры
+    - Защита от сжатия lineEdit до 1 px (авто-синхронизация геометрии)
     - Отключение wheelEvent во избежание случайного скролла
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setStyleSheet("""
             SamplingSpinBox, CompactSpinBox {
                 background-color: rgba(255, 255, 255, 0.06);
@@ -199,9 +202,6 @@ class SamplingSpinBox(CompactSpinBox):
                 border: none;
             }
         """)
-
-    def wheelEvent(self, e):
-        e.ignore()
 
 logger = logging.getLogger("NeonRoute.ModelsManager")
 

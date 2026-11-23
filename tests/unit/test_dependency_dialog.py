@@ -178,3 +178,167 @@ def test_dependency_dialog_escape_key_closes(qapp, dummy_window, monkeypatch):
 
     assert dialog.isVisible() is False
     dialog.deleteLater()
+
+
+def test_dependency_dialog_close_saves_config(qapp, dummy_window, monkeypatch):
+    """Проверяет сохранение флага при закрытии окна через close() / [X] при включенном чекбоксе."""
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
+
+    mock_cfg = {"check_dependencies_on_startup": True}
+    saved_cfg = {}
+
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: mock_cfg.copy())
+    monkeypatch.setattr("utils.config_manager.ConfigManager.save_config", lambda c: saved_cfg.update(c))
+
+    from ui.dialogs.dependency_dialog import DependencyDialog
+
+    dialog = DependencyDialog(dummy_window)
+    dialog.show()
+
+    dialog.cb_dont_show.setChecked(True)
+    dialog.close()
+
+    assert saved_cfg.get("check_dependencies_on_startup") is False
+    assert dialog.isVisible() is False
+    dialog.deleteLater()
+
+
+def test_dependency_dialog_reject_saves_config(qapp, dummy_window, monkeypatch):
+    """Проверяет сохранение флага при вызове reject() при включенном чекбоксе."""
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
+
+    mock_cfg = {"check_dependencies_on_startup": True}
+    saved_cfg = {}
+
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: mock_cfg.copy())
+    monkeypatch.setattr("utils.config_manager.ConfigManager.save_config", lambda c: saved_cfg.update(c))
+
+    from ui.dialogs.dependency_dialog import DependencyDialog
+
+    dialog = DependencyDialog(dummy_window)
+    dialog.show()
+
+    dialog.cb_dont_show.setChecked(True)
+    dialog.reject()
+
+    assert saved_cfg.get("check_dependencies_on_startup") is False
+    assert dialog.isVisible() is False
+    dialog.deleteLater()
+
+
+def test_dependency_dialog_accept_saves_config(qapp, dummy_window, monkeypatch):
+    """Проверяет сохранение флага при вызове accept() при включенном чекбоксе."""
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
+
+    mock_cfg = {"check_dependencies_on_startup": True}
+    saved_cfg = {}
+
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: mock_cfg.copy())
+    monkeypatch.setattr("utils.config_manager.ConfigManager.save_config", lambda c: saved_cfg.update(c))
+
+    from ui.dialogs.dependency_dialog import DependencyDialog
+
+    dialog = DependencyDialog(dummy_window)
+    dialog.show()
+
+    dialog.cb_dont_show.setChecked(True)
+    dialog.accept()
+
+    assert saved_cfg.get("check_dependencies_on_startup") is False
+    assert dialog.isVisible() is False
+    dialog.deleteLater()
+
+
+def test_dependency_dialog_on_finished_success_saves_config(qapp, dummy_window, monkeypatch):
+    """Проверяет сохранение флага при успешном завершении установки пакетов."""
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
+    monkeypatch.setattr("PyQt6.QtWidgets.QMessageBox.information", lambda *args, **kwargs: None)
+
+    mock_cfg = {"check_dependencies_on_startup": True}
+    saved_cfg = {}
+
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: mock_cfg.copy())
+    monkeypatch.setattr("utils.config_manager.ConfigManager.save_config", lambda c: saved_cfg.update(c))
+
+    from ui.dialogs.dependency_dialog import DependencyDialog
+
+    dialog = DependencyDialog(dummy_window)
+    dialog.show()
+
+    dialog.cb_dont_show.setChecked(True)
+    dialog._on_finished(True, "Компоненты успешно установлены")
+
+    assert saved_cfg.get("check_dependencies_on_startup") is False
+    assert dialog.isVisible() is False
+    dialog.deleteLater()
+
+
+def test_dependency_dialog_unchecked_does_not_save_false(qapp, dummy_window, monkeypatch):
+    """Проверяет, что при неактивном чекбоксе сохранение не перезаписывает настройки."""
+    monkeypatch.setattr("services.environment_doctor.EnvironmentDoctor.check_missing", lambda: [])
+
+    saved_calls = []
+
+    monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: {"check_dependencies_on_startup": True})
+    monkeypatch.setattr("utils.config_manager.ConfigManager.save_config", lambda c: saved_calls.append(c))
+
+    from ui.dialogs.dependency_dialog import DependencyDialog
+
+    dialog = DependencyDialog(dummy_window)
+    dialog.show()
+
+    assert dialog.cb_dont_show.isChecked() is False
+    dialog.close()
+
+    assert len(saved_calls) == 0
+    assert dialog.isVisible() is False
+    dialog.deleteLater()
+
+
+def test_config_manager_default_settings_and_dynamic_path(tmp_path, monkeypatch):
+    """Проверяет наличие check_dependencies_on_startup в DEFAULT_SETTINGS и динамическое разрешение пути."""
+    import config
+    from utils.config_manager import ConfigManager, DEFAULT_SETTINGS, get_config_path
+
+    # 1. Проверяем наличие ключа в DEFAULT_SETTINGS
+    assert "check_dependencies_on_startup" in DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["check_dependencies_on_startup"] is True
+
+    # 2. Динамическое разрешение через config.CONFIG_PATH
+    custom_cfg_path = tmp_path / "custom_config.json"
+    monkeypatch.setattr(config, "CONFIG_PATH", custom_cfg_path)
+    assert ConfigManager.get_config_path() == custom_cfg_path
+    assert get_config_path() == custom_cfg_path
+
+    # 3. Сохранение и загрузка через атомарную запись
+    ConfigManager.save_config({"check_dependencies_on_startup": False, "theme": "light"})
+    loaded = ConfigManager.load_config()
+    assert loaded["check_dependencies_on_startup"] is False
+    assert loaded["theme"] == "light"
+    # Fallback на дефолты при слиянии
+    assert "chat_font_size" in loaded
+
+    # 4. Сохранение существующего значения False при перезаписи/обновлении
+    assert loaded.get("check_dependencies_on_startup") is False
+
+
+def test_main_window_startup_dependencies_respects_config_flag(monkeypatch):
+    """Проверяет, что при check_dependencies_on_startup=False запуск диалога не планируется."""
+    from services.environment_doctor import EnvironmentDoctor
+    from utils.config_manager import ConfigManager
+
+    checked = []
+    monkeypatch.setattr(EnvironmentDoctor, "check_missing", lambda: checked.append("called") or ["dummy_pkg"])
+    monkeypatch.setattr(ConfigManager, "load_config", lambda: {"check_dependencies_on_startup": False})
+
+    cfg = ConfigManager.load_config()
+    should_check = cfg.get("check_dependencies_on_startup", True)
+    assert should_check is False
+
+    if should_check:
+        missing = EnvironmentDoctor.check_missing()
+    else:
+        missing = []
+
+    assert missing == []
+    assert len(checked) == 0

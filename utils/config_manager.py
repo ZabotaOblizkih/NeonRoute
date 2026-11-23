@@ -7,18 +7,50 @@ and visualizer settings persisted to C:\\NeonRoute\\config.json
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-from config import BASE_DIR
+import config
 
 logger = logging.getLogger("NeonRoute.ConfigManager")
-CONFIG_PATH = BASE_DIR / "config.json"
+
+_INITIAL_CONFIG_PATH = getattr(config, "CONFIG_PATH", getattr(config, "BASE_DIR", Path(".")) / "config.json")
+CONFIG_PATH = _INITIAL_CONFIG_PATH
+
+
+def get_config_path() -> Path:
+    """
+    Динамически разрешает актуальный путь к config.json.
+    Учитывает:
+    1. Переопределение на уровне класса ConfigManager.CONFIG_PATH
+    2. Переопределение на уровне модуля utils.config_manager.CONFIG_PATH
+    3. Динамический config.CONFIG_PATH или config.BASE_DIR / 'config.json'
+    """
+    cm_path = getattr(ConfigManager, "CONFIG_PATH", None)
+    if cm_path is not None:
+        return Path(cm_path)
+
+    mod_path = globals().get("CONFIG_PATH")
+    if mod_path is not None and mod_path != _INITIAL_CONFIG_PATH:
+        return Path(mod_path)
+
+    try:
+        import config as _cfg
+        if hasattr(_cfg, "CONFIG_PATH") and _cfg.CONFIG_PATH:
+            return Path(_cfg.CONFIG_PATH)
+        if hasattr(_cfg, "BASE_DIR") and _cfg.BASE_DIR:
+            return Path(_cfg.BASE_DIR) / "config.json"
+    except Exception:
+        pass
+
+    return Path(mod_path) if mod_path is not None else Path("config.json")
+
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     # 1. UI & Interface Settings
     "theme": "dark",
     "chat_font_size": 13,
     "auto_translate": False,
+    "check_dependencies_on_startup": True,
     "active_model": "",
     "engineer_model": "",
     "engineer_model_name": "",
@@ -72,6 +104,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_generate_art": False,
     "forge_sdxl_fp8_enabled": True,
     "forge_onboarding_shown": False,
+    "forge_patch_ignored_paths": [],
     "visualizer_settings": {
         "auto_generate_art": False,
         "steps": 28,
@@ -110,30 +143,41 @@ def _deep_merge_dicts(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[st
 
 
 class ConfigManager:
-    @staticmethod
-    def load_config() -> Dict[str, Any]:
+    CONFIG_PATH: Optional[Path] = None
+
+    @classmethod
+    def get_config_path(cls) -> Path:
+        """Возвращает динамически разрешённый путь к config.json."""
+        if cls.CONFIG_PATH is not None:
+            return Path(cls.CONFIG_PATH)
+        return get_config_path()
+
+    @classmethod
+    def load_config(cls) -> Dict[str, Any]:
         """Loads configuration from config.json with recursive fallback to default settings."""
         config = dict(DEFAULT_SETTINGS)
-        if CONFIG_PATH.exists():
+        target_path = cls.get_config_path()
+        if target_path.exists():
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                with open(target_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
                     config = _deep_merge_dicts(config, data)
             except Exception as e:
-                logger.warning(f"Could not load config.json: {e}")
+                logger.warning(f"Could not load {target_path.name}: {e}")
         return config
 
-    @staticmethod
-    def save_config(config_data: Dict[str, Any]):
+    @classmethod
+    def save_config(cls, config_data: Dict[str, Any]):
         """Saves configuration dict to config.json safely."""
         from utils.file_utils import atomic_write_json
-        atomic_write_json(CONFIG_PATH, config_data)
+        target_path = cls.get_config_path()
+        atomic_write_json(target_path, config_data)
 
-    @staticmethod
-    def update_setting(key: str, value: Any) -> Dict[str, Any]:
+    @classmethod
+    def update_setting(cls, key: str, value: Any) -> Dict[str, Any]:
         """Обновляет единичный параметр в config.json и сохраняет файл."""
-        cfg = ConfigManager.load_config()
+        cfg = cls.load_config()
         cfg[key] = value
-        ConfigManager.save_config(cfg)
+        cls.save_config(cfg)
         return cfg

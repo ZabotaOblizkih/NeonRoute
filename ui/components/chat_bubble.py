@@ -407,6 +407,8 @@ class ChatMessageWidget(QWidget):
                         e.accept()
 
                 def _on_preview_mouse_release(e):
+                    if hasattr(e, "accept"):
+                        e.accept()
                     if not hasattr(e, "button") or e.button() == Qt.MouseButton.LeftButton:
                         if hasattr(e, "pos") and not self.image_preview_lbl.rect().contains(e.pos()):
                             return
@@ -1227,7 +1229,9 @@ class ChatMessageWidget(QWidget):
 
         eff_params = generation_params or self.generation_params
         img_btn.clicked.connect(
-            lambda _checked=False, p=image_path, gp=eff_params: self._open_image_preview(p, generation_params=gp)
+            lambda _checked=False, p=image_path, gp=eff_params: QTimer.singleShot(
+                0, lambda: self._open_image_preview(p, generation_params=gp)
+            )
         )
         c_layout.addWidget(img_btn)
 
@@ -1242,6 +1246,10 @@ class ChatMessageWidget(QWidget):
                 dlg.exec()
             finally:
                 dlg.deleteLater()
+                while QApplication.overrideCursor() is not None:
+                    QApplication.restoreOverrideCursor()
+                if parent_win and hasattr(parent_win, "unsetCursor"):
+                    parent_win.unsetCursor()
 
     def _copy_text(self):
         if hasattr(self, "text_browser") and self.text_browser:

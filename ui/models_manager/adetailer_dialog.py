@@ -16,11 +16,14 @@ from qfluentwidgets import (
     SwitchButton,
     PrimaryPushButton,
     PushButton,
-    DoubleSpinBox,
-    SpinBox,
     Slider,
     setTheme,
     Theme
+)
+
+from ui.common.spinbox_utils import (
+    FluentDoubleSpinBox as DoubleSpinBox,
+    FluentSpinBox as SpinBox,
 )
 
 from services.asset_validator import MODELS_ADETAILER_DIR

@@ -109,6 +109,19 @@ SD_PATCHED_UNLOAD_BODY = '''    from backend import memory_management
     memory_management.soft_empty_cache()
     gc.collect()'''
 
+# 4. Фиксация версий критических библиотек Forge
+PINNED_FORGE_LIBRARIES: Dict[str, str] = {
+    "fastapi": "0.104.1",
+    "starlette": "0.27.0",
+    "pydantic": "2.8.2",
+    "pydantic-core": "2.20.1",
+    "gradio": "4.40.0",
+    "gradio-client": "1.2.0",
+    "anyio": "3.7.1",
+    "typing-extensions": "4.16.0",
+}
+CONSTRAINTS_FILENAME = "neonroute_constraints.txt"
+
 
 class ForgePatcher:
     """Сервис проверки и применения патчей совместимости NeonRoute к Forge."""
@@ -363,6 +376,210 @@ class ForgePatcher:
                 return True
         return False
 
+    @staticmethod
+    def _check_requirements_pinned(content: str, pinned: Dict[str, str]) -> bool:
+        """Проверяет, зафиксированы ли в тексте requirements указанные версии библиотек."""
+        found_pins = {}
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            m = re.match(r'^([a-zA-Z0-9_\-]+)\s*==\s*([a-zA-Z0-9_\-\.]+)', stripped)
+            if m:
+                pkg_name = m.group(1).lower().replace("_", "-")
+                found_pins[pkg_name] = m.group(2).strip()
+
+        for k, required_ver in pinned.items():
+            norm_k = k.lower().replace("_", "-")
+            if norm_k not in found_pins or found_pins[norm_k] != required_ver:
+                return False
+        return True
+
+    @staticmethod
+    def _update_requirements_text(content: str, pinned: Dict[str, str]) -> str:
+        """Обновляет или добавляет зафиксированные версии библиотек в requirements-файл."""
+        lines = content.splitlines()
+        handled = set()
+        new_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                new_lines.append(line)
+                continue
+
+            m = re.match(r'^([a-zA-Z0-9_\-]+)', stripped)
+            if m:
+                pkg_name = m.group(1).lower().replace("_", "-")
+                matched_key = None
+                for k in pinned:
+                    if k.lower().replace("_", "-") == pkg_name:
+                        matched_key = k
+                        break
+
+                if matched_key:
+                    new_lines.append(f"{matched_key}=={pinned[matched_key]}")
+                    handled.add(matched_key)
+                    continue
+
+            new_lines.append(line)
+
+        for k, v in pinned.items():
+            if k not in handled:
+                new_lines.append(f"{k}=={v}")
+
+        return "\n".join(new_lines) + "\n"
+
+    @classmethod
+    def get_constraints_path(cls, forge_root: Path | str) -> Optional[Path]:
+        """Возвращает путь к файлу ограничений neonroute_constraints.txt в каталоге webui."""
+        webui_dir = cls.find_forge_webui_dir(forge_root)
+        if not webui_dir:
+            return None
+        return webui_dir / CONSTRAINTS_FILENAME
+
+    @classmethod
+    def find_forge_site_packages(cls, forge_root: Path | str) -> Optional[Path]:
+        """
+        Ищет каталог site-packages виртуального или встроенного Python Forge.
+        Проверяет стандартные пути портативных сборок и venv:
+        1. forge_root / system / python / Lib / site-packages
+        2. webui_dir.parent / system / python / Lib / site-packages
+        3. forge_root / python / Lib / site-packages
+        4. webui_dir / venv / Lib / site-packages
+        5. forge_root / venv / Lib / site-packages
+        """
+        if not forge_root:
+            return None
+        try:
+            root = Path(forge_root).resolve()
+            webui_dir = cls.find_forge_webui_dir(forge_root)
+            candidates = [
+                root / "system" / "python" / "Lib" / "site-packages",
+                root / "python" / "Lib" / "site-packages",
+            ]
+            if webui_dir:
+                candidates.extend([
+                    webui_dir.parent / "system" / "python" / "Lib" / "site-packages",
+                    webui_dir / "venv" / "Lib" / "site-packages",
+                    webui_dir.parent / "venv" / "Lib" / "site-packages",
+                ])
+            candidates.append(root / "venv" / "Lib" / "site-packages")
+
+            for cand in candidates:
+                if cand.is_dir():
+                    return cand
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def check_site_packages_pinned(cls, sp_dir: Path, pinned_libs: Dict[str, str]) -> bool:
+        """
+        Проверяет по метаданным .dist-info в site-packages,
+        установлены ли точные версии целевых библиотек.
+        """
+        if not sp_dir or not sp_dir.is_dir():
+            return False
+        try:
+            installed = {}
+            for d in sp_dir.glob("*.dist-info"):
+                name_part = d.name[:-len(".dist-info")]
+                if "-" in name_part:
+                    pkg, ver = name_part.rsplit("-", 1)
+                    norm_pkg = pkg.lower().replace("_", "-")
+                    installed[norm_pkg] = ver
+
+            for pkg, req_ver in pinned_libs.items():
+                norm_pkg = pkg.lower().replace("_", "-")
+                if norm_pkg not in installed or installed[norm_pkg] != req_ver:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def are_libraries_pinned(cls, forge_root: Path | str) -> bool:
+        """
+        Проверяет, зафиксированы ли версии ключевых библиотек (fastapi, gradio, pydantic и др.)
+        в neonroute_constraints.txt и requirements_versions.txt, либо уже установлены
+        в эталонном виде в site-packages встроенного Python Forge.
+        """
+        webui_dir = cls.find_forge_webui_dir(forge_root)
+        if not webui_dir:
+            return False
+
+        constraints_file = webui_dir / CONSTRAINTS_FILENAME
+        if constraints_file.is_file():
+            try:
+                c_text = constraints_file.read_text(encoding="utf-8", errors="ignore")
+                if cls._check_requirements_pinned(c_text, PINNED_FORGE_LIBRARIES):
+                    req_path = webui_dir / "requirements_versions.txt"
+                    if req_path.is_file():
+                        try:
+                            r_text = req_path.read_text(encoding="utf-8", errors="ignore")
+                            if not cls._check_requirements_pinned(r_text, PINNED_FORGE_LIBRARIES):
+                                return False
+                        except Exception:
+                            return False
+                    return True
+            except Exception:
+                pass
+
+        # Если файл neonroute_constraints.txt пока отсутствует, проверяем, не является ли
+        # сборка эталонным Forge (где целевые версии уже зафиксированы в site-packages)
+        sp_dir = cls.find_forge_site_packages(forge_root)
+        if sp_dir and cls.check_site_packages_pinned(sp_dir, PINNED_FORGE_LIBRARIES):
+            # Окружение полностью эталонное — фиксируем constraints для надежности pip
+            try:
+                if not constraints_file.is_file():
+                    cls.pin_libraries(forge_root)
+            except Exception:
+                pass
+            return True
+
+        return False
+
+    @classmethod
+    def pin_libraries(cls, forge_root: Path | str) -> bool:
+        """
+        Создает neonroute_constraints.txt и обновляет requirements_versions.txt
+        для обратимого запрета обновления и фиксации версий критических библиотек.
+        """
+        webui_dir = cls.find_forge_webui_dir(forge_root)
+        if not webui_dir:
+            return False
+
+        try:
+            # 1. Запись файла ограничений pip
+            constraints_lines = ["# NeonRoute Pinned Dependencies for SD WebUI Forge"]
+            for pkg, ver in PINNED_FORGE_LIBRARIES.items():
+                constraints_lines.append(f"{pkg}=={ver}")
+            constraints_content = "\n".join(constraints_lines) + "\n"
+
+            constraints_file = webui_dir / CONSTRAINTS_FILENAME
+            constraints_file.write_text(constraints_content, encoding="utf-8")
+
+            # Также в forge_root, если он отличается от webui_dir
+            root_p = Path(forge_root).resolve()
+            if root_p != webui_dir and root_p.is_dir():
+                (root_p / CONSTRAINTS_FILENAME).write_text(constraints_content, encoding="utf-8")
+
+            # 2. Обновление requirements_versions.txt
+            req_path = webui_dir / "requirements_versions.txt"
+            old_req = req_path.read_text(encoding="utf-8", errors="ignore") if req_path.is_file() else ""
+            new_req = cls._update_requirements_text(old_req, PINNED_FORGE_LIBRARIES)
+            req_path.write_text(new_req, encoding="utf-8")
+
+            logger.info(
+                f"[ForgePatcher] Зафиксированы версии библиотек ({', '.join(PINNED_FORGE_LIBRARIES.keys())}) "
+                f"в {req_path.name} и {CONSTRAINTS_FILENAME}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[ForgePatcher] Ошибка фиксации версий библиотек: {e}", exc_info=True)
+            return False
+
     @classmethod
     def get_backup_dir(cls, forge_root: Path | str) -> Optional[Path]:
         """Возвращает путь к директории оригиналов .neonroute_backup/original/."""
@@ -506,23 +723,33 @@ class ForgePatcher:
             sd_diag = "sd_patched" if sd_patched else ("unload_anchor" if has_sd_anchor else "incompatible")
             launcher_diag = f"{launcher_bat.name}(needs_patch={launcher_needs_patch})" if launcher_bat else "none_or_configured"
 
+            # 4. Проверяем фиксацию версий библиотек Forge
+            libs_pinned = cls.are_libraries_pinned(forge_root)
+            libs_diag = "pinned" if libs_pinned else "not_pinned"
+
             if api_patched and models_patched and sd_patched:
+                missing_patch = []
                 if launcher_needs_patch:
+                    missing_patch.append(f"{launcher_bat.name}: флаг --api и передача параметров NeonRoute")
+                if not libs_pinned:
+                    missing_patch.append("фиксация версий библиотек (fastapi, gradio, pydantic...)")
+
+                if missing_patch:
                     status = ForgePatchStatus.NEEDS_PATCH
-                    res_msg = f"Требуется патч совместимости ({launcher_bat.name}: флаг --api и передача параметров NeonRoute)."
+                    res_msg = f"Требуется патч совместимости ({', '.join(missing_patch)})."
                     logger.info(
                         f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
                         f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
-                        f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                        f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag} | libs={libs_diag}"
                     )
                     return status, res_msg
 
                 status = ForgePatchStatus.PATCHED
-                res_msg = "Патч совместимости активен ✓ (поддерживается VRAM offload и автосмена моделей)."
+                res_msg = "Патч совместимости активен ✓ (библиотеки зафиксированы, поддерживается VRAM offload и автосмена моделей)."
                 logger.debug(
                     f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
                     f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
-                    f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                    f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag} | libs={libs_diag}"
                 )
                 return status, res_msg
 
@@ -536,12 +763,14 @@ class ForgePatcher:
                     missing.append("sd_models unload")
                 if launcher_needs_patch:
                     missing.append(f"{launcher_bat.name} (--api/args)")
+                if not libs_pinned:
+                    missing.append("фиксация версий библиотек")
                 status = ForgePatchStatus.NEEDS_PATCH
                 res_msg = f"Требуется патч совместимости ({', '.join(missing)})."
                 logger.info(
                     f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
                     f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
-                    f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                    f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag} | libs={libs_diag}"
                 )
                 return status, res_msg
 
@@ -550,7 +779,7 @@ class ForgePatcher:
             logger.warning(
                 f"[ForgePatcher] Аудит {webui_dir}: status={status.value} | "
                 f"api(route={has_free_vram_route}, method={has_free_vram_method}, refresh={has_refresh_opts}/{set_cfg_scenario}, models_cfg={models_cfg_variant}) | "
-                f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag}"
+                f"models={models_diag} | sd_models={sd_diag} | launcher={launcher_diag} | libs={libs_diag}"
             )
             return status, res_msg
         except Exception as e:
@@ -594,6 +823,12 @@ class ForgePatcher:
                 dst_bat = backup_dir / "webui-user.bat"
                 shutil.copy2(launcher_bat, dst_bat)
                 backup_files.append("webui-user.bat")
+
+            req_file = webui_dir / "requirements_versions.txt"
+            if req_file.is_file():
+                dst_req = backup_dir / "requirements_versions.txt"
+                shutil.copy2(req_file, dst_req)
+                backup_files.append("requirements_versions.txt")
 
             meta = {
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -772,6 +1007,14 @@ class ForgePatcher:
                 else:
                     logger.debug("[ForgePatcher] Шаг 4 (launcher): модификация лаунчера не требуется (уже настроен или forge_launcher.bat)")
 
+                # Модификация 5: Фиксация версий библиотек Forge (neonroute_constraints.txt и requirements_versions.txt)
+                pinned_ok = cls.pin_libraries(forge_root)
+                if not pinned_ok:
+                    logger.error("[ForgePatcher] Шаг 5 (libraries) откат: не удалось зафиксировать версии библиотек")
+                    cls.restore_backup(forge_root)
+                    return False, "Не удалось зафиксировать версии критических библиотек Forge."
+                logger.info("[ForgePatcher] Шаг 5 (libraries): зафиксированы версии критических библиотек (fastapi, gradio, pydantic...)")
+
                 # Итоговая верификация
                 new_status, new_msg = cls.check_status(forge_root)
                 if new_status == ForgePatchStatus.PATCHED:
@@ -814,7 +1057,11 @@ class ForgePatcher:
                     ")\n"
                     "set _CHECK_API=%COMMANDLINE_ARGS:--api=%\n"
                     'if "%_CHECK_API%"=="%COMMANDLINE_ARGS%" set COMMANDLINE_ARGS=%COMMANDLINE_ARGS% --api\n'
-                    "set _CHECK_API="
+                    "set _CHECK_API=\n"
+                    ":: [NeonRoute] Enforce pinned package versions via PIP_CONSTRAINT\n"
+                    'if exist "%~dp0neonroute_constraints.txt" (\n'
+                    '    set "PIP_CONSTRAINT=%~dp0neonroute_constraints.txt"\n'
+                    ')'
                 )
                 content = content[:match.start()] + patch_block + content[match.end():]
             else:
@@ -830,6 +1077,10 @@ class ForgePatcher:
                     "set _CHECK_API=%COMMANDLINE_ARGS:--api=%\n"
                     'if "%_CHECK_API%"=="%COMMANDLINE_ARGS%" set COMMANDLINE_ARGS=%COMMANDLINE_ARGS% --api\n'
                     "set _CHECK_API=\n"
+                    ":: [NeonRoute] Enforce pinned package versions via PIP_CONSTRAINT\n"
+                    'if exist "%~dp0neonroute_constraints.txt" (\n'
+                    '    set "PIP_CONSTRAINT=%~dp0neonroute_constraints.txt"\n'
+                    ')'
                 )
                 call_pos = content.lower().find("call webui.bat")
                 if call_pos != -1:
@@ -887,6 +1138,47 @@ class ForgePatcher:
                 if dst_bat:
                     shutil.copy2(src_bat, dst_bat)
                     restored_files.append("webui-user.bat")
+
+            # Читаем метаданные резервной копии
+            meta = {}
+            info_file = backup_dir.parent / "backup_info.json"
+            if info_file.is_file():
+                try:
+                    meta = json.loads(info_file.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+            original_backed_files = meta.get("files", [])
+
+            # Восстанавливаем requirements_versions.txt если он был в оригинальном бэкапе
+            src_req = backup_dir / "requirements_versions.txt"
+            dst_req = webui_dir / "requirements_versions.txt"
+            if src_req.is_file():
+                shutil.copy2(src_req, dst_req)
+                restored_files.append("requirements_versions.txt")
+            elif dst_req.is_file() and "requirements_versions.txt" not in original_backed_files:
+                # Если файла не было в оригинальной установке, удаляем созданный патчем
+                try:
+                    dst_req.unlink()
+                except Exception:
+                    pass
+
+            # Обратимый откат ограничений: удаляем neonroute_constraints.txt
+            constraints_file = webui_dir / CONSTRAINTS_FILENAME
+            if constraints_file.is_file():
+                try:
+                    constraints_file.unlink()
+                    logger.info(f"[ForgePatcher] Откат: удален файл ограничений версий {constraints_file}")
+                except Exception as del_err:
+                    logger.warning(f"[ForgePatcher] Ошибка удаления {constraints_file}: {del_err}")
+
+            root_p = Path(forge_root).resolve()
+            if root_p != webui_dir and root_p.is_dir():
+                root_constraints = root_p / CONSTRAINTS_FILENAME
+                if root_constraints.is_file():
+                    try:
+                        root_constraints.unlink()
+                    except Exception:
+                        pass
 
             logger.info(f"[ForgePatcher] Файлы Forge ({', '.join(restored_files)}) успешно восстановлены из {backup_dir}")
             return True, "Оригинальные файлы Forge успешно восстановлены из резервной копии."
