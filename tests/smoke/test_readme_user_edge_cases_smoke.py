@@ -365,12 +365,23 @@ def test_readme_mode_switching_and_missing_llm_edge_cases(smoke_isolation_guard,
 
     # 6.2 Попытка вызова ensure_model_loaded в LMStudioClient без доступных моделей
     client = LMStudioClient("http://127.0.0.1:1234/v1")
-    client.get_models = MagicMock(return_value=[])  # Имитация чистого ПК без скачанных GGUF моделей
+    orig_last_loaded = getattr(client, "_last_loaded_model_id", None)
+    orig_get_models = getattr(client, "get_models", None)
+    orig_pm = getattr(client, "process_manager", None)
+    try:
+        client._last_loaded_model_id = None
+        client.process_manager = None
+        client.get_models = MagicMock(return_value=[])  # Имитация ПК без скачанных GGUF моделей
 
-    with pytest.raises(ModelNotFoundError) as exc_info:
-        client.ensure_model_loaded(preferred_model="")
+        with pytest.raises(ModelNotFoundError) as exc_info:
+            client.ensure_model_loaded(preferred_model="")
 
-    assert_diag_in("активная модель", str(exc_info.value), scen, "Исключение ModelNotFoundError при отсутствии моделей")
+        assert_diag_in("активная модель", str(exc_info.value), scen, "Исключение ModelNotFoundError при отсутствии моделей")
+    finally:
+        client._last_loaded_model_id = orig_last_loaded
+        if orig_get_models:
+            client.get_models = orig_get_models
+        client.process_manager = orig_pm
 
 
 # =========================================================================
