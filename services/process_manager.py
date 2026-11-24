@@ -123,6 +123,22 @@ def inspect_port_occupant(port: int) -> Tuple[bool, Optional[int], Optional[str]
     return (False, None, None)
 
 
+_GLOBAL_PROCESS_MANAGER: Optional["ProcessManager"] = None
+
+
+def get_process_manager() -> Optional["ProcessManager"]:
+    """Returns the active ProcessManager singleton if initialized."""
+    return _GLOBAL_PROCESS_MANAGER
+
+
+def get_or_create_process_manager() -> "ProcessManager":
+    """Returns existing ProcessManager singleton or initializes a headless one."""
+    global _GLOBAL_PROCESS_MANAGER
+    if _GLOBAL_PROCESS_MANAGER is None:
+        _GLOBAL_PROCESS_MANAGER = ProcessManager()
+    return _GLOBAL_PROCESS_MANAGER
+
+
 class ProcessManager(QObject):
     """
     Orchestrates execution of external local AI servers (llama-server, LM Studio, SD WebUI Forge).
@@ -164,6 +180,9 @@ class ProcessManager(QObject):
 
         # Зачистка остатков KV-слотов после аварийного закрытия
         self.clear_kv_slot_cache()
+
+        global _GLOBAL_PROCESS_MANAGER
+        _GLOBAL_PROCESS_MANAGER = self
 
     @property
     def lm_client(self) -> Optional[Any]:

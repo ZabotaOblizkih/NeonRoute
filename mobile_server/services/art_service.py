@@ -62,46 +62,42 @@ def build_media_image_url(image_path: Path) -> str:
     return f"/media/image?path={encoded}"
 
 
-def prepare_session_forge_kwargs(
-    plan: Any,
-    session_id: str,
-    override_params: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Converts GenerationPlan to Forge kwargs bound to the session output directory."""
-    forge_kwargs = plan.to_forge_kwargs()
-    sess_out_dir = OUTPUTS_DIR / "sessions" / session_id
-    sess_out_dir.mkdir(parents=True, exist_ok=True)
-    forge_kwargs["output_dir"] = sess_out_dir
-    forge_kwargs["session_id"] = session_id
-    if override_params and isinstance(override_params, dict):
-        forge_kwargs.update(override_params)
-    return forge_kwargs
-
-
-async def enqueue_forge_plan_async(
+async def enqueue_forge_generation_async(
     task_queue: TaskQueueWorker,
     forge: ForgeClient,
+    art_director: Any,
     task_name: str,
     task_type: str,
-    forge_kwargs: Dict[str, Any],
     session_id: str,
-) -> Path:
-    """Submits a Forge txt2img task to TaskQueueWorker, unloads VRAM afterwards, and awaits result."""
+    mode: str = "assistant",
+    plan: Optional[Any] = None,
+    override_params: Optional[Dict[str, Any]] = None,
+    preferred_style: Optional[str] = None,
+    prompt_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Submits unified run_forge_art_generation() to TaskQueueWorker and awaits its result."""
+    from services.assistant_flow import run_forge_art_generation
+
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
 
     def _run():
         try:
-            saved_path = forge.text_to_image(**forge_kwargs)
-            loop.call_soon_threadsafe(fut.set_result, Path(saved_path))
+            gen_res = run_forge_art_generation(
+                forge_client=forge,
+                art_director=art_director,
+                session_id=session_id,
+                mode=mode,
+                plan=plan,
+                preferred_style=preferred_style,
+                override_params=override_params,
+                output_dir=SessionManager.get_session_images_dir(session_id),
+                unload_after=True,
+                prompt_label=prompt_label,
+            )
+            loop.call_soon_threadsafe(fut.set_result, gen_res)
         except Exception as exc:
             loop.call_soon_threadsafe(fut.set_exception, exc)
-        finally:
-            try:
-                forge.unload_checkpoint()
-                forge.free_vram()
-            except Exception as e_unl:
-                logger.debug(f"[ArtService] Forge VRAM cleanup error: {e_unl}")
 
     inference_task = InferenceTask(
         name=task_name,

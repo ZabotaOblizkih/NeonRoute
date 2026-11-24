@@ -48,9 +48,8 @@ from mobile_server.dependencies import (
 )
 from mobile_server.services.art_service import (
     build_media_image_url,
-    enqueue_forge_plan_async,
+    enqueue_forge_generation_async,
     get_session_forge_model,
-    prepare_session_forge_kwargs,
     save_art_message_to_session,
     set_session_forge_model,
 )
@@ -196,17 +195,22 @@ async def generate_scene_art(
         character=character_card,
     )
 
-    forge_kwargs = prepare_session_forge_kwargs(plan, req.session_id, override_params=req.override_params)
-
     try:
-        image_path = await enqueue_forge_plan_async(
+        gen_res = await enqueue_forge_generation_async(
             task_queue=task_queue,
             forge=forge,
+            art_director=art_director,
             task_name=f"ArtGen_{req.session_id}",
             task_type="image",
-            forge_kwargs=forge_kwargs,
             session_id=req.session_id,
+            mode=mode,
+            plan=plan,
+            override_params=req.override_params,
+            preferred_style=pref_style,
+            prompt_label=pos_clean,
         )
+        image_path = gen_res["image_path"]
+        forge_kwargs = gen_res["forge_kwargs"]
     except Exception as exc:
         logger.error(f"[ArtRoute] Generation failed: {exc}", exc_info=True)
         return GenerateArtResponse(
@@ -247,17 +251,19 @@ async def direct_art_command(
     """
     cmd = req.command.strip()
     plan = await asyncio.to_thread(art_director.build_direct_plan, raw_prompt=cmd)
-    forge_kwargs = prepare_session_forge_kwargs(plan, req.session_id)
-
     try:
-        img_path = await enqueue_forge_plan_async(
+        gen_res = await enqueue_forge_generation_async(
             task_queue=task_queue,
             forge=forge,
+            art_director=art_director,
             task_name=f"DirectArt_{req.session_id}",
             task_type="image",
-            forge_kwargs=forge_kwargs,
             session_id=req.session_id,
+            plan=plan,
+            prompt_label=cmd,
         )
+        img_path = gen_res["image_path"]
+        forge_kwargs = gen_res["forge_kwargs"]
     except Exception as exc:
         return GenerateArtResponse(success=False, error=str(exc))
 
@@ -385,17 +391,18 @@ async def generate_scene_background(
         use_visual_intent=True,
     )
 
-    forge_kwargs = prepare_session_forge_kwargs(plan, req.session_id)
-
     try:
-        bg_path = await enqueue_forge_plan_async(
+        gen_res = await enqueue_forge_generation_async(
             task_queue=task_queue,
             forge=forge,
+            art_director=art_director,
             task_name=f"SceneBg_{req.session_id}",
             task_type="scene_background",
-            forge_kwargs=forge_kwargs,
             session_id=req.session_id,
+            plan=plan,
+            prompt_label=location,
         )
+        bg_path = gen_res["image_path"]
     except Exception as exc:
         return SceneBackgroundResponse(success=False, error=str(exc))
 

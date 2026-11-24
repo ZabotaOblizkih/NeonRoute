@@ -169,13 +169,13 @@ def test_dispatch_art_to_forge_injects_elaria_dna_only_on_self_flag():
 def test_gallery_directives_preserve_structure_and_include_self_rule():
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
     assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
-    assert "--self" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
-    assert "--self" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
+    assert "is_self_portrait" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
+    assert "is_self_portrait" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
 
     built_sdxl = AssistantPromptBuilder.build_gallery_art_prompt(
         user_query="нарисуй себя",
         target_model_id="juggernaut_xl",
         architecture="sdxl",
     )
-    assert "--self" in built_sdxl
+    assert "is_self_portrait" in built_sdxl
     assert '"suggested_model": "juggernaut_xl"' in built_sdxl

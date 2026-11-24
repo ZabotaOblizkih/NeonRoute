@@ -1291,7 +1291,7 @@ def run_forge_art_generation(
                     "forge_kwargs": {},
                     "is_ambiguous": True,
                 }
-        VRAMArbiter.get_instance().release_llm_for_diffusion()
+    VRAMArbiter.get_instance().release_llm_for_diffusion()
 
     target_dir = output_dir or (SessionManager.get_session_images_dir(session_id) if session_id else None)
     forge_kwargs = plan.to_forge_kwargs(output_dir=target_dir, session_id=session_id)
@@ -1303,11 +1303,15 @@ def run_forge_art_generation(
         img_path = forge_client.text_to_image(**forge_kwargs)
     finally:
         if unload_after and forge_client is not None:
-            try:
-                forge_client.unload_checkpoint()
-                forge_client.free_vram()
-            except Exception as e_unl:
-                logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {e_unl}")
+            arbiter = VRAMArbiter.get_instance()
+            if arbiter.forge_client is forge_client:
+                arbiter.release_diffusion_for_llm(force=False, wait_stabilization=False)
+            else:
+                try:
+                    forge_client.unload_checkpoint()
+                    forge_client.free_vram()
+                except Exception as e_unl:
+                    logger.debug(f"[ForgeClient] Ошибка выгрузки чекпоинта: {e_unl}")
 
     forge_info = getattr(forge_client, "last_generation_info", None) or {}
     actual_seed = forge_info.get("seed", getattr(plan, "seed", -1))

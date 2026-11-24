@@ -11,6 +11,7 @@ from services.session_manager import SessionManager
 from services.lm_studio import LMStudioClient
 from services.mode_coordinator import ModeCoordinator, AppMode
 from services.forge_client import ForgeClient
+from services.process_manager import get_or_create_process_manager
 from services.task_queue import TaskQueueWorker, get_task_queue
 from services.vram_arbiter import VRAMArbiter
 from services.art_director.director import ArtDirector
@@ -73,6 +74,12 @@ _lm_studio_client = _vram_arbiter.lm_client if _vram_arbiter.lm_client is not No
 _forge_client = _vram_arbiter.forge_client if _vram_arbiter.forge_client is not None else ForgeClient.get_instance()
 if _vram_arbiter.lm_client is None or _vram_arbiter.forge_client is None:
     _vram_arbiter.set_clients(_lm_studio_client, _forge_client)
+
+_process_manager = get_or_create_process_manager()
+if getattr(_lm_studio_client, "process_manager", None) is None:
+    _lm_studio_client.set_process_manager(_process_manager)
+if getattr(_process_manager, "lm_client", None) is None:
+    _process_manager.lm_client = _lm_studio_client
 
 _task_queue = get_task_queue()
 if _task_queue is None:

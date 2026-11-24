@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from enum import Enum
 from typing import Optional, Any, Dict
@@ -25,6 +26,7 @@ class VRAMArbiter:
         self.forge_client = forge_client
         self._current_owner: GPUOwner = GPUOwner.NONE
         self._last_diffusion_release_ts: float = 0.0
+        self._lock = threading.RLock()
 
     @classmethod
     def get_instance(cls) -> "VRAMArbiter":
@@ -42,75 +44,78 @@ class VRAMArbiter:
         Синхронно вызывается внутри рабочего потока TaskQueueWorker перед выполнением задачи.
         Гарантирует, что GPU подготовлен под целевой тип инференса.
         """
-        meta = metadata or {}
+        with self._lock:
+            meta = metadata or {}
 
-        # ── 1. ЗАДАЧИ ЯЗЫКОВОЙ МОДЕЛИ (LLM, Текстовый диалог, Перевод, Инженер) ──
-        if task_type in ("llm", "translation", "file") or meta.get("is_ephemeral_doc"):
-            if self._current_owner != GPUOwner.LLM:
-                old_owner = self._current_owner
-                t0 = time.monotonic()
-                self._release_forge_vram()
-                self._current_owner = GPUOwner.LLM
-                dt_ms = (time.monotonic() - t0) * 1000
-                from services.layer_budgeter import LayerBudgeter
-                used_vram = LayerBudgeter.get_current_used_vram_mb()
-                logger.info(
-                    f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
-                    f"Инициатор: task_type='{task_type}' | VRAM used={used_vram:.1f} MB | Время переключения: {dt_ms:.1f}мс"
-                )
+            # ── 1. ЗАДАЧИ ЯЗЫКОВОЙ МОДЕЛИ (LLM, Текстовый диалог, Перевод, Инженер) ──
+            if task_type in ("llm", "translation", "file") or meta.get("is_ephemeral_doc"):
+                if self._current_owner != GPUOwner.LLM:
+                    old_owner = self._current_owner
+                    t0 = time.monotonic()
+                    self._release_forge_vram(wait_stabilization=True)
+                    self._current_owner = GPUOwner.LLM
+                    dt_ms = (time.monotonic() - t0) * 1000
+                    from services.layer_budgeter import LayerBudgeter
+                    used_vram = LayerBudgeter.get_current_used_vram_mb()
+                    logger.info(
+                        f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
+                        f"Инициатор: task_type='{task_type}' | VRAM used={used_vram:.1f} MB | Время переключения: {dt_ms:.1f}мс"
+                    )
 
-        # ── 2. ЗАДАЧИ ДИФФУЗИИ (Forge txt2img, scene_art, scene_background) ──
-        elif task_type in ("image", "scene_art", "scene_background"):
-            if meta.get("needs_llm_prompt_gen"):
-                logger.info("[VRAMArbiter] Пропуск предварительной выгрузки LLM: сначала требуется генерация арт-промта в РП.")
-                return
-            self.release_llm_for_diffusion()
+            # ── 2. ЗАДАЧИ ДИФФУЗИИ (Forge txt2img, scene_art, scene_background) ──
+            elif task_type in ("image", "scene_art", "scene_background"):
+                if meta.get("needs_llm_prompt_gen"):
+                    logger.info("[VRAMArbiter] Пропуск предварительной выгрузки LLM: сначала требуется генерация арт-промта в РП.")
+                    return
+                self.release_llm_for_diffusion()
 
-        # ── 3. СЕРВИСНЫЕ И CPU ЗАДАЧИ (Memory, File/Sandbox, TTS) ──
-        else:
-            # Не требуют монопольной смены владельца GPU
-            pass
+            # ── 3. СЕРВИСНЫЕ И CPU ЗАДАЧИ (Memory, File/Sandbox, TTS) ──
+            else:
+                # Не требуют монопольной смены владельца GPU
+                pass
 
     def release_llm_for_diffusion(self) -> bool:
         """Гарантированно выгружает LLM из VRAM в RAM и ожидает освобождения памяти драйвером перед стартом Forge."""
-        if self._current_owner == GPUOwner.DIFFUSION:
-            lm_unloaded = getattr(self.lm_client, "_is_model_unloaded", False) is True
-            pm = getattr(self.lm_client, "process_manager", None)
-            pm_evicted = False
-            if pm is not None:
-                state = getattr(pm, "_server_state", None)
-                state_val = getattr(state, "value", state)
-                if state_val in ("EVICTED_FOR_FORGE", "STOPPED"):
-                    pm_evicted = True
-            if lm_unloaded or pm_evicted:
-                logger.debug("[VRAMArbiter] LLM уже выгружен и GPU принадлежит DIFFUSION — пропуск повторной выгрузки.")
-                return True
+        with self._lock:
+            if self._current_owner == GPUOwner.DIFFUSION:
+                lm_unloaded = getattr(self.lm_client, "_is_model_unloaded", False) is True
+                pm = getattr(self.lm_client, "process_manager", None)
+                pm_evicted = False
+                if pm is not None:
+                    state = getattr(pm, "_server_state", None)
+                    state_val = getattr(state, "value", state)
+                    if state_val in ("EVICTED_FOR_FORGE", "STOPPED"):
+                        pm_evicted = True
+                if lm_unloaded or pm_evicted:
+                    logger.debug("[VRAMArbiter] LLM уже выгружен и GPU принадлежит DIFFUSION — пропуск повторной выгрузки.")
+                    return True
 
-        old_owner = self._current_owner
-        t0 = time.monotonic()
-        if self.lm_client and hasattr(self.lm_client, "unload_models_cli"):
-            logger.info("[VRAMArbiter] Синхронная выгрузка LLM перед стартом диффузии...")
-            self.lm_client.unload_models_cli()
-        if self.forge_client:
-            self.forge_client._last_vram_wait_ts = 0.0
-            if hasattr(self.forge_client, "_wait_for_vram_clear"):
-                self.forge_client._wait_for_vram_clear()
-        self._current_owner = GPUOwner.DIFFUSION
-        dt_ms = (time.monotonic() - t0) * 1000
-        from services.layer_budgeter import LayerBudgeter
-        used_vram = LayerBudgeter.get_current_used_vram_mb()
-        logger.info(
-            f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
-            f"Инициатор: release_llm_for_diffusion | VRAM used={used_vram:.1f} MB | Время: {dt_ms:.1f}мс"
-        )
-        return True
+            old_owner = self._current_owner
+            t0 = time.monotonic()
+            if self.lm_client and hasattr(self.lm_client, "unload_models_cli"):
+                logger.info("[VRAMArbiter] Синхронная выгрузка LLM перед стартом диффузии...")
+                self.lm_client.unload_models_cli()
+            if self.forge_client:
+                self.forge_client._last_vram_wait_ts = 0.0
+                if hasattr(self.forge_client, "_wait_for_vram_clear"):
+                    self.forge_client._wait_for_vram_clear()
+            self._current_owner = GPUOwner.DIFFUSION
+            dt_ms = (time.monotonic() - t0) * 1000
+            from services.layer_budgeter import LayerBudgeter
+            used_vram = LayerBudgeter.get_current_used_vram_mb()
+            logger.info(
+                f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
+                f"Инициатор: release_llm_for_diffusion | VRAM used={used_vram:.1f} MB | Время: {dt_ms:.1f}мс"
+            )
+            return True
 
-    def _release_forge_vram(self, force: bool = False):
+    def _release_forge_vram(self, force: bool = False, wait_stabilization: bool = True):
         if not self.forge_client:
             return
         if not force and getattr(self.forge_client, "_checkpoint_unloaded", False) is True:
             logger.debug("[VRAMArbiter] Чекпоинт Forge уже выгружен (_checkpoint_unloaded=True) — пропуск повторного запроса.")
-            self._wait_for_vram_stabilization()
+            if wait_stabilization:
+                self._wait_for_vram_stabilization()
             return
         is_ready = False
         try:
@@ -126,9 +131,11 @@ class VRAMArbiter:
                 logger.info("[VRAMArbiter] Чекпоинт Forge успешно выгружен в RAM.")
             except Exception as e:
                 logger.error(f"[VRAMArbiter] Критический сбой выгрузки Forge VRAM: {e}. Риск OOM при запуске LLM!")
+                raise
 
-        # Цикл стабилизации VRAM перед передачей GPU под LLM (до 1.5 с с шагом 0.1 с)
-        self._wait_for_vram_stabilization()
+        if wait_stabilization:
+            # Цикл стабилизации VRAM перед передачей GPU под LLM (до 2.5 с с шагом 0.1 с)
+            self._wait_for_vram_stabilization()
 
     def _wait_for_vram_stabilization(self, timeout_s: float = 2.5, step_s: float = 0.1, dwell_s: float = 0.6):
         """
@@ -174,50 +181,49 @@ class VRAMArbiter:
                 f"Текущая занятость: {curr_used:.1f} MB (порог 1500 MB не достигнут)."
             )
 
-    def release_diffusion_for_llm(self, force: bool = True) -> bool:
+    def release_diffusion_for_llm(self, force: bool = True, wait_stabilization: bool = False) -> bool:
         """Освобождает VRAM от диффузии и сбрасывает владельца GPU перед последующим запуском LLM."""
-        old_owner = self._current_owner
-        t0 = time.monotonic()
-        self._release_forge_vram(force=force)
-        self._last_diffusion_release_ts = time.monotonic()
-        self._current_owner = GPUOwner.NONE
-        dt_ms = (time.monotonic() - t0) * 1000
-        from services.layer_budgeter import LayerBudgeter
-        used_vram = LayerBudgeter.get_current_used_vram_mb()
-        logger.info(
-            f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
-            f"Инициатор: release_diffusion_for_llm | VRAM used={used_vram:.1f} MB | Время: {dt_ms:.1f}мс"
-        )
-        return True
+        with self._lock:
+            old_owner = self._current_owner
+            t0 = time.monotonic()
+            try:
+                self._release_forge_vram(force=force, wait_stabilization=wait_stabilization)
+            except Exception:
+                pass
+            self._last_diffusion_release_ts = time.monotonic()
+            self._current_owner = GPUOwner.NONE
+            dt_ms = (time.monotonic() - t0) * 1000
+            from services.layer_budgeter import LayerBudgeter
+            used_vram = LayerBudgeter.get_current_used_vram_mb()
+            logger.info(
+                f"[VRAMArbiter] Смена GPUOwner: {old_owner.value} -> {self._current_owner.value} | "
+                f"Инициатор: release_diffusion_for_llm | VRAM used={used_vram:.1f} MB | Время: {dt_ms:.1f}мс"
+            )
+            return True
 
     def release_all(self) -> Dict[str, str]:
         """Полностью освобождает VRAM от обеих подсистем (LLM и Forge) и сбрасывает владельца GPU."""
-        details: Dict[str, str] = {}
+        with self._lock:
+            details: Dict[str, str] = {}
 
-        if self.lm_client and hasattr(self.lm_client, "unload_models_cli"):
-            try:
-                self.lm_client.unload_models_cli()
-                details["lm_studio"] = "unloaded"
-            except Exception as e:
-                details["lm_studio"] = f"error: {e}"
-        else:
-            details["lm_studio"] = "skipped"
-
-        if self.forge_client:
-            if getattr(self.forge_client, "_checkpoint_unloaded", False) is True:
-                details["forge"] = "unloaded"
-            else:
+            if self.lm_client and hasattr(self.lm_client, "unload_models_cli"):
                 try:
-                    if hasattr(self.forge_client, "unload_checkpoint"):
-                        self.forge_client.unload_checkpoint()
-                    if hasattr(self.forge_client, "free_vram"):
-                        self.forge_client.free_vram(unload_models=True, force=True)
+                    self.lm_client.unload_models_cli()
+                    details["lm_studio"] = "unloaded"
+                except Exception as e:
+                    details["lm_studio"] = f"error: {e}"
+            else:
+                details["lm_studio"] = "skipped"
+
+            if self.forge_client:
+                try:
+                    self._release_forge_vram(force=False, wait_stabilization=False)
                     details["forge"] = "unloaded"
                 except Exception as e:
                     details["forge"] = f"error: {e}"
-        else:
-            details["forge"] = "skipped"
+            else:
+                details["forge"] = "skipped"
 
-        self._current_owner = GPUOwner.NONE
-        logger.info(f"[VRAMArbiter] Полная очистка VRAM завершена: {details}")
-        return details
+            self._current_owner = GPUOwner.NONE
+            logger.info(f"[VRAMArbiter] Полная очистка VRAM завершена: {details}")
+            return details

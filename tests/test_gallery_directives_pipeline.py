@@ -80,7 +80,7 @@ def test_build_gallery_art_prompt_sdxl():
     assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in prompt
     assert "thigh-up portrait" in prompt
     assert "medium shot" in prompt
-    assert "Avoid booru/SD1.5 tags like" in prompt
+    assert "NO booru/SD1.5 tags" in prompt
     assert "hands on hips" in prompt
     assert '"suggested_model": "juggernaut_xl"' in prompt
     assert "девушка у окна" in prompt
@@ -97,7 +97,7 @@ def test_build_gallery_art_prompt_sd15():
     )
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in prompt
     assert "12 to 26 comma-separated English keyword tags" in prompt
-    assert "Hand Anchor" in prompt
+    assert "hand anchor" in prompt.lower()
     assert "hands on hips" in prompt
     assert '"suggested_model": "dreamshaper_8"' in prompt
     assert "пейзаж заката" in prompt
@@ -361,10 +361,11 @@ def test_cinematic_directives_compilation_and_sections():
     # SDXL Cinematic
     d_xl = get_cinematic_directive("sdxl", model_hint="Blade Runner style", target_model_id="xl_cyber")
     assert "[SYSTEM DIRECTIVE: SDXL Cinematic Frame Director]" in d_xl
-    assert "### Style & Syntax Rules" in d_xl
-    assert "### Camera & Framing Priority" in d_xl
-    assert "### Lighting & Atmosphere" in d_xl
-    assert "### Negative Phrases, Self-Portrait & Widescreen Aspect Ratio Fields" in d_xl
+    assert "### Core Rules" in d_xl
+    assert "Widescreen Framing Ladder" in d_xl
+    assert "Angle, Gaze, OTS & Light" in d_xl
+    assert "Aspect Ratio, Exclusions & Self-Portrait" in d_xl
+    assert "### Output JSON Schema" in d_xl
     assert "Blade Runner style" in d_xl
     assert '"suggested_model": "xl_cyber"' in d_xl
     assert '"aspect_ratio": "cinematic"' in d_xl
@@ -372,8 +373,9 @@ def test_cinematic_directives_compilation_and_sections():
     # SD 1.5 Cinematic
     d_15 = get_cinematic_directive("sd15", model_hint="vintage 35mm film", target_model_id="sd15_vintage")
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Cinematic Frame Director]" in d_15
-    assert "### Camera & Framing Priority" in d_15
-    assert "### Lighting & Atmosphere" in d_15
+    assert "### Core Rules" in d_15
+    assert "Widescreen Framing Ladder" in d_15
+    assert "Angle, Gaze, OTS & Light" in d_15
     assert "vintage 35mm film" in d_15
     assert '"suggested_model": "sd15_vintage"' in d_15
 
