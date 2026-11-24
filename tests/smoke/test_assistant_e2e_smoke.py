@@ -227,11 +227,11 @@ def test_assistant_gallery_single_pass_pipeline(smoke_isolation_guard):
     assert_diag("[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in sys_prompt_sdxl, scen, "Директива SDXL", "Содержит SDXL Image Tag Translator", sys_prompt_sdxl[:200])
     assert_diag("pony_diffusion" in sys_prompt_sdxl, scen, "Имя модели в SDXL", "pony_diffusion", "pony_diffusion" in sys_prompt_sdxl)
 
-    # 4. Эмуляция чистового вывода модели за один ход
+    # 4. Эмуляция чистового вывода модели за один ход (с позитивным и негативным промптом)
     simulated_llm_output = (
         "<think>\nПланирую композицию города.\n</think>\n"
         "Секунду, перевожу образ в кадр...\n"
-        "[IMAGE_PROMPT: futuristic rain-lashed cityscape, neon signs reflecting on wet pavement, towering skyscrapers with glowing holographic interfaces, rainy night atmosphere --ar wide --model dreamshaper_8]"
+        "[IMAGE_PROMPT: futuristic rain-lashed cityscape, neon signs reflecting on wet pavement, towering skyscrapers with glowing holographic interfaces, rainy night atmosphere --ar wide --model dreamshaper_8 --neg blur, lowres, text]"
     )
 
     # 5. Проверка регулярных выражений и блокировки второго прохода
@@ -239,23 +239,46 @@ def test_assistant_gallery_single_pass_pipeline(smoke_isolation_guard):
     assert_diag(match_image is not None, scen, "Извлечение IMAGE_PROMPT", "Тег найден", match_image)
     extracted_prompt = match_image.group(1).strip()
     assert_diag("futuristic rain-lashed cityscape" in extracted_prompt, scen, "Промпт из тега", "futuristic rain-lashed cityscape", extracted_prompt)
+    assert_diag("--neg blur, lowres, text" in extracted_prompt, scen, "Негативный промпт в теге", "--neg blur, lowres, text", extracted_prompt)
 
     has_gallery = RE_GALLERY_TRIGGER.search(simulated_llm_output) is not None
     should_run_second_pass = bool(has_gallery and not extracted_prompt)
     assert_diag(should_run_second_pass is False, scen, "Флаг второго прохода", False, should_run_second_pass)
 
     # 6. Сквозная генерация GenerationPlan в ArtDirector
+    from services.art_director.prompting import parse_image_prompt_flags
+    parsed_flags = parse_image_prompt_flags(extracted_prompt)
+
     director = ArtDirector()
     v_intent = VisualIntent(
-        prompt=extracted_prompt,
+        prompt=parsed_flags.prompt,
+        user_neg=parsed_flags.negative,
         target_subject=TargetSubject.SCENE_OBJECT,
         suggested_model="dreamshaper_8",
+        aspect_ratio=parsed_flags.aspect_ratio,
         mode="assistant"
     )
     plan = director.plan_from_visual_intent(visual_intent=v_intent)
     assert_diag(plan is not None, scen, "ArtDirector Plan", "Plan сгенерирован", plan)
     assert_diag("futuristic rain-lashed cityscape" in plan.positive_prompt, scen, "Positive Prompt плана", "Содержит промпт", plan.positive_prompt)
+    assert_diag("blur" in plan.negative_prompt and "lowres" in plan.negative_prompt, scen, "Negative Prompt плана", "Содержит пользовательский/модельный негатив", plan.negative_prompt)
     assert_diag(plan.width > 0 and plan.height > 0, scen, "Размеры плана", "> 0", f"{plan.width}x{plan.height}")
+
+    # 7. Проверка сохранения и сквозной передачи негативного промпта модели в следующий ход (follow-up)
+    from services.assistant_flow import extract_last_image_prompt
+    session_messages = [
+        {"role": "user", "content": art_query},
+        {
+            "role": "assistant",
+            "content": simulated_llm_output,
+            "visual_intent": v_intent.to_dict() if hasattr(v_intent, "to_dict") else {"prompt": v_intent.prompt, "user_neg": v_intent.user_neg},
+            "generation_params": {"positive_prompt": plan.positive_prompt, "negative_prompt": plan.negative_prompt},
+        },
+    ]
+    reconstructed_prompt = extract_last_image_prompt(session_messages)
+    assert_diag(reconstructed_prompt is not None, scen, "Извлечение для follow-up", "Не None", reconstructed_prompt)
+    assert_diag("futuristic rain-lashed cityscape" in reconstructed_prompt, scen, "Позитив сохранен в follow-up", True, "futuristic rain-lashed cityscape" in reconstructed_prompt)
+    assert_diag("--neg blur, lowres, text" in reconstructed_prompt, scen, "Негатив сохранен в follow-up", True, "--neg blur, lowres, text" in reconstructed_prompt)
 
 
 # =========================================================================

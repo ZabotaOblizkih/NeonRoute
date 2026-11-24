@@ -655,7 +655,11 @@ class AssistantFlowControllerMixin:
                             m["generation_params"] = gen_params
                             pos = gen_params.get("positive_prompt") or gen_params.get("prompt")
                             if pos:
-                                m["image_prompt"] = pos
+                                neg = (v_int.user_neg if v_int and hasattr(v_int, "user_neg") else None) or (gen_params.get("negative_prompt") if gen_params else None)
+                                if neg and "--neg" not in pos and "--negative" not in pos:
+                                    m["image_prompt"] = f"{pos} --neg {neg}"
+                                else:
+                                    m["image_prompt"] = pos
                         v_int = getattr(widget_to_update, "visual_intent", None) or (task.metadata.get("visual_intent") if (task and getattr(task, "metadata", None)) else None)
                         if v_int is not None:
                             m["visual_intent"] = v_int.to_dict() if hasattr(v_int, "to_dict") else dict(v_int)
@@ -1072,6 +1076,8 @@ class AssistantFlowControllerMixin:
             prompt_anchor = v_intent.prompt
             if v_intent.aspect_ratio:
                 prompt_anchor = f"{prompt_anchor} --ar {v_intent.aspect_ratio}"
+            if v_intent.user_neg:
+                prompt_anchor = f"{prompt_anchor} --neg {v_intent.user_neg}"
             if "[IMAGE_PROMPT:" not in memory_content:
                 memory_content = f"{text}\n\n[IMAGE_PROMPT: {prompt_anchor}]".strip()
         elif extracted_image_prompt and "[IMAGE_PROMPT:" not in memory_content:

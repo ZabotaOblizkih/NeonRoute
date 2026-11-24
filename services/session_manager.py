@@ -663,6 +663,9 @@ class SessionManager:
                 if not saved_prompt and isinstance(m.get("generation_params"), dict):
                     saved_prompt = m["generation_params"].get("positive_prompt") or m["generation_params"].get("prompt")
                 if saved_prompt:
+                    neg = (m.get("visual_intent", {}).get("user_neg") if isinstance(m.get("visual_intent"), dict) else None) or (m.get("generation_params", {}).get("negative_prompt") if isinstance(m.get("generation_params"), dict) else None)
+                    if neg and "--neg" not in saved_prompt and "--negative" not in saved_prompt:
+                        saved_prompt = f"{saved_prompt} --neg {neg}"
                     prompt_tag = f"[IMAGE_PROMPT: {saved_prompt}]"
                     if "[IMAGE_PROMPT:" not in c_text:
                         if c_text and not c_text.startswith("Секунду, перевожу образ в кадр"):

@@ -465,7 +465,21 @@ def test_extract_last_image_prompt():
     ]
     assert extract_last_image_prompt(msgs_4) == "retro futuristic car"
 
-    # 5. Пустая история или отсутствие ассистента
+    # 5. Извлечение негативного промпта через visual_intent (user_neg)
+    msgs_5 = [
+        {"role": "user", "content": "Нарисуй двух девушек"},
+        {"role": "assistant", "content": "", "visual_intent": {"prompt": "two women, kissing", "user_neg": "solo, clothing, cartoon"}},
+    ]
+    assert extract_last_image_prompt(msgs_5) == "two women, kissing --neg solo, clothing, cartoon"
+
+    # 6. Извлечение негативного промпта из generation_params (fallback)
+    msgs_6 = [
+        {"role": "user", "content": "Нарисуй пейзаж"},
+        {"role": "assistant", "content": "Готово!", "image_prompt": "sunset mountains", "generation_params": {"positive_prompt": "sunset mountains", "negative_prompt": "fog, haze"}},
+    ]
+    assert extract_last_image_prompt(msgs_6) == "sunset mountains --neg fog, haze"
+
+    # 7. Пустая история или отсутствие ассистента
     assert extract_last_image_prompt([]) is None
     assert extract_last_image_prompt([{"role": "user", "content": "Привет"}]) is None
 
@@ -559,6 +573,45 @@ def test_build_gallery_art_plan_prepends_previous_image_prompt():
     assert sent_messages[1]["role"] == "user"
     assert "то же самое, но ночью" in sent_messages[1]["content"]
     assert plan.positive_prompt == "1girl, night, street lights"
+
+
+def test_build_gallery_art_plan_prepends_previous_image_prompt_with_negative():
+    """Проверяет передачу previous_image_prompt с флагом --neg в следующий ход генерации."""
+    from unittest.mock import MagicMock
+    from services.assistant_flow import build_gallery_art_plan
+
+    mock_client = MagicMock()
+    mock_client.chat_completion.return_value = "[IMAGE_PROMPT: 2girls, night --neg solo, single girl]"
+
+    mock_ad = MagicMock()
+    mock_ad.plan_from_visual_intent.return_value = MagicMock(positive_prompt="2girls, night", negative_prompt="solo, single girl")
+
+    session = {
+        "messages": [
+            {"role": "user", "content": "Нарисуй двух девушек"},
+            {
+                "role": "assistant",
+                "content": "Вот кадр:\n\n[IMAGE_PROMPT: 2girls, sunny park --neg solo, single girl]",
+                "visual_intent": {"prompt": "2girls, sunny park", "user_neg": "solo, single girl"},
+            },
+        ]
+    }
+
+    plan = build_gallery_art_plan(
+        user_query="сделай их ночью",
+        lm_client=mock_client,
+        art_director=mock_ad,
+        session=session,
+    )
+
+    mock_client.chat_completion.assert_called_once()
+    call_kwargs = mock_client.chat_completion.call_args[1]
+    sent_messages = call_kwargs["messages"]
+    assert len(sent_messages) == 2
+    assert sent_messages[0]["role"] == "assistant"
+    assert sent_messages[0]["content"] == "[IMAGE_PROMPT: 2girls, sunny park --neg solo, single girl]"
+    assert sent_messages[1]["role"] == "user"
+    assert "сделай их ночью" in sent_messages[1]["content"]
 
 
 def test_prompt_dialect_sd15_always_tags():

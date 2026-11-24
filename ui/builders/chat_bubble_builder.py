@@ -481,6 +481,9 @@ class ChatBubbleBuilderMixin:
                         if not saved_p and isinstance(m.get("generation_params"), dict):
                             saved_p = m["generation_params"].get("positive_prompt") or m["generation_params"].get("prompt")
                         if saved_p:
+                            neg = (m.get("visual_intent", {}).get("user_neg") if isinstance(m.get("visual_intent"), dict) else None) or (m.get("generation_params", {}).get("negative_prompt") if isinstance(m.get("generation_params"), dict) else None)
+                            if neg and "--neg" not in saved_p and "--negative" not in saved_p:
+                                saved_p = f"{saved_p} --neg {neg}"
                             m_text = f"[IMAGE_PROMPT: {saved_p}]"
                         elif m.get("image_path") or m.get("file_paths"):
                             m_text = "[Generated image]"
