@@ -555,7 +555,13 @@ class AssistantFlowControllerMixin:
                     t_widget.set_scene_art_busy(False)
             return True
 
-        gen_params = self._extract_generation_params(result) if hasattr(self, "_extract_generation_params") else None
+        gen_params = (
+            self._extract_generation_params(result)
+            if hasattr(self, "_extract_generation_params")
+            else None
+        )
+        if gen_params is None and isinstance(result, dict):
+            gen_params = result.get("generation_params") or result.get("parameters")
         plan = result.get("plan")
         sender_name = "Элария"
 
@@ -591,6 +597,14 @@ class AssistantFlowControllerMixin:
                     widget_to_update = w
                     break
 
+        # Извлечение visual_intent (из бабла, метаданных задачи или результата генерации)
+        v_int = (
+            getattr(widget_to_update, "visual_intent", None)
+            or (task.metadata.get("visual_intent") if (task and getattr(task, "metadata", None)) else None)
+            or (result.get("visual_intent") if isinstance(result, dict) else None)
+            or (getattr(plan, "visual_intent", None) if plan else None)
+        )
+
         if widget_to_update is not None:
             try:
                 # 1. Снятие состояния ожидания и скрытие лоадера
@@ -618,7 +632,11 @@ class AssistantFlowControllerMixin:
                     widget_to_update.attach_file(img_path, generation_params=gen_params)
 
                 # 3. Передача negative_prompt и generation_params
-                neg_prompt = (getattr(plan, "negative_prompt", None) if plan else None) or (gen_params.get("negative_prompt") if gen_params else None)
+                neg_prompt = (
+                    (v_int.user_neg if v_int and hasattr(v_int, "user_neg") else None)
+                    or (getattr(plan, "negative_prompt", None) if plan else None)
+                    or (gen_params.get("negative_prompt") if gen_params else None)
+                )
                 if neg_prompt and hasattr(widget_to_update, "set_negative_prompt"):
                     widget_to_update.set_negative_prompt(neg_prompt)
                 if gen_params and hasattr(widget_to_update, "set_generation_params"):
@@ -633,7 +651,11 @@ class AssistantFlowControllerMixin:
         # 5. Аварийный вывод, если бабл не найден
         if widget_to_update is None:
             avatar = self._get_current_avatar_path() if hasattr(self, "_get_current_avatar_path") else None
-            neg = (getattr(plan, "negative_prompt", None) if plan else None) or (gen_params.get("negative_prompt") if gen_params else None)
+            neg = (
+                (v_int.user_neg if v_int and hasattr(v_int, "user_neg") else None)
+                or (getattr(plan, "negative_prompt", None) if plan else None)
+                or (gen_params.get("negative_prompt") if gen_params else None)
+            )
             self._append_message(
                 sender_name,
                 "",
@@ -660,7 +682,6 @@ class AssistantFlowControllerMixin:
                                     m["image_prompt"] = f"{pos} --neg {neg}"
                                 else:
                                     m["image_prompt"] = pos
-                        v_int = getattr(widget_to_update, "visual_intent", None) or (task.metadata.get("visual_intent") if (task and getattr(task, "metadata", None)) else None)
                         if v_int is not None:
                             m["visual_intent"] = v_int.to_dict() if hasattr(v_int, "to_dict") else dict(v_int)
                         if m.get("content") == "Связь с моделью обновлена. Я готова, о чём поговорим?":

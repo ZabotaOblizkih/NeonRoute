@@ -871,10 +871,11 @@ sequenceDiagram
 4. **Динамический расчёт шагов второго прохода (`resolve_hires_second_pass_steps`)**:
    - Вместо жесткого хардкода 14/15 шагов число шагов вычисляется от `base_steps` и `denoising_strength` при сохранении приоритета за явным значением из профиля модели (`configured_steps > 0`).
    - Для быстрых моделей ($\le 10$ базовых шагов): $\max(4, \min(10, \text{base\_steps}))$; для стандартных моделей: $\min(22, \max(0.60 \times \text{base\_steps}, \lceil 3.0 / \text{denoise} \rceil))$.
+   - **Защита контракта Hires.fix (`hr_additional_modules`)**: при активном `enable_hr=True` в payload `/sdapi/v1/txt2img` передаётся `"hr_additional_modules": []` (пустой список). Это предотвращает падение ядра Forge на втором проходе (`modules/processing.py:1405`, `'Use same choices' not in self.hr_additional_modules`) с ошибкой `TypeError: argument of type 'NoneType' is not iterable`, возникающей из-за дефолта `None` в Pydantic-схеме Forge. При отключённом Hires.fix (`enable_hr=False`) или аварийных ретраях ключ удаляется из payload.
 5. **Синхронизация контракта с Forge (`/sdapi/v1/free-vram`)**:
    - В `ForgeClient.text_to_image` отслеживается пара `(always_offload, inference_memory_mb)`: любое изменение хотя бы одного параметра (включая смену резерва при неизменном `always_offload=False`) отправляет обновление в `/sdapi/v1/free-vram`.
    - При первом входе в `STAGE_OFFLOAD`, понижении из `FAST_KEEP_VRAM`/`SMART_SWAP` или дефиците RAM (`host_ram_starved`) передаётся `unload_models=True` для очистки прежних хвостов VRAM.
-   - При активном решении планировщика `enable_vae_tiling=True` (обязательно для `STAGE_OFFLOAD`, GPU $\le 6144$ МБ, SDXL `>= 960x960` + ADetailer и Hires $\ge 1024$ px) выставляются `forge_vae_tiling=True`, `sd_vae_tile=True` и аргумент скрипта `"Never OOM Integrated"` (при его наличии в `/sdapi/v1/scripts` через `has_script()`).
+   - При активном решении планировщика `enable_vae_tiling=True` (обязательно для `STAGE_OFFLOAD`, GPU $\le 6144$ МБ, SDXL `>= 960x960` + ADetailer и Hires $\ge 1024$ px) передаётся аргумент скрипта `"Never OOM Integrated"` (`alwayson_scripts["Never OOM Integrated"]["args"] = [False, True]` при его наличии в `/sdapi/v1/scripts` через `has_script()`). Запрещена подстановка невалидных ключей `forge_vae_tiling` и `sd_vae_tile` в `override_settings` или корень payload (вызывающих `KeyError` в `Options.set()` Forge). При переходе на генерацию без тайлинга передаётся аргумент `[False, False]`, сбрасывающий `VAE_ALWAYS_TILED` в ядре Forge.
 6. **Host RAM Starvation Guard и ликвидация состояния гонки при выгрузке**:
    - При `total_ram_mb <= 6144` или `available_ram_mb <= 2500` на профилях SDXL с `total_vram_mb <= 6144` `ArtDirector._log_vram_planner_passport()` и `ForgeClient.text_to_image()` форсируют `forge_unet_storage_dtype="fp8e4"`, отключают `Hires.fix` (`force_disable_hr`) и обрезают второй слот ADetailer (`disable_secondary_adetailer`).
    - На системах с `total_ram <= 16.5` ГБ методы `ensure_system_options()` и `set_model()` в `ForgeClient` гарантируют установку `sd_checkpoint_cache = 0` и `sd_checkpoints_limit = 1`, предотвращая удержание старых моделей в системной ОЗУ.
@@ -1175,6 +1176,11 @@ sequenceDiagram
    - **Декупплинг ADetailer от геометрии**: флаг `force_ad: True` закреплен за всеми бакетами (включая `scenery` и `cinematic`). Включение ADetailer зависит исключительно от настроек профиля модели в `art_director_models.json` и пользовательских тумблеров UI, а не от выбранного разрешения холста (YOLO-детектор пропускает кадр за 10 мс при отсутствии лиц).
    - **Очистка маркеров полного роста**: из `detect_scene_archetype` удалены бытовые токены (`standing`, `boots`, `dress`, `long shot`, `entire body`), оставлены только явные маркеры (`full body`, `full-body`, `full length`, `head to toe`).
    - **Защита от затирания архетипа**: при отсутствии явного флага `--ar` ветка `else:` сохраняет архетип, ранее обнаруженный `detect_scene_archetype()`, предотвращая безусловный сброс в `"solo"`.
+6. **Двухслойная архитектура негативного промпта и сквозная передача исключений (`--neg`)**:
+   - **Слой 1 (Базовый негатив модели)**: извлекается из поля `"negative_prompt"` активного профиля в `art_director_models.json` (или `canon.base_negative`). Определяет авторский канон стиля и технические ограничения чекпоинта.
+   - **Слой 2 (Пользовательский и модельный негатив)**: явные флаги пользователя (`--neg`, `--negative`, «без X») либо сгенерированные моделью исключения из поля `"negative_prompt"` схемы Structured JSON.
+   - **Сквозное сохранение в контекстный след**: при завершении хода в память диалога сохраняется компактный тег `[IMAGE_PROMPT: <positive> --ar <ar> --neg <user_neg>]` (через `v_intent.user_neg` и `generation_params`).
+   - **Контекстная непрерывность при редактировании (Follow-up Edits)**: функция `extract_last_image_prompt()` при формировании входного сообщения для следующего шага передаёт языковой модели как позитивные теги кадра, так и флаг `--neg <previous_negative>`. Благодаря этому LLM видит ранее применённые исключения и учитывает их при уточнении сцены без потери контекста и без слепых галлюцинаций.
 
 ### 5.3. Жизненный цикл диалогов и UI Re-entrancy Guards
 
@@ -1649,7 +1655,7 @@ flowchart TD
    - `scene_prompt` (string) — 12–26 английских тегов всей композиции (освещение, окружение, план, ракурс, стиль).
    - `face_prompt` (string) — 7–14 английских тегов строго для кропа лица (глаза, взгляд, причёска, эмоция, кожа, свет; без одежды, рук и фона; `""` если лица нет).
    - `hands_prompt` (string) — 6–12 английских тегов строго для кистей рук (пальцы, хват, предмет, свет; без лица и фона; `""` если руки скрыты).
-   - `negative_prompt` (string) — исключения пользователя («без X») или `""`.
+   - `negative_prompt` (string) — исключения пользователя («без X») или сгенерированные моделью теги исключений. Транслируются в `v_intent.user_neg`, сохраняются в метаданных кадра и передаются флагом `--neg` в контекст последующих реплик ассистента.
    - `aspect_ratio` (string, enum: `portrait`, `square`, `wide`, `cinematic`, `ultrawide`).
    - `suggested_model` (string) — идентификатор стиля/чекпоинта.
    - `is_self_portrait` (boolean) — флаг селфи/автопортрета Эларии.

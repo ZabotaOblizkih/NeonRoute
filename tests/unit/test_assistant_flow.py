@@ -128,3 +128,122 @@ def test_build_gallery_art_plan_passes_enable_thinking_false():
     assert kwargs.get("enable_thinking") is False
     assert kwargs.get("temperature") == pytest.approx(0.8)
     assert plan is not None
+
+
+def test_handle_assistant_art_completed_without_v_int_no_unbound_error(tmp_path):
+    """
+    Проверка, что при отсутствии visual_intent в задаче, бабле и плане
+    метод _handle_assistant_art_completed не падает с UnboundLocalError (v_int),
+    а корректно использует negative_prompt из generation_params.
+    """
+    from types import SimpleNamespace
+
+    flow = DummyAssistantFlow()
+    flow._append_message = MagicMock()
+    flow._save_current_session = MagicMock()
+
+    img_file = tmp_path / "test_generated_scene.png"
+    img_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 200)
+
+    task = SimpleNamespace(metadata={})
+    result = {
+        "image_path": str(img_file),
+        "parameters": {
+            "prompt": "neon cyberpunk avenue",
+            "negative_prompt": "blurry, low quality, artifacts"
+        }
+    }
+
+    flow.current_session = {
+        "messages": [
+            {"role": "user", "is_user": True, "content": "нарисуй улицу"},
+            {"role": "assistant", "is_user": False, "content": "Вот ваша иллюстрация"}
+        ]
+    }
+
+    ok = flow._handle_assistant_art_completed(task, result)
+    assert ok is True
+
+    last_msg = flow.current_session["messages"][-1]
+    assert last_msg["image_path"] == str(img_file)
+    assert last_msg["generation_params"]["negative_prompt"] == "blurry, low quality, artifacts"
+    assert last_msg["image_prompt"] == "neon cyberpunk avenue --neg blurry, low quality, artifacts"
+    assert "visual_intent" not in last_msg
+
+
+def test_handle_assistant_art_completed_with_v_int_user_neg(tmp_path):
+    """
+    Проверка, что при наличии visual_intent с пользовательским user_neg
+    он имеет приоритет при сборке image_prompt и корректно сохраняется в сессию.
+    """
+    from types import SimpleNamespace
+
+    flow = DummyAssistantFlow()
+    flow._append_message = MagicMock()
+    flow._save_current_session = MagicMock()
+
+    img_file = tmp_path / "test_art_v_int.png"
+    img_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 200)
+
+    class MockVisualIntent:
+        def __init__(self, user_neg):
+            self.user_neg = user_neg
+
+        def to_dict(self):
+            return {"user_neg": self.user_neg}
+
+    v_int_obj = MockVisualIntent(user_neg="bad anatomy, signature")
+    task = SimpleNamespace(metadata={"visual_intent": v_int_obj})
+    result = {
+        "image_path": str(img_file),
+        "parameters": {
+            "prompt": "anime girl in raincoat",
+            "negative_prompt": "default model negative"
+        }
+    }
+
+    flow.current_session = {
+        "messages": [
+            {"role": "assistant", "is_user": False, "content": "Готово"}
+        ]
+    }
+
+    ok = flow._handle_assistant_art_completed(task, result)
+    assert ok is True
+
+    last_msg = flow.current_session["messages"][-1]
+    assert last_msg["image_path"] == str(img_file)
+    assert last_msg["image_prompt"] == "anime girl in raincoat --neg bad anatomy, signature"
+    assert last_msg["visual_intent"] == {"user_neg": "bad anatomy, signature"}
+
+
+def test_handle_assistant_art_completed_fallback_append_message_without_bubble(tmp_path):
+    """
+    Проверка, что при отсутствии бабла в chat_layout срабатывает fallback ветка _append_message,
+    где v_int.user_neg или plan.negative_prompt корректно передаются без ошибок.
+    """
+    from types import SimpleNamespace
+
+    flow = DummyAssistantFlow()
+    flow._append_message = MagicMock()
+    flow._save_current_session = MagicMock()
+
+    img_file = tmp_path / "fallback_art.png"
+    img_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 200)
+
+    task = SimpleNamespace(metadata={})
+    plan = SimpleNamespace(negative_prompt="negative from plan")
+    result = {
+        "image_path": str(img_file),
+        "plan": plan,
+        "parameters": {"prompt": "retro car"}
+    }
+
+    ok = flow._handle_assistant_art_completed(task, result)
+    assert ok is True
+    assert flow._append_message.called
+    call_kwargs = flow._append_message.call_args[1]
+    assert call_kwargs["image_path"] == img_file
+    assert call_kwargs["negative_prompt"] == "negative from plan"
+
+

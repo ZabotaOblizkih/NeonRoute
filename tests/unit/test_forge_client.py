@@ -1203,6 +1203,7 @@ class TestTextToImageGeneration:
 
     def test_txt2img_with_vae_tiling_and_slots_summary(self, forge_client, monkeypatch):
         monkeypatch.setattr("services.forge_client.FORGE_ENABLE_VAE_TILING", True)
+        monkeypatch.setattr(forge_client, "has_script", lambda name, tab="txt2img": name == "Never OOM Integrated")
         img_b64 = _create_valid_png_b64(64, 64)
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {
@@ -1233,8 +1234,26 @@ class TestTextToImageGeneration:
             }
         )
         assert len(captured) == 1
-        assert captured[0].get("forge_vae_tiling") is True
-        assert captured[0].get("override_settings", {}).get("sd_vae_tile") is True
+        # Архитектурный контракт: forge_vae_tiling и sd_vae_tile не передаются (предотвращая KeyError в Forge)
+        assert "forge_vae_tiling" not in captured[0]
+        assert "sd_vae_tile" not in captured[0]
+        assert "forge_vae_tiling" not in captured[0].get("override_settings", {})
+        assert "sd_vae_tile" not in captured[0].get("override_settings", {})
+        # VAE Tiling активируется строго через Alwayson-скрипт Never OOM Integrated
+        assert captured[0].get("alwayson_scripts", {}).get("Never OOM Integrated") == {"args": [False, True]}
+        assert forge_client._never_oom_vae_active is True
+
+        # Проверка безопасного сброса состояния (no-stick): при последующей генерации без VAE tiling
+        monkeypatch.setattr("services.forge_client.FORGE_ENABLE_VAE_TILING", False)
+        forge_client.text_to_image(prompt="test_no_tile", checkpoint=None)
+        assert len(captured) == 2
+        assert captured[1].get("alwayson_scripts", {}).get("Never OOM Integrated") == {"args": [False, False]}
+        assert forge_client._never_oom_vae_active is False
+
+        # При третьем запуске без тайлинга - аргумент уже не отправляется повторно
+        forge_client.text_to_image(prompt="test_no_tile_3", checkpoint=None)
+        assert len(captured) == 3
+        assert "Never OOM Integrated" not in captured[2].get("alwayson_scripts", {})
 
     def test_txt2img_invalid_info_json_fallback(self, forge_client, monkeypatch):
         img_b64 = _create_valid_png_b64(64, 64)
@@ -1321,4 +1340,77 @@ class TestTextToImageGeneration:
         mock_sess.close.side_effect = Exception("close fail")
         forge_client._current_session = mock_sess
         forge_client.interrupt()  # Should not raise exception
+
+    def test_txt2img_hr_additional_modules_payload_contract_and_processing_emulation(self, forge_client, monkeypatch):
+        """
+        Проверка контракта hr_additional_modules для защиты от TypeError в Forge (processing.py:1405):
+        1. При enable_hr=True в payload обязательно передаётся пустой список hr_additional_modules: [].
+           Эмуляция проверки Forge ('Use same choices' not in payload['hr_additional_modules'])
+           выполняется без TypeError.
+        2. При enable_hr=False ключ hr_additional_modules отсутствует в payload (не передаётся None).
+        3. При аварийном fallback без Hires.fix ключ hr_additional_modules корректно удаляется из payload.
+        4. При явной передаче hr_additional_modules через kwargs кастомный список сохраняется.
+        """
+        img_b64 = _create_valid_png_b64(64, 64)
+        mock_ok_resp = MagicMock(status_code=200)
+        mock_ok_resp.json.return_value = {"images": [img_b64], "info": "{}"}
+
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+
+        captured_payloads = []
+
+        def mock_post(url, *a, **kw):
+            p = kw.get("json", {})
+            captured_payloads.append(dict(p))
+            return mock_ok_resp
+
+        self._patch_session_post(monkeypatch, mock_post)
+
+        # 1. Запуск с enable_hr=True (дефолт hr_additional_modules = [])
+        forge_client.text_to_image(prompt="cyberpunk city", enable_hr=True, hr_scale=1.5)
+        assert len(captured_payloads) == 1
+        p1 = captured_payloads[0]
+        assert p1.get("enable_hr") is True
+        assert "hr_additional_modules" in p1
+        assert p1["hr_additional_modules"] == []
+        # Эмуляция строки processing.py:1405 в Forge:
+        assert 'Use same choices' not in p1["hr_additional_modules"]
+
+        # 2. Запуск с enable_hr=False
+        forge_client.text_to_image(prompt="cyberpunk city 2", enable_hr=False)
+        assert len(captured_payloads) == 2
+        p2 = captured_payloads[1]
+        assert p2.get("enable_hr") is False
+        assert "hr_additional_modules" not in p2
+
+        # 3. Кастомный hr_additional_modules через kwargs
+        forge_client.text_to_image(prompt="cyberpunk city 3", enable_hr=True, hr_additional_modules=["CustomChoice"])
+        assert len(captured_payloads) == 3
+        p3 = captured_payloads[2]
+        assert p3["hr_additional_modules"] == ["CustomChoice"]
+        assert 'CustomChoice' in p3["hr_additional_modules"]
+
+        # 4. Аварийный fallback: сбой Hires.fix -> повтор с enable_hr=False и очисткой hr_additional_modules
+        fallback_payloads = []
+        attempt_counter = [0]
+
+        def mock_fallback_post(url, *a, **kw):
+            attempt_counter[0] += 1
+            fallback_payloads.append(dict(kw.get("json", {})))
+            if attempt_counter[0] == 1:
+                # Первый запрос с Hires.fix падает с ошибкой
+                fail_resp = MagicMock(status_code=500, text="Internal Server Error")
+                return fail_resp
+            return mock_ok_resp
+
+        self._patch_session_post(monkeypatch, mock_fallback_post)
+        forge_client.text_to_image(prompt="fallback test", enable_hr=True, hr_scale=1.5)
+        assert len(fallback_payloads) == 2
+        # Первый запрос имел Hires и hr_additional_modules
+        assert fallback_payloads[0].get("enable_hr") is True
+        assert fallback_payloads[0].get("hr_additional_modules") == []
+        # Аварийный повторный запрос отключил Hires и удалил hr_additional_modules
+        assert fallback_payloads[1].get("enable_hr") is False
+        assert "hr_additional_modules" not in fallback_payloads[1]
+
 

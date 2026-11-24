@@ -118,13 +118,20 @@
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   padding-top: calc(68px + env(safe-area-inset-top, 0px));
-  padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+  padding-bottom: 0;
   padding-left: max(12px, env(safe-area-inset-left, 0px));
   padding-right: max(12px, env(safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   gap: 16px;
   scroll-behavior: smooth;
+}
+
+.chat-viewport::after {
+  content: '';
+  display: block;
+  min-height: calc(110px + max(12px, env(safe-area-inset-bottom, 0px)) + var(--keyboard-offset, 0px));
+  flex-shrink: 0;
 }
 
 .chat-viewport::-webkit-scrollbar {

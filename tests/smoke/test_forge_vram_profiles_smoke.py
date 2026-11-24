@@ -381,10 +381,16 @@ def test_vram_profile_2gb_extreme_low_end(smoke_harness, model_key):
     assert res["txt2img"]["enable_hr"] is False
     assert res["pre_free"]["always_offload"] is True
 
-    # Контракт ТЗ 2.1: для 2 ГБ VRAM должен быть включён VAE tiling
+    # Контракт ТЗ 2.1 / архитектурный контракт: для 2 ГБ VRAM должен быть включён VAE tiling
+    # исключительно через alwayson_scripts["Never OOM Integrated"] (args=[False, True]),
+    # без недопустимых ключей forge_vae_tiling / sd_vae_tile в payload или override_settings.
     never_oom_args = (res["txt2img"].get("alwayson_scripts") or {}).get("Never OOM Integrated", {}).get("args")
-    has_vae_tile = bool(res["txt2img"].get("forge_vae_tiling")) or (never_oom_args == [False, True])
-    assert has_vae_tile, "На экстремальных 2 ГБ VRAM должен включаться VAE tiling (forge_vae_tiling / Never OOM Integrated)"
+    assert never_oom_args == [False, True], "На экстремальных 2 ГБ VRAM должен включаться VAE tiling через Never OOM Integrated"
+    assert "forge_vae_tiling" not in res["txt2img"]
+    assert "sd_vae_tile" not in res["txt2img"]
+    override = res["txt2img"].get("override_settings") or {}
+    assert "forge_vae_tiling" not in override
+    assert "sd_vae_tile" not in override
 
 
 @pytest.mark.parametrize("model_key", ["sd15", "sdxl_fp8", "sdxl_fp16"])
@@ -637,3 +643,165 @@ def test_session_sequential_sdxl_model_switching_with_ram_cache_guard_16gb():
         assert unloaded_b is True
         assert len(free_vram_calls) == 2
         assert free_vram_calls[1]["unload_models"] is True
+
+
+def test_forge_vae_tiling_isolated_contract_and_options_emulation(tmp_path):
+    """Изолированный смоук-тест контракта VAE tiling и эмуляции Options.set() Forge.
+
+    Проверяет:
+    1. Формирование payload при want_vae_tiling=True:
+       - alwayson_scripts["Never OOM Integrated"]["args"] == [False, True]
+       - Полное отсутствие 'forge_vae_tiling' и 'sd_vae_tile' как в корне payload, так и в override_settings.
+       - Эмуляция Forge Options.set() для каждого ключа override_settings гарантированно НЕ вызывает KeyError.
+       - fc._never_oom_vae_active переходит в True.
+    2. Сброс состояния при последующем вызове с want_vae_tiling=False:
+       - alwayson_scripts["Never OOM Integrated"]["args"] == [False, False] (сброс в Forge)
+       - fc._never_oom_vae_active сбрасывается в False (состояние не залипает).
+       - Ключи override_settings также валидны для Options.set().
+    3. Полная изоляция: все файлы сохраняются в tmp_path, реальная сеть не используется, мусор не остаётся.
+    """
+    class SimulatedForgeOptions:
+        """Эмулятор modules/options.py из SD WebUI Forge с проверкой по data_labels."""
+        def __init__(self):
+            # Реалистичный набор зарегистрированных опций Forge
+            self.data_labels = {
+                "sd_model_checkpoint": {},
+                "sd_vae": {},
+                "forge_unet_storage_dtype": {},
+                "forge_inference_memory": {},
+                "forge_async_loading": {},
+                "forge_pin_shared_memory": {},
+                "sd_checkpoint_cache": {},
+                "sd_checkpoints_limit": {},
+                "CLIP_stop_at_last_layers": {},
+            }
+            self.values = {}
+
+        def set(self, key, value):
+            if key not in self.data_labels:
+                raise KeyError(key)
+            self.values[key] = value
+
+    forge_opts = SimulatedForgeOptions()
+    # Проверяем, что эмулятор действительно ловит старые ошибочные ключи
+    with pytest.raises(KeyError):
+        forge_opts.set("forge_vae_tiling", True)
+    with pytest.raises(KeyError):
+        forge_opts.set("sd_vae_tile", True)
+
+    captured_payloads = []
+
+    def mock_post_handler(url, json_body=None, data=None, **kwargs):
+        payload_data = json_body if json_body is not None else kwargs.get("json")
+        if payload_data is None and isinstance(data, str):
+            payload_data = json.loads(data)
+        elif payload_data is None:
+            payload_data = {}
+        captured_payloads.append(payload_data)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "images": [VALID_PNG_B64],
+            "parameters": payload_data,
+            "info": "{}",
+        }
+        resp.text = json.dumps(resp.json.return_value)
+        return resp
+
+    fc = ForgeClient(base_url="http://127.0.0.1:7860")
+    fc._cached_scripts = {"txt2img": ["never oom integrated"], "img2img": []}
+    assert fc._never_oom_vae_active is False
+
+    with patch("requests.Session.post", side_effect=mock_post_handler), \
+         patch.object(fc, "is_server_ready", return_value=True):
+        # ---------------------------------------------------------------------
+        # Сценарий 1: Генерация с want_vae_tiling = True (например, профиль 2 ГБ)
+        # ---------------------------------------------------------------------
+        res_1 = fc.text_to_image(
+            prompt="cyberpunk neon road",
+            output_dir=tmp_path,
+            want_vae_tiling=True,
+            width=512,
+            height=512,
+            steps=20,
+        )
+        assert res_1.exists()
+        assert res_1.parent == tmp_path
+        assert fc._never_oom_vae_active is True
+
+        p1 = captured_payloads[0]
+        # Проверяем контракт: VAE tiling передан через Never OOM Integrated
+        scripts_1 = p1.get("alwayson_scripts", {})
+        assert "Never OOM Integrated" in scripts_1
+        assert scripts_1["Never OOM Integrated"]["args"] == [False, True]
+
+        # Проверяем отсутствие недопустимых ключей в корне payload
+        assert "forge_vae_tiling" not in p1
+        assert "sd_vae_tile" not in p1
+
+        # Проверяем override_settings и эмулируем Forge Options.set()
+        override_1 = p1.get("override_settings", {})
+        assert "forge_vae_tiling" not in override_1
+        assert "sd_vae_tile" not in override_1
+
+        # Каждый ключ из override_settings обязан успешно обрабатываться Forge без KeyError
+        for k, v in override_1.items():
+            forge_opts.set(k, v)
+
+        # ---------------------------------------------------------------------
+        # Сценарий 2: Следующая генерация с want_vae_tiling = False (сброс состояния)
+        # ---------------------------------------------------------------------
+        res_2 = fc.text_to_image(
+            prompt="cyberpunk neon road daylight",
+            output_dir=tmp_path,
+            want_vae_tiling=False,
+            width=512,
+            height=512,
+            steps=20,
+        )
+        assert res_2.exists()
+        assert res_2.parent == tmp_path
+        # Флаг клиента сбросился
+        assert fc._never_oom_vae_active is False
+
+        p2 = captured_payloads[1]
+        scripts_2 = p2.get("alwayson_scripts", {})
+        # Для сброса серверу Forge обязательно переданы аргументы [False, False]
+        assert "Never OOM Integrated" in scripts_2
+        assert scripts_2["Never OOM Integrated"]["args"] == [False, False]
+
+        # Ключи отсутствуют
+        assert "forge_vae_tiling" not in p2
+        assert "sd_vae_tile" not in p2
+        override_2 = p2.get("override_settings", {})
+        assert "forge_vae_tiling" not in override_2
+        assert "sd_vae_tile" not in override_2
+
+        for k, v in override_2.items():
+            forge_opts.set(k, v)
+
+        # ---------------------------------------------------------------------
+        # Сценарий 3: Повторная генерация с want_vae_tiling = False (уже выключено)
+        # ---------------------------------------------------------------------
+        res_3 = fc.text_to_image(
+            prompt="cyberpunk sunset",
+            output_dir=tmp_path,
+            want_vae_tiling=False,
+            width=512,
+            height=512,
+            steps=20,
+        )
+        assert res_3.exists()
+        assert res_3.parent == tmp_path
+        assert fc._never_oom_vae_active is False
+
+        p3 = captured_payloads[2]
+        assert "forge_vae_tiling" not in p3
+        assert "sd_vae_tile" not in p3
+        override_3 = p3.get("override_settings", {})
+        assert "forge_vae_tiling" not in override_3
+        assert "sd_vae_tile" not in override_3
+
+        for k, v in override_3.items():
+            forge_opts.set(k, v)
+

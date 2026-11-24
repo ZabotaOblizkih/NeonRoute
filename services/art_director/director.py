@@ -2128,9 +2128,22 @@ class ArtDirector:
             sampler_name = raw_sampler
             scheduler = canon.scheduler if canon else "Karras"
 
-        default_w, default_h = (1024, 1024) if is_xl else (512, 768)
-        width = int(user_params.get("width", default_w))
-        height = int(user_params.get("height", default_h))
+        if "enable_hr" in user_params:
+            enable_hr = bool(user_params["enable_hr"])
+            hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5))) if enable_hr else 1.0
+        elif "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
+            enable_hr = bool(model_pipeline["enable_hr"])
+            hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if enable_hr else 1.0
+        elif is_xl:
+            enable_hr = False
+            hr_scale = 1.0
+        else:
+            enable_hr = True
+            hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5)))
+
+        hr_denoise = float(user_params.get("denoising_strength", model_pipeline.get("hires_denoise", 0.35)))
+        hr_upscaler = user_params.get("hr_upscaler", model_pipeline.get("hires_upscaler", canon.hr_upscaler or "R-ESRGAN 4x+"))
+        hr_second_pass_steps = int(user_params.get("hr_second_pass_steps", model_pipeline.get("hr_second_pass_steps", canon.hr_second_pass_steps or 14)))
 
         ad_cfg = self._resolve_adetailer_pipeline(
             model_pipeline=model_pipeline,
@@ -2146,51 +2159,9 @@ class ArtDirector:
             enable_ad = bool(ad_cfg["enable_adetailer"])
             hands_enabled = bool(ad_cfg["hands_enabled"])
 
-        if "enable_hr" in user_params:
-            req_enable_hr = bool(user_params["enable_hr"])
-            req_hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5))) if req_enable_hr else 1.0
-        elif "enable_hr" in model_pipeline and model_pipeline["enable_hr"] is not None:
-            req_enable_hr = bool(model_pipeline["enable_hr"])
-            req_hr_scale = float(model_pipeline.get("hr_scale", 1.5)) if req_enable_hr else 1.0
-        elif is_xl:
-            req_enable_hr = False
-            req_hr_scale = 1.0
-        else:
-            req_enable_hr = True
-            req_hr_scale = float(user_params.get("hr_scale", model_pipeline.get("hr_scale", 1.5)))
-
-        hr_denoise = float(user_params.get("denoising_strength", model_pipeline.get("hires_denoise", 0.35)))
-        default_upscaler = "R-ESRGAN 4x+"
-        hr_upscaler = user_params.get("hr_upscaler") or model_pipeline.get("hires_upscaler") or model_pipeline.get("hr_upscaler") or default_upscaler
-        raw_hr_steps = user_params.get("hr_second_pass_steps") if user_params.get("hr_second_pass_steps") is not None else model_pipeline.get("hr_second_pass_steps")
-        hr_second_pass_steps = resolve_hires_second_pass_steps(
-            base_steps=steps,
-            denoising_strength=hr_denoise,
-            configured_steps=raw_hr_steps if (raw_hr_steps is not None and int(raw_hr_steps) > 0) else None,
-        )
-
-        # Адаптивный резолвер Hires.fix под реальный бюджет VRAM с диагностическим паспортом
-        hires_res = self._resolve_hires_policy_for_plan(
-            width=width,
-            height=height,
-            architecture="sdxl" if is_xl else "sd15",
-            checkpoint=target_ckpt,
-            enable_adetailer=enable_ad,
-            enable_hand_adetailer=hands_enabled,
-            requested_enable_hr=req_enable_hr,
-            requested_hr_scale=req_hr_scale,
-            hr_upscaler=hr_upscaler,
-            ad_inpaint_size=ad_cfg.get("face_inpaint_size", 512),
-            active_lora_count=len(re.findall(r'<lora:[^>]+>', pos_raw)),
-        )
-
-        enable_hr = bool(hires_res.get("allowed", False))
-        hr_scale = float(hires_res.get("effective_scale", 1.0)) if enable_hr else 1.0
-
-        hires_diag = (
-            f" (Hires.fix {hr_scale}x -> {int(round(width * hr_scale))}x{int(round(height * hr_scale))}, steps={hr_second_pass_steps}, denoise={hr_denoise})"
-            if enable_hr else f" (Hires.fix {hr_scale}x -> {int(round(width * hr_scale))}x{int(round(height * hr_scale))})"
-        )
+        default_w, default_h = (1024, 1024) if is_xl else (512, 768)
+        width = int(user_params.get("width", default_w))
+        height = int(user_params.get("height", default_h))
 
         logger.info(
             f"\n"
@@ -2198,14 +2169,13 @@ class ArtDirector:
             f"[POSITIVE]  : \"{final_positive}\"\n"
             f"[NEGATIVE]  : \"{final_negative}\"\n"
             f"[CKPT]      : {target_ckpt} ({plan_model_id})\n"
-            f"[RESOLUTION]: {width}x{height}{hires_diag}\n"
-            f"[INFERENCE] : Steps={steps} | CFG={cfg_scale} | Sampler={sampler_name}/{scheduler} | ClipSkip={clip_skip} | Seed={effective_seed}\n"
-            f"[HIRES.FIX] : Enable={enable_hr} | Scale={hr_scale}x | Steps={hr_second_pass_steps} | Denoise={hr_denoise} | Upscaler={hr_upscaler}\n"
+            f"[INFERENCE] : Steps={steps} | CFG={cfg_scale} | Sampler={sampler_name}/{scheduler} | ClipSkip={clip_skip} | Seed={effective_seed} | Size={width}x{height}\n"
+            f"[HIRES.FIX] : Enable={enable_hr} | Scale={hr_scale}x | Denoise={hr_denoise} | Upscaler={hr_upscaler}\n"
             f"[ADETAILER] : Face={'ON' if enable_ad else 'OFF'} | Hands={'ON' if hands_enabled else 'OFF'}\n"
             f"==========================================================================="
         )
 
-        plan = GenerationPlan(
+        return GenerationPlan(
             style=plan_model_id,
             target_model_key=plan_model_id,
             model_title=plan_model_title,
@@ -2250,12 +2220,6 @@ class ArtDirector:
             adetailer_hands_prompt=final_positive if hands_enabled else None,
             adetailer_hands_negative_prompt=final_negative if hands_enabled else None,
         )
-        self._log_vram_planner_passport(
-            plan=plan,
-            architecture="sdxl" if is_xl else "sd15",
-            lora_count=len(re.findall(r'<lora:[^>]+>', pos_raw)),
-        )
-        return plan
     def build_scene_background_plan(
         self,
         location_prompt: str,

@@ -969,17 +969,15 @@ class ForgeClient(QObject):
             "hr_second_pass_steps": steps_hr
         }
 
+        # Защита от TypeError в Forge (processing.py:1405): при активном Hires.fix передаём пустой список,
+        # исключая попадание None из Pydantic-схемы Forge в проверку 'Use same choices' not in self.hr_additional_modules
+        if is_hr_enabled:
+            payload["hr_additional_modules"] = kwargs.get("hr_additional_modules") if kwargs.get("hr_additional_modules") is not None else []
+
         override_dict = {
             "CLIP_stop_at_last_layers": clip_skip,
             "sd_vae": "Automatic"
         }
-
-        # Защита VRAM: VAE Tiling исключает скачки памяти в Shared RAM при апскейле
-        if FORGE_ENABLE_VAE_TILING:
-            override_dict["forge_vae_tiling"] = True
-            override_dict["sd_vae_tile"] = True
-            payload["forge_vae_tiling"] = True
-            payload["sd_vae_tile"] = True
 
         # ЖЕЛЕЗНЫЙ ХАРДЛОК ЧЕКПОИНТА: передаем модель прямо в override_settings только если set_model её ещё не синхронизировал
         target_model_title = target_model_name
@@ -1157,6 +1155,7 @@ class ForgeClient(QObject):
 
             if offload_pol.get("force_disable_hr") and payload.get("enable_hr"):
                 payload["enable_hr"] = False
+                payload.pop("hr_additional_modules", None)
                 is_hr_enabled = False
                 enable_hr = False
 
@@ -1164,19 +1163,22 @@ class ForgeClient(QObject):
                 payload["alwayson_scripts"]["ADetailer"]["args"] = list(ad_args[:3])
                 ad_args = payload["alwayson_scripts"]["ADetailer"]["args"]
 
-            want_vae_tiling = bool(FORGE_ENABLE_VAE_TILING or offload_pol.get("enable_vae_tiling", False))
-            if want_vae_tiling:
-                override_dict["forge_vae_tiling"] = True
-                override_dict["sd_vae_tile"] = True
-                payload["forge_vae_tiling"] = True
-                payload["sd_vae_tile"] = True
-                payload["override_settings"] = override_dict
+            if "want_vae_tiling" in kwargs:
+                want_vae_tiling = bool(kwargs["want_vae_tiling"])
+            else:
+                want_vae_tiling = bool(FORGE_ENABLE_VAE_TILING or offload_pol.get("enable_vae_tiling", False))
             if want_vae_tiling or getattr(self, "_never_oom_vae_active", False):
                 if self.has_script("Never OOM Integrated", tab="txt2img"):
                     scripts_map = payload.setdefault("alwayson_scripts", {})
                     if "Never OOM Integrated" not in scripts_map:
                         scripts_map["Never OOM Integrated"] = {"args": [False, want_vae_tiling]}
                         self._never_oom_vae_active = want_vae_tiling
+                    else:
+                        _args = scripts_map["Never OOM Integrated"].get("args", [])
+                        if len(_args) > 1:
+                            self._never_oom_vae_active = bool(_args[1])
+                else:
+                    self._never_oom_vae_active = False
         except Exception as _pol_err:
             offload_pol = {"mode": "DEFAULT", "always_offload": False}
             logger.debug(f"[ForgeClient] Ошибка применения vram_policy: {_pol_err}")
@@ -1356,6 +1358,7 @@ class ForgeClient(QObject):
                 if is_oom:
                     self.free_vram(always_offload=True, inference_memory_mb=1024, unload_models=True)
                 current_payload["enable_hr"] = False
+                current_payload.pop("hr_additional_modules", None)
                 current_payload.pop("alwayson_scripts", None)
                 try:
                     resp = _send_request(current_payload)
@@ -1387,6 +1390,7 @@ class ForgeClient(QObject):
             if not images and current_payload.get("enable_hr"):
                 logger.warning("Forge returned empty images list with Hires.fix. Retrying without Hires.fix...")
                 current_payload["enable_hr"] = False
+                current_payload.pop("hr_additional_modules", None)
                 current_payload.pop("alwayson_scripts", None)
                 resp = _send_request(current_payload)
                 if resp.status_code == 200:

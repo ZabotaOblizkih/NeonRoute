@@ -4,7 +4,7 @@
  * Network-only for /api/* and /media/* streams/images.
  */
 
-const CACHE_NAME = 'neonroute-shell-v5';
+const CACHE_NAME = 'neonroute-shell-v6';
 
 const PRECACHE_ASSETS = [
   '/',
