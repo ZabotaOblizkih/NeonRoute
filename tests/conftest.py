@@ -38,7 +38,8 @@ except ImportError:
 
 _AIRGAP_BASE = Path(__file__).resolve().parent.parent / "pytest_airgap_sandbox"
 _AIRGAP_BASE.mkdir(parents=True, exist_ok=True)
-_AIRGAP_TEMP_ROOT = Path(tempfile.mkdtemp(prefix="run_", dir=str(_AIRGAP_BASE)))
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "main")
+_AIRGAP_TEMP_ROOT = Path(tempfile.mkdtemp(prefix=f"run_{_XDIST_WORKER}_", dir=str(_AIRGAP_BASE)))
 
 
 def _apply_airgap_paths(temp_root: Path) -> None:
@@ -78,6 +79,8 @@ def _apply_airgap_paths(temp_root: Path) -> None:
         ("services.session_manager", {"HISTORY_DIR": mapping["HISTORY_DIR"], "OUTPUTS_DIR": mapping["OUTPUTS_DIR"]}),
         ("services.sandbox_manager", {"WORKSPACE_DIR": mapping["WORKSPACE_DIR"], "OUTPUTS_DIR": mapping["OUTPUTS_DIR"], "FORGE_ROOT_DIR": temp_root}),
         ("services.rp_cast_manager", {"HISTORY_DIR": mapping["HISTORY_DIR"]}),
+        ("services.rp_cast_extractor", {"HISTORY_DIR": mapping["HISTORY_DIR"]}),
+        ("mobile_server.routes.sessions", {"HISTORY_DIR": mapping["HISTORY_DIR"]}),
         ("services.user_profile_manager", {"DATA_DIR": mapping["DATA_DIR"], "USER_PROFILES_PATH": mapping["DATA_DIR"] / "user_profiles.json"}),
         ("services.art_director_config", {"ART_DIRECTOR_MODELS_PATH": mapping["ART_DIRECTOR_MODELS_PATH"], "DATA_DIR": mapping["DATA_DIR"]}),
         ("services.knowledge_manager", {"KNOWLEDGE_BASE_DIR": mapping["KNOWLEDGE_BASE_DIR"], "KNOWLEDGE_REGISTRY_PATH": mapping["KNOWLEDGE_REGISTRY_PATH"]}),
@@ -121,7 +124,8 @@ def pytest_unconfigure(config):
         except Exception:
             pass
     shutil.rmtree(_AIRGAP_TEMP_ROOT, ignore_errors=True)
-    shutil.rmtree(_AIRGAP_BASE, ignore_errors=True)
+    if not hasattr(config, "workerinput"):
+        shutil.rmtree(_AIRGAP_BASE, ignore_errors=True)
 
 
 _PROD_HISTORY_DIR = Path(__file__).resolve().parent.parent / "history"
@@ -134,15 +138,43 @@ def _snapshot_prod_history() -> set[str]:
     return {p.name for p in _PROD_HISTORY_DIR.glob("chat_*.json")}
 
 
+_REAL_VRAM_WAIT_TESTS = {
+    "test_wait_for_vram_stabilization_respects_dwell",
+    "test_vram_arbiter_stabilization_exits_via_plateau",
+}
+
+
+@pytest.fixture(autouse=True)
+def fast_test_guards(request, monkeypatch):
+    """Убирает лишние 2.5–3.0с ожидания реальных сокетов и WDDM VRAM в тестах."""
+    from services.process_manager import ProcessManager
+    from services.vram_arbiter import VRAMArbiter
+
+    monkeypatch.setattr(
+        ProcessManager,
+        "is_port_open",
+        lambda self, host="127.0.0.1", port=1234, timeout=0.1: False,
+    )
+    if request.node.name not in _REAL_VRAM_WAIT_TESTS and "stabilization" not in request.node.name:
+        monkeypatch.setattr(
+            VRAMArbiter,
+            "_wait_for_vram_stabilization",
+            lambda self, *args, **kwargs: None,
+        )
+
+
 @pytest.fixture(autouse=True)
 def check_sandbox_state_leak(request):
     _apply_airgap_paths(_AIRGAP_TEMP_ROOT)
     from services.sandbox_manager import SandboxManager
     SandboxManager._workspace_dir_override = _AIRGAP_TEMP_ROOT / "workspace"
     SandboxManager.set_active_session_id(None)
-    before_prod_files = _snapshot_prod_history()
+    is_xdist_worker = bool(os.environ.get("PYTEST_XDIST_WORKER"))
+    before_prod_files = _snapshot_prod_history() if not is_xdist_worker else set()
 
     yield
+
+    _apply_airgap_paths(_AIRGAP_TEMP_ROOT)
 
     # Очистка висящих фоновых таймеров роутера между тестами
     mr_mod = sys.modules.get("services.model_router")
@@ -158,14 +190,15 @@ def check_sandbox_state_leak(request):
             f"УТЕЧКА СОСТОЯНИЯ: Тест '{request.node.name}' оставил незакрытую сессию '{active_sid}'!"
         )
 
-    after_prod_files = _snapshot_prod_history()
-    leaked_files = after_prod_files - before_prod_files
-    if leaked_files:
-        for lf in leaked_files:
-            try:
-                (_PROD_HISTORY_DIR / lf).unlink(missing_ok=True)
-            except Exception:
-                pass
-        pytest.fail(
-            f"УТЕЧКА СЕССИИ В ПРОДАКШЕН: Тест '{request.node.name}' создал файлы в боевой папке history/: {leaked_files}"
-        )
+    if not is_xdist_worker:
+        after_prod_files = _snapshot_prod_history()
+        leaked_files = after_prod_files - before_prod_files
+        if leaked_files:
+            for lf in leaked_files:
+                try:
+                    (_PROD_HISTORY_DIR / lf).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            pytest.fail(
+                f"УТЕЧКА СЕССИИ В ПРОДАКШЕН: Тест '{request.node.name}' создал файлы в боевой папке history/: {leaked_files}"
+            )
