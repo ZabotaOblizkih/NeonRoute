@@ -23,6 +23,8 @@ class CharacterSummary(BaseModel):
     archetype: str
     author: Optional[str] = None
     description: Optional[str] = None
+    personality: Optional[str] = None
+    scenario: Optional[str] = None
     first_mes: Optional[str] = None
     tags: List[str] = []
 
@@ -42,17 +44,11 @@ def _scan_characters_sync() -> List[CharacterSummary]:
             cid = p.stem
             archetype = getattr(card, "archetype_label", "Персонаж")
 
-            # Extract clean description
-            desc = card.description_ru or card.description or ""
-            desc_clean = " ".join(desc.strip().split()[:35])
-            if desc_clean and len(desc.strip().split()) > 35:
-                desc_clean += "..."
-
-            # First message
-            first_mes = card.first_mes_ru or card.first_mes or ""
-
-            # Tags
-            tags = list(card.tags) if isinstance(card.tags, (list, tuple)) else []
+            desc = (card.description_ru or card.description or "").strip()
+            personality = (card.personality_ru or card.personality or "").strip() or None
+            scenario = (card.scenario_ru or card.scenario or "").strip() or None
+            first_mes = (card.first_mes_ru or card.first_mes or "").strip() or None
+            tags = [str(t) for t in card.tags] if isinstance(card.tags, (list, tuple)) else []
 
             results.append(
                 CharacterSummary(
@@ -61,9 +57,11 @@ def _scan_characters_sync() -> List[CharacterSummary]:
                     avatar_url=f"/media/character-avatar/{cid}",
                     archetype=archetype,
                     author=getattr(card, "creator_notes", None) or "Авторский канон",
-                    description=desc_clean or "Персонаж для ролевого диалога",
+                    description=desc or "Персонаж для ролевого диалога",
+                    personality=personality,
+                    scenario=scenario,
                     first_mes=first_mes,
-                    tags=tags[:5],
+                    tags=tags,
                 )
             )
         except Exception:

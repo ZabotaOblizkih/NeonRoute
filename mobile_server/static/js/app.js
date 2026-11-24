@@ -186,9 +186,28 @@ async function refreshSystemStatus() {
   }
 }
 
+const HEADER_GALLERY_ICON_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+    <polyline points="21 15 16 10 5 21"></polyline>
+  </svg>
+`;
+
+const HEADER_WORLD_LORE_ICON_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="2" y1="12" x2="22" y2="12"></line>
+    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+  </svg>
+`;
+
 function updateActiveMode(mode) {
   state.activeMode = mode;
-  elements.btnWorldStatus.style.display = (mode === 'roleplay') ? 'flex' : 'none';
+  const isRoleplay = (mode === 'roleplay');
+  elements.btnWorldStatus.style.display = isRoleplay ? 'flex' : 'none';
+  elements.btnHeaderGallery.title = isRoleplay ? 'Правила мира и лор' : 'Галерея артов';
+  elements.btnHeaderGallery.innerHTML = isRoleplay ? HEADER_WORLD_LORE_ICON_SVG : HEADER_GALLERY_ICON_SVG;
 }
 
 // ─── Drawer & Gestures ───
@@ -265,27 +284,29 @@ function closeDrawer() {
 }
 
 // ─── Character Gallery ───
+async function selectCompanion(char) {
+  closeDrawer();
+  try {
+    await api.setSystemMode('roleplay');
+    updateActiveMode('roleplay');
+    const res = await api.createSession({
+      mode: 'roleplay',
+      characterId: char.id,
+      title: char.name
+    });
+    await loadSessionsList();
+    await switchSession(res.session_id);
+    ui.showToast(`Начат диалог с ${char.name}`);
+  } catch (err) {
+    ui.showToast(`Ошибка старта персонажа: ${err.message}`, true);
+  }
+}
+
 async function loadCharactersList() {
   try {
     const list = await api.getCharacters();
     state.characters = list;
-    ui.renderCharactersGallery(elements.drawerCharactersGrid, list, async (char) => {
-      closeDrawer();
-      try {
-        await api.setSystemMode('roleplay');
-        updateActiveMode('roleplay');
-        const res = await api.createSession({
-          mode: 'roleplay',
-          characterId: char.id,
-          title: char.name
-        });
-        await loadSessionsList();
-        await switchSession(res.session_id);
-        ui.showToast(`Начат диалог с ${char.name}`);
-      } catch (err) {
-        ui.showToast(`Ошибка старта персонажа: ${err.message}`, true);
-      }
-    });
+    ui.renderCharactersGallery(elements.drawerCharactersGrid, list, selectCompanion);
   } catch (err) {
     console.debug('Failed to load characters:', err);
   }
@@ -877,18 +898,48 @@ function initForgeEvents() {
   });
 }
 
-// ─── World Status & Campaign Bottom Sheet ───
-function initWorldStatusEvents() {
-  elements.btnWorldStatus.addEventListener('click', async () => {
-    if (!state.activeSessionId) return;
-    try {
-      const castData = await api.getSessionCast(state.activeSessionId);
-      ui.renderWorldStatus(elements.worldStatusBody, castData);
-      elements.worldStatusModal.classList.add('active');
-    } catch (err) {
-      ui.showToast(`Ошибка загрузки статуса мира: ${err.message}`, true);
+// ─── World Status & Character Gallery Bottom Sheet ───
+function setWorldModalTitle(title) {
+  const titleEl = elements.worldStatusModal.querySelector('.modal-title');
+  if (titleEl) titleEl.textContent = title;
+}
+
+async function openWorldStatusModal() {
+  if (!state.activeSessionId) return;
+  try {
+    const castData = await api.getSessionCast(state.activeSessionId);
+    setWorldModalTitle('📜 Правила мира и лор');
+    elements.worldStatusBody.classList.remove('characters-gallery-detailed');
+    ui.renderWorldStatus(elements.worldStatusBody, castData);
+    elements.worldStatusModal.classList.add('active');
+  } catch (err) {
+    ui.showToast(`Ошибка загрузки статуса мира: ${err.message}`, true);
+  }
+}
+
+async function openCharactersGalleryModal() {
+  try {
+    if (!state.characters || state.characters.length === 0) {
+      await loadCharactersList();
     }
-  });
+    setWorldModalTitle('🎭 Галерея персонажей');
+    ui.renderCharactersGallery(
+      elements.worldStatusBody,
+      state.characters,
+      async (char) => {
+        elements.worldStatusModal.classList.remove('active');
+        await selectCompanion(char);
+      },
+      { detailed: true }
+    );
+    elements.worldStatusModal.classList.add('active');
+  } catch (err) {
+    ui.showToast(`Ошибка загрузки персонажей: ${err.message}`, true);
+  }
+}
+
+function initWorldStatusEvents() {
+  elements.btnWorldStatus.addEventListener('click', openCharactersGalleryModal);
 
   elements.worldStatusBody.addEventListener('click', async (e) => {
     const target = e.target.closest('button');
@@ -959,9 +1010,13 @@ function initHardwareEvents() {
   });
 }
 
-// ─── Art Gallery Modal ───
+// ─── Art Gallery Modal (or World Lore in Roleplay) ───
 function initArtGalleryEvents() {
   elements.btnHeaderGallery.addEventListener('click', async () => {
+    if (state.activeMode === 'roleplay') {
+      await openWorldStatusModal();
+      return;
+    }
     try {
       const data = await api.getArtGallery(state.activeSessionId);
       ui.renderArtGalleryGrid(elements.artGalleryGrid, data.items || [], (item) => {

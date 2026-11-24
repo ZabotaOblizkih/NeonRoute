@@ -312,6 +312,82 @@
   text-align: center;
 }
 
+/* Detailed Character Gallery Modal List */
+.characters-gallery-detailed {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.character-card-item.detailed {
+  cursor: default;
+  padding: 12px;
+  gap: 10px;
+}
+
+.character-card-item.detailed:active {
+  transform: none;
+  border-color: var(--border-subtle);
+  box-shadow: none;
+}
+
+.character-card-detailed-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.character-card-item.detailed .character-card-poster {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.character-card-detailed-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.character-card-item.detailed .character-card-name {
+  white-space: normal;
+  font-size: 15px;
+}
+
+.character-card-author {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.character-card-item.detailed .character-card-body {
+  padding: 0;
+  gap: 8px;
+}
+
+.character-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.character-detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--neon-cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.character-detail-value {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Sessions List */
 .drawer-sessions-list {
   display: flex;

@@ -111,6 +111,7 @@ export function createAssistantMessagePlaceholder(container, mode = 'assistant',
   return {
     row,
     bubble,
+    mode,
     avatarImg,
     thoughtBox,
     thoughtHeader,
@@ -263,8 +264,8 @@ export function finalizeAssistantMessage(placeholder, container, handlers = {}) 
     placeholder.bubble.appendChild(choicesBox);
   }
 
-  // Render Message Action Footer ([ 🎨 Арт ], [ 🔄 Повтор ], [ 📋 ])
-  if (!placeholder.bubble.querySelector('.message-action-footer')) {
+  // Render Message Action Footer ([ 🎨 Арт ], [ 🔄 Повтор ], [ 📋 ]) only in Roleplay mode
+  if (placeholder.mode === 'roleplay' && !placeholder.bubble.querySelector('.message-action-footer')) {
     const footer = document.createElement('div');
     footer.className = 'message-action-footer';
 
@@ -520,9 +521,11 @@ export function renderSessionsList(container, sessions, activeSessionId, onSelec
   });
 }
 
-// ─── Character Gallery Rendering (2-column grid) ───
-export function renderCharactersGallery(container, characters, onSelect) {
+// ─── Character Gallery Rendering (2-column grid or detailed modal list) ───
+export function renderCharactersGallery(container, characters, onSelect, options = {}) {
+  const { detailed = false } = options;
   container.innerHTML = '';
+  container.classList.toggle('characters-gallery-detailed', detailed);
 
   if (!characters || characters.length === 0) {
     container.innerHTML = `
@@ -533,9 +536,24 @@ export function renderCharactersGallery(container, characters, onSelect) {
     return;
   }
 
+  const appendDetailBlock = (parent, label, value) => {
+    if (!value) return;
+    const block = document.createElement('div');
+    block.className = 'character-detail-block';
+    const lbl = document.createElement('div');
+    lbl.className = 'character-detail-label';
+    lbl.textContent = label;
+    const val = document.createElement('div');
+    val.className = 'character-detail-value';
+    val.textContent = value;
+    block.appendChild(lbl);
+    block.appendChild(val);
+    parent.appendChild(block);
+  };
+
   characters.forEach(char => {
     const card = document.createElement('div');
-    card.className = 'character-card-item';
+    card.className = detailed ? 'character-card-item detailed' : 'character-card-item';
     card.dataset.id = char.id;
 
     const poster = document.createElement('img');
@@ -556,25 +574,71 @@ export function renderCharactersGallery(container, characters, onSelect) {
     archetype.className = 'character-card-archetype';
     archetype.textContent = char.archetype || 'Персонаж';
 
-    const desc = document.createElement('div');
-    desc.className = 'character-card-desc';
-    desc.textContent = char.description || char.author || '';
+    body.appendChild(name);
+    body.appendChild(archetype);
+
+    if (detailed) {
+      if (char.author) {
+        const author = document.createElement('div');
+        author.className = 'character-card-author';
+        author.textContent = char.author;
+        body.appendChild(author);
+      }
+
+      if (char.tags && char.tags.length > 0) {
+        const tagsCloud = document.createElement('div');
+        tagsCloud.className = 'tags-cloud';
+        char.tags.forEach(tag => {
+          const badge = document.createElement('span');
+          badge.className = 'tag-badge';
+          badge.textContent = tag;
+          tagsCloud.appendChild(badge);
+        });
+        body.appendChild(tagsCloud);
+      }
+
+      appendDetailBlock(body, 'Описание', char.description);
+      appendDetailBlock(body, 'Характер', char.personality);
+      appendDetailBlock(body, 'Сценарий', char.scenario);
+      appendDetailBlock(body, 'Приветствие', char.first_mes);
+    } else {
+      const desc = document.createElement('div');
+      desc.className = 'character-card-desc';
+      desc.textContent = char.description || char.author || '';
+      body.appendChild(desc);
+    }
 
     const startBtn = document.createElement('button');
     startBtn.className = 'btn-card-start';
-    startBtn.textContent = 'Начать диалог';
+    startBtn.textContent = detailed ? '🎴 Выбрать компаньона' : 'Начать диалог';
 
-    body.appendChild(name);
-    body.appendChild(archetype);
-    body.appendChild(desc);
     body.appendChild(startBtn);
 
-    card.appendChild(poster);
-    card.appendChild(body);
-
-    card.addEventListener('click', () => {
-      if (onSelect) onSelect(char);
-    });
+    if (detailed) {
+      const headerRow = document.createElement('div');
+      headerRow.className = 'character-card-detailed-head';
+      headerRow.appendChild(poster);
+      const headMeta = document.createElement('div');
+      headMeta.className = 'character-card-detailed-meta';
+      headMeta.appendChild(name);
+      headMeta.appendChild(archetype);
+      if (body.querySelector('.character-card-author')) {
+        headMeta.appendChild(body.querySelector('.character-card-author'));
+      }
+      headerRow.appendChild(headMeta);
+      card.appendChild(headerRow);
+      card.appendChild(body);
+      startBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (onSelect) onSelect(char);
+      });
+    } else {
+      card.appendChild(poster);
+      card.appendChild(body);
+      card.addEventListener('click', () => {
+        if (onSelect) onSelect(char);
+      });
+    }
 
     container.appendChild(card);
   });
