@@ -252,6 +252,10 @@ class MenuBuilder:
         act_about.triggered.connect(lambda *_: window._open_about_dialog())
         help_menu.addAction(act_about)
 
+        act_updates = Action(FIF.SYNC, "Обновления...", root_menu)
+        act_updates.triggered.connect(lambda *_: window._open_updates_dialog())
+        help_menu.addAction(act_updates)
+
         root_menu.addMenu(help_menu)
 
         root_menu.addSeparator()

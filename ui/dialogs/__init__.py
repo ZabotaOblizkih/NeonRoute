@@ -35,6 +35,7 @@ _LAZY_EXPORTS = {
     "CampaignInfoDialog": (".campaign_info_dialog", "CampaignInfoDialog"),
     "SettingsDialog": (".settings_dialog", "SettingsDialog"),
     "MobileServerDialog": (".mobile_server_dialog", "MobileServerDialog"),
+    "UpdatesDialog": (".updates_dialog", "UpdatesDialog"),
 }
 
 if TYPE_CHECKING:

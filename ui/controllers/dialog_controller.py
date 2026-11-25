@@ -266,6 +266,12 @@ class DialogControllerMixin:
         dialog = AboutDialog(self)
         dialog.exec()
 
+    def _open_updates_dialog(self):
+        """Opens Updates & Integrity dialog."""
+        from ui.dialogs.updates_dialog import UpdatesDialog
+        dialog = UpdatesDialog(self)
+        dialog.exec()
+
     def _open_knowledge_manager_dialog(self):
         """Открывает диалоговое окно базы знаний Эларии."""
         try:

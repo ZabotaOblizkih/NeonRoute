@@ -760,6 +760,18 @@ class SettingsDialog(FramelessDialog):
         )
         group.addSettingCard(self.card_about)
 
+        self.card_updates = PushSettingCard(
+            text="Проверить",
+            icon=FIF.SYNC,
+            title="Обновления",
+            content="Проверка целостности файлов и выборочное обновление из GitHub Releases",
+            parent=group
+        )
+        self.card_updates.clicked.connect(
+            lambda: self.window._open_updates_dialog() if hasattr(self.window, "_open_updates_dialog") else None
+        )
+        group.addSettingCard(self.card_updates)
+
         self.card_exit = PushSettingCard(
             text="Выход",
             icon=FIF.POWER_BUTTON,
