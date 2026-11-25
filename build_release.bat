@@ -31,6 +31,45 @@ if not defined PY_EXE (
 )
 
 echo [INFO] Using Python: %PY_EXE%
+echo [INFO] Generating and validating model presets catalog...
+%PY_EXE% scripts\build_model_catalog.py
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Model catalog generation failed!
+    pause
+    exit /b %ERRORLEVEL%
+)
+
+set "GIT_TERMINAL_PROMPT=0"
+where git >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    git rev-parse --is-inside-work-tree >nul 2>&1
+    if !ERRORLEVEL! EQU 0 (
+        git diff --quiet -- data/model_presets_catalog.json
+        if !ERRORLEVEL! EQU 1 (
+            echo [INFO] Model catalog changed, committing data/model_presets_catalog.json...
+            git add -- data/model_presets_catalog.json
+            git commit --only data/model_presets_catalog.json -m "chore(catalog): update model_presets_catalog.json"
+            if !ERRORLEVEL! EQU 0 (
+                for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CUR_BRANCH=%%B"
+                if defined CUR_BRANCH if not "!CUR_BRANCH!"=="HEAD" (
+                    git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>&1
+                    if !ERRORLEVEL! EQU 0 (
+                        echo [INFO] Pushing catalog update to origin HEAD...
+                        git push origin HEAD
+                        if !ERRORLEVEL! NEQ 0 (
+                            echo [WARN] git push failed or is disabled on remote, continuing release build...
+                        )
+                    ) else (
+                        echo [INFO] No upstream configured for branch !CUR_BRANCH!, skipping git push.
+                    )
+                )
+            )
+        ) else (
+            echo [INFO] data/model_presets_catalog.json is up to date.
+        )
+    )
+)
+
 %PY_EXE% scripts\build_release.py %*
 
 if %ERRORLEVEL% NEQ 0 (

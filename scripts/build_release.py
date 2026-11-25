@@ -389,7 +389,7 @@ def assemble_release(
     # Clean defaults are auto-generated on first launch by services.art_director_config.
     data_dst = release_dir / "data"
     data_dst.mkdir(parents=True, exist_ok=True)
-    for df in ["user_personas.json", "lora_registry.json"]:
+    for df in ["user_personas.json", "lora_registry.json", "model_presets_catalog.json"]:
         src_df = repo_root / "data" / df
         if src_df.is_file():
             shutil.copy2(src_df, data_dst / df)

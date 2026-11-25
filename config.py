@@ -39,6 +39,11 @@ LOCAL_BIN_DIR = BASE_DIR / "bin"
 LOCAL_MODELS_DIR = BASE_DIR / "models"
 LLAMA_SERVER_BAT_PATH = BASE_DIR / "run_llama_server.bat"
 ART_DIRECTOR_MODELS_PATH = DATA_DIR / "art_director_models.json"
+MODEL_PRESETS_CATALOG_PATH = DATA_DIR / "model_presets_catalog.json"
+MODEL_PRESETS_CATALOG_URL = os.environ.get(
+    "NEONROUTE_MODEL_CATALOG_URL",
+    "https://raw.githubusercontent.com/ZabotaOblizkih/NeonRoute/main/data/model_presets_catalog.json",
+)
 LORA_REGISTRY_PATH = DATA_DIR / "lora_registry.json"
 KV_SLOTS_DIR = DATA_DIR / "kv_slots"
 # ENTITIES_JSON_PATH = DATA_DIR / "entities.json"  # Deprecated and removed
