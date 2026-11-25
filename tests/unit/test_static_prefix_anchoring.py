@@ -118,7 +118,7 @@ def test_turn_context_injection_only_in_ephemeral_payload_not_history():
     assert raw_user_text in last_msg["content"]
     assert "- Текущая дата и время: 18.11.2026" in last_msg["content"]
     assert "Любит спорткары" in last_msg["content"]
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in last_msg["content"]
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in last_msg["content"]
 
     # 3. Промежуточные сообщения истории не содержат TurnContext
     for m in messages[1:-1]:

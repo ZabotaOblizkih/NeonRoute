@@ -41,7 +41,7 @@ def test_gallery_directives_registry():
     assert "sdxl" in GALLERY_DIRECTIVES_BY_ARCH
     # Обратная совместимость для внешних модулей
     assert GALLERY_SKILL_DIRECTIVE_TEMPLATE == GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
 
 
@@ -77,7 +77,7 @@ def test_build_gallery_art_prompt_sdxl():
         target_model_desc="photorealism",
         architecture="sdxl"
     )
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in prompt
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in prompt
     assert "thigh-up portrait" in prompt
     assert "medium shot" in prompt
     assert "NO booru/SD1.5 tags" in prompt
@@ -381,7 +381,7 @@ def test_cinematic_directives_compilation_and_sections():
 
     # get_art_directive полиморфная диспетчеризация
     assert "[SYSTEM DIRECTIVE: SDXL Cinematic Frame Director]" in get_art_directive("cinematic", "sdxl")
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in get_art_directive("gallery", "sdxl")
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in get_art_directive("gallery", "sdxl")
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Cinematic Frame Director]" in get_art_directive("cinematic", "sd15")
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in get_art_directive("gallery", "sd15")
 
@@ -687,7 +687,7 @@ def test_get_art_directive_dialect_dispatch():
 
     # Juggernaut (SDXL arch, dialect == 'phrases') -> получает SDXL фразовый шаблон
     art_dir_phrases = get_art_directive("gallery", "sdxl", model_hint=juggernaut_desc)
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in art_dir_phrases
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in art_dir_phrases
     assert "STYLE GUIDANCE" in art_dir_phrases
 
 

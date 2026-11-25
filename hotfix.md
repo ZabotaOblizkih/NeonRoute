@@ -1,5 +1,49 @@
 # История изменений и релизов NeonRoute
 
+## v0.9.8.8-beta (2026-11-25)
+
+> **Ключевое обновление:** полноценный рендеринг Markdown в мобильном веб-клиенте, галерея персонажей и лор мира прямо в шапке РП-чата, сквозное сохранение негативного промпта (`--neg`) при доработке изображений, устранение ошибок Forge (`KeyError: 'forge_vae_tiling'`, `TypeError` в Hires.fix) и устранение дублирования оркестрации VRAM между десктопом и мобильным сервером.
+
+### Что изменилось
+
+#### Мобильный веб-интерфейс (PWA) и РП-режим
+
+- **Отображение Markdown в ответах нейросети:** внедрён XSS-безопасный парсер Markdown с поддержкой заголовков, списков, цитат, таблиц, инлайн-кода, блоков кода с кнопкой копирования в один клик и корректной отрисовкой незакрытых блоков кода прямо во время потокового стриминга.
+- **Галерея персонажей и «Правила мира и лор» в шапке РП-чата:** в режиме Roleplay кнопки верхней панели теперь открывают детальную карточку персонажей (описание, характер, сценарий, приветствие, теги, автор и выбор компаньона) и справочник правил мира/лора, возвращаясь к галерее артов в режимах Ассистента и Инженера.
+- **Чистый интерфейс вне РП-чата:** кнопки действий под сообщениями (`🎨 Арт сцены`, `🔄 Повтор`, `📋 Копировать`) отображаются только в режиме Roleplay и больше не загромождают обычные диалоги.
+- **Корректная прокрутка и вёрстка на мобильных браузерах (включая Firefox Mobile):** добавлена гарантированная гибкая распорка снизу области чата и защита карточек от сжатия при появлении экранной клавиатуры; кэш PWA принудительно обновлён (`v6`).
+
+#### Генерация изображений, память промптов и SD WebUI Forge
+
+- **Сквозное сохранение негативного промпта (`--neg`) между кадрами:** при уточнении или продолжении генерации следующего изображения модель теперь автоматически получает из истории диалога не только позитивные теги, но и предыдущий негативный промпт (`--neg`), не теряя пользовательские исключения.
+- **Исправление ошибок SD WebUI Forge (`KeyError` и `TypeError` в Hires.fix):** управление тайлингом VAE переведено на штатный скрипт Forge (`Never OOM Integrated`) вместо несуществующих ключей настроек, а при включённом `Hires.fix` устранено падение второго прохода на `hr_additional_modules`.
+- **Исправление сбоя при завершении генерации арта в чате:** устранена ошибка `UnboundLocalError` при обработке результата генерации за счёт каскадного извлечения параметров визуального плана.
+- **Единая оркестрация LLM / Forge / VRAM и ускорение тестов:** устранено дублирование логики переключения видеопамяти между десктопным приложением и мобильным сервером, добавлена потокобезопасная блокировка переключений `VRAMArbiter` и настроен параллельный запуск тестов через `pytest-xdist`.
+
+---
+
+### Технический список изменений (Changelog)
+
+- **Рендеринг Markdown и интерфейс мобильного клиента (`mobile_server/static/js/markdown.js`, `ui.js`, `app.js`, `index.html`, `components.css`, `layout.css`, `sw.js`):**
+  - Добавлен XSS-безопасный рендерер `markdown.js` (заголовки, списки, цитаты, таблицы, инлайн-код, блоки кода с `.md-code-copy-btn`, ссылки, форматирование и обработка незакрытых code-блоков при стриминге), интегрированный в `updateTokenChunk` и `finalizeAssistantMessage`.
+  - В `createAssistantMessagePlaceholder` сохранено поле `mode`; рендер панели `.message-action-footer` ограничен условием `placeholder.mode === 'roleplay'`.
+  - Логика выбора персонажа вынесена в `selectCompanion(char)`; в режиме `roleplay` кнопка `#btnWorldStatus` открывает `openCharactersGalleryModal()`, а `#btnHeaderGallery` переключается на `openWorldStatusModal()`.
+  - В `layout.css` добавлена flex-распорка `.chat-viewport::after` (`calc(110px + max(12px, env(safe-area-inset-bottom, 0px)) + var(--keyboard-offset, 0px))`), в `components.css` задано `flex-shrink: 0` для `.chat-row` и `.cyberpunk-viewfinder`; версия кэша Service Worker повышена до `neonroute-shell-v6` (`?v=6`).
+- **Галерея персонажей и единая оркестрация VRAM (`mobile_server/routes/characters.py`, `art.py`, `mobile_server/services/art_service.py`, `mobile_server/dependencies.py`, `services/vram_arbiter.py`, `services/process_manager.py`, `services/assistant_flow.py`):**
+  - В `CharacterSummary` добавлены поля `personality` и `scenario`, снята обрезка `description` до 35 слов и `tags` до 5 элементов.
+  - В `VRAMArbiter` добавлен реентрантный мьютекс `threading.RLock()` (`self._lock`) для `prepare_for_task`, `release_llm_for_diffusion`, `release_diffusion_for_llm` и `release_all`; параметризован `wait_stabilization` в `_release_forge_vram`.
+  - В `process_manager.py` и `mobile_server/dependencies.py` реализовано переиспользование единого инстанса `ProcessManager` (`get_process_manager()` / `get_or_create_process_manager()`) с привязкой к `_lm_studio_client`.
+  - В `assistant_flow.py`, `art_service.py` и роутах `/generate`, `/direct-command`, `/scene-background` удалены дублирующие `prepare_session_forge_kwargs` и `enqueue_forge_plan_async` с переходом на единый `enqueue_forge_generation_async` поверх `run_forge_art_generation()`.
+- **Интеграция с SD WebUI Forge и контроллер генераций (`services/forge_client.py`, `ui/controllers/assistant_flow_controller.py`):**
+  - Удалена передача несуществующих ключей `forge_vae_tiling` / `sd_vae_tile`; управление тайлингом переведено на `alwayson_scripts["Never OOM Integrated"]["args"] = [False, want_vae_tiling]`.
+  - При `enable_hr=True` в payload `/sdapi/v1/txt2img` добавлена явная передача `"hr_additional_modules": []` с очисткой при `enable_hr=False` и в ветках ретрая (устранение `TypeError: argument of type 'NoneType' is not iterable`).
+  - В `_handle_assistant_art_completed` извлечение `v_int` перенесено в начало метода с многоуровневым каскадом фоллбэков (`widget_to_update`, `task.metadata`, `result`, `plan`) и безопасным чтением `generation_params` / `parameters`.
+- **Сквозная передача негативного промпта `--neg` (`services/assistant_flow.py`, `services/session_manager.py`, `ui/controllers/assistant_flow_controller.py`, `ui/builders/chat_bubble_builder.py`):**
+  - В `extract_last_image_prompt()` добавлена функция `_extract_msg_negative(m)` (извлечение `user_neg` из `visual_intent` или `generation_params`) с автоматическим добавлением `--neg <tokens>` в `[IMAGE_PROMPT: ...]` при последующих шагах генерации.
+  - Обеспечена запись и реконструкция флага `--neg` в `memory_content` (`assistant_flow_controller.py`), `session_manager.py` и `chat_bubble_builder.py`.
+- **Параллелизация и изоляция тестового контура (`tests/conftest.py`):**
+  - Подключён `pytest-xdist` (`pytest -n auto`), изолирован `_AIRGAP_TEMP_ROOT` по `PYTEST_XDIST_WORKER`, добавлены заглушки `ProcessManager.is_port_open` и `VRAMArbiter._wait_for_vram_stabilization`, а также повторное применение `_apply_airgap_paths` после каждого теста.
+
 ## v0.9.8.7-beta (2026-11-24)
 
 > **Ключевое обновление:** 100% сохранение KV-кэша в Roleplay-чате на каждом ходе, устранение сетевого сбоя запуска SD WebUI Forge (`clip==1.0` / `tqdm` на PyPI), защита ядра Forge после обновлений (`git pull`), мягкая деградация при отсутствии ADetailer и динамический аудит установленных чекпоинтов.

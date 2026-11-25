@@ -48,7 +48,7 @@ def test_gallery_effective_prompt_reflects_selected_checkpoint():
         "gallery",
         selected_forge_checkpoint="ponyDiffusionV6XL.safetensors"
     )
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in effective_sdxl
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in effective_sdxl
     assert "ponyDiffusionV6XL.safetensors" in effective_sdxl
 
     effective_auto = AssistantPromptBuilder.get_effective_skill_prompt(

@@ -98,7 +98,7 @@ def test_manual_header_selection_propagates_through_deferred_rag_to_llm(monkeypa
     assert "selected_forge_checkpoint" not in call_kwargs
     turn_msg = call_kwargs["messages"][-1]["content"]
 
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in turn_msg
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in turn_msg
     assert "Prompt as cinematic dark fantasy art, tactile fabric textures." in turn_msg
     assert '"suggested_model": "sdxl_fantasy"' in turn_msg
 
@@ -130,6 +130,6 @@ def test_enqueue_gallery_art_pass_respects_manual_and_auto_style_description(mon
     ctrl._enqueue_gallery_art_pass("Нарисуй аниме город")
     manual_task = ctrl.task_queue.enqueue.call_args[0][0]
     manual_prompt = manual_task.kwargs["messages"][0]["content"]
-    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in manual_prompt
+    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in manual_prompt
     assert "Prompt as cinematic dark fantasy art, tactile fabric textures." in manual_prompt
     assert '"suggested_model": "sdxl_fantasy"' in manual_prompt
