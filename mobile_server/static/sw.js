@@ -17,6 +17,7 @@ const PRECACHE_ASSETS = [
   '/static/js/api.js',
   '/static/js/stream.js',
   '/static/js/ui.js',
+  '/static/js/markdown.js',
   '/static/assets/icon-192.svg',
   '/static/assets/icon-512.svg'
 ];

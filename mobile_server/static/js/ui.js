@@ -3,6 +3,8 @@
  * Handles DOM rendering for messages, thought spoilers, choices, stats, drawer, modals, and toasts.
  */
 
+import { renderMarkdown } from './markdown.js';
+
 // ─── Auto-scroll Lock ───
 export function isNearBottom(container, threshold = 80) {
   if (!container) return true;
@@ -100,6 +102,20 @@ export function createAssistantMessagePlaceholder(container, mode = 'assistant',
   // Main text container
   const textContainer = document.createElement('div');
   textContainer.className = 'assistant-text';
+  textContainer.addEventListener('click', (e) => {
+    const copyBtn = e.target.closest('.md-code-copy-btn');
+    if (!copyBtn) return;
+    const codeEl = copyBtn.closest('.md-code-block')?.querySelector('pre code');
+    if (!codeEl) return;
+    const codeText = codeEl.textContent || '';
+    const onCopied = () => {
+      copyBtn.textContent = '✓ Скопировано';
+      setTimeout(() => { copyBtn.textContent = '📋 Копировать'; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(codeText).then(onCopied).catch(() => {});
+    }
+  });
 
   bubble.appendChild(thoughtBox);
   bubble.appendChild(textContainer);
@@ -152,7 +168,7 @@ export function finalizeThoughtSpoiler(placeholder, container) {
 export function updateTokenChunk(placeholder, chunk, container) {
   const nearBottom = isNearBottom(container);
   placeholder.rawText = (placeholder.rawText || '') + chunk;
-  placeholder.textContainer.textContent = placeholder.rawText;
+  placeholder.textContainer.innerHTML = renderMarkdown(placeholder.rawText);
   if (nearBottom) scrollToBottom(container);
 }
 
@@ -206,8 +222,8 @@ export function finalizeAssistantMessage(placeholder, container, handlers = {}) 
   const fullText = placeholder.rawText || placeholder.textContainer.textContent || '';
   const { cleanText, choices, stats } = parseSpecialTags(fullText);
 
-  // Set narrative text
-  placeholder.textContainer.textContent = cleanText;
+  // Set narrative text as formatted Markdown
+  placeholder.textContainer.innerHTML = renderMarkdown(cleanText);
 
   // Render Stats Accordion if present
   if (stats.length > 0 && !placeholder.bubble.querySelector('.stats-accordion')) {
