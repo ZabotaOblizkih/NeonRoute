@@ -39,7 +39,7 @@
         "enable_hr": false,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 25
@@ -97,7 +97,7 @@
         "enable_hr": false,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "DPM++ SDE",
         "scheduler": "Normal",
         "steps": 25
@@ -157,7 +157,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "Latent (bicubic antialiased)",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 28
@@ -228,7 +228,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 25
@@ -292,7 +292,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "Euler a",
         "scheduler": "Karras",
         "steps": 40
@@ -351,7 +351,7 @@
         "enable_hr": false,
         "hires_denoise": 0.34,
         "hires_upscaler": "R-ESRGAN 4x+",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "DPM++ 2M",
         "scheduler": "Karras",
         "steps": 28
@@ -415,7 +415,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.25,
+        "hr_scale": 1.5,
         "sampler": "DPM++ 2M",
         "scheduler": "Karras",
         "steps": 35
