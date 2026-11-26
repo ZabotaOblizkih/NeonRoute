@@ -101,6 +101,7 @@ class ForgeSettingsDialog(FramelessDialog):
             self.titleBar.closeBtn.clicked.connect(self.reject)
 
         self._current_palette: Dict[str, str] = {}
+        self._palette_pixmap_key: Optional[int] = None
 
         self._load_current_settings()
         self._init_ui()
@@ -124,6 +125,10 @@ class ForgeSettingsDialog(FramelessDialog):
     def update_adaptive_palette(self):
         """Адаптирует стили карточек и контролов под активные обои."""
         pixmap = self._resolve_pixmap()
+        pixmap_key = pixmap.cacheKey() if pixmap and not pixmap.isNull() else -1
+        if self._current_palette and self._palette_pixmap_key == pixmap_key:
+            return
+        self._palette_pixmap_key = pixmap_key
         palette = extract_adaptive_palette(pixmap)
         self._current_palette = palette
 
@@ -578,7 +583,11 @@ class ForgeSettingsDialog(FramelessDialog):
 
     def _sync_with_current_config(self):
         """Синхронизирует элементы интерфейса с текущими параметрами."""
-        self.line_path.setText(self.current_forge_root)
+        self.line_path.blockSignals(True)
+        try:
+            self.line_path.setText(self.current_forge_root)
+        finally:
+            self.line_path.blockSignals(False)
         self._update_path_and_patch_status(self.current_forge_root)
 
         self.switch_fp8.blockSignals(True)
@@ -688,7 +697,10 @@ class ForgeSettingsDialog(FramelessDialog):
 
         if self._hardware_spec is None:
             try:
-                self._hardware_spec = resolve_forge_hardware_spec()
+                try:
+                    self._hardware_spec = resolve_forge_hardware_spec(fetch_latest_url=False)
+                except TypeError:
+                    self._hardware_spec = resolve_forge_hardware_spec()
             except Exception as e:
                 logger.debug(f"[ForgeSettingsDialog] Ошибка resolve_forge_hardware_spec: {e}")
 

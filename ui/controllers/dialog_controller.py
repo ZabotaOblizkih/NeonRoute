@@ -478,6 +478,7 @@ class DialogControllerMixin:
         """Открывает главное окно параметров и настроек Fluent Design."""
         dialog = None
         open_gallery_after = False
+        open_bug_report_after = False
         try:
             from ui.dialogs.settings_dialog import SettingsDialog
             dialog = SettingsDialog(self)
@@ -488,6 +489,7 @@ class DialogControllerMixin:
                 dialog.switch_to_page(idx)
             dialog.exec()
             open_gallery_after = getattr(dialog, "_requested_open_gallery", False)
+            open_bug_report_after = getattr(dialog, "_requested_open_bug_report", False)
         except Exception as e:
             logger.error(f"Не удалось открыть окно настроек: {e}", exc_info=True)
         finally:
@@ -497,5 +499,64 @@ class DialogControllerMixin:
 
         if open_gallery_after and hasattr(self, "_open_characters_gallery_dialog"):
             self._open_characters_gallery_dialog()
+        elif open_bug_report_after:
+            self.open_bug_report_dialog(source="settings")
+
+    def open_bug_report_dialog(
+        self,
+        error_summary: str = "",
+        traceback_text: str = "",
+        source: str = "manual",
+    ):
+        """Открывает диалог предпросмотра и отправки отчёта об ошибке без дублей и вложенной модальности."""
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+
+        existing = getattr(self, "_active_bug_report_dialog", None)
+        if existing is not None:
+            try:
+                if existing.isMinimized():
+                    existing.showNormal()
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                self._active_bug_report_dialog = None
+
+        active_modal = QApplication.activeModalWidget()
+        if active_modal is not None and active_modal is not self:
+            try:
+                active_modal.close()
+            except Exception:
+                pass
+            QTimer.singleShot(
+                0,
+                lambda: self.open_bug_report_dialog(
+                    error_summary=error_summary,
+                    traceback_text=traceback_text,
+                    source=source,
+                ),
+            )
+            return
+
+        dialog = None
+        try:
+            from ui.dialogs.bug_report_dialog import BugReportDialog
+
+            dialog = BugReportDialog(
+                parent=self,
+                error_summary=error_summary,
+                traceback_text=traceback_text,
+                source=source,
+            )
+            self._active_bug_report_dialog = dialog
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Не удалось открыть диалог отчёта об ошибке: {e}", exc_info=True)
+        finally:
+            self._active_bug_report_dialog = None
+            if dialog is not None:
+                dialog.deleteLater()
 
 __all__ = ["DialogControllerMixin"]

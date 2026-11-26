@@ -178,6 +178,11 @@ NeonRoute/
 ├── run_mobile_server.py                 # Точка входа Headless Mobile Gateway Server (FastAPI на порту 8000)
 ├── server_config.ini                    # Пользовательская конфигурация путей [PATHS] (forge_root_dir, forge_path)
 │
+├── cloudflare_worker/                   # Изолированный HTTP-прокси (Cloudflare Worker -> GitHub Issues)
+│   ├── src/index.js                     # Валидация JSON (title<=200, body<=16000), CORS, прокси в GitHub API через env.GITHUB_TOKEN
+│   ├── wrangler.toml                    # Конфигурация воркера и целевого репозитория (GITHUB_OWNER, GITHUB_REPO)
+│   └── README.md                        # Инструкция деплоя (wrangler secret put GITHUB_TOKEN, wrangler deploy)
+│
 ├── core/                                # Ядро и системные привязки Windows
 │   ├── __init__.py                      # Инициализация пакета core
 │   ├── forge_locator.py                 # 5-уровневый каскад поиска Forge, парсер аргументов, изоляция env, find_forge_python, check_forge_environment_ready
@@ -205,9 +210,10 @@ NeonRoute/
 │   ├── asset_validator.py               # Динамический каскадный аудит Forge, чекпоинтов SD, LoRA, ADetailer и ESRGAN
 │   ├── assistant_flow.py                # Пошаговый пайплайн Ассистента
 │   ├── assistant_prompt_builder.py      # Сборщик промпта Эларии, resolve_gallery_target_profile, директивы SD 1.5/SDXL (thigh-up, HAND ANCHOR, --self, --neg)
+│   ├── bug_report_service.py            # Изолированный сервис баг-репортов: санитизация путей/секретов, сбор окружения, сборка и отправка отчёта
 │   ├── card_translator.py               # Пошаговый переводчик карточек с CJK Quality Gate
 │   ├── chub_client.py                   # REST API клиент каталога Chub.ai (поиск, очистка промо-мусора)
-│   ├── civitai_service.py               # Запрос параметров модели по AutoV2 SHA-256 с Civitai API
+│   ├── civitai_service.py               # Запрос параметров модели по SHA-256 / имени с Civitai API и отменяемым хешированием (через каскадный резолвер)
 │   ├── code_engine.py                   # ASTSkeletonizer, ExecutionSandbox, AutoImporter (Zero-Token Healing)
 │   ├── code_validator.py                # AST-валидатор синтаксиса, Scope Guard, квалифицированный Stub Guard (Class.method), BlockingFreeze, MissingDisplayFlip
 │   ├── context_window_builder.py        # Сборщик контекста LLM, «Три якоря», Sliding CoT, проброс selected_forge_checkpoint
@@ -231,6 +237,7 @@ NeonRoute/
 │   ├── forge_patcher.py                 # Аудит пакетов Forge (.dist-info), фиксация constraints, лог [ForgePatcher], игнорирование путей
 │   ├── git_sandbox.py                   # GitSandboxManager: локальный Git репозиторий песочницы
 │   ├── hybrid_search.py                 # Гибридный поиск: BM25 (TF + stopwords) + FastEmbed ONNX + Weighted Normalized RRF (v3)
+│   ├── integrity_service.py             # SSOT периметра целостности, SHA-256/aggregate_hash, release_manifest.json, 3-way обновления
 │   ├── knowledge_manager.py             # Менеджер базы знаний: [RAG-Trace], Context Stitching, has_document_anaphora, registry.json
 │   ├── knowledge_watcher.py             # QFileSystemWatcher сателлит с дебаунсом 2.0 с
 │   ├── layer_budgeter.py                # Топологический аудитор GPU, парсер GGUF и калькулятор слоев NGL
@@ -241,6 +248,7 @@ NeonRoute/
 │   ├── memory_extractor.py              # Асинхронный экстрактор фактов о пользователе (PRIORITY_LOW)
 │   ├── minor_safety.py                  # Детектор несовершеннолетних персонажей и фильтр безопасности
 │   ├── mode_coordinator.py              # Конечный автомат режимов (Teardown -> Switch -> Boot -> Mount)
+│   ├── model_catalog_service.py         # Каскадный резолвер параметров (GitHub -> data/model_presets_catalog.json -> Civitai -> Fallback), единый парсер meta, нормализация и [AutoFill:<id>] трассировка
 │   ├── model_router.py                  # Гибридный роутер моделей Арт-директора (триггеры + FastEmbed, reset_instance, изоляция таймера)
 │   ├── patch_engine.py                  # Хирургический PatchApplier и SelfHealingEngine
 │   ├── process_manager.py               # Оркестратор процессов: llama-server, Forge (resolve_forge_startup_flags), L4+L7, thread isolation
@@ -321,13 +329,14 @@ NeonRoute/
 │   │   ├── task_lifecycle_controller.py # Маршрутизация задач в очередь, перехват команд памяти
 │   │   └── window_state_controller.py   # Кэширование фона главного окна и полный экран (F11)
 │   │
-│   ├── dialogs/                         # 29 модальных диалоговых окон приложения (Lazy Loaded via PEP 562)
+│   ├── dialogs/                         # 31 модальное диалоговое окно приложения (Lazy Loaded via PEP 562)
 │   │   ├── __init__.py                  # Реэкспорт диалогов через PEP 562
 │   │   ├── about_dialog.py              # Окно «О программе», лицензии, системная информация
 │   │   ├── anchor_viewer_dialog.py      # Инспектор активных системных якорей и промптов
 │   │   ├── avatar_crop_dialog.py        # Интерактивный кроппер аватаров персонажей и профиля
 │   │   ├── avatar_lightbox_dialog.py    # Полноэкранный просмотрщик аватаров высокого разрешения
 │   │   ├── background_dialog.py         # Настройка статических и динамических фонов сцены
+│   │   ├── bug_report_dialog.py         # Предпросмотр, редактирование и явная отправка отчёта об ошибке (FramelessDialog)
 │   │   ├── campaign_info_dialog.py      # Дашборд кампании (Память, Инвентарь, Сценарий, Каст, Локация)
 │   │   ├── campaign_subdialogs.py       # Вспомогательные окна редактора квестов и отношений
 │   │   ├── card_visual_setup_dialog.py  # Визуальный конфигуратор ДНК внешности персонажа
@@ -357,6 +366,7 @@ NeonRoute/
 │   │   ├── prompt_viewer_dialog.py      # Инспектор сырых токенов и скомпилированного системного промпта
 │   │   ├── settings_dialog.py           # Глобальные параметры интерфейса и тем оформления
 │   │   ├── shutdown_dialog.py           # Диалог безопасного завершения фоновых процессов
+│   │   ├── updates_dialog.py            # Проверка целостности, 3-way анализ и выборочное обновление с GitHub Releases
 │   │   └── user_settings_dialog.py      # Профили пользователя и игровые персоны
 │   │
 │   ├── components/                      # 23 специализированных графических компонента
@@ -402,6 +412,8 @@ NeonRoute/
 │   │
 │   └── workers/                         # Фоновые воркеры интерфейса
 │       ├── __init__.py                  # Инициализация пакета workers
+│       ├── bug_report_worker.py         # Фоновый QThread отправки отчёта об ошибке на Cloudflare Worker
+│       ├── integrity_worker.py          # Фоновая warn-only проверка целостности, проверка и применение обновлений
 │       ├── model_discovery_worker.py    # Фоновое сканирование установленных моделей
 │       ├── shutdown_worker.py           # Грациозная остановка внешних рантаймов
 │       └── tool_execution_worker.py     # Выполнение инструментов песочницы в рабочем потоке
@@ -415,7 +427,8 @@ NeonRoute/
 │
 ├── scripts/                             # Диагностические и сервисные CLI-инструменты
 │   ├── assistant_prompt_stand.py        # Интерактивный CLI-стенд инспекции системного промпта, скиллов и арт-пайплайна Ассистента
-│   ├── build_release.py                 # Автоматический конвейер релизной сборки (AST-аудит, Quality Gate, упаковка ZIP)
+│   ├── build_model_catalog.py           # Детерминированный генератор и merger версионированного каталога data/model_presets_catalog.json (вызывается в build_release.bat)
+│   ├── build_release.py                 # Автоматический конвейер релизной сборки (AST-аудит, Quality Gate, release_manifest.json, ZIP, GitHub Releases)
 │   ├── download_llama_server.py         # CLI-утилита загрузки и распаковки бинарников llama-server с верификацией версии
 │   ├── forge_neonroute.patch            # Эталонный git diff патча ядра Forge 2.0 (free-vram, VRAM offload, config=None)
 │   └── patch_forge.py                   # CLI-утилита инспекции, авто-бэкапа, применения и отката патчей Forge
@@ -475,7 +488,8 @@ NeonRoute/
         ├── test_llama_downloader.py     # Авто-загрузчик llama-server (CUDA/Vulkan/CPU), Range-докачка, валидация cudart/cublas DLL и --list-devices
         ├── test_logging_hygiene.py      # Гигиена pythonw.exe, перенаправление stdout/stderr, crash.log и threading.excepthook
         ├── test_mobile_server_dialog.py # Жизненный цикл MobileServerDialog, QR, смена IP, остановка сервера
-        ├── test_models_manager_dialog.py# 10 сквозных тестов ModelsManagerDialog: CRUD, пресеты, спинбоксы, воркеры
+        ├── test_model_catalog_service.py# Изолированные тесты каталога моделей: нормализация, canonical_key, parse_civitai_meta, каскадный резолвер и build_model_catalog
+        ├── test_models_manager_dialog.py# Сквозные тесты ModelsManagerDialog: CRUD, пресеты, спинбоксы, воркеры, target_row, частичные профили и [AutoFill:<id>] логирование
         ├── test_seamless_onboarding_and_models.py # Бесшовный авто-подбор .gguf моделей и умный однократный онбординг Forge
         ├── test_spinbox_geometry.py     # Синхронизация геометрии QLineEdit в спинбоксах, предотвращение 1px сжатия
         ├── test_assistant_flow.py       # Резолвинг температур и диспетчеризация арт-прохода
@@ -767,6 +781,7 @@ flowchart TD
    - **«Квантомания» (`switch_fp8`)**: управляет ключом `forge_sdxl_fp8_enabled` (по умолчанию `True`). Переводит веса UNet SDXL в формат `fp8e4` через REST API Forge (`forge_unet_storage_dtype='fp8e4'`), высвобождая до 2.5 ГБ VRAM без потери качества рендера. В логах генерации `ArtDirector` и клиента `ForgeClient` статус отображается как `[Квантомания: ВКЛ (fp8e4) / ВЫКЛ]`.
    - **Запрет автоскачивания ADetailer (`switch_ad_no_hf`)**: управляет ключом `forge_ad_no_huggingface` (по умолчанию `False` — онлайн-загрузка недостающих детекторов лиц/рук с Hugging Face разрешена). При активации (`True`) передает флаг `--ad-no-huggingface` в аргументы запуска процесса Forge, гарантируя автономную работу строго по локальным весам из `models/adetailer`.
    - **Режим генерации иллюстраций (`segmented_art`)**: выбор между ручным рендером по кнопке в чате (`"manual"`) и сквозной фоновой генерацией сразу при получении промпта (`"auto"`).
+   - **Калибровка порога `VAETile` (`services/art_director/vram_policy.py`)**: в режиме `FAST_KEEP_VRAM` для SDXL с активным `ADetailer` без `Hires.fix` принудительное включение `Never OOM Integrated` (`enable_vae_tiling=True`, `inf_mem=512 МБ`) срабатывает с порога `>= 1024×1024` (`1 048 576 px`). Стандартный портретный холст `896×1152` (`1 032 192 px`) декодируется без тайлинга VAE.
 2. **Контракт мгновенного бесколлизионного сохранения (Zero-Click AutoSave)**:
    - Переключение тумблеров `switch_fp8` и `switch_ad_no_hf` мгновенно фиксирует изменения на диске через `ConfigManager.update_setting(key, value)` и обновляет in-memory словарь `parent_win.app_config` без необходимости нажатия кнопки «Сохранить». Изменения не теряются при закрытии диалога крестиком, клавишей Esc или кнопкой «Отмена».
    - Защита от паразитного дребезга: метод синхронизации UI `_sync_with_current_config()` изолирует установку начальных состояний тумблеров через `blockSignals(True) ... finally: blockSignals(False)`, предотвращая холостые операции ввода-вывода при каждом открытии окна.
@@ -1099,6 +1114,7 @@ classDiagram
 - **Уровни приоритетов**: `PRIORITY_HIGH = 0` (пользовательский ввод и прямой рендер), `PRIORITY_NORMAL = 10` (арт сцены, озвучка), `PRIORITY_LOW = 20` (экстракция фактов, RAG-индексация).
 - **Вытесняющая отмена (`abort_tasks_by_type`)**: при остановке генерации или смене сессии неприоритетные задачи мгновенно сбрасываются из очереди.
 - **Универсальный воркер**: `TaskQueueWorker.run()` выполняет задачи по общему контракту `task.func(*task.args, **task.kwargs)`, подготавливая VRAM через `VRAMArbiter.prepare_for_task()` и гарантируя отсутствие взаимных блокировок.
+- **Единый headless-возврат LLM в VRAM (`VRAMArbiter`)**: отложенный возврат языковой модели после освобождения Forge перенесен из GUI-таймера `HardwareEngineMixin` в `services/vram_arbiter.py` (`schedule_llm_reload()`, `cancel_llm_reload()`, `resolve_active_llm_target()`) на базе `threading.Timer` с поколением таймера (`_reload_generation`) и `RLock`. В `run_forge_art_generation(..., unload_after=True)` (`services/assistant_flow.py`) и `HardwareEngineMixin._reload_active_lms_model_async()` используется единый механизм, а `TaskQueueWorker.enqueue()` / `stop()` автоматически отменяют ожидающий таймер при поступлении новой задачи (`llm`, `image`, `scene_art`, `scene_background`) или остановке очереди. Задача ставится с `PRIORITY_LOW` и `metadata={"silent": True, "is_llm_reload": True}`.
 
 #### Архитектура отложенной сборки контекста (Deferred Context Assembly Runner)
 
@@ -1243,8 +1259,8 @@ classDiagram
 ```
 
 1. **Контроллер-миксины (`ui/models_manager/mixins.py`)**:
-   - `ModelPipelineFormMixin`: двусторонняя привязка полей формы пайплайна (сэмплеры, планировщики, шаги, CFG, денойз hires, clip skip, негативный промпт), пресеты параметров (`MODEL_PRESETS`), расчет геометрии и разрешения, синхронизация с дашбордом ADetailer. Блокировка сигналов (`blockSignals(True)`) для всех виджетов формы при загрузке модели предотвращает рекурсивные вызовы и преждевременную перезапись параметров.
-   - `ForgeCivitaiSyncMixin`: фоновые интеграции сканирования локальных чекпоинтов SD Forge (`ForgeScanWorker`), парсинг параметров Civitai API (`CivitaiParamsWorker`), авторегистрация новых моделей в реестре и семантическое тестирование роутинга (`RoutingTestWorker`). Все операции сканирования и хеширования изолированы от GUI-потока.
+   - `ModelPipelineFormMixin`: двусторонняя привязка полей формы пайплайна (сэмплеры, планировщики, шаги, CFG, денойз hires, `hr_scale`, clip skip, негативный промпт, `trained_words`), пресеты параметров (`MODEL_PRESETS`), расчет геометрии и разрешения, синхронизация с дашбордом ADetailer. Блокировка сигналов (`blockSignals(True)`) для всех виджетов формы при загрузке модели предотвращает рекурсивные вызовы и преждевременную перезапись параметров.
+   - `ForgeCivitaiSyncMixin`: фоновые интеграции сканирования локальных чекпоинтов SD Forge (`ForgeScanWorker`), каскадный резолвер автонастройки (`CivitaiParamsWorker` -> `services/model_catalog_service.py`: GitHub raw -> локальный `data/model_presets_catalog.json` -> Civitai API -> явный fallback `not_found`/`empty_meta`/`catalog_error`), авторегистрация новых моделей и семантическое тестирование роутинга (`RoutingTestWorker`). На весь цикл автонастройки жёстко фиксируется `target_row` и генерируется сквозной `autofill_id` (`[AutoFill:<id>]`). Частичные профили без текстовых/стилевых полей (`None`/`[]`) применяют технические параметры без затирания ручных `routing_description`, `llm_guidance`, `style_triggers` и `negative_prompt`; при конфликте непустых ручных полей запрашивается подтверждение. В `ForgeClient` удалены скрытые переопределения `clip_skip`, а `build_release.bat` автоматически обновляет `data/model_presets_catalog.json` через `scripts/build_model_catalog.py`.
    - `FP8ConversionMixin`: управление конвейером квантования весов в FP8 E4M3FN (`FP8ConvertWorker`), обнаружение локального torch/python окружения, Name Affinity Guard и безопасная атомарная замена файлов. Метод `_update_fp8_button_state()` выполняется за $\mathcal{O}(1)$ строковыми проверками суффиксов, не вызывая `subprocess.run` и `import torch` при открытии окна.
    - `_DynamicModuleProxy`: динамический прокси для `InfoBar`, `InfoBarPosition` и `MessageBox`, прозрачно перенаправляющий вызовы на моки `patch("ui.models_manager_dialog.*")` в существующих тестовых сьютах.
 
@@ -1280,6 +1296,12 @@ classDiagram
    - `/api/art`: заказ генерации артов через `ArtDirector` и Forge API с контролем очередей.
    - `/api/characters`: каталог карточек персонажей, переключение спутников.
    - `/media`: раздача сохраненных артов, аватаров и фонов сцены с динамическим кэшированием HTTP ETag 304 через `_file_response` и `_svg_response`.
+5. **Прозрачное логирование в общий лог (`logs/neonroute.log`)**:
+   - В `mobile_server/api.py` добавлен `_access_log_middleware`, логирующий входящие HTTP-запросы в формате `[MobileHTTP] <ip> <method> <path> -> <status> (<ms>)` (шумный поллинг `/health`, `/api/system/health`, `/api/system/status`, `/api/art/progress` и `/static/*` при ответах 2xx/3xx пишется на уровне `DEBUG`), а также события старта/остановки шлюза (`start_mobile_server_thread`, `stop_mobile_server_thread`).
+   - В роутах `chat.py`, `art.py`, `sessions.py` и `system.py` добавлено структурированное `INFO`-логирование ключевых действий (`[MobileChat]`, `[MobileArt]`, `[MobileSessions]`, `[MobileSystem]`).
+   - В автономной точке входа `run_mobile_server.py` подключен `TimedRotatingFileHandler` в `logs/neonroute.log` с единым форматом, совпадающим с `main.py`.
+6. **Сквозной возврат LLM после мобильной генерации арта**:
+   - Оба мобильных пути рендеринга (`chat_service.py` и `art_service.py`) вызывают `run_forge_art_generation(..., unload_after=True)`, который после `release_diffusion_for_llm()` планирует отложенный возврат активной LLM в VRAM через `VRAMArbiter.schedule_llm_reload()`.
 
 ### 5.6. Диалог управления мобильным сервером (`MobileServerDialog`) и модальная безопасность
 
@@ -1697,7 +1719,7 @@ flowchart TD
 | :--- | :---: | :---: | :--- |
 | **`tests/smoke/`** | 16 | 113 | Быстрые сквозные смоук-тесты: контракт синхронизации закрытия диалога моделей (`test_dialog_sync_smoke.py`, 5 тестов: async reload, неблокирующий save_all, дедупликация ModelRouter, фоновый refresh_checkpoints, сброс WaitCursor), единый консолидированный сьют РП-чата (`test_roleplay_e2e_smoke.py`), гигиена batch-файлов, проброс ADetailer, матрица профилей VRAM/RAM Forge, Layer Budgeter, жизненный цикл MainWindow, холодный старт на чистом ПК без Forge (`test_clean_pc_startup_smoke.py`), реактивный жизненный цикл `ForgeSettingsDialog` |
 | **`tests/unit/`** | 68 | 648 | Изолированное модульное тестирование: жизненный цикл `MobileServerDialog` и безопасность превью (`test_mobile_server_dialog.py`, 5 тестов), синхронизация геометрии QLineEdit в спинбоксах (`test_spinbox_geometry.py`, 6 тестов), динамический каскад ассетов и моделей Forge (`test_asset_validator.py`, 10 тестов), аудит игнорирования патчей Forge и нормализация путей (`test_forge_patch_ignored.py`, 6 тестов), гигиена pythonw.exe, перенаправление stdout/stderr и crash.log (`test_logging_hygiene.py`), встроенный загрузчик Forge (`test_forge_downloader.py`), сквозные тесты ModelsManagerDialog (`test_models_manager_dialog.py`), 3-слойный ADetailer и Structured JSON (`test_adetailer_dialog.py`), 5-уровневый каскад локатора Forge, динамический поиск интерпретатора `find_forge_python` и аудит зависимостей `check_forge_environment_ready` (`test_forge_locator.py`, 18 тестов), адаптивная политика VRAM и автоинжекция `--skip-install` (`test_forge_vram_policy.py`, 28 тестов), защита отката и аудит коммитов git HEAD (`test_forge_patcher.py`, 17 тестов), гейт ADetailer, fallback чекпоинтов и различение keep-alive сброса от оффлайна (`test_forge_client.py`, 104 теста), предотвращение запуска второго процесса на занятом порту 7860 (`test_forge_handshake.py`, 7 тестов), автозагрузчик llama-server, клиенты Forge и LM Studio, патчер Forge, память MemoryDB, FastEmbed ONNX, Deferred RAG |
-| **`tests/integration/`** | 3 | 13 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`), отказоустойчивости e2e (`test_e2e_fault_tolerance.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок) |
+| **`tests/integration/`** | 3 | 14 | Сквозные тесты периметра безопасности песочницы (`test_sandbox_security.py`), отказоустойчивости e2e (`test_e2e_fault_tolerance.py`) и сквозного арбитража видеопамяти (`test_vram_arbitrage_flow.py`, включая идемпотентность выгрузок и `schedule_llm_reload` / `cancel_llm_reload`) |
 | **`tests/` (root)** | 12 | 175 | Интеграционные, регрессионные и характеризационные тесты: базовые контракты MainWindow (14 тестов), Token Budget Manager, Tavern Parser, Thought Stream Parser, Layer Budgeter, Three Anchors (включая стабильность префикса KV-кэша лорбука), FP8 Safety, Gallery Directives, Mobile Server Gateway, Prompt & Anchor Viewer, Chat Flow & Gallery Override (`test_chat.py`) |
 | **ИТОГО** | **99** | **956** | **100% Pass Rate на полном прогоне `pytest -q`** |
 
@@ -1910,4 +1932,60 @@ $$T_{\text{current}} = \begin{cases} T_{\text{worker}}, & \text{если } \text
      Запрещено возвращать приведённый выше код без изменений! Обязательно внеси указанные правки в код перед записью в <<TOOL:write_file>>.
      ```
    - Это гарантирует, что модель видит конкретное предписание исправления в непосредственной близости к точке генерации ответа.
+
+---
+
+## 9. Контроль целостности, релизный манифест и выборочные обновления
+
+Подсистема контроля целостности и доставки обновлений спроектирована вокруг единого источника правды (SSOT) в `services/integrity_service.py`, связывающего сборочный конвейер и клиентский рантайм:
+
+1. **Единый периметр целостности и защита от самохэширования**:
+   - Периметр включает штатные корневые файлы сборки (за исключением пользовательского `server_config.ini`), директории кода/ассетов (`core/`, `services/`, `ui/`, `mobile_server/`, `utils/`, `scripts/`, `audio/`, `assets/`), эталонные каталоги `data/` (`model_presets_catalog.json`, `lora_registry.json`, `skill_icons/`) и штатные аватары.
+   - Пользовательские настройки, БД, кэши и рантайм (`config.json`, `server_config.ini`, `data/memory.db*`, `data/user_personas.json`, `data/cache/`, `history/`, `logs/`, `models/`, `bin/`, `runtime/`, `*.pyc`, `*.log`, `*.bak`, `hotfix_*`, а также сам `release_manifest.json`) строго исключены из периметра и расчёта `aggregate_hash`.
+   - Пофайловый SHA-256 считается в бинарном режиме (`rb`) чанками по 128 КБ (hex в нижнем регистре), а `aggregate_hash` — от канонической UTF-8 строки `f"{rel_path}:{sha256}:{size}\n"` по отсортированным POSIX-путям.
+
+2. **Релизный конвейер (`build_release.bat` / `scripts/build_release.py`)**:
+   - На этапе версионирования обновляется `config.APP_VERSION` без автоматической перезаписи `hotfix.md`. Описание релиза (`body`) при публикации читается из `hotfix.md` строго в режиме чтения (`read_hotfix_section`).
+   - В `assemble_release()` формируется `release_manifest.json` (`schema_version = 1`, `app_version`, `tag`, `target_branch = "ui-fluent-redesign"`, `aggregate_hash`, `files`), который упаковывается в `dist/NeonRoute_v{version}.zip` и дублируется в `dist/release_manifest.json`.
+   - После успешного прохождения всех этапов сборки и тестов `build_release.bat` запрашивает `[Y/N]` на публикацию в GitHub Releases (`ZabotaOblizkih/NeonRoute`) через `--publish-only` с авторизацией через `git credential fill`, удалением одноимённых ассетов и загрузкой ZIP + `release_manifest.json`.
+
+3. **Фоновая проверка при старте (Warn-Only)**:
+   - `LocalIntegrityWorker` (`QThread`, `parent=None`) запускается через `QTimer.singleShot` уже после `startup_ready` и не входит в `StartupBarrier`, не задерживая скрытие splash-экрана.
+   - Отсутствие локального `release_manifest.json` или несовпадение хэшей логируется (`INFO` / `WARNING [HASH MISMATCH] ...`) без исключений и без прерывания запуска приложения.
+
+4. **3-Way анализ и выборочное обновление в UI (`UpdatesDialog`)**:
+   - Точки входа расположены в «Параметры и настройки» -> «Справка» -> «Обновления» (`MenuBuilder.create_settings_menu` и `SettingsDialog._build_help_page` -> `DialogControllerMixin._open_updates_dialog`).
+   - Быстрая проверка сверяет удалённый `aggregate_hash` и версию; при отличиях выполняется 3-way классификация по `(B, L, R)`:
+     - `UPDATE_SAFE` (`L == B` и `R != B`, либо новый файл): отмечен по умолчанию;
+     - `CONFLICT_LOCAL` (`L != B` и `R != B` и `L != R`): помечается как изменённый локально, по умолчанию снят с выбора; при явном выборе создаётся резервная копия `.bak`;
+     - `NO_BASE_DIFF` (`B is None`): требует осознанного выбора пользователя.
+   - Выборочное применение (`apply_selective_update_from_zip`) распаковывает только отмеченные файлы во временную директорию `tempfile.TemporaryDirectory()` с защитой от Zip Slip и снятием корневого префикса `NeonRoute_v{version}/`, обрабатывает `PermissionError` / `WinError 32` без остановки обновления остальных файлов и атомарно обновляет локальный `release_manifest.json` через `atomic_write_json`.
+
+---
+
+## 10. Изолированная подсистема отправки отчётов об ошибках (Bug Reporter & Cloudflare Proxy)
+
+Подсистема баг-репортов спроектирована как полностью изолированный контур без хранения секретных токенов в клиентском коде и без фоновой автоотправки данных:
+
+1. **Облачный прокси (`cloudflare_worker/`)**:
+   - `cloudflare_worker/src/index.js` и `cloudflare_worker/wrangler.toml`: минимальный Cloudflare Worker, обрабатывающий `POST` с `Content-Type: application/json` (и `OPTIONS` preflight, возвращая `405` для прочих методов).
+   - Валидирует структуру JSON, непустоту и типы `title`/`body` (и опциональных `app_version`, `category`) с жёсткими лимитами (`title` ≤ 200 символов, `body` ≤ 16000 символов; `400`/`413` при нарушении).
+   - Использует секрет окружения `env.GITHUB_TOKEN` (устанавливается через `wrangler secret put GITHUB_TOKEN`) и переменные `GITHUB_OWNER`, `GITHUB_REPO` для создания Issue через `POST https://api.github.com/repos/${owner}/${repo}/issues`, возвращая `201` (`issue_number`, `issue_url`) либо безопасную JSON-ошибку без раскрытия секретов.
+
+2. **Сервис диагностики, маскирования и сборки (`services/bug_report_service.py`)**:
+   - Не зависит от Qt-виджетов (прямо тестируется в `pytest`).
+   - `sanitize_text()`: маскирует пути пользователя Windows (`C:\Users\<name>\...`, `C:/Users/<name>/...` без учёта регистра), значения `USERPROFILE`, `HOME`, `BASE_DIR`, `FORGE_ROOT_DIR`, `USERNAME`, учётные данные в URL (`user:pass@`), а также известные форматы токенов и API-ключей (`ghp_...`, `github_pat_...`, `hf_...`, `sk-...`, query/header/key-value секреты).
+   - `collect_environment_summary()`: собирает срез окружения (версия приложения, ОС, Python, GPU/VRAM через `pynvml`/реестр, RAM через `psutil`, недостающие зависимости через `EnvironmentDoctor.check_missing(verbose=False)` и версии ключевых пакетов); каждый блок изолирован `try/except` с fallback `"N/A"`.
+   - `build_bug_report_payload()`: формирует очищенный `BugReportPayload` (окружение, источник, суть ошибки, traceback и хвост свежих логов из `_CURRENT_SESSION_LOGS` / `logs/neonroute.log` / `logs/crash.log`) с усечением по `max_body_chars`.
+   - `send_bug_report()`: выполняет явный `requests.post` на эндпоинт (по умолчанию `DEFAULT_BUG_REPORT_ENDPOINT = "https://neonroute-bug-reporter.neonroute-logs-2026.workers.dev"`, с приоритетом `NEONROUTE_BUG_REPORT_URL` и `bug_report_endpoint_url` в `config.json`), перехватывает сетевые и HTTP-ошибки и возвращает нормализованный `BugReportResult`.
+
+3. **Фоновый воркер и диалог предпросмотра (`ui/workers/bug_report_worker.py`, `ui/dialogs/bug_report_dialog.py`)**:
+   - `BugReportSendWorker(QThread)` с `parent=None` выполняет `send_bug_report()` в фоне и излучает `finished_with_result(object)` / `error_occurred(str)`.
+   - `BugReportDialog(FramelessDialog)` с `FluentTitleBar` и адаптивной палитрой отображает уведомление о приватности, редактируемые поля `title` и `body` для полного предпросмотра перед отправкой, блокирует элементы на время запроса и очищает ссылку на воркер через `deleteLater()`. Зарегистрирован в `ui/dialogs/__init__.py` (`_LAZY_EXPORTS`).
+
+4. **Точки интеграции и модальная безопасность**:
+   - `DialogControllerMixin.open_bug_report_dialog()` (`ui/controllers/dialog_controller.py`): предотвращает дублирование открытого окна и исключает вложенную модальность (если открыта другая модалка, закрывает её и планирует открытие через `QTimer.singleShot(0, ...)`).
+   - Точки входа: меню «Справка» -> «Сообщить об ошибке...» (`ui/builders/menu_builder.py`), вкладка «Справка» в настройках (`SettingsDialog._build_help_page` в `ui/dialogs/settings_dialog.py`), консоль логов (`LogConsoleDialog._open_bug_report` в `ui/log_console.py`) и кнопка «Сообщить об ошибке...» в `global_exception_handler()` (`main.py`) с дедупликацией повторных падений по сигнатуре и cooldown.
+
+
 

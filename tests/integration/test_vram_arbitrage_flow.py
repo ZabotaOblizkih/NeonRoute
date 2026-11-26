@@ -131,3 +131,39 @@ def test_vram_arbiter_idempotent_llm_and_forge_unloads():
     assert arbiter._current_owner == GPUOwner.LLM
     mock_forge.unload_checkpoint.assert_not_called()
     mock_forge.free_vram.assert_not_called()
+
+
+def test_vram_arbiter_schedule_and_cancel_llm_reload(monkeypatch):
+    """Единый headless-возврат LLM в VRAM: постановка задачи в TaskQueue и отмена при новой задаче."""
+    mock_lm = MagicMock()
+    mock_lm.process_manager = None
+    mock_lm.ensure_model_loaded = MagicMock()
+    mock_tq = MagicMock()
+    mock_tq._running = True
+    mock_tq.current_task = None
+    mock_tq.has_pending_tasks.return_value = False
+
+    monkeypatch.setattr("services.task_queue.get_task_queue", lambda: mock_tq)
+    monkeypatch.setattr(
+        "services.vram_arbiter.resolve_active_llm_target",
+        lambda session_id=None, mode=None, fallback_model=None: ("test-model.gguf", 14336, False, False),
+    )
+
+    arbiter = VRAMArbiter(lm_client=mock_lm, forge_client=MagicMock())
+    arbiter._current_owner = GPUOwner.NONE
+
+    # 1. Отмена сбрасывает таймер до срабатывания
+    assert arbiter.schedule_llm_reload(delay=0.5, session_id="s1") is True
+    assert arbiter.cancel_llm_reload(reason="test") is True
+    assert mock_tq.enqueue.call_count == 0
+
+    # 2. Срабатывание таймера ставит тихую задачу Возврат LLM в VRAM
+    assert arbiter.schedule_llm_reload(delay=0.05, session_id="s1") is True
+    import time
+    time.sleep(0.15)
+    assert mock_tq.enqueue.call_count == 1
+    enqueued_task = mock_tq.enqueue.call_args[0][0]
+    assert enqueued_task.name == "Возврат LLM в VRAM"
+    assert enqueued_task.task_type == "llm"
+    assert enqueued_task.metadata.get("silent") is True
+    assert enqueued_task.metadata.get("is_llm_reload") is True

@@ -123,6 +123,91 @@ def resolve_forge_models_directory(forge_root: Optional[Path], launcher_path: Op
     return (REPO_ROOT.parent / "neyroGPD" / "models" / "Stable-diffusion").resolve()
 
 
+def resolve_forge_embeddings_directories(
+    forge_root: Optional[Path] = None,
+    launcher_path: Optional[Path] = None,
+) -> List[Path]:
+    """
+    Возвращает упорядоченный список директорий embeddings Forge с раскрытием симлинков и NTFS Junctions:
+    1. --embeddings-dir из аргументов лаунчера.
+    2. Каталоги относительно --models-dir / Stable-diffusion (models_root/embeddings, models_root.parent/embeddings, models_root/TextualInversion).
+    3. Штатные каталоги forge_root (forge_root/embeddings, forge_root/webui/embeddings, forge_root/models/embeddings, forge_root/webui/models/embeddings).
+    """
+    custom = parse_forge_launcher_args(launcher_path)
+    candidates: List[Path] = []
+
+    if "embeddings_dir" in custom:
+        candidates.append(custom["embeddings_dir"])
+    if "models_dir" in custom:
+        candidates.append(custom["models_dir"] / "embeddings")
+        candidates.append(custom["models_dir"].parent / "embeddings")
+        candidates.append(custom["models_dir"] / "TextualInversion")
+    if "ckpt_dir" in custom:
+        models_root = custom["ckpt_dir"].parent
+        candidates.append(models_root / "embeddings")
+        candidates.append(models_root.parent / "embeddings")
+        candidates.append(models_root / "TextualInversion")
+
+    if forge_root:
+        p_root = Path(forge_root).resolve()
+        candidates.extend([
+            p_root / "embeddings",
+            p_root / "webui" / "embeddings",
+            p_root / "models" / "embeddings",
+            p_root / "webui" / "models" / "embeddings",
+            p_root / "models" / "TextualInversion",
+        ])
+        try:
+            for sub in p_root.glob("webui*/webui"):
+                if sub.is_dir():
+                    candidates.append(sub / "embeddings")
+                    candidates.append(sub / "models" / "embeddings")
+        except Exception:
+            pass
+
+    seen = set()
+    result: List[Path] = []
+    for d in candidates:
+        try:
+            r = Path(d).resolve()
+            if r not in seen:
+                seen.add(r)
+                result.append(r)
+        except Exception:
+            pass
+    return result
+
+
+def resolve_forge_embeddings_directory(
+    forge_root: Optional[Path] = None,
+    launcher_path: Optional[Path] = None,
+) -> Path:
+    """
+    Возвращает основную целевую директорию embeddings Forge (для скачивания и сохранения).
+    Предпочитает --embeddings-dir, затем существующую директорию, иначе webui/embeddings или models/embeddings.
+    """
+    custom = parse_forge_launcher_args(launcher_path)
+    if "embeddings_dir" in custom:
+        return custom["embeddings_dir"]
+
+    dirs = resolve_forge_embeddings_directories(forge_root=forge_root, launcher_path=launcher_path)
+    for d in dirs:
+        if d.is_dir():
+            return d
+
+    if forge_root:
+        p_root = Path(forge_root).resolve()
+        if (p_root / "webui" / "webui.py").exists():
+            return (p_root / "webui" / "embeddings").resolve()
+        if (p_root / "webui.py").exists():
+            return (p_root / "embeddings").resolve()
+        return (p_root / "models" / "embeddings").resolve()
+
+    if dirs:
+        return dirs[0]
+    return (REPO_ROOT.parent / "neyroGPD" / "embeddings").resolve()
+
+
 
 def _log_passport(forge_root: Any, source_name: str) -> None:
     """Выводит структурированный диагностический паспорт обнаруженной установки Forge."""

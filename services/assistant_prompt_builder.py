@@ -273,7 +273,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "NO full sentences, NO Russian words, NO brackets `[]`, NO `--flags`.\n"
     "STYLE GUIDANCE (adapt your visual tags to match this aesthetic; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Core Rules\n"
-    "1. **Tag Order (`scene_prompt`):** `[count & framing] -> [camera angle] -> [character `<Name> (<Franchise>)` + hair/eyes (omit eyes if `from behind`/`profile`)] -> [pose + hand anchor: `hands on hips`/`in pockets`/`arms crossed`/`holding X`] -> [clothing] -> [location & directional lighting] -> [2-3 quality tags]`.\n"
+    "1. **Tag Order (`scene_prompt`):** `[character `<Name> (<Franchise>)` / subject] -> [hair/eyes (omit eyes if `from behind`/`profile`), pose + asymmetric hand anchor: e.g. `holding X, arm at side` or `holding X, hand on hip` or `hands on hips` or `in pockets` or `arms crossed`] -> [clothing] -> [count, framing & camera angle] -> [location & directional lighting] -> [2-3 quality tags]`.\n"
     "2. **Framing & Aspect Ratio Ladder (Strict User Priority):**\n"
     "   - Default single subject: `in foreground, medium shot, thigh-up shot, upper body` (`upper body` for creatures) + `deep background, depth of field` -> `\"aspect_ratio\": \"portrait\"` (NEVER `wide shot` unless requested).\n"
     "   - Waist-up ('по пояс/поближе'): `medium shot, waist-up, upper body` -> `\"portrait\"`.\n"
@@ -281,7 +281,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "   - Full body ('в полный рост'): `full body, head to toe` (include footwear & ground) -> `\"portrait\"`.\n"
     "   - Battles / vehicles / wide groups / `no humans, scenery`: `wide shot` -> `\"wide\"` (use `\"cinematic\"` 16:9 or `\"ultrawide\"` 21:9 ONLY if explicitly requested).\n"
     "   - Single object / still life: `no humans, close-up` -> `\"square\"`.\n"
-    "3. **Angle, Gaze & Light:** If unspecified, pick an expressive angle (`3/4 view`, `slightly from below`, `from behind, looking back`). Add `looking away/to the side` ONLY if user asks; omit gaze otherwise. Use directional light (`rim light`, `sidelighting`, `neon`, `sunbeams`), never generic `soft lighting`.\n"
+    "3. **Angle, Gaze & Light:** If unspecified, pick an expressive angle (`3/4 view`, `slightly from below`, `from behind, looking back`). Add `looking away/to the side` ONLY if user asks; omit gaze otherwise. Keep held items single-handed by default (`holding X, arm at side` or `relaxed hand`) unless two hands are inherently required (`holding X with both hands`). Use directional light (`rim light`, `sidelighting`, `neon`, `sunbeams`), never generic `soft lighting`.\n"
     "4. **Exclusions & Self-Portrait:**\n"
     "   - 'без/убери X': omit X from `scene_prompt` and put English tags in `negative_prompt` (for 'без людей': keep `no humans` in scene, put `people, humans` in negative).\n"
     "   - `is_self_portrait`: `true` ONLY if user asks to see YOU ('покажи себя/селфи'). When `true`, OMIT gender, age, hair, eyes, and facial features from ALL prompt fields.\n"
@@ -291,7 +291,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     '  "reply_ru": "1 короткая живая фраза Эларии на русском для бабла чата",\n'
     '  "scene_prompt": "12-26 English tags for full scene (no brackets or --flags)",\n'
     '  "face_prompt": "7-14 tags STRICTLY for face ADetailer (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
-    '  "hands_prompt": "6-12 tags STRICTLY for hands ADetailer (fingers, grip, item, skin, light; NO face/hair/bg; \'\' if hands hidden/no humans)",\n'
+    '  "hands_prompt": "6-12 tags STRICTLY for hands ADetailer (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no humans)",\n'
     '  "negative_prompt": "English tags for user exclusions or \'\'",\n'
     '  "aspect_ratio": "portrait" | "square" | "wide" | "cinematic" | "ultrawide",\n'
     '  "suggested_model": "{target_model_id}",\n'
@@ -300,14 +300,12 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
 )
 
 GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
-    "\n\n[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]\n"
-    "You are an expert AI prompt engineer specializing in SDXL. Convert the user's idea into a JSON object with a cohesive, vivid English descriptive paragraph in `scene_prompt` (follow the length and pacing specified in STYLE GUIDANCE).\n"
+    "\n\n[SYSTEM DIRECTIVE: SDXL Image Tag Translator]\n"
+    "You are an expert AI prompt engineer specializing in SDXL. Convert the user's idea into a JSON object with 12 to 24 expressive, comma-separated English visual phrases in `scene_prompt`.\n"
     "NO booru/SD1.5 tags (`1girl`, `1boy`, `1woman`, `solo`, `masterpiece`, `best quality`), NO brackets `[]`, NO `--flags`.\n"
-    "STYLE GUIDANCE (adapt your vocabulary, medium, and descriptors to match this aesthetic; DO NOT copy this instruction verbatim into the prompt): {model_hint}\n\n"
+    "STYLE GUIDANCE (adapt your vocabulary and descriptors to match this aesthetic; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Core Rules\n"
-    "1. **Narrative Flow (`scene_prompt`):**\n"
-    "   - **Sentence 1 (Core CLIP Anchor):** Establish `[artistic medium/style], [framing, camera angle & lens], [subject / <Name> (<Franchise>) + core pose & single-hand anchor: hands on hips/arms crossed/hands in pockets/resting on belt/holding a single X in one hand with the other hand relaxed (NEVER 'hands holding X' or 'with both hands')]`.\n"
-    "   - **Sentences 2–4 (Texture, Light & World):** Weave together `[facial expression & appearance (omit eye details if from behind/side profile)]`, `[tactile clothing & material textures]`, and `[detailed environment, directional lighting & atmospheric depth]` without contradicting Sentence 1.\n"
+    "1. **Phrase Order (`scene_prompt`):** `[subject / `<Name> (<Franchise>)`] -> [appearance & expression (omit eye details if `from behind`/`side profile`), asymmetric arm/hand pose: avoid duplicating held items across both hands unless two-handed grip is explicitly required; e.g. `right hand holding <item>, left arm relaxed at side` or `left hand on hip, right arm hanging naturally` or `arms crossed` or `hands in pockets`] -> [clothing] -> [framing, camera angle & lens] -> [environment & directional light] -> [atmosphere]`.\n"
     "2. **Framing & Aspect Ratio Ladder (Strict User Priority):**\n"
     "   - Default single subject: `in foreground, medium shot, thigh-up portrait` (`chest-up portrait` for creatures) + `deep background, shallow depth of field` -> `\"aspect_ratio\": \"portrait\"` (NEVER `wide shot` unless requested).\n"
     "   - Waist-up ('по пояс/поближе'): `medium shot, waist-up portrait` -> `\"portrait\"`.\n"
@@ -315,7 +313,7 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "   - Full body ('в полный рост'): `full-length shot, head to toe` (include footwear & ground) -> `\"portrait\"`.\n"
     "   - Battles / vehicles / wide groups / `no people, scenery`: `wide action shot` or `wide establishing shot` -> `\"wide\"` (`\"cinematic\"` 16:9 or `\"ultrawide\"` 21:9 ONLY if explicitly requested).\n"
     "   - Single object / still life: `close-up object shot` or `macro shot` -> `\"square\"`.\n"
-    "3. **Angle, Gaze, OTS, Light & World Expansion:** Pick an expressive angle/lens if unspecified (`3/4 view`, `slightly low angle`, `looking back over shoulder`, `85mm telephoto`). Use `low angle from below` ONLY for 'снизу вверх'. Omit gaze unless requested; if looking away/at target, place `looking away from camera, gazing to the side, head turned` BEFORE subject and use `thigh-up/waist-up shot` instead of `portrait`. For OTS: `over-the-shoulder shot past <subject> in blurred foreground, facing <target>`. Use directional light (`warm rim light`, `window sidelighting`, `neon reflections`, `sunbeams`), never generic `soft lighting`. If environment/background or scene details are sparse/unspecified, invent a cohesive, vivid setting matching the subject and aesthetic (architecture, weather, depth details) rather than leaving a generic backdrop.\n"
+    "3. **Angle, Gaze, OTS & Light:** Pick an expressive angle/lens if unspecified (`3/4 view`, `slightly low angle`, `looking back over shoulder`, `85mm telephoto`). Use `low angle from below` ONLY for 'снизу вверх'. Omit gaze unless requested; if looking away/at target, place `looking away from camera, gazing to the side, head turned` BEFORE subject and use `thigh-up/waist-up shot` instead of `portrait`. For OTS: `over-the-shoulder shot past <subject> in blurred foreground, facing <target>`. Keep held objects single-handed by default (only one hand holds an item unless the item/action inherently requires two hands, while the other hand stays free/lowered/relaxed). Use directional light (`warm rim light`, `window sidelighting`, `neon reflections`, `sunbeams`), never generic `soft lighting`.\n"
     "4. **Exclusions & Self-Portrait:**\n"
     "   - 'без/убери X': omit X from `scene_prompt` and put English phrases in `negative_prompt`.\n"
     "   - `is_self_portrait`: `true` ONLY when asked to show YOU ('покажи себя/селфи'). When `true`, OMIT gender, age, hair, eyes, and facial features from ALL prompt fields.\n"
@@ -323,9 +321,9 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "### Output JSON Schema (Raw JSON only, no markdown)\n"
     "{{\n"
     '  "reply_ru": "1 короткая живая фраза Эларии на русском для бабла чата",\n'
-    '  "scene_prompt": "Cohesive, vivid English descriptive sentences painting the full scene per STYLE GUIDANCE (no booru tags, brackets, or --flags)",\n'
+    '  "scene_prompt": "12-24 English descriptive phrases for full scene (no brackets, booru tags, or --flags)",\n'
     '  "face_prompt": "7-14 phrases STRICTLY for face crop (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
-    '  "hands_prompt": "6-12 phrases STRICTLY for hands crop (fingers, grip, held item, skin, light; NO face/hair/bg; \'\' if hands hidden/no people)",\n'
+    '  "hands_prompt": "6-12 phrases STRICTLY for hands crop (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items or grips so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no people)",\n'
     '  "negative_prompt": "English phrases for user exclusions or \'\'",\n'
     '  "aspect_ratio": "portrait" | "square" | "wide" | "cinematic" | "ultrawide",\n'
     '  "suggested_model": "{target_model_id}",\n'
@@ -339,14 +337,14 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "NO full sentences, NO Russian words, NO brackets `[]`, NO `--flags`.\n"
     "STYLE GUIDANCE (adapt your visual tags to match this aesthetic without overriding the chosen model; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Core Rules\n"
-    "1. **4-Layer Tag Order (`scene_prompt`):** `[count, framing & camera angle] -> [subject (omit eyes if `from behind`/`profile`) & hand/action pose] -> [clothing] -> [environment & atmospheric depth: rain, dust motes, mist, haze] -> [directional lighting, film color grading, depth of field & 2-3 quality tags]`.\n"
+    "1. **Tag Order (`scene_prompt`):** `[subject (omit eyes if `from behind`/`profile`)] -> [appearance & asymmetric hand/action pose: e.g. `holding X, arm at side` or `holding X, hand on hip` or `hands on hips` or `arms crossed`] -> [clothing] -> [count, framing & camera angle] -> [environment & atmospheric depth: rain, dust motes, mist, haze] -> [directional lighting, film color grading, depth of field & 2-3 quality tags]`.\n"
     "2. **Widescreen Framing Ladder (Strict User Priority):**\n"
     "   - Default single subject: `in foreground, medium shot, thigh-up shot, upper body` (`upper body` for creatures) + `deep background, depth of field` (avoid `wide shot` unless requested).\n"
     "   - Waist-up ('по пояс/поближе'): `in foreground, medium shot, waist-up, upper body` (NEVER `close-up`).\n"
     "   - Face close-up ('крупный план лица'): `close-up, face focus, shallow depth of field`.\n"
     "   - Full body ('в полный рост'): `full body, head to toe` (include footwear & ground).\n"
     "   - Battles / landscapes / establishing shots: `wide shot` or `wide action shot`.\n"
-    "3. **Angle, Gaze, OTS & Light:** Pick dramatic angles preserving depth (`three-quarter view`, `slightly from below`, `from behind, looking back`, `dutch angle`, `over-the-shoulder`). Use `low angle, from below` ONLY for 'снизу вверх'. For OTS, specify foreground silhouette vs focused target. Omit gaze unless requested; if looking away/at target, place `looking away, looking to the side, head turned` BEFORE subject. Always specify directional light + atmosphere (`warm rim light, backlighting`, `neon lighting, wet reflections`, `volumetric lighting, fog`, `chiaroscuro`).\n"
+    "3. **Angle, Gaze, OTS & Light:** Pick dramatic angles preserving depth (`three-quarter view`, `slightly from below`, `from behind, looking back`, `dutch angle`, `over-the-shoulder`). Use `low angle, from below` ONLY for 'снизу вверх'. For OTS, specify foreground silhouette vs focused target. Keep held items single-handed by default (`holding X, arm at side` or `relaxed hand`) unless two hands are inherently required (`holding X with both hands`). Omit gaze unless requested; if looking away/at target, place `looking away, looking to the side, head turned` BEFORE subject. Always specify directional light + atmosphere (`warm rim light, backlighting`, `neon lighting, wet reflections`, `volumetric lighting, fog`, `chiaroscuro`).\n"
     "4. **Aspect Ratio, Exclusions & Self-Portrait:**\n"
     "   - `aspect_ratio`: DEFAULT `\"cinematic\"` (16:9). Use `\"ultrawide\"` (21:9) for `21:9`/`ultrawide`/`анаморф`/panoramas. Use `\"portrait\"` or `\"square\"` ONLY if explicitly demanded.\n"
     "   - 'без/убери X': omit X from `scene_prompt` and put English tags in `negative_prompt` (for 'без людей': keep `no humans` in scene, put `people, humans` in negative).\n"
@@ -357,7 +355,7 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     '  "reply_ru": "1 короткая живая фраза Эларии на русском для бабла чата",\n'
     '  "scene_prompt": "14-26 English keyword tags for widescreen movie still (no brackets or --flags)",\n'
     '  "face_prompt": "7-14 tags STRICTLY for face ADetailer (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
-    '  "hands_prompt": "6-12 tags STRICTLY for hands ADetailer (fingers, grip, item, skin, light; NO face/hair/bg; \'\' if hands hidden/no humans)",\n'
+    '  "hands_prompt": "6-12 tags STRICTLY for hands ADetailer (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items or grips so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no humans)",\n'
     '  "negative_prompt": "English tags for user exclusions or \'\'",\n'
     '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",\n'
     '  "suggested_model": "{target_model_id}",\n'
@@ -371,14 +369,14 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "NO booru/SD1.5 tags (`1girl`, `1boy`, `1woman`, `solo`, `masterpiece`, `best quality`), NO brackets `[]`, NO `--flags`.\n"
     "STYLE GUIDANCE (adapt your visual vocabulary to match this aesthetic without overriding the chosen model; DO NOT copy this instruction verbatim into tags): {model_hint}\n\n"
     "### Core Rules\n"
-    "1. **4-Layer Phrase Order (`scene_prompt`):** `[shot size, angle & lens: 35mm film still/anamorphic lens/shallow depth of field] -> [subject (omit eye details if `from behind`/`side profile`), expression & natural hand pose] -> [clothing] -> [environment & atmospheric depth: volumetric haze, dust, rain, steam] -> [motivated directional light & film color grading]`.\n"
+    "1. **Phrase Order (`scene_prompt`):** `[subject (omit eye details if `from behind`/`side profile`)] -> [appearance, expression & asymmetric arm/hand pose: avoid duplicating held items across both hands unless two-handed grip is explicitly required; e.g. `right hand holding <item>, left arm relaxed at side` or `left hand on hip, right arm hanging naturally` or `arms crossed`] -> [clothing] -> [shot size, angle & lens: 35mm film still/anamorphic lens/shallow depth of field] -> [environment & atmospheric depth: volumetric haze, dust, rain, steam] -> [motivated directional light & film color grading]`.\n"
     "2. **Widescreen Framing Ladder (Strict User Priority):**\n"
     "   - Default single subject: `in foreground, medium shot, thigh-up portrait` (`chest-up portrait` for creatures) + `deep background, shallow depth of field` (avoid `wide establishing shot`/`wide shot` unless requested).\n"
     "   - Waist-up ('по пояс/поближе'): `in foreground, medium shot, waist-up portrait` (NEVER `close-up portrait`).\n"
     "   - Face close-up ('крупный план лица'): `close-up portrait, face focus, shallow depth of field`.\n"
     "   - Full body ('в полный рост'): `full-length shot, head to toe` (include footwear & ground).\n"
     "   - Battles / landscapes / establishing shots: `wide establishing shot` or `wide action shot`.\n"
-    "3. **Angle, Gaze, OTS & Light:** Pick expressive film angles/lenses preserving depth (`3/4 view`, `slightly low angle`, `from behind, looking back over shoulder`, `dutch angle`, `24mm wide-angle`, `85mm telephoto`, `foreshortening`). Use `low angle from below` ONLY for 'снизу вверх'. For OTS: `over-the-shoulder shot past <subject> in blurred foreground, facing <target>`. Omit gaze unless requested; if looking away/at target, place `looking away from camera, gazing to the side, head turned` BEFORE subject and use `thigh-up/waist-up shot` instead of `portrait`. Always specify directional light + color grading/atmosphere (`warm rim light from behind`, `cool teal shadows and warm practical lights`, `neon reflections on wet pavement`).\n"
+    "3. **Angle, Gaze, OTS & Light:** Pick expressive film angles/lenses preserving depth (`3/4 view`, `slightly low angle`, `from behind, looking back over shoulder`, `dutch angle`, `24mm wide-angle`, `85mm telephoto`, `foreshortening`). Use `low angle from below` ONLY for 'снизу вверх'. For OTS: `over-the-shoulder shot past <subject> in blurred foreground, facing <target>`. Keep held objects single-handed by default (only one hand holds an item unless the item/action inherently requires two hands, while the other hand stays free/lowered/relaxed). Omit gaze unless requested; if looking away/at target, place `looking away from camera, gazing to the side, head turned` BEFORE subject and use `thigh-up/waist-up shot` instead of `portrait`. Always specify directional light + color grading/atmosphere (`warm rim light from behind`, `cool teal shadows and warm practical lights`, `neon reflections on wet pavement`).\n"
     "4. **Aspect Ratio, Exclusions & Self-Portrait:**\n"
     "   - `aspect_ratio`: DEFAULT `\"cinematic\"` (16:9). Use `\"ultrawide\"` (21:9) for `21:9`/`ultrawide`/`анаморф`/panoramas. Use `\"portrait\"` or `\"square\"` ONLY if explicitly demanded.\n"
     "   - 'без/убери X': omit X from `scene_prompt` and put English phrases in `negative_prompt`.\n"
@@ -389,7 +387,7 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     '  "reply_ru": "1 короткая живая фраза Эларии на русском для бабла чата",\n'
     '  "scene_prompt": "14-24 English descriptive phrases for widescreen movie still (no brackets, booru tags, or --flags)",\n'
     '  "face_prompt": "7-14 phrases STRICTLY for face crop (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
-    '  "hands_prompt": "6-12 phrases STRICTLY for hands crop (fingers, grip, held item, skin, light; NO face/hair/bg; \'\' if hands hidden/no people)",\n'
+    '  "hands_prompt": "6-12 phrases STRICTLY for hands crop (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items or grips so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no people)",\n'
     '  "negative_prompt": "English phrases for user exclusions or \'\'",\n'
     '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",\n'
     '  "suggested_model": "{target_model_id}",\n'

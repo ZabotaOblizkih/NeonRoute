@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from config import DATA_DIR, FORGE_ROOT_DIR
 from services.civitai_service import clean_civitai_description
+from services.model_catalog_service import parse_civitai_meta
 
 CIVITAI_CACHE_DIR = DATA_DIR / "cache" / "civitai_thumbs"
 CIVITAI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -87,16 +88,17 @@ def resolve_civitai_target_dir(
 
     # Textual Inversion / Embeddings
     if m_type in ("TEXTUALINVERSION", "EMBEDDING", "EMBEDDINGS"):
-        models_root = base_ckpt.parent
-        candidates = [
-            models_root / "embeddings",
-            models_root.parent / "embeddings",
-            models_root / "TextualInversion",
-        ]
-        for cand in candidates:
-            if cand.exists():
-                return cand.resolve()
-        return (models_root.parent / "embeddings").resolve() if (models_root.parent / "webui.py").exists() else (models_root / "embeddings").resolve()
+        from core.forge_locator import resolve_forge_embeddings_directory
+        import core.forge_locator as fl
+        curr_root = getattr(config, "FORGE_ROOT_DIR", FORGE_ROOT_DIR)
+        launcher = getattr(config, "FORGE_LAUNCHER_PATH", None)
+        if custom_target_dir is not None and base_ckpt != Path(curr_root):
+            models_root = base_ckpt.parent
+            for cand in (models_root / "embeddings", models_root.parent / "embeddings", models_root / "TextualInversion"):
+                if cand.exists():
+                    return cand.resolve()
+            return (models_root.parent / "embeddings").resolve() if (models_root.parent / "webui.py").exists() else (models_root / "embeddings").resolve()
+        return resolve_forge_embeddings_directory(forge_root=curr_root, launcher_path=launcher)
 
     # Фоллбек для прочих типов
     return base_ckpt
@@ -391,12 +393,13 @@ class CivitaiDownloadWorker(QThread):
     finished_successfully = pyqtSignal(Path)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, download_url: str, dest_path: Path, api_token: Optional[str] = None, expected_sha256: Optional[str] = None, parent=None):
+    def __init__(self, download_url: str, dest_path: Path, api_token: Optional[str] = None, expected_sha256: Optional[str] = None, allowed_extensions: tuple = (".safetensors",), parent=None):
         super().__init__(parent)
         self.download_url = download_url
         self.dest_path = dest_path
         self.api_token = api_token.strip() if api_token else None
         self.expected_sha256 = expected_sha256.strip().lower() if expected_sha256 else None
+        self.allowed_extensions = tuple(ext.lower() for ext in allowed_extensions)
         self._is_aborted = False
         self._session: Optional[requests.Session] = None
 
@@ -426,11 +429,11 @@ class CivitaiDownloadWorker(QThread):
 
         self._session = requests.Session()
         try:
-            # 1. Проверка расширения файла (строго .safetensors)
-            if self.dest_path.suffix.lower() != ".safetensors":
+            # 1. Проверка расширения файла
+            if self.dest_path.suffix.lower() not in self.allowed_extensions:
                 raise ValueError(
                     f"Запрещенное расширение файла: {self.dest_path.suffix}. "
-                    f"Разрешены строго безопасные веса .safetensors (.ckpt и .pt заблокированы)."
+                    f"Разрешены: {', '.join(self.allowed_extensions)}."
                 )
 
             # 2. Проверка домена URL по белому списку (*.civitai.com) для защиты от SSRF
@@ -948,15 +951,23 @@ class CivitaiCatalogDialog(QDialog):
         else:
             self.lbl_triggers.setText("🏷️ Триггер-слова: не требуются (стандартный чекпоинт)")
 
-        # Рекомендованные параметры из метаданных превью
+        # Рекомендованные параметры из метаданных превью (единый безопасный парсер)
         meta = c.get("meta") or {}
-        sampler = meta.get("sampler") or "DPM++ 2M Karras"
-        steps = meta.get("steps") or 25
-        cfg = meta.get("cfgScale") or 6.0
+        parsed_meta = parse_civitai_meta(
+            meta=meta,
+            model_title=c.get("name", ""),
+            checkpoint_name=c.get("filename", ""),
+            base_model=c.get("base_model", ""),
+            trained_words=c.get("trained_words") or [],
+        )
+        sampler = parsed_meta.get("sampler") or "DPM++ 2M"
+        scheduler = parsed_meta.get("scheduler") or "Karras"
+        steps = parsed_meta.get("steps") or 25
+        cfg = parsed_meta.get("cfg_scale") or 6.0
 
         clean_desc = clean_civitai_description(c.get("description", ""))
         desc_parts = [
-            f"⚙️ Рекомендованные автором параметры:\n• Сэмплер: {sampler}\n• Шаги: {steps}\n• CFG Scale: {cfg}",
+            f"⚙️ Рекомендованные автором параметры:\n• Сэмплер: {sampler} ({scheduler})\n• Шаги: {steps}\n• CFG Scale: {cfg}",
             f"📄 Имя файла: {c['filename']}",
             f"📖 Описание:\n{clean_desc}" if clean_desc else "📖 Описание:\n(описание не указано автором)"
         ]
@@ -982,12 +993,14 @@ class CivitaiCatalogDialog(QDialog):
         save_dir.mkdir(parents=True, exist_ok=True)
         dest_file = (save_dir / filename).resolve()
 
-        if dest_file.suffix.lower() != ".safetensors":
+        m_type_upper = str(c.get("type", "Checkpoint")).strip().upper()
+        allowed_exts = (".safetensors", ".pt") if m_type_upper in ("TEXTUALINVERSION", "EMBEDDING", "EMBEDDINGS") else (".safetensors",)
+        if dest_file.suffix.lower() not in allowed_exts:
             QMessageBox.critical(
                 self,
                 "Запрещенный формат модели",
                 f"Загрузка файлов с расширением '{dest_file.suffix}' заблокирована в целях безопасности.\n\n"
-                f"Разрешены строго безопасные веса в формате .safetensors. Файлы .ckpt и .pt запрещены."
+                f"Разрешенные форматы: {', '.join(allowed_exts)}."
             )
             return
 
@@ -1001,6 +1014,7 @@ class CivitaiCatalogDialog(QDialog):
             download_url=c["download_url"],
             dest_path=dest_file,
             expected_sha256=c.get("sha256"),
+            allowed_extensions=allowed_exts,
             parent=self
         )
         self._download_worker.progress_updated.connect(self._on_download_progress)
@@ -1042,6 +1056,13 @@ class CivitaiCatalogDialog(QDialog):
 
         meta = c.get("meta") or {}
         triggers = c.get("trained_words") or []
+        parsed_meta = parse_civitai_meta(
+            meta=meta,
+            model_title=c.get("name", ""),
+            checkpoint_name=saved_path.name,
+            base_model=c.get("base_model", ""),
+            trained_words=triggers,
+        )
         desc_text = f"{c.get('name', '')}. Теги: {', '.join(triggers[:8])}" if triggers else c.get('name', '')
 
         cleaned_c_desc = clean_civitai_description(c.get("description", ""))
@@ -1053,12 +1074,19 @@ class CivitaiCatalogDialog(QDialog):
             "filename": saved_path.name,
             "path": str(saved_path),
             "type": c.get("type"),
+            "architecture": parsed_meta.get("architecture"),
             "triggers": triggers,
+            "trained_words": parsed_meta.get("trained_words", triggers),
             "description": final_desc,
             "guidance": f"Trigger words: {', '.join(triggers[:5])}" if triggers else "",
-            "sampler": meta.get("sampler", "DPM++ 2M Karras"),
-            "steps": int(meta.get("steps", 25)),
-            "cfg_scale": float(meta.get("cfgScale", 6.0))
+            "sampler": parsed_meta.get("sampler", "DPM++ 2M"),
+            "scheduler": parsed_meta.get("scheduler", "Karras"),
+            "steps": parsed_meta.get("steps", 25),
+            "cfg_scale": parsed_meta.get("cfg_scale", 6.0),
+            "clip_skip": parsed_meta.get("clip_skip", 1),
+            "hires_upscaler": parsed_meta.get("hires_upscaler", "4x-UltraSharp"),
+            "hires_denoise": parsed_meta.get("hires_denoise", 0.32),
+            "negative_prompt": parsed_meta.get("negative_prompt", ""),
         }
 
         self.model_installed.emit(model_payload)

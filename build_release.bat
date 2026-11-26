@@ -82,5 +82,19 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
+set "PUBLISH_ANS="
+set /p "PUBLISH_ANS=Опубликовать релиз на GitHub после успешной сборки и тестов? [Y/N]: "
+if /i "%PUBLISH_ANS%"=="Y" (
+    echo.
+    echo [INFO] Publishing release assets to GitHub Releases...
+    %PY_EXE% scripts\build_release.py --publish-only --non-interactive
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] GitHub Release publication failed!
+        pause
+        exit /b !ERRORLEVEL!
+    )
+)
+
+echo.
 pause
 exit /b 0

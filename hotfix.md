@@ -1,5 +1,52 @@
 # История изменений и релизов NeonRoute
 
+## v0.9.8.9-beta (2026-11-26)
+
+> **Ключевое обновление:** умный каталог пресетов моделей с каскадным поиском (`GitHub -> Local -> Civitai`) и автозагрузкой недостающих эмбеддингов, встроенная система проверки целостности и выборочных обновлений из программы, отправка баг-репортов в 1 клик с маскированием личных данных, мгновенное открытие «Моделей генерации» и живая синхронизация апскейлеров/сэмплеров/планировщиков с SD WebUI Forge.
+
+### Что изменилось
+
+#### Умный каталог моделей, автонастройка и скачивание эмбеддингов
+
+- **Единый каталог пресетов моделей (`GitHub -> Local -> Civitai`):** при автозаполнении настроек чекпоинта программа сначала ищет готовый проверенный пресет в онлайн-каталоге GitHub и локальной базе `data/model_presets_catalog.json`, а затем обращается к Civitai API. В каталоге хранятся рабочие параметры (`sampler`, `scheduler`, `steps`, `cfg_scale`, `clip_skip`, `Hires.fix`, `ADetailer`, `trained_words`), а ручные описания пользователя бережно защищены от перезаписи.
+- **Автоматическая проверка и докачка недостающих эмбеддингов (`TextualInversion`):** при применении пресета программа анализирует рекомендованные и негативные эмбеддинги, проверяет локальные папки Forge и при необходимости предлагает скачать недостающие `.pt` / `.safetensors` с Civitai после подтверждения пользователем.
+- **Живая синхронизация апскейлеров, сэмплеров и планировщиков с Forge:** выпадающие списки в «Моделях генерации» больше не содержат несуществующих хардкодных моделей вроде `4x_NMKD-Superscale-SP_178000_G`, а подтягивают актуальные списки из запущенного SD Forge или локальных папок `ESRGAN`/`RealESRGAN`/`SwinIR`. Встроенные латентные апскейлеры (`Latent (bicubic antialiased)` и др.) больше не подменяются ошибочно на `R-ESRGAN 4x+`.
+- **Мгновенное открытие окна «Модели генерации»:** убрана повторная перерисовка глобальной темы `qfluentwidgets` и многократное чтение обоев с диска при каждом открытии диалога.
+
+#### Система обновлений, проверка целостности и баг-репорты в 1 клик
+
+- **Проверка целостности файлов и выборочное обновление из интерфейса:** добавлен сервис контроля файлов (`SHA-256` + `release_manifest.json`), который в фоне при старте проверяет состояние установки (без задержки запуска и без затрагивания пользовательских конфигов, баз и персонажей), а в новом окне обновлений позволяет сравнить локальные файлы с релизом на GitHub и выборочно обновить нужные модули с сохранением `.bak`-копий.
+- **Отправка баг-репортов прямо из программы:** добавлено окно «Сообщить об ошибке...» (в меню «Справка», в настройках и в консоли логов) с предпросмотром отчёта и автоматическим маскированием имён пользователей в путях Windows, токенов и ключей перед отправкой через изолированный облачный прокси в GitHub Issues.
+
+#### Оптимизация видеопамяти (VRAM), мобильный шлюз и документация
+
+- **Калибровка порога `VAETile` и бесшовный возврат LLM в VRAM:** принудительный тайлинг VAE в режиме `FAST_KEEP_VRAM` включается только для разрешений от `1024×1024` (стандартный `896×1152` декодируется быстрее без тайлинга), а возврат языковой модели в видеопамять после генерации арта переведён на единый потокобезопасный планировщик с автоотменой при новых задачах.
+- **Прозрачное логирование мобильного сервера и актуализация спецификации:** добавлено структурированное HTTP/роут-логирование мобильного сервера в общий `logs/neonroute.log` и сквозной возврат LLM в VRAM после генерации картинок с телефона; документ `ARCHITECTURE.md` синхронизирован со всеми подсистемами.
+
+---
+
+### Технический список изменений (Changelog)
+
+- **Каталог пресетов моделей и автозаполнение (`data/model_presets_catalog.json`, `services/model_catalog_service.py`, `scripts/build_model_catalog.py`, `services/civitai_service.py`, `ui/dialogs/civitai_catalog_dialog.py`):**
+  - Создан версионированный каталог `data/model_presets_catalog.json` и каскадный резолвер `resolve_model_presets` (`GitHub raw -> локальный каталог -> Civitai API -> fallback`) с типобезопасным парсером `parse_civitai_meta`, разделением `sampler` / `scheduler` (`Karras` / `Exponential`), сохранением явного `clip_skip` у аниме-моделей и накопительным генератором `scripts/build_model_catalog.py`.
+  - В `services/civitai_service.py` удалён хардкод `webui_forge_cu121_torch231`, добавлена поддержка отмены `cancel_check` при подсчёте `SHA-256` и возврат `status="empty_meta"` при пустых метаданных; в `services/forge_client.py` убрано скрытое переопределение `clip_skip == 1 -> 2`.
+  - В `ui/models_manager/mixins.py` и `ui/models_manager_dialog.py` зафиксирован `target_row` на весь цикл автозаполнения, добавлены сохранение `hr_scale` и `trained_words`, защита ручных текстовых полей с подтверждением конфликтов и сквозной `correlation ID` (`[AutoFill:<id>]`).
+- **Поиск и скачивание эмбеддингов (`services/embedding_service.py`, `core/forge_locator.py`, `services/asset_validator.py`, `ui/models_manager/workers.py`):**
+  - Добавлены единые резолверы директорий `resolve_forge_embeddings_directories` / `resolve_forge_embeddings_directory` (учёт `--embeddings-dir`, `--models-dir`, `--ckpt-dir` и `webui*/webui/embeddings`).
+  - Реализован `services/embedding_service.py` для извлечения кандидатов из промптов/каталога, рекурсивной локальной проверки, точного поиска `TextualInversion` на Civitai (с сохранением версий в ключе и обработкой `ambiguous`) и безопасного скачивания `.safetensors`/`.pt` через `.part` с проверкой `SHA-256`; добавлены воркеры `EmbeddingResolveWorker` и `EmbeddingDownloadWorker` с обязательным подтверждением пользователя.
+- **Синхронизация апскейлеров/сэмплеров/планировщиков и ускорение «Моделей генерации» (`services/forge_client.py`, `ui/models_manager_dialog.py`, `ui/models_manager/workers.py`, `mixins.py`):**
+  - В `ForgeClient` добавлены кэшируемые методы `get_samplers()` и `get_schedulers()`, а в `resolve_safe_hires_settings()` исправлена приоритетная обработка встроенных латентных апскейлеров (`Latent`, `Latent (bicubic antialiased)`).
+  - `ForgeScanWorker` обновлён до передачи 5 списков (`raw_models, installed, upscalers, samplers, schedulers`), удалён хардкодный `4x_NMKD-Superscale-SP_178000_G`, добавлено оффлайн-сканирование `ESRGAN`/`RealESRGAN`/`SwinIR`/`DAT`/`ScuNET`/`LDSR` и предупреждение `InfoBar.warning` при отсутствии выбранного в профиле компонента.
+  - В `ModelsManagerDialog` оптимизировано открытие: `setTheme(Theme.DARK)` вызывается только при смене темы, убран глобальный `setThemeColor()` из `update_adaptive_palette()`, добавлено кэширование адаптивной палитры по `pixmap.cacheKey()` и дефолтных обоев в `_cached_default_pixmap`.
+- **Сервис целостности, выборочные обновления и релизный пайплайн (`services/integrity_service.py`, `ui/workers/integrity_worker.py`, `ui/dialogs/updates_dialog.py`, `scripts/build_release.py`, `build_release.bat`):**
+  - Реализованы потоковый расчёт `SHA-256`, детерминированный `aggregate_hash`, тихая стартовая проверка `verify_local_integrity` (через `QTimer.singleShot(1200, ...)` в `ui/main_window.py` с исключением пользовательских данных), загрузка манифеста с GitHub Releases, 3-way анализ (`UPDATE_SAFE`, `CONFLICT_LOCAL`, `NO_BASE_DIFF`) и выборочное обновление из ZIP с защитой от Zip Slip и созданием `.bak`.
+  - В `scripts/build_release.py` и `build_release.bat` добавлены генерация `release_manifest.json`, чтение `hotfix.md` строго в read-only режиме (`read_hotfix_section`), сборка каталога моделей перед релизом и флаг `--publish-only` для публикации релиза и ассетов на GitHub.
+- **Подсистема баг-репортов и облачный прокси (`services/bug_report_service.py`, `ui/workers/bug_report_worker.py`, `ui/dialogs/bug_report_dialog.py`, `cloudflare_worker/`):**
+  - Реализованы очистка персональных данных и токенов `sanitize_text()`, сбор сводки окружения, предпросмотр отчёта в `BugReportDialog(FramelessDialog)` (интеграция в меню «Справка», `SettingsDialog`, `LogConsole` и `global_exception_handler` в `main.py`) и отправка через Cloudflare Worker (`neonroute-bug-reporter`) в GitHub Issues.
+- **Оптимизация VRAM, логирование мобильного шлюза, тесты и документация (`services/vram_arbiter.py`, `mobile_server/`, `ARCHITECTURE.md`, `tests/`):**
+  - Зафиксирован порог `VAETile >= 1024×1024` для `FAST_KEEP_VRAM`, внедрён потокобезопасный планировщик возврата LLM (`schedule_llm_reload` / `cancel_llm_reload`) и логирование `[MobileHTTP]` / `[MobileChat]` / `[MobileArt]` в `logs/neonroute.log`.
+  - Добавлены модульные тесты (`test_model_catalog_service.py`, `test_embedding_service.py`, `test_bug_report_service.py` и др.) и актуализированы разделы `3.2.4`, `5.2`, `5.4`, `5.5`, `7.1` и новый раздел `10` в `ARCHITECTURE.md`.
+
 ## v0.9.8.8-beta (2026-11-25)
 
 > **Ключевое обновление:** полноценный рендеринг Markdown в мобильном веб-клиенте, галерея персонажей и лор мира прямо в шапке РП-чата, сквозное сохранение негативного промпта (`--neg`) при доработке изображений, устранение ошибок Forge (`KeyError: 'forge_vae_tiling'`, `TypeError` в Hires.fix) и устранение дублирования оркестрации VRAM между десктопом и мобильным сервером.

@@ -772,6 +772,16 @@ class SettingsDialog(FramelessDialog):
         )
         group.addSettingCard(self.card_updates)
 
+        self.card_bug_report = PushSettingCard(
+            text="Сообщить",
+            icon=FIF.FEEDBACK if hasattr(FIF, "FEEDBACK") else FIF.SEND,
+            title="Сообщить об ошибке",
+            content="Сформировать диагностический отчёт с предпросмотром и отправкой разработчику",
+            parent=group
+        )
+        self.card_bug_report.clicked.connect(self._on_open_bug_report)
+        group.addSettingCard(self.card_bug_report)
+
         self.card_exit = PushSettingCard(
             text="Выход",
             icon=FIF.POWER_BUTTON,
@@ -796,6 +806,14 @@ class SettingsDialog(FramelessDialog):
         # Для unit-тестов без модального event loop передаем синхронный вызов
         if not was_visible and hasattr(self.window, "_open_characters_gallery_dialog"):
             self.window._open_characters_gallery_dialog()
+
+    def _on_open_bug_report(self):
+        """Закрывает окно настроек перед открытием диалога отчёта об ошибке, избегая вложенной модальности."""
+        self._requested_open_bug_report = True
+        was_visible = self.isVisible()
+        self.accept()
+        if not was_visible and hasattr(self.window, "open_bug_report_dialog"):
+            self.window.open_bug_report_dialog(source="settings")
 
     def _on_exit_clicked(self):
         """Безопасно закрывает диалог настроек и главное окно."""

@@ -35,6 +35,38 @@ app.add_middleware(
 )
 
 
+_QUIET_ACCESS_PREFIXES = ("/static/", "/api/system/health", "/api/system/status", "/api/art/progress")
+_QUIET_ACCESS_EXACT = {"/health", "/favicon.ico"}
+
+
+@app.middleware("http")
+async def _access_log_middleware(request: Request, call_next):
+    t0 = time.perf_counter()
+    client_ip = request.client.host if request.client else "-"
+    method = request.method
+    path = request.url.path
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        logger.error(f"[MobileHTTP] {client_ip} {method} {path} -> 500 ({elapsed_ms:.1f}ms): {exc}", exc_info=True)
+        raise
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    status = response.status_code
+    is_quiet = path in _QUIET_ACCESS_EXACT or path.startswith(_QUIET_ACCESS_PREFIXES)
+    msg = f"[MobileHTTP] {client_ip} {method} {path} -> {status} ({elapsed_ms:.1f}ms)"
+    if status >= 500:
+        logger.error(msg)
+    elif status >= 400:
+        logger.warning(msg)
+    elif is_quiet:
+        logger.debug(msg)
+    else:
+        logger.info(msg)
+    return response
+
+
 @app.middleware("http")
 async def _no_cache_mobile_shell_middleware(request: Request, call_next):
     response = await call_next(request)
@@ -207,14 +239,18 @@ def start_mobile_server_thread(timeout: float = 3.0) -> Tuple[bool, str]:
         if _server_error:
             return False, f"Ошибка запуска мобильного сервера: {_server_error}"
         if getattr(_uvicorn_server, "started", False) or _is_port_listening(settings.PORT, timeout=0.1):
+            logger.info(f"[MobileServer] Шлюз запущен на порту {settings.PORT} (URLs: {', '.join(get_mobile_server_urls())})")
             return True, f"Мобильный сервер запущен на порту {settings.PORT}."
         if _server_thread is None or not _server_thread.is_alive():
             return False, f"Сервер завершился при запуске ({_server_error or 'порт занят'})."
         time.sleep(0.02)
 
-    return _is_port_listening(settings.PORT), (
+    listening = _is_port_listening(settings.PORT)
+    if listening:
+        logger.info(f"[MobileServer] Шлюз запущен на порту {settings.PORT} (URLs: {', '.join(get_mobile_server_urls())})")
+    return listening, (
         f"Мобильный сервер запущен на порту {settings.PORT}."
-        if _is_port_listening(settings.PORT)
+        if listening
         else "Не удалось дождаться старта мобильного сервера."
     )
 
@@ -233,6 +269,8 @@ def stop_mobile_server_thread(timeout: float = 2.0) -> bool:
 
     stopped = thread is None or not thread.is_alive()
     if stopped:
+        if server is not None:
+            logger.info(f"[MobileServer] Шлюз остановлен (порт {settings.PORT}).")
         with _server_lock:
             _uvicorn_server = None
             _server_thread = None

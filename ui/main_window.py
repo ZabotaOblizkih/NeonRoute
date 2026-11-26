@@ -721,6 +721,19 @@ class MainWindow(
 
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(1500, self._check_forge_onboarding)
+        QTimer.singleShot(1200, self._start_local_integrity_check)
+
+    def _start_local_integrity_check(self):
+        """Запускает фоновую warn-only проверку локальной целостности после startup_ready."""
+        try:
+            from config import BASE_DIR
+            from ui.workers.integrity_worker import LocalIntegrityWorker
+            if getattr(self, "_integrity_worker", None) and self._integrity_worker.isRunning():
+                return
+            self._integrity_worker = LocalIntegrityWorker(BASE_DIR)
+            self._integrity_worker.start()
+        except Exception as e:
+            logger.debug(f"[Integrity] Не удалось запустить фоновую проверку целостности: {e}")
 
     def _on_process_action_completed(self, action_name: str, success: bool, message: str):
         if action_name == "lms_start":
@@ -1013,6 +1026,14 @@ class MainWindow(
             try:
                 if self._knowledge_sync_worker.isRunning():
                     self._knowledge_sync_worker.wait(400)
+            except Exception:
+                pass
+
+        if hasattr(self, "_integrity_worker") and self._integrity_worker:
+            try:
+                if self._integrity_worker.isRunning():
+                    self._integrity_worker.quit()
+                    self._integrity_worker.wait(400)
             except Exception:
                 pass
 

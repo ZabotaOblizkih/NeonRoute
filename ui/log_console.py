@@ -296,6 +296,12 @@ class LogConsoleDialog(FramelessDialog):
         self.btn_export.clicked.connect(self._export_logs)
         bottom_layout.addWidget(self.btn_export)
 
+        self.btn_report = PushButton("🐞 Сообщить об ошибке", body_widget)
+        self.btn_report.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_report.setToolTip("Открыть предпросмотр отчёта об ошибке с текущими логами")
+        self.btn_report.clicked.connect(self._open_bug_report)
+        bottom_layout.addWidget(self.btn_report)
+
         bottom_layout.addStretch(1)
 
         # Индикатор статуса
@@ -433,6 +439,33 @@ class LogConsoleDialog(FramelessDialog):
                 self.status_lbl.setText(f"Файл сохранен: {os.path.basename(file_path)}")
             except Exception as e:
                 self.status_lbl.setText(f"Ошибка экспорта: {e}")
+
+    def _open_bug_report(self):
+        """Закрывает консоль логов и открывает диалог отправки отчёта об ошибке."""
+        from PyQt6.QtCore import QTimer
+
+        parent_win = self.window or self.parent()
+        lines = self.text_edit.toPlainText().splitlines()
+        error_lines = [ln for ln in lines if "[ERROR]" in ln or "[CRITICAL]" in ln]
+        summary = error_lines[-1] if error_lines else ""
+
+        self.close()
+        if parent_win is not None and hasattr(parent_win, "open_bug_report_dialog"):
+            QTimer.singleShot(
+                0,
+                lambda: parent_win.open_bug_report_dialog(
+                    error_summary=summary,
+                    source="log_console",
+                ),
+            )
+        else:
+            def _open_standalone():
+                from ui.dialogs.bug_report_dialog import BugReportDialog
+
+                dlg = BugReportDialog(parent=None, error_summary=summary, source="log_console")
+                dlg.exec()
+
+            QTimer.singleShot(0, _open_standalone)
 
     def showEvent(self, event):
         super().showEvent(event)

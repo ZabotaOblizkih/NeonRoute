@@ -198,13 +198,13 @@ def test_rollback_on_failure_when_hotfix_did_not_exist(tmp_path):
     assert new_ver == "0.9.9-beta"
     assert rollback_state is not None
     assert read_app_version(config_file) == "0.9.9-beta"
-    assert hotfix_file.is_file()
+    assert not hotfix_file.exists(), "hotfix.md не должен создаваться при версионировании"
 
     # Имитируем падение проверки Stage A или B и вызываем откат
     rollback_versioning(rollback_state)
 
     assert read_app_version(config_file) == "0.9.8-beta"
-    assert not hotfix_file.exists(), "hotfix.md должен быть удалён, так как его не было до сборки!"
+    assert not hotfix_file.exists()
 
 
 def test_rollback_on_failure_when_hotfix_existed(tmp_path):
@@ -227,7 +227,7 @@ def test_rollback_on_failure_when_hotfix_existed(tmp_path):
 
     assert new_ver == "1.0.0"
     assert read_app_version(config_file) == "1.0.0"
-    assert "## v1.0.0" in hotfix_file.read_text(encoding="utf-8")
+    assert hotfix_file.read_text(encoding="utf-8") == original_hotfix
 
     # Откат
     rollback_versioning(rollback_state)
@@ -340,7 +340,7 @@ def test_create_release_git_commit_structure(tmp_path):
 
     # Проверяем последовательность команд git
     assert len(git_calls) == 2
-    assert git_calls[0] == ["git", "add", "--", "config.py", "hotfix.md"]
+    assert git_calls[0] == ["git", "add", "--", "config.py"]
 
     commit_cmd = git_calls[1]
     assert commit_cmd[:2] == ["git", "commit"]
@@ -421,12 +421,7 @@ def test_prompt_interactive_single_enter_substitutes_all_commits(tmp_path):
     for noise in ["commit ", "Author:", "Date:", RELEASE_COMMIT_MARKER]:
         assert noise not in changes_text
 
-    hotfix_content = hotfix_file.read_text(encoding="utf-8")
-    assert "## v0.9.9-beta" in hotfix_content
-    assert "- fix(engine): resolve mmap load mode" in hotfix_content
-    assert "- fea(cuda): download cudart runtime" in hotfix_content
-    for noise in ["commit ", "Author:", "Date:", RELEASE_COMMIT_MARKER]:
-        assert noise not in hotfix_content
+    assert not hotfix_file.exists(), "hotfix.md не должен создаваться при версионировании"
 
 
 def test_prompt_interactive_all_keyword_displays_ignored_and_reprompts(tmp_path):

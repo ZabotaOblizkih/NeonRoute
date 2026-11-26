@@ -870,10 +870,11 @@ def resolve_forge_offload_policy(
     elif est_peak_mb <= safe_budget_mb:
         mode = "FAST_KEEP_VRAM"
         always_offload = False
-        # Для SDXL на крупных холстах (>= ~1024x1024) с ADetailer включаем tiled VAE
-        # и снижаем inference_memory_mb до 512 МБ, чтобы Forge не выкидывал UNet/CLIP
-        # из VRAM на пике декодирования VAE перед шагом ADetailer (Reuse 1 loaded models).
-        if is_xl and enable_adetailer and ((clean_w * clean_h >= 960 * 960) or hr_active):
+        # Для SDXL на крупных холстах (>= 1024x1024) или с Hires.fix при активном ADetailer
+        # включаем tiled VAE и снижаем inference_memory_mb до 512 МБ, чтобы Forge не выкидывал
+        # UNet/CLIP из VRAM на пике декодирования VAE перед шагом ADetailer (Reuse 1 loaded models).
+        # Стандартный 896x1152 (1,032,192 px < 1024x1024) на 8 ГБ в FAST_KEEP_VRAM декодируется без тайлинга быстрее.
+        if is_xl and enable_adetailer and ((clean_w * clean_h >= 1024 * 1024) or hr_active):
             enable_vae_tiling = True
             inference_memory_mb = 512
         else:

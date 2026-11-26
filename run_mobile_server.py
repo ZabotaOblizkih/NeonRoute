@@ -10,12 +10,28 @@ from mobile_server.config import settings
 
 
 def setup_logging():
+    from logging.handlers import TimedRotatingFileHandler
+    from config import LOGS_DIR
+
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            TimedRotatingFileHandler(
+                LOGS_DIR / "neonroute.log",
+                when="midnight",
+                interval=1,
+                backupCount=7,
+                encoding="utf-8",
+            )
+        )
+    except Exception:
+        pass
+
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-        ],
+        format="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s",
+        handlers=handlers,
     )
 
 

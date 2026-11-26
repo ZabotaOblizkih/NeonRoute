@@ -7,6 +7,8 @@ from core.forge_locator import (
     find_forge_root,
     parse_forge_launcher_args,
     resolve_forge_models_directory,
+    resolve_forge_embeddings_directories,
+    resolve_forge_embeddings_directory,
     FORGE_LAUNCHER_CANDIDATES,
 )
 
@@ -405,6 +407,65 @@ class AssetValidator:
     def find_adetailer_model(cls, model_name: str) -> Optional[Path]:
         """Публичный интерфейс поиска модели ADetailer (алиас к get_adetailer_model_path)."""
         return cls.get_adetailer_model_path(model_name)
+
+    @classmethod
+    def resolve_embeddings_dirs(cls) -> List[Path]:
+        """Возвращает нормализованный список директорий embeddings (включая --embeddings-dir, webui_dir и штатные пути Forge)."""
+        root = cls.resolve_forge_root()
+        launcher = cls.resolve_forge_launcher(root)
+        dirs = resolve_forge_embeddings_directories(forge_root=root, launcher_path=launcher)
+
+        def _append_unique(p: Optional[Path]):
+            if p is None:
+                return
+            try:
+                r = Path(p).resolve()
+                if r not in dirs:
+                    dirs.append(r)
+            except Exception:
+                pass
+
+        webui_dir = cls.resolve_webui_dir(root)
+        if webui_dir is not None:
+            _append_unique(webui_dir / "embeddings")
+            _append_unique(webui_dir / "models" / "embeddings")
+
+        if hasattr(config, "get_forge_models_dir"):
+            try:
+                sd_dir = Path(config.get_forge_models_dir()).resolve()
+                models_root = sd_dir.parent
+                for cand in (models_root / "embeddings", models_root.parent / "embeddings", models_root / "TextualInversion"):
+                    _append_unique(cand)
+            except Exception:
+                pass
+
+        _append_unique(cls.get_target_embeddings_dir())
+        return dirs
+
+    @classmethod
+    def get_target_embeddings_dir(cls) -> Path:
+        """Возвращает основную целевую директорию для сохранения новых эмбеддингов."""
+        root = cls.resolve_forge_root()
+        launcher = cls.resolve_forge_launcher(root)
+        return resolve_forge_embeddings_directory(forge_root=root, launcher_path=launcher)
+
+    @classmethod
+    def find_embedding_file(cls, name: str) -> Optional[Path]:
+        """Рекурсивно ищет установленный файл эмбеддинга (.pt, .safetensors, .bin) на диске без учёта регистра."""
+        if not name:
+            return None
+        target = Path(name).stem.lower()
+        for emb_dir in cls.resolve_embeddings_dirs():
+            if not emb_dir.is_dir():
+                continue
+            try:
+                for item in emb_dir.rglob("*"):
+                    if item.is_file() and item.suffix.lower() in (".pt", ".safetensors", ".bin"):
+                        if item.stem.lower() == target:
+                            return item.resolve()
+            except Exception:
+                pass
+        return None
 
     @classmethod
     def is_adetailer_available(cls, model_name: str) -> bool:

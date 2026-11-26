@@ -191,7 +191,7 @@ DEFAULT_SD_SETTINGS = {
 
 # Application UI Strings & Metadata
 APP_NAME = "NeonRoute"
-APP_VERSION = "0.9.8.8-beta"
+APP_VERSION = "0.9.8.9-beta"
 APP_TAGLINE = "Local AI Orchestrator • 8GB VRAM Optimized"
 
 # Базовый промпт ролевого режима (по умолчанию, если не задана карточка)

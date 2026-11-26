@@ -297,38 +297,212 @@ def test_models_manager_table_crud(qapp, isolated_storage):
 
 
 def test_models_manager_civitai_params_ready_flow(qapp, isolated_storage):
-    """Проверяет обработку полученных параметров из Civitai."""
+    """Проверяет обработку полученных параметров, подтверждение перезаписи и фиксацию target_row."""
     with patch.object(ModelsManagerDialog, "_start_forge_scan"):
         dialog = ModelsManagerDialog()
 
     dialog._autofill_target_row = 0
+    # Переключаем текущую строку на 1 во время «фонового» запроса — изменения должны лечь в row 0
+    dialog.table.selectRow(1)
+    dialog.current_selected_row = 1
+
     civitai_response = {
         "status": "success",
         "sampler": "Euler a",
+        "scheduler": "Normal",
+        "architecture": "sdxl",
         "steps": 30,
         "cfg_scale": 7.0,
         "clip_skip": 2,
+        "hr_scale": 1.35,
         "hires_upscaler": "4x-AnimeSharp",
         "hires_denoise": 0.40,
-        "negative_prompt": "civitai negative sample"
+        "negative_prompt": "civitai negative sample",
+        "style_triggers": ["anime", "cel"],
+        "trained_words": ["1girl", "solo"],
     }
 
-    with patch("ui.models_manager_dialog.InfoBar"):
+    mock_msg = MagicMock()
+    mock_msg.exec.return_value = True
+    with patch("ui.models_manager_dialog.InfoBar"), patch("ui.models_manager_dialog.MessageBox", return_value=mock_msg):
         dialog._on_civitai_params_ready(civitai_response)
 
-    assert dialog.combo_sampler.currentText() == "Euler a"
-    assert dialog.spin_steps.value() == 30
-    assert abs(dialog.spin_cfg.value() - 7.0) < 0.05
-    assert dialog.spin_clip_skip.value() == 2
-    assert dialog.combo_upscaler.currentText() == "4x-AnimeSharp"
-    assert abs(dialog.spin_hires_denoise.value() - 0.40) < 0.01
-    assert dialog.input_negative_prompt.toPlainText() == "civitai negative sample"
+    # Целевая строка 0 обновлена полностью, несмотря на смену current_selected_row на 1
+    row0 = dialog.row_widgets[0]
+    assert row0["pipeline"]["sampler"] == "Euler a"
+    assert row0["pipeline"]["scheduler"] == "Normal"
+    assert row0["pipeline"]["steps"] == 30
+    assert row0["pipeline"]["hr_scale"] == 1.35
+    assert row0["pipeline"]["negative_prompt"] == "civitai negative sample"
+    assert row0["style_triggers"] == ["anime", "manga", "cel"]  # без дублей
+    assert row0["trained_words"] == ["1girl", "solo"]
+    # Строка 1 не испорчена
+    assert dialog.row_widgets[1]["pipeline"]["steps"] == 25
 
-    # Синхронизация с целевой моделью строки
-    assert dialog.row_widgets[0]["pipeline"]["sampler"] == "Euler a"
-    assert dialog.row_widgets[0]["pipeline"]["steps"] == 30
+    # Проверяем отказ от перезаписи ручных полей при empty_meta
+    dialog._autofill_target_row = 1
+    decline_msg = MagicMock()
+    decline_msg.exec.return_value = False
+    with patch("ui.models_manager_dialog.InfoBar"), patch("ui.models_manager_dialog.MessageBox", return_value=decline_msg):
+        dialog._on_civitai_params_ready({"status": "empty_meta", "steps": 12, "negative_prompt": "should not apply"})
+    assert dialog.row_widgets[1]["pipeline"]["steps"] == 25
+    assert dialog.row_widgets[1]["negative_prompt"] == "bad anatomy, doll"
 
     dialog.reject()
+
+
+def test_civitai_partial_profile_e2e_preserves_manual_style_and_prompts(qapp, isolated_storage, tmp_path, monkeypatch):
+    """
+    Сквозной смок-тест (resolve_model_presets + _on_civitai_params_ready):
+    - модели нет в каталоге (GitHub/Local);
+    - Civitai возвращает технические параметры (steps, cfgScale, sampler, Clip skip),
+      но trainedWords пуст, negativePrompt отсутствует, а стилевых полей нет;
+    - пользовательские routing_description, llm_guidance, style_triggers и negative_prompt
+      в UI сохраняются нетронутыми без лишних диалогов.
+    """
+    from services.model_catalog_service import resolve_model_presets
+
+    empty_catalog = tmp_path / "empty_catalog.json"
+    empty_catalog.write_text('{"schema_version": 1, "generated_at": "2026-11-25T00:00:00Z", "models": []}', encoding="utf-8")
+
+    civitai_ver_resp = MagicMock()
+    civitai_ver_resp.status_code = 200
+    civitai_ver_resp.json.return_value = {
+        "items": [
+            {
+                "name": "SDXL Base Anime",
+                "tags": ["anime"],
+                "modelVersions": [{"id": 999, "name": "v1.0", "baseModel": "SDXL 1.0"}],
+            }
+        ]
+    }
+    civitai_detail_resp = MagicMock()
+    civitai_detail_resp.status_code = 200
+    civitai_detail_resp.json.return_value = {
+        "id": 999,
+        "name": "v1.0",
+        "baseModel": "SDXL 1.0",
+        "trainedWords": [],
+        "images": [
+            {
+                "meta": {
+                    "sampler": "DPM++ 2M Karras",
+                    "steps": 32,
+                    "cfgScale": 6.5,
+                    "Clip skip": 2,
+                }
+            }
+        ],
+    }
+
+    def _mock_get(url, *args, **kwargs):
+        if "model-versions/999" in url:
+            return civitai_detail_resp
+        return civitai_ver_resp
+
+    monkeypatch.setattr("services.civitai_service.requests.get", _mock_get)
+    monkeypatch.setattr("services.civitai_service.resolve_checkpoint_file", lambda _: None)
+
+    resolved = resolve_model_presets(
+        "sdxl_anime_v1.safetensors",
+        allow_github=False,
+        catalog_path=empty_catalog,
+    )
+    assert resolved["status"] == "success"
+    assert resolved["source"] == "civitai"
+    assert resolved["negative_prompt"] is None
+    assert resolved["routing_description"] is None
+    assert resolved["llm_guidance"] is None
+    assert resolved["style_triggers"] == []
+    assert resolved["trained_words"] == []
+
+    with patch.object(ModelsManagerDialog, "_start_forge_scan"):
+        dialog = ModelsManagerDialog()
+
+    dialog._autofill_target_row = 0
+    # Не должно вызываться ни одного MessageBox при применении частичного профиля
+    with patch("ui.models_manager_dialog.InfoBar"), patch("ui.models_manager_dialog.MessageBox") as mock_mb:
+        dialog._on_civitai_params_ready(resolved)
+        mock_mb.assert_not_called()
+
+    # Технические параметры применились
+    assert dialog.combo_sampler.currentText() == "DPM++ 2M"
+    assert dialog.combo_scheduler.currentText() == "Karras"
+    assert dialog.spin_steps.value() == 32
+    assert abs(dialog.spin_cfg.value() - 6.5) < 0.05
+    assert dialog.spin_clip_skip.value() == 2
+    assert dialog.row_widgets[0]["pipeline"]["steps"] == 32
+
+    # Пользовательские текстовые/стилевые поля сохранились нетронутыми
+    assert dialog.input_desc.toPlainText() == "Аниме стилистика SDXL"
+    assert dialog.input_guidance.toPlainText() == "anime, masterpiece"
+    assert dialog.input_negative_prompt.toPlainText() == "worst quality, blurry"
+    assert dialog.row_widgets[0]["style_triggers"] == ["anime", "manga"]
+    assert dialog.row_widgets[0]["negative_prompt"] == "worst quality, blurry"
+
+    dialog.reject()
+
+
+def test_autofill_logging_correlation_id_stages(qapp, isolated_storage, tmp_path, monkeypatch, caplog):
+    """
+    Проверяет сквозной correlation ID (autofill_id) по всем этапам логирования:
+    NORMALIZE -> HASH_SKIPPED -> GITHUB_CATALOG -> LOCAL_CATALOG -> CIVITAI_API -> UI_READY -> UI_APPLY.
+    """
+    import logging
+    from services.model_catalog_service import resolve_model_presets
+
+    caplog.set_level(logging.INFO)
+    empty_catalog = tmp_path / "empty_cat.json"
+    empty_catalog.write_text('{"schema_version": 1, "generated_at": "2026-11-25T00:00:00Z", "models": []}', encoding="utf-8")
+
+    search_resp = MagicMock(status_code=200)
+    search_resp.json.return_value = {
+        "items": [{"name": "SDXL Base Anime", "tags": [], "modelVersions": [{"id": 777, "name": "v1.0", "baseModel": "SDXL 1.0"}]}]
+    }
+    ver_resp = MagicMock(status_code=200)
+    ver_resp.json.return_value = {
+        "id": 777,
+        "name": "v1.0",
+        "baseModel": "SDXL 1.0",
+        "trainedWords": [],
+        "images": [{"meta": {"sampler": "Euler a", "steps": 24, "cfgScale": 6.0}}],
+    }
+
+    monkeypatch.setattr("services.model_catalog_service.requests.get", lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("offline")))
+    monkeypatch.setattr("services.civitai_service.requests.get", lambda url, *a, **kw: ver_resp if "model-versions/777" in url else search_resp)
+    monkeypatch.setattr("services.civitai_service.resolve_checkpoint_file", lambda _: None)
+
+    aid = "trace99a"
+    resolved = resolve_model_presets(
+        "sdxl_anime_v1.safetensors",
+        catalog_url="https://example.test/cat.json",
+        catalog_path=empty_catalog,
+        autofill_id=aid,
+    )
+    assert resolved["autofill_id"] == aid
+
+    with patch.object(ModelsManagerDialog, "_start_forge_scan"):
+        dialog = ModelsManagerDialog()
+
+    dialog._autofill_target_row = 0
+    with patch("ui.models_manager_dialog.InfoBar"), patch("ui.models_manager_dialog.MessageBox"):
+        dialog._on_civitai_params_ready(resolved)
+
+    dialog.reject()
+
+    aid_logs = [rec.getMessage() for rec in caplog.records if f"[AutoFill:{aid}]" in rec.getMessage()]
+    joined = "\n".join(aid_logs)
+    for expected_stage in (
+        "NORMALIZE",
+        "HASH_SKIPPED",
+        "GITHUB_CATALOG status=error",
+        "LOCAL_CATALOG status=miss",
+        "CIVITAI_API",
+        "UI_READY",
+        "UI_APPLY",
+    ):
+        assert expected_stage in joined, f"Missing stage '{expected_stage}' in logs:\n{joined}"
+    assert "preserved_manual=['routing_description', 'llm_guidance', 'negative_prompt', 'style_triggers']" in joined
 
 
 def test_models_manager_forge_scan_auto_registration(qapp, isolated_storage):

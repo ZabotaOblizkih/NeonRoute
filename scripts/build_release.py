@@ -36,6 +36,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import config
+from services.integrity_service import (
+    GITHUB_REPO,
+    INTEGRITY_AVATAR_FILES,
+    INTEGRITY_DATA_DIRS,
+    INTEGRITY_DATA_FILES,
+    MANIFEST_FILENAME,
+    RELEASE_EXTRA_DIRS,
+    RELEASE_ROOT_FILES,
+    INTEGRITY_SOURCE_DIRS,
+    TARGET_BRANCH,
+    build_release_manifest,
+    save_local_manifest,
+)
 
 # Import -> PyPI package mapping (normalized to lowercase with hyphens)
 IMPORT_TO_PYPI: Dict[str, str] = {
@@ -340,28 +353,13 @@ def assemble_release(
     print(f"\n[Stage C] Assembling sterile package: {release_dir.name}")
 
     # 1. Root files
-    root_files = [
-        "main.py",
-        "run_mobile_server.py",
-        "config.py",
-        "server_config.ini",
-        "requirements.txt",
-        "run.bat",
-        "run_debug.bat",
-        "run_llama_server.bat",
-        "install.bat",
-        "README.md",
-        "Agentrules.md",
-        "ARCHITECTURE.md",
-        "pytest.ini"
-    ]
-    for rf in root_files:
+    for rf in RELEASE_ROOT_FILES:
         src = repo_root / rf
         if src.is_file():
             shutil.copy2(src, release_dir / rf)
 
     # 2. Source directories
-    source_dirs = ["core", "services", "ui", "mobile_server", "utils", "scripts", "audio", "lorebooks", "exports", "assets"]
+    source_dirs = list(INTEGRITY_SOURCE_DIRS) + list(RELEASE_EXTRA_DIRS)
     for sd in source_dirs:
         src = repo_root / sd
         dst = release_dir / sd
@@ -389,13 +387,16 @@ def assemble_release(
     # Clean defaults are auto-generated on first launch by services.art_director_config.
     data_dst = release_dir / "data"
     data_dst.mkdir(parents=True, exist_ok=True)
-    for df in ["user_personas.json", "lora_registry.json", "model_presets_catalog.json"]:
+    release_data_files = ["user_personas.json"] + [Path(p).name for p in INTEGRITY_DATA_FILES]
+    for df in release_data_files:
         src_df = repo_root / "data" / df
         if src_df.is_file():
             shutil.copy2(src_df, data_dst / df)
 
-    if (repo_root / "data" / "skill_icons").is_dir():
-        _copy_clean_tree(repo_root / "data" / "skill_icons", data_dst / "skill_icons")
+    for dd in INTEGRITY_DATA_DIRS:
+        src_dd = repo_root / dd
+        if src_dd.is_dir():
+            _copy_clean_tree(src_dd, release_dir / dd)
 
     (data_dst / "cache").mkdir(parents=True, exist_ok=True)
     (data_dst / "vector_memory").mkdir(parents=True, exist_ok=True)
@@ -412,7 +413,8 @@ def assemble_release(
     # 6. Avatars directory (canonical modes only)
     avatars_dst = release_dir / "avatars"
     avatars_dst.mkdir(parents=True, exist_ok=True)
-    for av in ["assistant.jpg", "engenier.jpg", "RP_chat.jpg"]:
+    for av_rel in INTEGRITY_AVATAR_FILES:
+        av = Path(av_rel).name
         src_av = repo_root / "avatars" / av
         if src_av.is_file():
             shutil.copy2(src_av, avatars_dst / av)
@@ -442,6 +444,13 @@ def assemble_release(
             raise RuntimeError("Failed to bundle autonomous portable Python runtime.")
     else:
         print("\n[INFO] Bundling of embedded Python runtime skipped (--no-embedded-python).")
+
+    # 9.5. Generate release_manifest.json inside release_dir and copy to dist/
+    print("\nGenerating release_manifest.json...")
+    manifest_data = build_release_manifest(release_dir, app_version=version, target_branch=TARGET_BRANCH)
+    save_local_manifest(release_dir, manifest_data)
+    save_local_manifest(dist_dir, manifest_data)
+    print(f"  [OK] {MANIFEST_FILENAME} generated ({len(manifest_data['files'])} files, aggregate={manifest_data['aggregate_hash'][:12]}...)")
 
     # 10. Pack to ZIP archive
     print(f"\nCompressing into ZIP archive: {zip_path.name}")
@@ -642,6 +651,44 @@ def update_app_version_in_config(config_path: Path, new_version: str) -> None:
         pass
 
 
+def read_hotfix_section(hotfix_path: Path, version: str) -> str:
+    """
+    Читает существующий hotfix.md строго в режиме чтения (encoding='utf-8')
+    и возвращает содержимое секции ## v<version>.
+    Если файл или секция отсутствуют — возвращает пустую строку без ошибки.
+    """
+    if not hotfix_path.is_file():
+        return ""
+    try:
+        content = hotfix_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+    lines = content.splitlines()
+    target_header = f"## v{version}"
+    start_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            stripped == target_header
+            or stripped.startswith(f"{target_header} ")
+            or stripped.startswith(f"{target_header}(")
+        ):
+            start_idx = i + 1
+            break
+
+    if start_idx is None:
+        return ""
+
+    section_lines: List[str] = []
+    for j in range(start_idx, len(lines)):
+        if lines[j].strip().startswith("## v") or lines[j].strip().startswith("##  v"):
+            break
+        section_lines.append(lines[j])
+
+    return "\n".join(section_lines).strip()
+
+
 def update_hotfix_md(
     hotfix_path: Path,
     new_version: str,
@@ -696,8 +743,8 @@ def update_hotfix_md(
 
 
 def rollback_versioning(rollback_state: dict) -> None:
-    """Rolls back config.py and hotfix.md to their states before interactive versioning."""
-    print("\n  [ROLLBACK] Откат изменений версии и hotfix.md из-за сбоя проверок...")
+    """Rolls back config.py to its state before interactive versioning."""
+    print("\n  [ROLLBACK] Откат изменений версии в config.py из-за сбоя проверок...")
     config_path = rollback_state.get("config_path")
     config_backup = rollback_state.get("config_backup")
     if config_path and config_backup is not None:
@@ -709,16 +756,6 @@ def rollback_versioning(rollback_state: dict) -> None:
                 config.APP_VERSION = old_version
         except Exception:
             pass
-
-    hotfix_path = rollback_state.get("hotfix_path")
-    hotfix_existed = rollback_state.get("hotfix_existed")
-    hotfix_backup = rollback_state.get("hotfix_backup")
-    if hotfix_path:
-        hp = Path(hotfix_path)
-        if hotfix_existed and hotfix_backup is not None:
-            hp.write_text(hotfix_backup, encoding="utf-8")
-        elif not hotfix_existed and hp.exists():
-            hp.unlink(missing_ok=True)
     print("  [ROLLBACK] Исходные файлы успешно восстановлены.")
 
 
@@ -838,17 +875,11 @@ def prompt_interactive_versioning(
         "config_path": config_path,
         "config_backup": config_path.read_text(encoding="utf-8"),
         "old_version": current_version,
-        "hotfix_path": hotfix_path,
-        "hotfix_existed": hotfix_path.is_file(),
-        "hotfix_backup": hotfix_path.read_text(encoding="utf-8") if hotfix_path.is_file() else None,
         "changes_text": changes_text,
     }
 
     update_app_version_in_config(config_path, new_version)
     print(f"  [SUCCESS] Версия в config.py обновлена: {current_version} -> {new_version}")
-
-    update_hotfix_md(hotfix_path, new_version, changes_text)
-    print(f"  [SUCCESS] Запись в {hotfix_path.name} добавлена/обновлена.")
 
     return new_version, rollback_state
 
@@ -859,9 +890,9 @@ def create_release_git_commit(
     changes_text: str
 ) -> bool:
     """
-    Creates an automatic git release commit for config.py and hotfix.md.
-    Contains RELEASE_COMMIT_MARKER in the commit body (never in hotfix.md).
-    Uses git commit --only -- config.py hotfix.md to avoid committing unrelated files.
+    Creates an automatic git release commit for config.py.
+    Contains RELEASE_COMMIT_MARKER in the commit body (never modifies hotfix.md).
+    Uses git commit --only -- config.py to avoid committing unrelated files.
     Does not raise exceptions if git fails (e.g., missing user.name/user.email).
     """
     if not shutil.which("git"):
@@ -887,7 +918,7 @@ def create_release_git_commit(
 
     try:
         subprocess.run(
-            ["git", "add", "--", "config.py", "hotfix.md"],
+            ["git", "add", "--", "config.py"],
             cwd=str(repo_root),
             capture_output=True,
             text=True,
@@ -903,8 +934,7 @@ def create_release_git_commit(
                 "-m",
                 commit_body,
                 "--",
-                "config.py",
-                "hotfix.md"
+                "config.py"
             ],
             cwd=str(repo_root),
             capture_output=True,
@@ -925,6 +955,133 @@ def create_release_git_commit(
         return False
 
 
+def get_github_token_from_git_credential() -> Optional[str]:
+    """Получает токен GitHub через git credential fill (protocol=https, host=github.com)."""
+    if not shutil.which("git"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            return None
+        for line in proc.stdout.splitlines():
+            if line.startswith("password="):
+                tok = line.split("=", 1)[1].strip()
+                if tok:
+                    return tok
+    except Exception:
+        pass
+    return None
+
+
+def publish_github_release(
+    repo_root: Path,
+    version: str,
+    zip_path: Path,
+    manifest_path: Path,
+    repo: str = GITHUB_REPO,
+    target_branch: str = TARGET_BRANCH,
+    token: Optional[str] = None,
+) -> bool:
+    """
+    Публикует релиз v<version> на GitHub Releases:
+    - берёт body строго из hotfix.md (read-only);
+    - находит существующий релиз по тегу или создаёт новый (target_commitish=ui-fluent-redesign);
+    - удаляет одноимённые ассеты при их наличии;
+    - загружает NeonRoute_v{version}.zip и release_manifest.json.
+    """
+    import requests
+
+    tok = token or get_github_token_from_git_credential()
+    if not tok:
+        print("  [ERROR] Не найден токен GitHub в git credential fill (protocol=https, host=github.com).")
+        print("          Выполните авторизацию git (или GitHub CLI / credential manager) и повторите попытку.")
+        return False
+
+    if not zip_path.is_file() or not manifest_path.is_file():
+        print(f"  [ERROR] Отсутствуют артефакты релиза: {zip_path} или {manifest_path}")
+        return False
+
+    tag_name = f"v{version}"
+    body = read_hotfix_section(repo_root / "hotfix.md", version)
+    headers = {
+        "Authorization": f"Bearer {tok}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "NeonRoute-ReleasePublisher",
+    }
+
+    api_base = f"https://api.github.com/repos/{repo}/releases"
+    release_data = None
+
+    # 1. Поиск существующего релиза по тегу
+    resp = requests.get(f"{api_base}/tags/{tag_name}", headers=headers, timeout=15)
+    if resp.status_code == 200:
+        release_data = resp.json()
+        print(f"  [INFO] Найден существующий релиз {tag_name} (id={release_data.get('id')}).")
+    elif resp.status_code == 404:
+        payload = {
+            "tag_name": tag_name,
+            "target_commitish": target_branch,
+            "name": f"NeonRoute {tag_name}",
+            "body": body,
+            "draft": False,
+            "prerelease": True,
+        }
+        create_resp = requests.post(api_base, headers=headers, json=payload, timeout=15)
+        if create_resp.status_code not in (200, 201):
+            print(f"  [ERROR] Не удалось создать релиз {tag_name}: HTTP {create_resp.status_code} {create_resp.text}")
+            return False
+        release_data = create_resp.json()
+        print(f"  [SUCCESS] Создан релиз {tag_name} (target={target_branch}).")
+    else:
+        print(f"  [ERROR] Ошибка запроса GitHub Releases API: HTTP {resp.status_code} {resp.text}")
+        return False
+
+    upload_url_tpl = release_data.get("upload_url", "")
+    upload_base = upload_url_tpl.split("{", 1)[0]
+    existing_assets = {a.get("name"): a.get("id") for a in (release_data.get("assets") or [])}
+
+    assets_to_upload = [
+        (zip_path, "application/zip"),
+        (manifest_path, "application/json"),
+    ]
+
+    for asset_path, content_type in assets_to_upload:
+        asset_name = asset_path.name
+        if asset_name in existing_assets and existing_assets[asset_name]:
+            del_id = existing_assets[asset_name]
+            print(f"  [INFO] Удаление существующего ассета {asset_name} (id={del_id})...")
+            del_resp = requests.delete(f"{api_base}/assets/{del_id}", headers=headers, timeout=15)
+            if del_resp.status_code not in (200, 204):
+                print(f"  [ERROR] Не удалось удалить ассет {asset_name}: HTTP {del_resp.status_code}")
+                return False
+
+        print(f"  [INFO] Загрузка ассета {asset_name} ({asset_path.stat().st_size} байт)...")
+        up_headers = dict(headers)
+        up_headers["Content-Type"] = content_type
+        with open(asset_path, "rb") as f:
+            up_resp = requests.post(
+                f"{upload_base}?name={asset_name}",
+                headers=up_headers,
+                data=f,
+                timeout=300,
+            )
+        if up_resp.status_code not in (200, 201):
+            print(f"  [ERROR] Ошибка загрузки {asset_name}: HTTP {up_resp.status_code} {up_resp.text}")
+            return False
+        print(f"  [OK] Ассет {asset_name} загружен.")
+
+    print(f"  [SUCCESS] Релиз {tag_name} успешно опубликован: {release_data.get('html_url', '')}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="NeonRoute Automated Release Builder & Quality Gate")
     parser.add_argument("--skip-dep-check", action="store_true", help="Skip AST dependency check vs requirements.txt")
@@ -935,7 +1092,16 @@ def main():
     parser.add_argument("--no-embedded-python", action="store_true", help="Exclude bundled portable Python runtime from release package")
     parser.add_argument("--non-interactive", action="store_true", help="Run without interactive prompts (for CI/CD)")
     parser.add_argument("--no-git-commit", action="store_true", help="Do not create an automatic git release commit")
+    parser.add_argument("--publish-only", action="store_true", help="Publish already built release artifacts to GitHub Releases")
     args = parser.parse_args()
+
+    if args.publish_only:
+        ver = read_app_version(REPO_ROOT / "config.py")
+        dist_dir = REPO_ROOT / "dist"
+        zip_path = dist_dir / f"NeonRoute_v{ver}.zip"
+        manifest_path = dist_dir / MANIFEST_FILENAME
+        ok = publish_github_release(REPO_ROOT, ver, zip_path, manifest_path)
+        sys.exit(0 if ok else 1)
 
     # Interactive Versioning Step (Before Stage A)
     version, rollback_state = prompt_interactive_versioning(

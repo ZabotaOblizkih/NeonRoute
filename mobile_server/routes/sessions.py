@@ -3,6 +3,7 @@ Session management routes: CRUD operations over chat sessions via SessionManager
 """
 
 import json
+import logging
 import uuid
 import asyncio
 from pathlib import Path
@@ -24,6 +25,7 @@ from mobile_server.dependencies import get_session_manager
 from mobile_server.services.art_service import build_media_image_url
 from mobile_server.services.chat_service import subscribe_session_events
 
+logger = logging.getLogger("NeonRoute.MobileServer.Sessions")
 router = APIRouter()
 
 
@@ -191,6 +193,7 @@ async def create_session(
 
     try:
         new_id = await asyncio.to_thread(_create_and_save)
+        logger.info(f"[MobileSessions] Created session={new_id} mode={req.mode} title={req.title!r}")
         return SessionMutationResponse(
             success=True,
             session_id=new_id,
@@ -226,6 +229,7 @@ async def delete_session(
             SessionManager._current_session = None
 
     await asyncio.to_thread(_delete_sync)
+    logger.info(f"[MobileSessions] Deleted session={session_id}")
 
     return SessionMutationResponse(
         success=True,

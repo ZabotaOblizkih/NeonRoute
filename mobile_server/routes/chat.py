@@ -2,6 +2,7 @@
 Chat inference routes: streaming LLM generation via Server-Sent Events (SSE).
 """
 
+import logging
 import uuid
 import asyncio
 from datetime import datetime
@@ -27,6 +28,7 @@ from mobile_server.dependencies import (
 )
 from mobile_server.services.chat_service import stream_chat_sse
 
+logger = logging.getLogger("NeonRoute.MobileServer.Chat")
 router = APIRouter()
 
 
@@ -72,6 +74,10 @@ async def chat_stream(
         )
 
     await asyncio.to_thread(SessionManager.save_session, session)
+    logger.info(
+        f"[MobileChat] /stream session={req.session_id} mode={req.mode or 'auto'} "
+        f"len={len(req.text or '')} overrides={bool(req.sampling_overrides)}"
+    )
 
     return EventSourceResponse(
         stream_chat_sse(
@@ -130,6 +136,8 @@ async def chat_regenerate(
         if m.get("role") == "user":
             last_user_text = m.get("content", "")
             break
+
+    logger.info(f"[MobileChat] /regenerate session={req.session_id} mode={req.mode or 'auto'}")
 
     return EventSourceResponse(
         stream_chat_sse(

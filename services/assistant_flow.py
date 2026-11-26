@@ -1306,6 +1306,7 @@ def run_forge_art_generation(
             arbiter = VRAMArbiter.get_instance()
             if arbiter.forge_client is forge_client:
                 arbiter.release_diffusion_for_llm(force=False, wait_stabilization=False)
+                arbiter.schedule_llm_reload(delay=1.2, session_id=session_id, mode=mode)
             else:
                 try:
                     forge_client.unload_checkpoint()

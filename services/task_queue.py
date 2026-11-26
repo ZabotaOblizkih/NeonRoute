@@ -100,6 +100,11 @@ class TaskQueueWorker(QThread):
 
     def enqueue(self, task: InferenceTask):
         """Add a new task to the prioritized sequential queue."""
+        if task.task_type in ("llm", "image", "scene_art", "scene_background") and not (task.metadata or {}).get("is_llm_reload"):
+            try:
+                VRAMArbiter.get_instance().cancel_llm_reload(reason=f"new_task:{task.task_type}")
+            except Exception:
+                pass
         with self._lock:
             self._seq_counter += 1
             seq = self._seq_counter
@@ -254,6 +259,10 @@ class TaskQueueWorker(QThread):
     def stop(self):
         """Stops the worker thread cleanly."""
         self._running = False
+        try:
+            VRAMArbiter.get_instance().cancel_llm_reload(reason="task_queue_stop")
+        except Exception:
+            pass
         self.abort_current()
         self.clear_queue()
         with self._lock:

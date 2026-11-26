@@ -196,6 +196,10 @@ async def generate_scene_art(
     )
 
     try:
+        logger.info(
+            f"[MobileArt] /generate session={req.session_id} model={chosen_model or 'auto'} "
+            f"ar={req.aspect_ratio or 'portrait'}"
+        )
         gen_res = await enqueue_forge_generation_async(
             task_queue=task_queue,
             forge=forge,
@@ -252,6 +256,7 @@ async def direct_art_command(
     cmd = req.command.strip()
     plan = await asyncio.to_thread(art_director.build_direct_plan, raw_prompt=cmd)
     try:
+        logger.info(f"[MobileArt] /direct-command session={req.session_id} cmd={cmd[:60]!r}")
         gen_res = await enqueue_forge_generation_async(
             task_queue=task_queue,
             forge=forge,
@@ -366,6 +371,7 @@ async def interrupt_art_generation(
         if target_sid:
             publish_session_event(target_sid, "art_interrupted", {"session_id": target_sid})
 
+    logger.info(f"[MobileArt] /interrupt session={session_id or 'active'}")
     await asyncio.to_thread(_interrupt)
     return {"success": True, "interrupted": True}
 
@@ -392,6 +398,7 @@ async def generate_scene_background(
     )
 
     try:
+        logger.info(f"[MobileArt] /scene-background session={req.session_id} location={location[:60]!r}")
         gen_res = await enqueue_forge_generation_async(
             task_queue=task_queue,
             forge=forge,

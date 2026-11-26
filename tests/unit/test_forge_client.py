@@ -842,7 +842,8 @@ class TestTextToImageGeneration:
             checkpoint="urpm_merge_v1.safetensors",
             clip_skip=1
         )
-        assert captured_payloads[0]["clip_skip"] == 2
+        assert captured_payloads[0]["clip_skip"] == 1
+        assert captured_payloads[0]["override_settings"]["CLIP_stop_at_last_layers"] == 1
 
     def test_txt2img_session_id_directory_structure(self, forge_client, tmp_path, monkeypatch):
         monkeypatch.setattr("services.forge_client.OUTPUTS_DIR", tmp_path / "global_outputs")

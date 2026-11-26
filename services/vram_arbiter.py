@@ -2,9 +2,63 @@ import logging
 import threading
 import time
 from enum import Enum
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Tuple
 
 logger = logging.getLogger("NeonRoute.VRAMArbiter")
+
+
+def resolve_active_llm_target(
+    session_id: Optional[str] = None,
+    mode: Optional[str] = None,
+    fallback_model: Optional[str] = None,
+) -> Tuple[str, int, bool, bool]:
+    """Определяет целевую LLM-модель и длину контекста без привязки к GUI-окну."""
+    try:
+        from utils.config_manager import ConfigManager
+        app_config = ConfigManager.load_config() or {}
+    except Exception:
+        app_config = {}
+
+    session_data: Optional[Dict[str, Any]] = None
+    if session_id:
+        try:
+            from services.session_manager import SessionManager
+            session_data = SessionManager.load_session(session_id)
+        except Exception:
+            session_data = None
+
+    eff_mode = str(mode or (session_data.get("mode") if isinstance(session_data, dict) else "") or "assistant").strip().lower()
+    is_rp = eff_mode == "roleplay"
+    is_eng = (not is_rp) and (
+        eff_mode in ("engineer", "engineering")
+        or (isinstance(session_data, dict) and str(session_data.get("type", "")).lower() == "engineering")
+    )
+
+    if is_eng:
+        target_model = app_config.get("engineer_model_name") or app_config.get("engineer_model")
+        ctx_len = int(app_config.get("context_length_engineer", 28672) or 28672)
+    elif is_rp:
+        char_data = (session_data.get("character_data") or {}) if isinstance(session_data, dict) else {}
+        target_model = (
+            char_data.get("character_model")
+            or app_config.get("rp_model_name")
+            or (session_data.get("model_id") if isinstance(session_data, dict) else None)
+            or app_config.get("active_model")
+        )
+        ctx_len = int(app_config.get("context_length_roleplay", 24576) or 24576)
+    else:
+        target_model = (
+            app_config.get("assistant_model_name")
+            or (session_data.get("model_id") if isinstance(session_data, dict) else None)
+            or app_config.get("active_model")
+        )
+        ctx_len = int(app_config.get("context_length_assistant", 14336) or 14336)
+
+    target_model = str(target_model or "").strip()
+    if (not target_model or target_model.startswith("default")) and fallback_model:
+        target_model = str(fallback_model).strip()
+
+    return target_model, ctx_len, is_eng, is_rp
 
 
 class GPUOwner(str, Enum):
@@ -27,6 +81,8 @@ class VRAMArbiter:
         self._current_owner: GPUOwner = GPUOwner.NONE
         self._last_diffusion_release_ts: float = 0.0
         self._lock = threading.RLock()
+        self._reload_timer: Optional[threading.Timer] = None
+        self._reload_generation: int = 0
 
     @classmethod
     def get_instance(cls) -> "VRAMArbiter":
@@ -227,3 +283,110 @@ class VRAMArbiter:
             self._current_owner = GPUOwner.NONE
             logger.info(f"[VRAMArbiter] Полная очистка VRAM завершена: {details}")
             return details
+
+    def cancel_llm_reload(self, reason: str = "") -> bool:
+        """Отменяет отложенный таймер возврата LLM в VRAM (потокобезопасно)."""
+        with self._lock:
+            self._reload_generation += 1
+            timer = self._reload_timer
+            self._reload_timer = None
+            if timer is not None:
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+                if reason:
+                    logger.debug(f"[VRAMArbiter] Отложенный возврат LLM отменён ({reason}).")
+                return True
+            return False
+
+    def schedule_llm_reload(
+        self,
+        delay: float = 1.2,
+        session_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        fallback_model: Optional[str] = None,
+    ) -> bool:
+        """Планирует тихий возврат активной LLM в VRAM после освобождения Forge (без привязки к Qt)."""
+        if not self.lm_client or not hasattr(self.lm_client, "ensure_model_loaded"):
+            return False
+
+        from services.task_queue import get_task_queue
+        tq = get_task_queue()
+        if tq is not None and tq.has_pending_tasks(("scene_art", "image", "scene_background")):
+            self.cancel_llm_reload(reason="pending_forge_tasks")
+            logger.info("[VRAMArbiter] Возврат LLM отменён: в очереди ожидают задачи Forge.")
+            return False
+
+        with self._lock:
+            self.cancel_llm_reload()
+            gen = self._reload_generation
+            wait_s = max(0.05, float(delay))
+            timer = threading.Timer(
+                wait_s,
+                self._on_reload_timer,
+                args=(gen, session_id, mode, fallback_model),
+            )
+            timer.daemon = True
+            self._reload_timer = timer
+            timer.start()
+            logger.debug(f"[VRAMArbiter] Запланирован возврат LLM в VRAM через {wait_s:.1f}с (session={session_id or 'active'}).")
+            return True
+
+    def _on_reload_timer(
+        self,
+        expected_gen: int,
+        session_id: Optional[str],
+        mode: Optional[str],
+        fallback_model: Optional[str],
+    ) -> None:
+        """Ставит фоновую задачу возврата LLM в VRAM, если GPU свободен и очередь пуста."""
+        with self._lock:
+            if expected_gen != self._reload_generation:
+                return
+            self._reload_timer = None
+            if self._current_owner != GPUOwner.NONE:
+                return
+
+        if not self.lm_client or not hasattr(self.lm_client, "ensure_model_loaded"):
+            return
+
+        pm = getattr(self.lm_client, "process_manager", None)
+        if pm is not None:
+            state = getattr(pm, "_server_state", None)
+            state_val = getattr(state, "value", state)
+            if state_val == "ERROR" and hasattr(pm, "is_server_binary_available") and not pm.is_server_binary_available():
+                logger.debug("[VRAMArbiter] Пропуск возврата LLM: сервер в ERROR и бинарники отсутствуют.")
+                return
+
+        from services.task_queue import get_task_queue, InferenceTask, PRIORITY_LOW
+        tq = get_task_queue()
+        if tq is None or not getattr(tq, "_running", True):
+            return
+        if tq.current_task is not None:
+            return
+        if tq.has_pending_tasks(("llm", "scene_art", "image", "scene_background")):
+            return
+
+        target_model, ctx_len, is_eng, is_rp = resolve_active_llm_target(
+            session_id=session_id,
+            mode=mode,
+            fallback_model=fallback_model,
+        )
+        if not target_model or target_model.startswith("default"):
+            return
+
+        task = InferenceTask(
+            name="Возврат LLM в VRAM",
+            task_type="llm",
+            func=self.lm_client.ensure_model_loaded,
+            kwargs={
+                "preferred_model": target_model,
+                "context_length": ctx_len,
+                "is_engineer": is_eng,
+                "is_roleplay": is_rp,
+            },
+            priority=PRIORITY_LOW,
+            metadata={"silent": True, "is_llm_reload": True},
+        )
+        tq.enqueue(task)

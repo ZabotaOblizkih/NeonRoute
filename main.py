@@ -25,6 +25,9 @@ from config import (
 # during the heavy transitive import chain (~50+ modules).
 
 _FAULTHANDLER_FILE = None
+_ACTIVE_CRASH_DIALOG = False
+_LAST_CRASH_SIGNATURE = None
+_LAST_CRASH_TS = 0.0
 
 
 def _write_to_crash_log(header: str, err_msg: str):
@@ -53,6 +56,18 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 
     # If QApplication instance is already running, show informative modal error dialog
     if QApplication.instance():
+        global _ACTIVE_CRASH_DIALOG, _LAST_CRASH_SIGNATURE, _LAST_CRASH_TS
+        import time
+
+        now = time.monotonic()
+        sig = (getattr(exc_type, "__name__", str(exc_type)), str(exc_value))
+        if _ACTIVE_CRASH_DIALOG or (sig == _LAST_CRASH_SIGNATURE and (now - _LAST_CRASH_TS) < 10.0):
+            return
+
+        _ACTIVE_CRASH_DIALOG = True
+        _LAST_CRASH_SIGNATURE = sig
+        _LAST_CRASH_TS = now
+        open_report = False
         try:
             msg_box = QMessageBox()
             msg_box.setIcon(QMessageBox.Icon.Critical)
@@ -60,11 +75,42 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
             msg_box.setText("Произошла непредвиденная ошибка в приложении:")
             msg_box.setInformativeText(str(exc_value))
             msg_box.setDetailedText(err_msg)
+            btn_report = msg_box.addButton("Сообщить об ошибке...", QMessageBox.ButtonRole.ActionRole)
             msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg_box.exec()
+            open_report = msg_box.clickedButton() is btn_report
         except Exception as dialog_err:
             logging.error(f"Failed to display error dialog: {dialog_err}")
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        finally:
+            _ACTIVE_CRASH_DIALOG = False
+
+        if open_report:
+            try:
+                app = QApplication.instance()
+                main_win = getattr(app, "_main_window", None) if app else None
+                summary = f"{getattr(exc_type, '__name__', 'Exception')}: {exc_value}"
+                if main_win is not None and hasattr(main_win, "open_bug_report_dialog"):
+                    QTimer.singleShot(
+                        0,
+                        lambda: main_win.open_bug_report_dialog(
+                            error_summary=summary,
+                            traceback_text=err_msg,
+                            source="crash_handler",
+                        ),
+                    )
+                else:
+                    from ui.dialogs.bug_report_dialog import BugReportDialog
+
+                    dlg = BugReportDialog(
+                        parent=None,
+                        error_summary=summary,
+                        traceback_text=err_msg,
+                        source="crash_handler",
+                    )
+                    dlg.exec()
+            except Exception as report_err:
+                logging.error(f"Failed to open bug report dialog: {report_err}")
     else:
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
 

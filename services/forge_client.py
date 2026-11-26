@@ -133,6 +133,8 @@ class ForgeClient(QObject):
         self._cached_scripts: Optional[Dict[str, List[str]]] = None
         self._checkpoint_cache_size: int = 0
         self._cached_upscalers: Optional[List[str]] = None
+        self._cached_samplers: Optional[List[str]] = None
+        self._cached_schedulers: Optional[List[str]] = None
         self._cached_embeddings: Optional[List[str]] = None
         self._free_vram_supported: bool = True
         self._free_vram_warned: bool = False
@@ -151,15 +153,30 @@ class ForgeClient(QObject):
         except Exception:
             pass
 
-        # Надежный поиск файлов на диске, если эндпоинт Forge возвращает ошибку 500
-        local_emb_dirs = [
-            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "embeddings",
-            FORGE_ROOT_DIR / "webui_forge_cu121_torch231" / "webui" / "models" / "embeddings"
-        ]
+        # Надежный поиск файлов на диске через единый резолвер AssetValidator (без хардкода путей)
+        local_emb_dirs = []
+        try:
+            from core.forge_locator import resolve_forge_embeddings_directories
+            from services.asset_validator import AssetValidator
+            local_emb_dirs.extend(AssetValidator.resolve_embeddings_dirs())
+            for d in resolve_forge_embeddings_directories(forge_root=FORGE_ROOT_DIR):
+                if d not in local_emb_dirs:
+                    local_emb_dirs.append(d)
+            webui_dir = AssetValidator.resolve_webui_dir(FORGE_ROOT_DIR)
+            if webui_dir is not None:
+                for sub in (webui_dir / "embeddings", webui_dir / "models" / "embeddings"):
+                    r = sub.resolve()
+                    if r not in local_emb_dirs:
+                        local_emb_dirs.append(r)
+        except Exception:
+            local_emb_dirs = [
+                FORGE_ROOT_DIR / "embeddings",
+                FORGE_ROOT_DIR / "models" / "embeddings",
+            ]
         for d in local_emb_dirs:
             if d.exists():
                 try:
-                    for f in d.iterdir():
+                    for f in d.rglob("*"):
                         if f.is_file() and f.suffix.lower() in (".pt", ".bin", ".safetensors"):
                             stem = f.stem
                             if stem not in found:
@@ -172,25 +189,51 @@ class ForgeClient(QObject):
             logger.info(f"[ForgeClient] Активные эмбеддинги: {self._cached_embeddings}")
         return self._cached_embeddings
 
+    def _fetch_cached_names(
+        self,
+        endpoint: str,
+        cache_attr: str,
+        label: str,
+        keys: Tuple[str, ...] = ("name",),
+    ) -> List[str]:
+        """Fetches and caches a list of named items from a Forge /sdapi/v1/* endpoint."""
+        cached = getattr(self, cache_attr, None)
+        if cached is not None:
+            return cached
+        try:
+            resp = requests.get(f"{self.base_url}{endpoint}", timeout=2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                result: List[str] = []
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    val = next((str(item[k]).strip() for k in keys if item.get(k)), "")
+                    if val and val not in result:
+                        result.append(val)
+                setattr(self, cache_attr, result)
+                logger.info(f"Forge detected {label}: {result}")
+                return result
+        except Exception as e:
+            logger.debug(f"Could not fetch {label} from Forge: {e}")
+        return []
+
     def get_upscalers(self) -> List[str]:
         """
         Retrieves list of available upscalers from Forge (/sdapi/v1/upscalers).
         Fast check with 2.0s timeout, cached in self._cached_upscalers.
         """
-        if self._cached_upscalers is not None:
-            return self._cached_upscalers
-        try:
-            resp = requests.get(f"{self.base_url}/sdapi/v1/upscalers", timeout=2.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                self._cached_upscalers = [
-                    u["name"] for u in data if isinstance(u, dict) and "name" in u
-                ]
-                logger.info(f"Forge detected upscalers: {self._cached_upscalers}")
-                return self._cached_upscalers
-        except Exception as e:
-            logger.debug(f"Could not fetch upscalers from Forge: {e}")
-        return []
+        return self._fetch_cached_names("/sdapi/v1/upscalers", "_cached_upscalers", "upscalers")
+
+    def get_samplers(self) -> List[str]:
+        """Retrieves available samplers from Forge (/sdapi/v1/samplers), cached."""
+        return self._fetch_cached_names("/sdapi/v1/samplers", "_cached_samplers", "samplers")
+
+    def get_schedulers(self) -> List[str]:
+        """Retrieves available schedulers from Forge (/sdapi/v1/schedulers), cached."""
+        return self._fetch_cached_names(
+            "/sdapi/v1/schedulers", "_cached_schedulers", "schedulers", keys=("label", "name")
+        )
 
     def has_script(self, script_title: str, tab: str = "txt2img") -> bool:
         """Проверяет наличие alwayson-скрипта в Forge (/sdapi/v1/scripts) с кэшированием."""
@@ -234,22 +277,46 @@ class ForgeClient(QObject):
 
         selected_upscaler = None
 
+        # Built-in Latent upscalers are always supported by Forge core even though
+        # /sdapi/v1/upscalers only returns pixel-space / ESRGAN upscalers.
+        if target.lower() == "latent" or target.lower().startswith("latent ("):
+            if denoise < 0.48:
+                denoise = 0.50
+            return target, denoise
+
         # Priority 1: Check if requested upscaler or ESRGAN is available
         if target.lower() in available_map:
             selected_upscaler = available_map[target.lower()]
-        elif "anime" in target.lower() and "r-esrgan 4x+ anime6b" in available_map:
+            if selected_upscaler.lower() == "latent" or selected_upscaler.lower().startswith("latent ("):
+                if denoise < 0.48:
+                    denoise = 0.50
+            return selected_upscaler, denoise
+
+        logger.warning(
+            f"[ForgeClient] Апскейлер '{target}' не найден в Forge "
+            f"(отсутствует в папке или удалён). Доступные: {available}."
+        )
+
+        if "anime" in target.lower() and "r-esrgan 4x+ anime6b" in available_map:
             selected_upscaler = available_map["r-esrgan 4x+ anime6b"]
         elif "r-esrgan 4x+" in available_map:
             selected_upscaler = available_map["r-esrgan 4x+"]
         elif "r-esrgan 4x+ anime6b" in available_map:
             selected_upscaler = available_map["r-esrgan 4x+ anime6b"]
 
-        if selected_upscaler and selected_upscaler.lower() != "latent":
+        if selected_upscaler:
+            logger.warning(
+                f"[ForgeClient] Резервная замена апскейлера: '{target}' -> '{selected_upscaler}' (denoise={denoise})."
+            )
             return selected_upscaler, denoise
 
         # Fallback to native Latent (built into SD core, 0 network downloads)
         if denoise < 0.48:
             denoise = 0.50
+        logger.error(
+            f"[ForgeClient] Ошибка выбора апскейлера: '{target}' и резервные ESRGAN не найдены в Forge. "
+            f"Аварийный откат на встроенный 'Latent' (denoise={denoise})."
+        )
         return "Latent", denoise
 
     def is_server_ready(self, timeout: float = 1.0) -> bool:
@@ -938,13 +1005,6 @@ class ForgeClient(QObject):
         clean_seed = int(seed) if seed is not None else -1
         clean_steps = max(1, int(steps)) if steps is not None else 20
         clean_cfg = float(cfg_scale) if cfg_scale is not None else 7.0
-
-        # Auto clip_skip=2 for merged/URPM realistic models trained with CLIP skip 2
-        CLIP_SKIP2_MARKERS = ["urpm", "uberrealistic", "merge", "boudoir", "nsfw", "porn"]
-        is_clip2_model = any(k in target_model_name for k in CLIP_SKIP2_MARKERS)
-        if is_clip2_model and clip_skip == 1:
-            clip_skip = 2
-            logger.info(f"Auto clip_skip=2 applied for merged/URPM model: {target_model_name}")
 
         # 1, 2, 4. Full payload with WebUI reference parameters and safe Latent Hires.fix
         payload = {

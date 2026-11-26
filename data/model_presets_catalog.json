@@ -1,0 +1,266 @@
+{
+  "generated_at": "2026-11-25T18:39:20Z",
+  "models": [
+    {
+      "match": {
+        "aliases": [
+          "cyberrealistic_classicV50Final",
+          "cyberrealistic_classic",
+          "CyberRealistic_V4.1",
+          "cyberrealistic",
+          "CyberRealistic_V4.1_FP16",
+          "cyber",
+          "cyberdelia",
+          "CyberRealistic Classic"
+        ],
+        "canonical_key": "sd15::cyberrealistic_classic",
+        "civitai_model_id": 15003,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.42,
+        "adetailer_face_denoise": 0.34,
+        "adetailer_face_inpaint_size": 512,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.4,
+        "adetailer_hands_denoise": 0.37,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 512,
+        "architecture": "sd15",
+        "cfg_scale": 5.5,
+        "clip_skip": 1,
+        "enable_adetailer": true,
+        "enable_hr": false,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "4x-UltraSharp",
+        "hr_scale": 1.25,
+        "sampler": "DPM++ SDE",
+        "scheduler": "Karras",
+        "steps": 25
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "CyberRealistic_Negative-neg, bad-hands-5, worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, extra limbs, plastic skin, doll, cgi, 2d, illustration",
+        "routing_description": "Технологичный фотореализм, киберпанк, глянец, латекс, броня, хай-тек будуар и контрастное неоновое освещение, cyberpunk, sci-fi.",
+        "style_triggers": [
+          "cyberpunk",
+          "neon",
+          "sci-fi",
+          "photorealistic",
+          "studio lighting",
+          "киберпанк",
+          "неон",
+          "футуризм",
+          "андроид",
+          "high-tech",
+          "латекс",
+          "ночной город"
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "dreamshaper_8",
+          "dreamshaper",
+          "ds8",
+          "fantasy",
+          "artistic",
+          "DreamShaper 8",
+          "fantasy_art"
+        ],
+        "canonical_key": "sd15::dreamshaper_8",
+        "civitai_model_id": 4384,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.36,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sd15",
+        "cfg_scale": 7.0,
+        "clip_skip": 2,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "Latent (bicubic antialiased)",
+        "hr_scale": 1.5,
+        "sampler": "DPM++ SDE",
+        "scheduler": "Karras",
+        "steps": 28
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "BadDream, FastNegativeV2, unrealisticDream",
+        "routing_description": "Художественные арты, цифровая живопись, магия, сказочные расы, фэнтези и концепт-арт, magic, fantasy.",
+        "style_triggers": [
+          "fantasy",
+          "digital painting",
+          "illustration",
+          "concept art",
+          "рисунок",
+          "картина",
+          "маслом",
+          "акварель",
+          "иллюстрация",
+          "painting",
+          "artstation"
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "meinahentai_v5Final",
+          "meinahentai",
+          "meinamix",
+          "meinahentai_v5",
+          "meina",
+          "meinav5",
+          "anime",
+          "anime_meina"
+        ],
+        "canonical_key": "sd15::meinahentai_v5final",
+        "civitai_model_id": 12606,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sd15",
+        "cfg_scale": 7.0,
+        "clip_skip": 2,
+        "enable_adetailer": false,
+        "enable_hr": true,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hr_scale": 1.5,
+        "sampler": "DPM++ SDE",
+        "scheduler": "Karras",
+        "steps": 25
+      },
+      "style_and_prompts": {
+        "llm_guidance": "anime-background-style-v2",
+        "negative_prompt": "easynegative, (worst quality, low quality:1.2), (zombie, interlocked fingers), full body, thighs",
+        "routing_description": "Чистая 2D аниме-рисовка, манга, вайфу, стилизованный аниме-ролеплей и хентай, anime, 2d, waifu.",
+        "style_triggers": [
+          "anime",
+          "manga",
+          "2d",
+          "waifu",
+          "cel shading",
+          "аниме",
+          "манга",
+          "2д",
+          "вайфу",
+          "тян",
+          "селл-шейдинг"
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "realisticVisionV60B1_v51HyperVAE",
+          "realisticVisionV60B1",
+          "realistic_vision",
+          "rv60",
+          "rv51",
+          "realisticVisionV60B1_v51HyperVAE_pruned_fp16",
+          "realisticvision",
+          "realistic",
+          "Realistic Vision"
+        ],
+        "canonical_key": "sd15::realisticvisionv60b1_v51hypervae",
+        "civitai_model_id": 4201,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.36,
+        "adetailer_face_inpaint_size": 512,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 512,
+        "architecture": "sd15",
+        "cfg_scale": 5.5,
+        "clip_skip": 1,
+        "enable_adetailer": true,
+        "enable_hr": false,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "R-ESRGAN 4x+",
+        "hr_scale": 1.25,
+        "sampler": "DPM++ 2M",
+        "scheduler": "Karras",
+        "steps": 28
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "deformed iris, deformed pupils, (semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime:1.4), text, close up, headshot, portrait, cropped, out of frame, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, malformed limbs, missing arms, missing legs, fused fingers, too many fingers, long neck",
+        "routing_description": "Повседневные фотореалистичные кадры, люди, реальная жизнь, естественный будуар и студийные портреты, raw photo, dslr.",
+        "style_triggers": [
+          "photo",
+          "photorealistic",
+          "portrait",
+          "real life",
+          "dslr",
+          "nature",
+          "фото",
+          "снимок",
+          "портрет",
+          "реализм",
+          "девуш",
+          "женщин",
+          "человек",
+          "люд",
+          "парн",
+          "мужчин",
+          "настоящ",
+          "реальн"
+        ],
+        "trained_words": []
+      }
+    }
+  ],
+  "schema_version": 1
+}

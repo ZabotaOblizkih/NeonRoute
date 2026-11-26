@@ -71,11 +71,13 @@ class ForgeInstallSpec:
     adetailer_models: Tuple[Tuple[str, str], ...]
 
 
-def resolve_forge_hardware_spec() -> ForgeInstallSpec:
+def resolve_forge_hardware_spec(fetch_latest_url: bool = True) -> ForgeInstallSpec:
     """
     Опрашивает LayerBudgeter.detect_hardware_kv_profile() и формирует спецификацию
     установки Forge: совместимость GPU NVIDIA (VRAM >= 3.8 ГБ), флаг Blackwell
     (CC >= 10.0 или RTX 50xx) и ссылки на актуальные ассеты.
+    При fetch_latest_url=False не выполняет блокирующий HTTPS-запрос к GitHub API
+    (используется для мгновенного открытия UI-диалога настроек).
     """
     vendor = "unknown"
     vram_mb = 0
@@ -112,23 +114,24 @@ def resolve_forge_hardware_spec() -> ForgeInstallSpec:
 
     # Резолв URL Forge через GitHub Releases API (с таймаутом 5с и fallback)
     forge_url = FORGE_FALLBACK_URL
-    try:
-        req = urllib.request.Request(
-            FORGE_DEFAULT_GITHUB_API,
-            headers={"User-Agent": "NeonRoute-Forge-Downloader/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            assets = data.get("assets", [])
-            for asset in assets:
-                aname = asset.get("name", "").lower()
-                if aname.endswith(".7z") and ("webui_forge" in aname or "cu121" in aname):
-                    found_url = asset.get("browser_download_url")
-                    if found_url:
-                        forge_url = found_url
-                        break
-    except Exception as e:
-        logger.debug(f"[ForgeDownloader] GitHub API fallback к {FORGE_FALLBACK_URL}: {e}")
+    if fetch_latest_url:
+        try:
+            req = urllib.request.Request(
+                FORGE_DEFAULT_GITHUB_API,
+                headers={"User-Agent": "NeonRoute-Forge-Downloader/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                assets = data.get("assets", [])
+                for asset in assets:
+                    aname = asset.get("name", "").lower()
+                    if aname.endswith(".7z") and ("webui_forge" in aname or "cu121" in aname):
+                        found_url = asset.get("browser_download_url")
+                        if found_url:
+                            forge_url = found_url
+                            break
+        except Exception as e:
+            logger.debug(f"[ForgeDownloader] GitHub API fallback к {FORGE_FALLBACK_URL}: {e}")
 
     return ForgeInstallSpec(
         supported=supported,

@@ -92,7 +92,7 @@ class RoutingTestWorker(QThread):
 
 
 class ForgeScanWorker(QThread):
-    scan_completed = pyqtSignal(list, list, list)  # (raw_models, installed_checkpoints, upscalers)
+    scan_completed = pyqtSignal(list, list, list, list, list)  # (raw_models, installed_checkpoints, upscalers, samplers, schedulers)
     scan_failed = pyqtSignal(str)
 
     def __init__(self, forge_client: ForgeClient, parent=None):
@@ -131,17 +131,87 @@ class ForgeScanWorker(QThread):
             logger.warning(f"[ForgeModelsWorker] Сбой получения апскейлеров Forge: {e}")
             upscalers = []
 
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+
+        try:
+            samplers = self.forge_client.get_samplers() or []
+        except Exception as e:
+            logger.warning(f"[ForgeModelsWorker] Сбой получения сэмплеров Forge: {e}")
+            samplers = []
+
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+
+        try:
+            schedulers = self.forge_client.get_schedulers() or []
+        except Exception as e:
+            logger.warning(f"[ForgeModelsWorker] Сбой получения планировщиков Forge: {e}")
+            schedulers = []
+
         if not (self._is_aborted or self.isInterruptionRequested()):
-            self.scan_completed.emit(raw_models, installed, upscalers)
+            self.scan_completed.emit(raw_models, installed, upscalers, samplers, schedulers)
 
 
 class CivitaiParamsWorker(QThread):
     params_ready = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, checkpoint: str, parent=None):
+    def __init__(self, checkpoint: str, autofill_id: Optional[str] = None, parent=None):
         super().__init__(parent)
         self.checkpoint = checkpoint
+        self.autofill_id = autofill_id
+        self._is_aborted = False
+
+    def abort(self):
+        self._is_aborted = True
+        self.requestInterruption()
+
+    def run(self):
+        aid = self.autofill_id or "-"
+        if self._is_aborted or self.isInterruptionRequested():
+            logger.info(f"[AutoFill:{aid}] WORKER_ABORTED before start checkpoint='{self.checkpoint}'")
+            return
+        try:
+            from services.civitai_service import fetch_civitai_parameters
+            logger.info(f"[AutoFill:{aid}] WORKER_START checkpoint='{self.checkpoint}'")
+            params = fetch_civitai_parameters(
+                self.checkpoint,
+                cancel_check=self.isInterruptionRequested,
+                autofill_id=self.autofill_id,
+            )
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                logger.info(
+                    f"[AutoFill:{aid}] WORKER_DONE status={params.get('status')} source={params.get('source')}"
+                )
+                self.params_ready.emit(params)
+            else:
+                logger.info(f"[AutoFill:{aid}] WORKER_CANCELLED after fetch")
+        except Exception as e:
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                logger.error(f"[AutoFill:{aid}] WORKER_ERROR: {e}", exc_info=True)
+                self.error_occurred.emit(str(e))
+
+
+class EmbeddingResolveWorker(QThread):
+    embeddings_resolved = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(
+        self,
+        negative_prompt: Optional[str],
+        architecture: Optional[str] = None,
+        catalog_embeddings: Optional[List[Dict[str, Any]]] = None,
+        installed_names: Optional[List[str]] = None,
+        autofill_id: Optional[str] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.negative_prompt = negative_prompt
+        self.architecture = architecture
+        self.catalog_embeddings = catalog_embeddings or []
+        self.installed_names = installed_names
+        self.autofill_id = autofill_id
         self._is_aborted = False
 
     def abort(self):
@@ -152,14 +222,75 @@ class CivitaiParamsWorker(QThread):
         if self._is_aborted or self.isInterruptionRequested():
             return
         try:
-            from services.civitai_service import fetch_civitai_parameters
-            params = fetch_civitai_parameters(self.checkpoint)
+            from services.embedding_service import resolve_missing_embeddings
+            result = resolve_missing_embeddings(
+                negative_prompt=self.negative_prompt,
+                architecture=self.architecture,
+                catalog_embeddings=self.catalog_embeddings,
+                installed_names=self.installed_names,
+                cancel_check=self.isInterruptionRequested,
+            )
             if not (self._is_aborted or self.isInterruptionRequested()):
-                self.params_ready.emit(params)
+                self.embeddings_resolved.emit(result)
         except Exception as e:
             if not (self._is_aborted or self.isInterruptionRequested()):
-                logger.error(f"[CivitaiParamsWorker] Ошибка запроса Civitai: {e}", exc_info=True)
+                logger.error(f"[EmbeddingResolveWorker] Ошибка поиска эмбеддингов: {e}", exc_info=True)
                 self.error_occurred.emit(str(e))
+
+
+class EmbeddingDownloadWorker(QThread):
+    download_finished = pyqtSignal(list, list)  # (downloaded_paths, failed_items)
+    download_failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        items: List[Dict[str, Any]],
+        target_dir: Path,
+        autofill_id: Optional[str] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.items = list(items)
+        self.target_dir = Path(target_dir)
+        self.autofill_id = autofill_id
+        self._is_aborted = False
+
+    def abort(self):
+        self._is_aborted = True
+        self.requestInterruption()
+
+    def run(self):
+        if self._is_aborted or self.isInterruptionRequested():
+            return
+        downloaded: List[str] = []
+        failed: List[str] = []
+        try:
+            from services.embedding_service import download_embedding_file
+            for item in self.items:
+                if self._is_aborted or self.isInterruptionRequested():
+                    return
+                fname = item.get("filename") or f"{item.get('name', 'embedding')}.pt"
+                dest = self.target_dir / Path(fname).name
+                try:
+                    saved = download_embedding_file(
+                        download_url=item["download_url"],
+                        dest_path=dest,
+                        expected_sha256=item.get("sha256"),
+                        cancel_check=self.isInterruptionRequested,
+                    )
+                    downloaded.append(str(saved))
+                except InterruptedError:
+                    return
+                except Exception as e:
+                    logger.warning(f"[EmbeddingDownloadWorker] Failed '{fname}': {e}")
+                    failed.append(f"{fname}: {e}")
+
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                self.download_finished.emit(downloaded, failed)
+        except Exception as e:
+            if not (self._is_aborted or self.isInterruptionRequested()):
+                logger.error(f"[EmbeddingDownloadWorker] Ошибка загрузки: {e}", exc_info=True)
+                self.download_failed.emit(str(e))
 
 
 class FP8ConvertWorker(QThread):

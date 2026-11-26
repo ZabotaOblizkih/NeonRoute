@@ -36,6 +36,7 @@ _LAZY_EXPORTS = {
     "SettingsDialog": (".settings_dialog", "SettingsDialog"),
     "MobileServerDialog": (".mobile_server_dialog", "MobileServerDialog"),
     "UpdatesDialog": (".updates_dialog", "UpdatesDialog"),
+    "BugReportDialog": (".bug_report_dialog", "BugReportDialog"),
 }
 
 if TYPE_CHECKING:

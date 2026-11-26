@@ -165,6 +165,15 @@ def test_resolve_forge_offload_policy_calibrated_8gb():
         assert pol_xl_fp8["enable_vae_tiling"] is True
         assert pol_xl_fp8["inference_memory_mb"] == 512
 
+        # 2б. SDXL FP8 + ADetailer (без Hires, 896x1152) -> FAST_KEEP_VRAM без принудительного VAETile
+        pol_xl_fp8_portrait = resolve_forge_offload_policy(
+            width=896, height=1152, architecture="sdxl", is_fp8=True,
+            enable_hr=False, enable_adetailer=True, enable_hand_adetailer=True,
+        )
+        assert pol_xl_fp8_portrait["mode"] == "FAST_KEEP_VRAM"
+        assert pol_xl_fp8_portrait["always_offload"] is False
+        assert pol_xl_fp8_portrait["enable_vae_tiling"] is False
+
         # 3. SDXL FP8 + Hires + ADetailer (Face+Hands) -> FAST_KEEP_VRAM / SMART_SWAP
         pol_xl_fp8_heavy = resolve_forge_offload_policy(
             width=896, height=1152, architecture="sdxl", is_fp8=True,

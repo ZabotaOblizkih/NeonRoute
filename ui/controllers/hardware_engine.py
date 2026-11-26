@@ -1124,101 +1124,32 @@ class HardwareEngineMixin:
         self.task_queue.enqueue(task)
 
     # -------------------------------------------------------------------------
-    # 4. Координация таймеров возврата LLM
+    # 4. Координация таймеров возврата LLM (делегируется в единый headless VRAMArbiter)
     # -------------------------------------------------------------------------
     def _reload_active_lms_model_async(self, delay: float = 3.0):
-        self._sig_reload_lms.emit(delay)
+        from services.vram_arbiter import VRAMArbiter
+        sess = getattr(self, "current_session", None)
+        sess_id = sess.get("id") if isinstance(sess, dict) else None
+        mode = getattr(self, "current_mode", None)
+        fallback = getattr(self, "active_lms_model", None)
+        VRAMArbiter.get_instance().schedule_llm_reload(
+            delay=delay,
+            session_id=sess_id,
+            mode=mode,
+            fallback_model=fallback,
+        )
 
     def _cancel_lms_reload(self):
-        self._sig_cancel_lms.emit()
+        from services.vram_arbiter import VRAMArbiter
+        VRAMArbiter.get_instance().cancel_llm_reload(reason="ui_cancel")
 
     @pyqtSlot(float)
     def _do_reload_active_lms_timer(self, delay: float):
-        self._do_cancel_lms_reload()
-
-        has_pending_art = self.task_queue.has_pending_tasks(("scene_art", "image", "scene_background")) if hasattr(self, "task_queue") and self.task_queue else False
-        if has_pending_art:
-            logger.info("[MainWindow] Возврат LLM отменён: в очереди ожидают задачи Forge.")
-            return
-
-        self._lms_reload_timer = QTimer(self)
-        self._lms_reload_timer.setSingleShot(True)
-        self._lms_reload_timer.timeout.connect(self._execute_lms_reload)
-        self._lms_reload_timer.start(int(delay * 1000))
+        self._reload_active_lms_model_async(delay=delay)
 
     @pyqtSlot()
     def _do_cancel_lms_reload(self):
-        if hasattr(self, "_lms_reload_timer") and self._lms_reload_timer and self._lms_reload_timer.isActive():
-            self._lms_reload_timer.stop()
-            logger.info("[MainWindow] Отложенная загрузка LLM успешно отменена до выгрузки.")
-
-    def _execute_lms_reload(self):
-        if getattr(self, "is_busy", False):
-            return
-
-        if hasattr(self, "_can_start_llm_engine") and not self._can_start_llm_engine():
-            logger.debug("[HardwareEngine] Пропуск отложенного возврата LLM: сервер в ERROR и бинарники отсутствуют.")
-            return
-
-        if hasattr(self, "task_queue") and self.task_queue:
-            if self.task_queue.current_task is not None:
-                return
-            if self.task_queue.has_pending_tasks(("scene_art", "image", "scene_background")):
-                return
-
-        is_rp = (getattr(self, "current_mode", "assistant") == "roleplay")
-        is_eng = (not is_rp) and (self.is_engineer_mode_active() if hasattr(self, "is_engineer_mode_active") else False)
-
-        # Точное определение целевой модели под текущий режим
-        if is_eng:
-            target_model = self.app_config.get("engineer_model_name") or self.app_config.get("engineer_model")
-        elif is_rp:
-            char_data = (self.current_session.get("character_data") or {}) if self.current_session else {}
-            target_model = (
-                char_data.get("character_model")
-                or self.app_config.get("rp_model_name")
-                or (self.current_session.get("model_id") if self.current_session else None)
-                or self.app_config.get("active_model")
-            )
-        else:
-            target_model = (
-                self.app_config.get("assistant_model_name")
-                or (self.current_session.get("model_id") if self.current_session else None)
-                or self.app_config.get("active_model")
-            )
-
-        target_model = (target_model or "").strip()
-        if not target_model or target_model.startswith("default"):
-            target_model = getattr(self, "active_lms_model", "")
-
-        if not target_model or target_model.startswith("default"):
-            return
-
-        # Определение целевого контекста: 28K для Инженера, 24K для РП, 14K для Ассистента
-        if is_eng:
-            ctx_len = self.app_config.get("context_length_engineer", 28672)
-        elif is_rp:
-            ctx_len = self.app_config.get("context_length_roleplay", 24576)
-        else:
-            ctx_len = self.app_config.get("context_length_assistant", 14336)
-
-        if hasattr(self, "lm_client") and self.lm_client and hasattr(self, "task_queue") and self.task_queue:
-            from services.task_queue import PRIORITY_LOW
-            task = InferenceTask(
-                name="Возврат LLM в VRAM",
-                task_type="llm",
-                func=self.lm_client.ensure_model_loaded,
-                kwargs={
-                    "preferred_model": target_model,
-                    "context_length": ctx_len,
-                    "is_engineer": is_eng,
-                    "is_roleplay": is_rp
-                },
-                priority=PRIORITY_LOW,
-                metadata={"silent": True}
-            )
-            self._active_tasks[task.id] = task
-            self.task_queue.enqueue(task)
+        self._cancel_lms_reload()
 
 
     # -------------------------------------------------------------------------

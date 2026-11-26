@@ -256,6 +256,10 @@ class MenuBuilder:
         act_updates.triggered.connect(lambda *_: window._open_updates_dialog())
         help_menu.addAction(act_updates)
 
+        act_bug_report = Action(FIF.FEEDBACK if hasattr(FIF, "FEEDBACK") else FIF.SEND, "Сообщить об ошибке...", root_menu)
+        act_bug_report.triggered.connect(lambda *_: window.open_bug_report_dialog(source="menu"))
+        help_menu.addAction(act_bug_report)
+
         root_menu.addMenu(help_menu)
 
         root_menu.addSeparator()

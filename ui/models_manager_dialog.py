@@ -30,8 +30,8 @@ from qfluentwidgets import (
     TableWidget,
     FluentIcon as FIF,
     setTheme,
-    setThemeColor,
     Theme,
+    qconfig,
     InfoBar,
     InfoBarPosition,
     MessageBox,
@@ -64,6 +64,8 @@ from ui.models_manager.workers import (
     ForgeScanWorker,
     CivitaiParamsWorker,
     FP8ConvertWorker,
+    EmbeddingResolveWorker,
+    EmbeddingDownloadWorker,
     register_orphaned_worker,
 )
 
@@ -104,9 +106,12 @@ class ModelsManagerDialog(
     ):
         super().__init__(parent)
         try:
-            setTheme(Theme.DARK)
+            if qconfig.theme != Theme.DARK:
+                setTheme(Theme.DARK)
         except Exception:
             pass
+        self._palette_pixmap_key: Optional[int] = None
+        self._current_palette: Dict[str, str] = {}
 
         self.forge_client = forge_client or ForgeClient()
         self.art_director = art_director or getattr(parent, "art_director", None)
@@ -136,6 +141,8 @@ class ModelsManagerDialog(
         self._scan_worker: Optional[ForgeScanWorker] = None
         self._civitai_worker: Optional[CivitaiParamsWorker] = None
         self._fp8_worker: Optional[FP8ConvertWorker] = None
+        self._emb_resolve_worker: Optional[EmbeddingResolveWorker] = None
+        self._emb_download_worker: Optional[EmbeddingDownloadWorker] = None
         self._cached_torch_python: Optional[str] = None
         self._fp8_target_row: int = -1
         self._fp8_source_path: Optional[Path] = None
@@ -163,11 +170,15 @@ class ModelsManagerDialog(
                 return p._bg_render_cache
             p = p.parent()
         try:
+            if hasattr(self, "_cached_default_pixmap"):
+                return self._cached_default_pixmap
             from config import DEFAULT_BACKGROUND_PATH
             if DEFAULT_BACKGROUND_PATH and Path(DEFAULT_BACKGROUND_PATH).exists():
                 pm = QPixmap(str(DEFAULT_BACKGROUND_PATH))
                 if not pm.isNull():
+                    self._cached_default_pixmap = pm
                     return pm
+            self._cached_default_pixmap = None
         except Exception:
             pass
         return None
@@ -175,13 +186,12 @@ class ModelsManagerDialog(
     def update_adaptive_palette(self):
         """Адаптирует цветовую палитру диалога, карточек, заголовков и кнопок под активные обои."""
         pixmap = self._resolve_pixmap()
+        pixmap_key = pixmap.cacheKey() if pixmap and not pixmap.isNull() else -1
+        if self._current_palette and self._palette_pixmap_key == pixmap_key:
+            return
+        self._palette_pixmap_key = pixmap_key
         palette = extract_adaptive_palette(pixmap)
         self._current_palette = palette
-
-        try:
-            setThemeColor(QColor(palette['accent']), save=False)
-        except Exception:
-            pass
 
         self.setStyleSheet(f"""
             QDialog#ModelsManagerDialog {{
@@ -322,7 +332,9 @@ class ModelsManagerDialog(
         self.update_adaptive_palette()
 
     def _setup_ui(self):
-        self._current_palette = extract_adaptive_palette(self._resolve_pixmap())
+        if not self._current_palette:
+            pixmap = self._resolve_pixmap()
+            self._current_palette = extract_adaptive_palette(pixmap)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(18, 16, 18, 16)
@@ -535,9 +547,10 @@ class ModelsManagerDialog(
         sched_row = QHBoxLayout()
         sched_row.addWidget(QLabel("Планировщик:", card_pipeline))
         self.combo_scheduler = FluentEditableComboBox(card_pipeline)
-        self.combo_scheduler.addItems([
+        initial_schedulers = list(getattr(self.forge_client, "_cached_schedulers", None) or [
             "Karras", "Exponential", "SGM Uniform", "Simple", "Normal", "Align Your Steps", "Turbo"
         ])
+        self.combo_scheduler.addItems(initial_schedulers)
         self.combo_scheduler.currentTextChanged.connect(self._on_param_modified)
         sched_row.addWidget(self.combo_scheduler, stretch=1)
         arch_sched_row.addLayout(sched_row, stretch=1)
@@ -551,10 +564,11 @@ class ModelsManagerDialog(
         samp_row = QHBoxLayout()
         samp_row.addWidget(QLabel("Семплер:", card_pipeline))
         self.combo_sampler = FluentEditableComboBox(card_pipeline)
-        self.combo_sampler.addItems([
+        initial_samplers = list(getattr(self.forge_client, "_cached_samplers", None) or [
             "DPM++ 2M Karras", "DPM++ SDE Karras", "Euler a", "Euler",
             "LCM", "DPM++ 2M", "DPM++ 2M SDE", "UniPC", "DDIM"
         ])
+        self.combo_sampler.addItems(initial_samplers)
         self.combo_sampler.currentTextChanged.connect(self._on_param_modified)
         samp_row.addWidget(self.combo_sampler, stretch=1)
         combos_row.addLayout(samp_row, stretch=1)
@@ -562,10 +576,34 @@ class ModelsManagerDialog(
         up_row = QHBoxLayout()
         up_row.addWidget(QLabel("Апскейлер Hires:", card_pipeline))
         self.combo_upscaler = FluentEditableComboBox(card_pipeline)
-        self.combo_upscaler.addItems([
-            "4x-UltraSharp", "R-ESRGAN 4x+", "R-ESRGAN 4x+ Anime6B",
-            "4x_NMKD-Superscale-SP_178000_G", "Latent (bicubic antialiased)", "None"
-        ])
+        initial_upscalers: List[str] = list(getattr(self.forge_client, "_cached_upscalers", None) or [])
+        if not initial_upscalers:
+            try:
+                from services.asset_validator import AssetValidator
+                esrgan_dir = AssetValidator.resolve_esrgan_dir()
+                if esrgan_dir:
+                    upscaler_dirs = [esrgan_dir] + [
+                        esrgan_dir.parent / sub
+                        for sub in ("RealESRGAN", "SwinIR", "DAT", "ScuNET", "LDSR")
+                    ]
+                    forge_name_map = {
+                        "realesrgan_x4plus": "R-ESRGAN 4x+",
+                        "realesrgan_x4plus_anime_6b": "R-ESRGAN 4x+ Anime6B",
+                    }
+                    for folder in upscaler_dirs:
+                        if not folder.is_dir():
+                            continue
+                        for p in sorted(folder.iterdir()):
+                            if p.is_file() and p.suffix.lower() in (".pth", ".pt", ".safetensors", ".ckpt"):
+                                mapped = forge_name_map.get(p.stem.lower(), p.stem)
+                                if all(u.lower() != mapped.lower() for u in initial_upscalers):
+                                    initial_upscalers.append(mapped)
+            except Exception as e:
+                logger.debug(f"[ModelsManagerDialog] Не удалось просканировать папки апскейлеров: {e}")
+        for builtin_up in ("Latent", "Latent (bicubic antialiased)", "None", "Lanczos", "Nearest"):
+            if all(u.lower() != builtin_up.lower() for u in initial_upscalers):
+                initial_upscalers.append(builtin_up)
+        self.combo_upscaler.addItems(initial_upscalers)
         self.combo_upscaler.currentTextChanged.connect(self._on_param_modified)
         up_row.addWidget(self.combo_upscaler, stretch=1)
         combos_row.addLayout(up_row, stretch=1)
@@ -892,6 +930,7 @@ class ModelsManagerDialog(
                 "negative_prompt": neg,
                 "is_default": bool(r.get("is_default", False)),
                 "style_triggers": r.get("style_triggers", []),
+                "trained_words": r.get("trained_words", []),
                 "active": is_active,
                 "triggers": r.get("triggers", []),
                 "pipeline": {
@@ -903,6 +942,7 @@ class ModelsManagerDialog(
                     "clip_skip": pipe.get("clip_skip", 1),
                     "hires_upscaler": pipe.get("hires_upscaler", "4x-UltraSharp"),
                     "hires_denoise": round(pipe.get("hires_denoise", 0.32), 2),
+                    "hr_scale": round(float(pipe.get("hr_scale", 1.25) or 1.25), 2),
                     "enable_hr": pipe.get("enable_hr", False),
                     "enable_adetailer": pipe.get("enable_adetailer", True),
                     "adetailer_face_model": pipe.get("adetailer_face_model", "face_yolov8m.pt"),
@@ -969,14 +1009,18 @@ class ModelsManagerDialog(
             except Exception:
                 break
 
-        workers = [self._scan_worker, self._test_worker, self._civitai_worker, self._fp8_worker]
+        workers = [
+            self._scan_worker, self._test_worker, self._civitai_worker,
+            self._fp8_worker, self._emb_resolve_worker, self._emb_download_worker,
+        ]
         for worker in workers:
             if worker is None:
                 continue
 
             for sig_name in (
                 "scan_completed", "scan_failed", "result_ready", "error_occurred",
-                "params_ready", "progress_updated", "conversion_finished", "conversion_failed"
+                "params_ready", "progress_updated", "conversion_finished", "conversion_failed",
+                "embeddings_resolved", "download_finished", "download_failed",
             ):
                 sig = getattr(worker, sig_name, None)
                 if sig is not None:
@@ -1019,6 +1063,8 @@ class ModelsManagerDialog(
         self._test_worker = None
         self._civitai_worker = None
         self._fp8_worker = None
+        self._emb_resolve_worker = None
+        self._emb_download_worker = None
 
     def closeEvent(self, event):
         self._stop_all_workers()

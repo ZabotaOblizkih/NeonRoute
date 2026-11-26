@@ -3,6 +3,7 @@ System routes for status checks, telemetry, and mode management.
 """
 
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from mobile_server.schemas import (
@@ -24,6 +25,7 @@ from mobile_server.dependencies import (
 from services.mode_coordinator import AppMode
 from services.vram_arbiter import VRAMArbiter
 
+logger = logging.getLogger("NeonRoute.MobileServer.System")
 router = APIRouter()
 
 
@@ -93,6 +95,7 @@ async def set_active_mode(
 
     target_mode = valid_modes[mode_str]
     await asyncio.to_thread(coordinator.transition_to, target_mode)
+    logger.info(f"[MobileSystem] Mode switched -> {coordinator.current_mode.value}")
 
     return SetModeResponse(
         success=True,
