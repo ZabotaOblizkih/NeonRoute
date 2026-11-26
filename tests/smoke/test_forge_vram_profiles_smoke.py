@@ -438,7 +438,7 @@ def test_vram_profile_8gb_target_reference(smoke_harness):
     assert res_fp8["pre_free"]["always_offload"] is False
     assert res_fp8["pre_free"]["inference_memory_mb"] <= 768
     never_oom = (res_fp8["txt2img"].get("alwayson_scripts") or {}).get("Never OOM Integrated", {}).get("args")
-    assert never_oom == [False, True]
+    assert never_oom is None
 
     res_fp16 = _run_full_chain(smoke_harness, "sdxl_fp16", total_vram_mb=8152, total_ram_mb=16065, avail_ram_mb=9500)
     assert res_fp16["pre_free"]["always_offload"] is True
@@ -529,11 +529,10 @@ def test_session_model_switching_and_arbiter_idempotency_8gb(smoke_harness):
         fc.text_to_image(**plan.to_forge_kwargs(output_dir=smoke_harness.outputs_dir))
 
     policy_calls = [c for c in smoke_harness.spy.free_vram_calls if "always_offload" in c]
-    assert len(policy_calls) >= 3
-    # SD 1.5 -> FAST_KEEP_VRAM (False), SDXL FP8 -> FAST_KEEP_VRAM (False, inf=512), SDXL FP16 -> STAGE_OFFLOAD (True, unload_models=True)
+    assert len(policy_calls) >= 2
+    # SD 1.5 -> FAST_KEEP_VRAM (False, inf=768), SDXL FP8 (896x1152) -> FAST_KEEP_VRAM (False, inf=768, дедупликация free_vram), SDXL FP16 -> STAGE_OFFLOAD (True, unload_models=True)
     assert policy_calls[0]["always_offload"] is False
-    assert policy_calls[1]["always_offload"] is False
-    assert policy_calls[1]["inference_memory_mb"] != policy_calls[0]["inference_memory_mb"]
+    assert policy_calls[0]["inference_memory_mb"] == 768
     assert policy_calls[-1]["always_offload"] is True
     assert policy_calls[-1]["unload_models"] is True
 

@@ -168,7 +168,7 @@ def test_dispatch_art_to_forge_injects_elaria_dna_only_on_self_flag():
 
 def test_gallery_directives_preserve_structure_and_include_self_rule():
     assert "[SYSTEM DIRECTIVE: Stable Diffusion 1.5 Prompt Generator]" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
-    assert "[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
+    assert "[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
     assert "is_self_portrait" in GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE
     assert "is_self_portrait" in GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE
 

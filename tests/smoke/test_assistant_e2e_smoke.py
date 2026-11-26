@@ -224,7 +224,7 @@ def test_assistant_gallery_single_pass_pipeline(smoke_isolation_guard):
         target_model_desc="Pony Diffusion V6",
         static_core_only=False
     )
-    assert_diag("[SYSTEM DIRECTIVE: SDXL Image Prompt Engineer]" in sys_prompt_sdxl, scen, "Директива SDXL", "Содержит SDXL Image Prompt Engineer", sys_prompt_sdxl[:200])
+    assert_diag("[SYSTEM DIRECTIVE: SDXL Image Tag Translator]" in sys_prompt_sdxl, scen, "Директива SDXL", "Содержит SDXL Image Tag Translator", sys_prompt_sdxl[:200])
     assert_diag("pony_diffusion" in sys_prompt_sdxl, scen, "Имя модели в SDXL", "pony_diffusion", "pony_diffusion" in sys_prompt_sdxl)
 
     # 4. Эмуляция чистового вывода модели за один ход (с позитивным и негативным промптом)
