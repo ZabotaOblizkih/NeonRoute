@@ -652,9 +652,9 @@ def resolve_forge_startup_flags(
     if ad_no_huggingface is None:
         try:
             from utils.config_manager import ConfigManager
-            ad_no_huggingface = bool(ConfigManager.load_config().get("forge_ad_no_huggingface", False))
+            ad_no_huggingface = bool(ConfigManager.load_config().get("forge_ad_no_huggingface", True))
         except Exception:
-            ad_no_huggingface = False
+            ad_no_huggingface = True
 
     if ad_no_huggingface:
         flags.append("--ad-no-huggingface")

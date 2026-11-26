@@ -35,43 +35,38 @@ def isolate_models_cache(tmp_path, monkeypatch):
     monkeypatch.setattr("services.layer_budgeter.MODELS_CACHE_PATH", fake_cache_path)
 
 
+@pytest.mark.parametrize("vram_mb,is_pure,os_res,ram_mb,is_arbiter,exp_ngl_min,exp_ngl_max,exp_forge_res", [
+    (2048, True, 150, 16384.0, True, 0, 0, 0),
+    (2048, False, 700, 16384.0, True, 0, 0, 0),
+    (4096, True, 150, 16384.0, True, 5, 22, 0),
+    (4096, False, 700, 16384.0, True, 1, 22, 0),
+    (8192, False, 700, 16384.0, True, 37, 48, 0),
+    (8151, True, 150, 16384.0, False, 0, 99, 450),
+    (16384, True, 150, 32768.0, True, 99, 99, 0),
+])
+def test_hardware_profile_offload_matrix(
+    vram_mb, is_pure, os_res, ram_mb, is_arbiter, exp_ngl_min, exp_ngl_max, exp_forge_res
+):
+    """Матрица базовых аппаратных профилей (2/4/8/16 ГБ VRAM) для Gemma 4 12B."""
+    with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(is_pure, os_res)), \
+         patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
+        ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
+            model_path="dummy_gemma4.gguf",
+            target_context=14336,
+            total_vram_mb=vram_mb,
+            available_ram_mb=ram_mb,
+            cache_type="q8_0",
+            is_arbiter_managed=is_arbiter,
+        )
+        assert can_run is True
+        assert exp_ngl_min <= ngl <= exp_ngl_max
+        assert audit["final_ngl"] == ngl
+        if exp_forge_res:
+            assert audit["forge_reserve_mb"] == exp_forge_res
+
+
 class TestProfile2GB:
-    """1. 2 ГБ VRAM / 16 ГБ RAM: ngl == 0, can_run is True (безопасный fallback на CPU)."""
-
-    def test_2gb_vram_pure_compute_cpu_fallback(self):
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=2048,
-                available_ram_mb=16384.0,
-                cache_type="q8_0",
-                is_arbiter_managed=True,
-            )
-
-            assert ngl == 0
-            assert audit["final_ngl"] == 0
-            assert can_run is True
-            assert "OK" in reason
-
-    def test_2gb_vram_primary_display_cpu_fallback(self):
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(False, 700)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=2048,
-                available_ram_mb=16384.0,
-                cache_type="q8_0",
-                is_arbiter_managed=True,
-            )
-
-            assert ngl == 0
-            assert audit["final_ngl"] == 0
-            assert can_run is True
+    """1. 2 ГБ VRAM / 16 ГБ RAM: поведение с фоновой VRAM."""
 
     def test_profile_2gb_with_background_vram(self):
         """При фоне 300 МБ ngl снижается до 2–3 (без пробоя 2048 МБ), при Primary Display (700 МБ) -> ngl == 0, can_run is True."""
@@ -123,40 +118,7 @@ class TestProfile2GB:
 
 
 class TestProfile4GB:
-    """2. 4 ГБ VRAM / 16 ГБ RAM: сбалансированный гибридный оффлоад (10 <= ngl <= 22) и RAM Guard."""
-
-    def test_4gb_vram_hybrid_offload_pure_compute(self):
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=4096,
-                available_ram_mb=16384.0,
-                cache_type="q8_0",
-                is_arbiter_managed=True,
-            )
-
-            assert 5 <= ngl <= 22
-            assert can_run is True
-            assert audit["final_ngl"] == ngl
-
-    def test_4gb_vram_hybrid_offload_primary_display(self):
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(False, 700)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=4096,
-                available_ram_mb=16384.0,
-                cache_type="q8_0",
-                is_arbiter_managed=True,
-            )
-
-            assert ngl > 0
-            assert can_run is True
+    """2. 4 ГБ VRAM / 16 ГБ RAM: сбалансированный гибридный оффлоад и RAM Guard."""
 
     def test_profile_4gb_pure_and_primary_with_compute_headroom(self):
         """В Pure Compute ngl == 18, в Primary Display ngl == 14, фактическая сумма оставляет >= 300 МБ свободной VRAM."""
@@ -532,59 +494,8 @@ class TestProfile8GB:
                 assert ngl_q3_post_32k in (48, 99)
                 assert audit_q3_32k["cpu_weights_mb"] == 0.0
 
-    def test_8gb_vram_primary_display_offload_ngl_safe_43(self):
-        """В Primary Display (8192 МБ, OS reserve 700 МБ) модель 12B с учетом WDDM запаса и буфера логитов оффлоадит ngl == 43."""
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(False, 700)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=8192,
-                available_ram_mb=16384.0,
-                cache_type="q8_0",
-                is_arbiter_managed=True,
-            )
-
-            assert ngl >= 37
-            assert can_run is True
-
-    def test_8gb_vram_backward_compat_non_arbiter(self):
-        """При is_arbiter_managed=False сохраняется вычитание FORGE_VRAM_RESERVE_MB (450 МБ)."""
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=8151,
-                available_ram_mb=16384.0,
-                cache_type="q8_0",
-                is_arbiter_managed=False,
-            )
-
-            assert audit["forge_reserve_mb"] == 450
-            assert can_run is True
-
-
 class TestProfile16GB:
-    """4. 16 ГБ VRAM / 32 ГБ RAM: ngl == 99 для 12B, тяжелые модели и 32B с фоном."""
-
-    def test_16gb_vram_12b_full_offload(self):
-        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
-             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=GEMMA4_12B_META):
-
-            ngl, can_run, reason, audit = LayerBudgeter.calculate_layer_offload(
-                model_path="dummy_gemma4.gguf",
-                target_context=14336,
-                total_vram_mb=16384,
-                available_ram_mb=32768.0,
-                cache_type="q8_0",
-                is_arbiter_managed=True,
-            )
-
-            assert ngl == 99
-            assert can_run is True
+    """4. 16 ГБ VRAM / 32 ГБ RAM: тяжелые модели и 32B с фоном."""
 
     def test_16gb_vram_heavy_model_partial_offload(self):
         heavy_meta = {

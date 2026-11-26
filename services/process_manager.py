@@ -1980,7 +1980,7 @@ class ProcessManager(QObject):
                     forge_root=getattr(config, "FORGE_ROOT_DIR", None),
                 )
                 cmd.extend(startup_flags)
-                ad_no_hf_val = startup_meta.get("ad_no_huggingface", False)
+                ad_no_hf_val = startup_meta.get("ad_no_huggingface", True)
                 skip_inst_val = startup_meta.get("skip_install", False)
                 skip_inst_reason = startup_meta.get("skip_install_reason", "")
                 logger.info(

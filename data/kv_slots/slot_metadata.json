@@ -1,0 +1,10 @@
+{
+  "filename": "evicted_slot_0_c7b566d6.bin",
+  "model_path": "C:\\Users\\user\\.lmstudio\\models\\HauhauCS\\gemma-4-12b-it-uncensored-Q3_K_M\\gemma-4-12b-it-uncensored-Q3_K_M.gguf",
+  "model_mtime": 1794611411.0,
+  "context_length": 14336,
+  "gpu_layers": 48,
+  "kv_cache_type_k": "q8_0",
+  "kv_cache_type_v": "q8_0",
+  "flash_attn": "on"
+}

@@ -283,7 +283,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "   - Single object / still life: `no humans, close-up` -> `\"square\"`.\n"
     "3. **Angle, Gaze & Light:** If unspecified, pick an expressive angle (`3/4 view`, `slightly from below`, `from behind, looking back`). Add `looking away/to the side` ONLY if user asks; omit gaze otherwise. Keep held items single-handed by default (`holding X, arm at side` or `relaxed hand`) unless two hands are inherently required (`holding X with both hands`). Use directional light (`rim light`, `sidelighting`, `neon`, `sunbeams`), never generic `soft lighting`.\n"
     "4. **Exclusions & Self-Portrait:**\n"
-    "   - 'без/убери X': omit X from `scene_prompt` and put English tags in `negative_prompt` (for 'без людей': keep `no humans` in scene, put `people, humans` in negative).\n"
+    "   - **Strict Negative Prompt Rule:** `negative_prompt` MUST be `\"\"` (empty string) by default. NEVER add standard quality/anatomy negative tags (`bad anatomy`, `worst quality`, `lowres`, `extra fingers`, `watermark`, etc.) or textual inversions on your own. Populate `negative_prompt` ONLY if the user explicitly asks to exclude or remove something (e.g., 'без X', 'убери X', 'no X')—in that case, omit X from `scene_prompt` and list ONLY those excluded English tags in `negative_prompt` (for 'без людей': keep `no humans` in `scene_prompt`, put `people, humans` in `negative_prompt`).\n"
     "   - `is_self_portrait`: `true` ONLY if user asks to see YOU ('покажи себя/селфи'). When `true`, OMIT gender, age, hair, eyes, and facial features from ALL prompt fields.\n"
     "5. **Follow-up Edits:** Keep previous scene context, apply only requested changes. When zooming in, strip distant framing (`wide shot`, `full body`) and lower-body tags (`pants`, `skirt`, `shoes`, `legs`).\n\n"
     "### Output JSON Schema (Raw JSON only, no markdown)\n"
@@ -292,7 +292,7 @@ GALLERY_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     '  "scene_prompt": "12-26 English tags for full scene (no brackets or --flags)",\n'
     '  "face_prompt": "7-14 tags STRICTLY for face ADetailer (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
     '  "hands_prompt": "6-12 tags STRICTLY for hands ADetailer (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no humans)",\n'
-    '  "negative_prompt": "English tags for user exclusions or \'\'",\n'
+    '  "negative_prompt": "MUST be \'\' unless user explicitly requests exclusions (\'без/убери X\'); NEVER add default quality/anatomy tags",\n'
     '  "aspect_ratio": "portrait" | "square" | "wide" | "cinematic" | "ultrawide",\n'
     '  "suggested_model": "{target_model_id}",\n'
     '  "is_self_portrait": boolean\n'
@@ -315,7 +315,7 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "   - Single object / still life: `close-up object shot` or `macro shot` -> `\"square\"`.\n"
     "3. **Angle, Gaze, OTS & Light:** Pick an expressive angle/lens if unspecified (`3/4 view`, `slightly low angle`, `looking back over shoulder`, `85mm telephoto`). Use `low angle from below` ONLY for 'снизу вверх'. Omit gaze unless requested; if looking away/at target, place `looking away from camera, gazing to the side, head turned` BEFORE subject and use `thigh-up/waist-up shot` instead of `portrait`. For OTS: `over-the-shoulder shot past <subject> in blurred foreground, facing <target>`. Keep held objects single-handed by default (only one hand holds an item unless the item/action inherently requires two hands, while the other hand stays free/lowered/relaxed). Use directional light (`warm rim light`, `window sidelighting`, `neon reflections`, `sunbeams`), never generic `soft lighting`.\n"
     "4. **Exclusions & Self-Portrait:**\n"
-    "   - 'без/убери X': omit X from `scene_prompt` and put English phrases in `negative_prompt`.\n"
+    "   - **Strict Negative Prompt Rule:** `negative_prompt` MUST be `\"\"` (empty string) by default. NEVER add standard quality/anatomy negatives (`bad anatomy`, `blurry`, `extra fingers`, `watermark`, etc.) on your own. Populate `negative_prompt` ONLY if the user explicitly asks to exclude or remove something (e.g., 'без X', 'убери X', 'no X')—in that case, omit X from `scene_prompt` and list ONLY those excluded English phrases in `negative_prompt`.\n"
     "   - `is_self_portrait`: `true` ONLY when asked to show YOU ('покажи себя/селфи'). When `true`, OMIT gender, age, hair, eyes, and facial features from ALL prompt fields.\n"
     "5. **Follow-up Edits:** Keep previous scene context, apply only requested changes. When zooming in, strip distant framing (`wide shot`, `full-length shot`) and lower-body items (`pants`, `skirt`, `boots`, `legs`).\n\n"
     "### Output JSON Schema (Raw JSON only, no markdown)\n"
@@ -324,7 +324,7 @@ GALLERY_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     '  "scene_prompt": "12-24 English descriptive phrases for full scene (no brackets, booru tags, or --flags)",\n'
     '  "face_prompt": "7-14 phrases STRICTLY for face crop (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
     '  "hands_prompt": "6-12 phrases STRICTLY for hands crop (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items or grips so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no people)",\n'
-    '  "negative_prompt": "English phrases for user exclusions or \'\'",\n'
+    '  "negative_prompt": "MUST be \'\' unless user explicitly requests exclusions (\'без/убери X\'); NEVER add default quality/anatomy phrases",\n'
     '  "aspect_ratio": "portrait" | "square" | "wide" | "cinematic" | "ultrawide",\n'
     '  "suggested_model": "{target_model_id}",\n'
     '  "is_self_portrait": boolean\n'
@@ -347,7 +347,7 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     "3. **Angle, Gaze, OTS & Light:** Pick dramatic angles preserving depth (`three-quarter view`, `slightly from below`, `from behind, looking back`, `dutch angle`, `over-the-shoulder`). Use `low angle, from below` ONLY for 'снизу вверх'. For OTS, specify foreground silhouette vs focused target. Keep held items single-handed by default (`holding X, arm at side` or `relaxed hand`) unless two hands are inherently required (`holding X with both hands`). Omit gaze unless requested; if looking away/at target, place `looking away, looking to the side, head turned` BEFORE subject. Always specify directional light + atmosphere (`warm rim light, backlighting`, `neon lighting, wet reflections`, `volumetric lighting, fog`, `chiaroscuro`).\n"
     "4. **Aspect Ratio, Exclusions & Self-Portrait:**\n"
     "   - `aspect_ratio`: DEFAULT `\"cinematic\"` (16:9). Use `\"ultrawide\"` (21:9) for `21:9`/`ultrawide`/`анаморф`/panoramas. Use `\"portrait\"` or `\"square\"` ONLY if explicitly demanded.\n"
-    "   - 'без/убери X': omit X from `scene_prompt` and put English tags in `negative_prompt` (for 'без людей': keep `no humans` in scene, put `people, humans` in negative).\n"
+    "   - **Strict Negative Prompt Rule:** `negative_prompt` MUST be `\"\"` (empty string) by default. NEVER add standard quality/anatomy negative tags (`bad anatomy`, `worst quality`, `lowres`, `extra fingers`, `watermark`, etc.) or textual inversions on your own. Populate `negative_prompt` ONLY if the user explicitly asks to exclude or remove something (e.g., 'без X', 'убери X', 'no X')—in that case, omit X from `scene_prompt` and list ONLY those excluded English tags in `negative_prompt` (for 'без людей': keep `no humans` in `scene_prompt`, put `people, humans` in `negative_prompt`).\n"
     "   - `is_self_portrait`: `true` ONLY when asked to show YOU ('покажи себя/селфи'). When `true`, OMIT gender, age, hair, eyes, and facial features from ALL prompt fields.\n"
     "5. **Follow-up Edits:** Keep previous scene context, apply only requested edits. When zooming in, strip distant framing (`wide shot`, `full body`) and lower-body tags (`pants`, `skirt`, `boots`, `legs`).\n\n"
     "### Output JSON Schema (Raw JSON only, no markdown)\n"
@@ -356,7 +356,7 @@ CINEMATIC_SKILL_DIRECTIVE_SD15_TEMPLATE = (
     '  "scene_prompt": "14-26 English keyword tags for widescreen movie still (no brackets or --flags)",\n'
     '  "face_prompt": "7-14 tags STRICTLY for face ADetailer (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
     '  "hands_prompt": "6-12 tags STRICTLY for hands ADetailer (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items or grips so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no humans)",\n'
-    '  "negative_prompt": "English tags for user exclusions or \'\'",\n'
+    '  "negative_prompt": "MUST be \'\' unless user explicitly requests exclusions (\'без/убери X\'); NEVER add default quality/anatomy tags",\n'
     '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",\n'
     '  "suggested_model": "{target_model_id}",\n'
     '  "is_self_portrait": boolean\n'
@@ -379,7 +379,7 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     "3. **Angle, Gaze, OTS & Light:** Pick expressive film angles/lenses preserving depth (`3/4 view`, `slightly low angle`, `from behind, looking back over shoulder`, `dutch angle`, `24mm wide-angle`, `85mm telephoto`, `foreshortening`). Use `low angle from below` ONLY for 'снизу вверх'. For OTS: `over-the-shoulder shot past <subject> in blurred foreground, facing <target>`. Keep held objects single-handed by default (only one hand holds an item unless the item/action inherently requires two hands, while the other hand stays free/lowered/relaxed). Omit gaze unless requested; if looking away/at target, place `looking away from camera, gazing to the side, head turned` BEFORE subject and use `thigh-up/waist-up shot` instead of `portrait`. Always specify directional light + color grading/atmosphere (`warm rim light from behind`, `cool teal shadows and warm practical lights`, `neon reflections on wet pavement`).\n"
     "4. **Aspect Ratio, Exclusions & Self-Portrait:**\n"
     "   - `aspect_ratio`: DEFAULT `\"cinematic\"` (16:9). Use `\"ultrawide\"` (21:9) for `21:9`/`ultrawide`/`анаморф`/panoramas. Use `\"portrait\"` or `\"square\"` ONLY if explicitly demanded.\n"
-    "   - 'без/убери X': omit X from `scene_prompt` and put English phrases in `negative_prompt`.\n"
+    "   - **Strict Negative Prompt Rule:** `negative_prompt` MUST be `\"\"` (empty string) by default. NEVER add standard quality/anatomy negatives (`bad anatomy`, `blurry`, `extra fingers`, `watermark`, etc.) on your own. Populate `negative_prompt` ONLY if the user explicitly asks to exclude or remove something (e.g., 'без X', 'убери X', 'no X')—in that case, omit X from `scene_prompt` and list ONLY those excluded English phrases in `negative_prompt`.\n"
     "   - `is_self_portrait`: `true` ONLY when asked to show YOU ('покажи себя/селфи'). When `true`, OMIT gender, age, hair, eyes, and facial features from ALL prompt fields.\n"
     "5. **Follow-up Edits:** Keep previous scene context, apply only requested edits. When zooming in, strip distant framing (`wide establishing shot`, `wide shot`, `full-length shot`) and lower-body items (`pants`, `skirt`, `boots`, `legs`).\n\n"
     "### Output JSON Schema (Raw JSON only, no markdown)\n"
@@ -388,7 +388,7 @@ CINEMATIC_SKILL_DIRECTIVE_SDXL_TEMPLATE = (
     '  "scene_prompt": "14-24 English descriptive phrases for widescreen movie still (no brackets, booru tags, or --flags)",\n'
     '  "face_prompt": "7-14 phrases STRICTLY for face crop (eyes, gaze, hair, expression, skin, light; NO clothes/hands/bg; \'\' if face hidden)",\n'
     '  "hands_prompt": "6-12 phrases STRICTLY for hands crop (anatomical fingers, natural hand pose, realistic skin texture, light; avoid naming held items or grips so ADetailer does not duplicate objects onto both hands; NO face/hair/bg; \'\' if hands hidden/no people)",\n'
-    '  "negative_prompt": "English phrases for user exclusions or \'\'",\n'
+    '  "negative_prompt": "MUST be \'\' unless user explicitly requests exclusions (\'без/убери X\'); NEVER add default quality/anatomy phrases",\n'
     '  "aspect_ratio": "cinematic" | "ultrawide" | "portrait" | "square" | "wide",\n'
     '  "suggested_model": "{target_model_id}",\n'
     '  "is_self_portrait": boolean\n'

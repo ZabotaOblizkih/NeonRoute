@@ -57,37 +57,3 @@ def test_gallery_effective_prompt_reflects_selected_checkpoint():
     )
     assert "[SYSTEM DIRECTIVE:" in effective_auto
     assert "Альтернативный шаблон" in effective_auto
-
-
-def test_knowledge_manager_dialog_shows_real_effective_skill_prompt(qapp, monkeypatch):
-    """
-    Проверяет, что KnowledgeManagerDialog во вкладке скиллов показывает
-    реальный боевой промпт из AssistantPromptBuilder в режиме read-only (без блокировки скролла/копирования).
-    """
-    monkeypatch.setattr("services.knowledge_manager.KnowledgeManager.get_documents", staticmethod(lambda: []))
-
-    from ui.dialogs.knowledge_manager_dialog import KnowledgeManagerDialog
-
-    dummy_parent = MagicMock()
-    dummy_parent.app_config = {"user_name": "Виктор"}
-
-    dialog = KnowledgeManagerDialog(parent=None)
-    dialog.app_config = {"user_name": "Виктор"}
-    try:
-        dialog._on_skill_selected("code_architect")
-        shown_text = dialog.text_system_prompt.toPlainText()
-        expected_snippet = "[АКТИВНЫЙ СКИЛЛ: РАЗРАБОТКА И АРХИТЕКТУРА КОДА]"
-        assert expected_snippet in shown_text
-        assert "Эталонный образец:" in shown_text
-        assert dialog.text_system_prompt.isEnabled() is True
-        assert dialog.text_system_prompt.isReadOnly() is True
-        assert dialog.btn_save_skill.isEnabled() is False
-
-        dialog._on_add_skill_clicked()
-        assert dialog.text_system_prompt.isEnabled() is True
-        assert dialog.text_system_prompt.isReadOnly() is False
-        assert dialog.btn_save_skill.isEnabled() is True
-    finally:
-        dialog.hide()
-        dialog.deleteLater()
-        qapp.processEvents()

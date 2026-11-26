@@ -26,6 +26,7 @@ from qframelesswindow import FramelessDialog
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
+    CheckBox,
     FluentIcon as FIF,
     FluentTitleBar,
     PrimaryPushButton,
@@ -83,6 +84,7 @@ class UpdatesDialog(FramelessDialog):
         self._current_report: Optional[ThreeWayReport] = None
         self._current_meta: Optional[dict] = None
         self._entry_map: Dict[str, ThreeWayFileEntry] = {}
+        self._row_checkboxes: Dict[str, CheckBox] = {}
 
         self._setup_ui()
         self._apply_palette()
@@ -122,6 +124,9 @@ class UpdatesDialog(FramelessDialog):
                 border-bottom-left-radius: 14px;
                 border-bottom-right-radius: 14px;
             }}
+            QWidget#UpdatesBody QLabel {{
+                background-color: transparent;
+            }}
             QFrame#InfoCard {{
                 background-color: {palette['card']};
                 border: 1px solid {palette['card_border']};
@@ -129,19 +134,29 @@ class UpdatesDialog(FramelessDialog):
                 padding: 12px;
             }}
             QListWidget#FilesList {{
-                background-color: {palette['terminal_bg']};
-                border: 1px solid {palette['terminal_border']};
+                background-color: rgba(15, 23, 42, 0.90);
+                border: 1px solid rgba(148, 163, 184, 0.25);
                 border-radius: 8px;
-                color: #E2E8F0;
-                padding: 4px;
+                color: #F8FAFC;
+                padding: 6px;
                 font-size: 12px;
+                outline: none;
             }}
             QListWidget#FilesList::item {{
-                padding: 6px 8px;
+                background-color: rgba(30, 41, 59, 0.65);
+                border: 1px solid rgba(148, 163, 184, 0.14);
                 border-radius: 6px;
+                margin: 2px 0px;
+                padding: 2px 4px;
+                color: #F8FAFC;
             }}
             QListWidget#FilesList::item:hover {{
-                background-color: rgba(0, 240, 255, 0.10);
+                background-color: rgba(0, 240, 255, 0.12);
+                border-color: rgba(0, 240, 255, 0.35);
+            }}
+            QListWidget#FilesList::item:selected {{
+                background-color: rgba(0, 240, 255, 0.16);
+                border-color: rgba(0, 240, 255, 0.45);
             }}
         """)
 
@@ -244,11 +259,8 @@ class UpdatesDialog(FramelessDialog):
             self.lbl_local_integrity.setStyleSheet("color: #FBBF24;")
 
     def _set_all_checked(self, checked: bool) -> None:
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for i in range(self.files_list.count()):
-            item = self.files_list.item(i)
-            if item and (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
-                item.setCheckState(state)
+        for cb in self._row_checkboxes.values():
+            cb.setChecked(checked)
 
     def _on_check_clicked(self) -> None:
         if self._check_worker and self._check_worker.isRunning():
@@ -256,6 +268,7 @@ class UpdatesDialog(FramelessDialog):
         self.btn_check.setEnabled(False)
         self.btn_apply.setEnabled(False)
         self.files_list.clear()
+        self._row_checkboxes.clear()
         self.lbl_remote_status.setStyleSheet("color: #38BDF8;")
         self.lbl_remote_status.setText("Запрос последнего релиза и проверка aggregate_hash...")
 
@@ -273,6 +286,8 @@ class UpdatesDialog(FramelessDialog):
         self._current_report = report
         self._current_meta = meta or {}
         self._entry_map = {e.rel_path: e for e in report.entries}
+        self.files_list.clear()
+        self._row_checkboxes.clear()
 
         if report.is_up_to_date:
             self.lbl_remote_status.setStyleSheet("color: #4ADE80;")
@@ -293,21 +308,47 @@ class UpdatesDialog(FramelessDialog):
         for entry in report.entries:
             if entry.status == FileUpdateStatus.UPDATE_SAFE:
                 tag_lbl = "Новый файл" if entry.local_sha is None else "Обновление"
-                color = QColor("#E2E8F0")
+                badge_color = "#4ADE80"
+                badge_bg = "rgba(74, 222, 128, 0.14)"
             elif entry.status == FileUpdateStatus.CONFLICT_LOCAL:
                 tag_lbl = "Изменён локально (есть обновление)"
-                color = QColor("#FBBF24")
+                badge_color = "#FBBF24"
+                badge_bg = "rgba(251, 191, 36, 0.14)"
             else:
                 tag_lbl = "Нет эталона B (требует выбора)"
-                color = QColor("#FDBA74")
+                badge_color = "#FDBA74"
+                badge_bg = "rgba(253, 186, 116, 0.14)"
 
             size_kb = max(1, entry.remote_size // 1024) if entry.remote_size else 1
-            item = QListWidgetItem(f"{entry.rel_path}  —  [{tag_lbl}, ~{size_kb} КБ]")
+
+            row_widget = QWidget(self.files_list)
+            row_widget.setStyleSheet("background: transparent;")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(10)
+
+            cb = CheckBox(entry.rel_path, row_widget)
+            cb.setChecked(entry.default_checked)
+            cb.setStyleSheet(
+                "CheckBox { color: #F8FAFC; font-weight: 600; font-size: 12px; background: transparent; }"
+            )
+
+            badge = QLabel(f"{tag_lbl} • ~{size_kb} КБ", row_widget)
+            badge.setStyleSheet(
+                f"color: {badge_color}; background-color: {badge_bg}; "
+                f"border: 1px solid {badge_color}; border-radius: 5px; "
+                "padding: 2px 8px; font-size: 11px; font-weight: 600;"
+            )
+
+            row_layout.addWidget(cb, 1)
+            row_layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight)
+
+            item = QListWidgetItem(self.files_list)
             item.setData(Qt.ItemDataRole.UserRole, entry.rel_path)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if entry.default_checked else Qt.CheckState.Unchecked)
-            item.setForeground(color)
+            item.setSizeHint(row_widget.sizeHint())
             self.files_list.addItem(item)
+            self.files_list.setItemWidget(item, row_widget)
+            self._row_checkboxes[entry.rel_path] = cb
 
         has_items = self.files_list.count() > 0
         self.btn_select_all.setEnabled(has_items)
@@ -315,14 +356,7 @@ class UpdatesDialog(FramelessDialog):
         self.btn_apply.setEnabled(has_items and bool(self._current_meta.get("zip_url")))
 
     def _get_selected_files(self) -> List[str]:
-        selected: List[str] = []
-        for i in range(self.files_list.count()):
-            item = self.files_list.item(i)
-            if item and item.checkState() == Qt.CheckState.Checked:
-                rel_path = item.data(Qt.ItemDataRole.UserRole)
-                if rel_path:
-                    selected.append(rel_path)
-        return selected
+        return [rel_path for rel_path, cb in self._row_checkboxes.items() if cb.isChecked()]
 
     def _on_apply_clicked(self) -> None:
         selected = self._get_selected_files()

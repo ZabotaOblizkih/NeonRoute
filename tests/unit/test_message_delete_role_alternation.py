@@ -220,7 +220,11 @@ def test_context_window_builder_normalizes_assistant_and_preserves_roleplay_anch
 def test_roleplay_strict_template_sanitization_via_lm_studio(monkeypatch):
     from services.lm_studio import LMStudioClient
 
+    LMStudioClient._instance = None
     client = LMStudioClient()
+    client._is_model_unloaded = False
+    client._current_loaded_ctx = 16384
+    client._current_loaded_gpu = "1.0"
     captured_payloads = []
 
     def mock_post(url, *args, **kwargs):

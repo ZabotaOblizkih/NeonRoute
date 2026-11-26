@@ -871,6 +871,10 @@ class ForgeCivitaiSyncMixin:
                     new_added += 1
 
         if new_added > 0:
+            if self.current_selected_row < 0 and self.table.rowCount() > 0:
+                self.table.selectRow(0)
+                self.current_selected_row = 0
+                self._load_model_to_form(0)
             self._save_models_to_json()
 
         if not getattr(self, "_scan_silent", True):
@@ -1353,14 +1357,30 @@ class ForgeCivitaiSyncMixin:
         if not selected_items:
             return
 
-        lines = [
-            f"• {it.get('name')} ({it.get('version_name', 'v1.0')}, {it.get('architecture') or 'any'}) -> {it.get('filename')} [{it.get('source', 'civitai')}]"
-            for it in selected_items
-        ]
+        lines = []
+        for it in selected_items:
+            fname = it.get("filename") or f"{it.get('name', 'embedding')}.pt"
+            arch_str = it.get("architecture") or "any"
+            ver_str = it.get("version_name", "v1.0")
+            src_str = it.get("source", "civitai")
+            page_name = it.get("name", "")
+            line = f"• {fname}  ({arch_str}, версия: {ver_str}, источник: {src_str})"
+            if page_name and page_name.lower() != Path(fname).stem.lower():
+                line += f"\n  Карточка Civitai: «{page_name}»"
+            lines.append(line)
+
+        from services.asset_validator import AssetValidator
+        target_dir = AssetValidator.get_target_embeddings_dir()
+        installed_names = [x.get("name") for x in installed if x.get("name")]
+        installed_note = (
+            f"\n\nУже установлены локально (пропущены): {', '.join(installed_names)}"
+            if installed_names else ""
+        )
         msg_text = (
-            "В негативном промпте / профиле обнаружены отсутствующие эмбеддинги:\n\n"
+            "Будут скачаны только отсутствующие файлы эмбеддингов:\n\n"
             + "\n".join(lines)
-            + "\n\nСкачать выбранные эмбеддинги в папку embeddings Forge?"
+            + installed_note
+            + f"\n\nПапка назначения:\n{target_dir}"
         )
         dlg = MessageBox("Скачивание эмбеддингов", msg_text, self)
         dlg.yesButton.setText("Скачать")

@@ -278,20 +278,19 @@ class ModelRouter(metaclass=ModelRouterMeta):
     def load_profiles(self) -> List[Dict[str, Any]]:
         """
         Loads model profiles strictly from data/art_director_models.json.
-        Legacy config/ directory lookup completely removed.
+        Returns an empty list when the file is missing or contains no models.
         """
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.data_path.exists():
-            self.profiles = [dict(m) for m in DEFAULT_ROUTER_MODELS]
-            self.save_profiles(self.profiles)
+            self.profiles = []
             return self.profiles
 
         try:
             with open(self.data_path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             models = data.get("models")
-            if isinstance(models, list) and models:
+            if isinstance(models, list):
                 self.profiles = [dict(m) for m in models]
                 for m in self.profiles:
                     if not m.get("architecture"):
@@ -299,12 +298,11 @@ class ModelRouter(metaclass=ModelRouterMeta):
                         m["architecture"] = "sdxl" if any(x in name_and_ckpt for x in ("xl", "pony", "illustrious")) else "sd15"
                 return self.profiles
             else:
-                self.profiles = [dict(m) for m in DEFAULT_ROUTER_MODELS]
-                self.save_profiles(self.profiles)
+                self.profiles = []
                 return self.profiles
         except Exception as e:
             logger.error(f"[ModelRouter] Failed to load {self.data_path}: {e}")
-            self.profiles = [dict(m) for m in DEFAULT_ROUTER_MODELS]
+            self.profiles = []
             return self.profiles
 
     def save_profiles(self, profiles: Optional[List[Dict[str, Any]]] = None) -> bool:

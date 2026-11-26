@@ -10,6 +10,7 @@ services/bug_report_service.py
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -159,13 +160,95 @@ def sanitize_text(text: str) -> str:
     return result
 
 
+def _normalize_short_hash(raw: Any) -> Optional[str]:
+    """Нормализует хэш сборки/коммита до 7–12 символов без пробелов и санитизирует его."""
+    if raw is None:
+        return None
+    parts = str(raw).strip().split()
+    if not parts:
+        return None
+    cleaned = sanitize_text(parts[0]).strip()
+    if not cleaned:
+        return None
+    return cleaned[:12]
+
+
+def _resolve_build_hash() -> str:
+    """
+    Определяет короткий хэш сборки/коммита из config, release_manifest.json или .git.
+    При любых сбоях возвращает 'N/A'.
+    """
+    try:
+        import config as _cfg
+
+        # 1. Опциональные атрибуты в config
+        for attr in ("BUILD_HASH", "APP_BUILD_HASH", "GIT_COMMIT"):
+            short = _normalize_short_hash(getattr(_cfg, attr, None))
+            if short:
+                return short
+
+        base_dir_raw = getattr(_cfg, "BASE_DIR", None)
+        if not base_dir_raw:
+            return "N/A"
+        base_dir = Path(base_dir_raw)
+
+        # 2. release_manifest.json в BASE_DIR
+        manifest_path = base_dir / "release_manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(manifest, dict):
+                    for key in ("build_hash", "git_commit", "commit"):
+                        short = _normalize_short_hash(manifest.get(key))
+                        if short:
+                            return short
+            except Exception:
+                pass
+
+        # 3. .git/HEAD -> refs/... или packed-refs (без subprocess)
+        git_dir = base_dir / ".git"
+        head_path = git_dir / "HEAD"
+        if head_path.is_file():
+            head_text = head_path.read_text(encoding="utf-8", errors="replace").strip()
+            if head_text.lower().startswith("ref:"):
+                ref_rel = head_text[4:].strip().lstrip("/")
+                ref_file = git_dir / ref_rel
+                if ref_file.is_file():
+                    short = _normalize_short_hash(
+                        ref_file.read_text(encoding="utf-8", errors="replace")
+                    )
+                    if short:
+                        return short
+
+                packed_refs = git_dir / "packed-refs"
+                if packed_refs.is_file():
+                    for line in packed_refs.read_text(encoding="utf-8", errors="replace").splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#") or line.startswith("^"):
+                            continue
+                        tokens = line.split()
+                        if len(tokens) >= 2 and tokens[1] == ref_rel:
+                            short = _normalize_short_hash(tokens[0])
+                            if short:
+                                return short
+            else:
+                short = _normalize_short_hash(head_text)
+                if short:
+                    return short
+    except Exception:
+        pass
+
+    return "N/A"
+
+
 def collect_environment_summary() -> Dict[str, Any]:
     """
-    Собирает краткий срез окружения (версия приложения, ОС, Python, GPU/VRAM, RAM,
+    Собирает краткий срез окружения (версия приложения, build_hash, ОС, Python, GPU/VRAM, RAM,
     статус зависимостей). Каждый блок изолирован try/except с безопасным fallback 'N/A'.
     """
     summary: Dict[str, Any] = {
         "app_version": "N/A",
+        "build_hash": _resolve_build_hash(),
         "os": "N/A",
         "python": "N/A",
         "gpu": "N/A",
@@ -357,6 +440,7 @@ def build_bug_report_payload(
         (
             "## Окружение\n"
             f"- **App Version**: `{env_summary.get('app_version', 'N/A')}`\n"
+            f"- **Build Hash**: `{env_summary.get('build_hash', 'N/A')}`\n"
             f"- **OS**: `{env_summary.get('os', 'N/A')}`\n"
             f"- **Python**: `{env_summary.get('python', 'N/A')}`\n"
             f"- **GPU**: `{env_summary.get('gpu', 'N/A')}` (VRAM: `{env_summary.get('vram_total_mb', 'N/A')}` MB)\n"

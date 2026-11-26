@@ -42,7 +42,7 @@ ART_DIRECTOR_MODELS_PATH = DATA_DIR / "art_director_models.json"
 MODEL_PRESETS_CATALOG_PATH = DATA_DIR / "model_presets_catalog.json"
 MODEL_PRESETS_CATALOG_URL = os.environ.get(
     "NEONROUTE_MODEL_CATALOG_URL",
-    "https://raw.githubusercontent.com/ZabotaOblizkih/NeonRoute/main/data/model_presets_catalog.json",
+    "https://raw.githubusercontent.com/ZabotaOblizkih/NeonRoute/ui-fluent-redesign/data/model_presets_catalog.json",
 )
 LORA_REGISTRY_PATH = DATA_DIR / "lora_registry.json"
 KV_SLOTS_DIR = DATA_DIR / "kv_slots"
@@ -129,7 +129,7 @@ LM_STUDIO_CLI_CMD = "lms"
 FORGE_EXTRA_ARGS = []
 FORGE_ENABLE_VAE_TILING = False
 FORGE_SDXL_FP8_ENABLED = True
-FORGE_AD_NO_HUGGINGFACE = False
+FORGE_AD_NO_HUGGINGFACE = True
 
 # Reasoning & Thinking Model Configuration
 DEFAULT_THINKING_MODE = "auto"

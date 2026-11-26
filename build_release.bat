@@ -32,7 +32,7 @@ if not defined PY_EXE (
 
 echo [INFO] Using Python: %PY_EXE%
 echo [INFO] Generating and validating model presets catalog...
-%PY_EXE% scripts\build_model_catalog.py
+%PY_EXE% scripts\build_model_catalog.py --include-local
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Model catalog generation failed!
     pause

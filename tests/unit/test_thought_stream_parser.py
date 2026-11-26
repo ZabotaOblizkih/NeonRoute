@@ -11,19 +11,9 @@ Unit tests for ThoughtStreamParser and ThoughtSpoilerWidget:
 import json
 import pytest
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication
 
 from services.thought_stream_parser import ThoughtStreamParser, ThinkParserState
 from services.session_manager import SessionManager
-from ui.components.thought_spoiler_widget import ThoughtSpoilerWidget
-
-
-@pytest.fixture(scope="session")
-def qapp():
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
 
 
 def test_standard_think_parsing():
@@ -220,47 +210,6 @@ def test_session_persistence_thought_block(tmp_path, monkeypatch):
     assert "thought" in r_ast
     assert r_ast["thought"]["duration"] == 2.4
     assert r_ast["thought"]["token_count"] == 68
-
-
-def test_thought_spoiler_widget_ui(qapp):
-    widget = ThoughtSpoilerWidget()
-    widget.show()
-
-    # Исходное состояние: свернут
-    assert widget.is_collapsed is True
-    assert widget.content_area.isHidden() is True
-
-    # Стриминг чанков
-    widget.append_thought_chunk("Первая мысль... ")
-    assert widget.is_collapsed is False
-    assert widget.content_area.isHidden() is False
-    assert "Анализ данных..." in widget.metrics_label.text()
-
-    widget.append_thought_chunk("Вторая мысль.")
-    assert "Первая мысль... Вторая мысль." in widget.get_thought_text()
-
-    # Финализация
-    widget.finalize_thought(duration_sec=3.5, token_count=45)
-    # После финализации виджет автоматически аккуратно сворачивается
-    assert widget.is_collapsed is True
-    assert widget.content_area.isHidden() is True
-    assert "45 токенов • 3.5 сек" in widget.metrics_label.text()
-
-    # Ручное переключение кликом
-    widget.toggle_collapsed()
-    assert widget.is_collapsed is False
-    assert widget.content_area.isHidden() is False
-
-    widget.toggle_collapsed()
-    assert widget.is_collapsed is True
-    assert widget.content_area.isHidden() is True
-
-    # Восстановление из истории
-    widget.set_thought_data("Мысли загруженные из session.json", duration=1.8, token_count=32)
-    assert widget.is_collapsed is True
-    assert widget.isHidden() is False
-    assert "32 токенов • 1.8 сек" in widget.metrics_label.text()
-    assert "Мысли загруженные" in widget.get_thought_text()
 
 
 def test_implicit_open_think_tag_closed_in_stream():

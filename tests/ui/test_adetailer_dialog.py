@@ -26,11 +26,12 @@ def qapp():
 @pytest.fixture
 def isolated_storage(tmp_path, monkeypatch):
     tmp_json_path = tmp_path / "art_director_models.json"
-    from services.model_router import ModelRouter
+    from services.model_router import ModelRouter, DEFAULT_ROUTER_MODELS
     ModelRouter._instance = None
     monkeypatch.setattr("services.art_director_config.ART_DIRECTOR_MODELS_PATH", tmp_json_path)
     monkeypatch.setattr("config.ART_DIRECTOR_MODELS_PATH", tmp_json_path)
     monkeypatch.setattr("services.model_router.DEFAULT_DATA_PATH", tmp_json_path)
+    save_art_director_models([dict(m) for m in DEFAULT_ROUTER_MODELS])
     return tmp_json_path
 
 

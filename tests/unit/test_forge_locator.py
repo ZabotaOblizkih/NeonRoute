@@ -390,3 +390,65 @@ def test_check_forge_environment_ready_site_packages_fallback_missing_packages(t
     assert "tqdm" in missing
 
 
+def test_forge_locator_and_env_with_unicode_and_spaces(tmp_path):
+    """Проверка путей с пробелами и кириллицей (is_valid_forge_dir, server_config.ini, find_forge_root)."""
+    import config
+    from core.forge_locator import is_valid_forge_dir, find_forge_root, update_server_config_forge_root
+
+    orig_root, orig_launcher = config.FORGE_ROOT_DIR, config.FORGE_LAUNCHER_PATH
+    try:
+        forge_dir = tmp_path / "Нейро Инструменты" / "SD Forge Portable 1.0"
+        forge_dir.mkdir(parents=True, exist_ok=True)
+        (forge_dir / "forge_launcher.bat").write_text("@echo off\n", encoding="utf-8")
+
+        assert is_valid_forge_dir(forge_dir) is True
+        ini_file = tmp_path / "server_config.ini"
+        assert update_server_config_forge_root(forge_dir, config_file=ini_file) is True
+        assert find_forge_root(config_file=ini_file) == forge_dir.resolve()
+    finally:
+        config.FORGE_ROOT_DIR = orig_root
+        config.FORGE_LAUNCHER_PATH = orig_launcher
+
+
+def test_forge_locator_malformed_ini_and_directory_trap(tmp_path, monkeypatch):
+    """Устойчивость к битому server_config.ini и подпапкам с именем лаунчера."""
+    from core.forge_locator import is_valid_forge_dir, find_forge_root
+
+    monkeypatch.delenv("FORGE_ROOT_DIR", raising=False)
+    monkeypatch.setattr("core.forge_locator.is_valid_forge_dir", lambda p: False)
+
+    broken_ini = tmp_path / "broken_server_config.ini"
+    broken_ini.write_bytes(b"\x00\xff\xfe[PATHS\ncorrupted syntax == :: ???")
+    assert find_forge_root(config_file=broken_ini) is None
+
+    missing_ini = tmp_path / "missing_server_config.ini"
+    missing_ini.write_text(f"[PATHS]\nforge_root_dir = {tmp_path / 'deleted'}\n", encoding="utf-8")
+    assert find_forge_root(config_file=missing_ini) is None
+
+    monkeypatch.undo()
+    fake_forge = tmp_path / "fake_forge"
+    (fake_forge / "forge_launcher.bat").mkdir(parents=True, exist_ok=True)
+    assert is_valid_forge_dir(fake_forge) is False
+
+
+def test_get_clean_forge_env_handles_messy_path():
+    """Санитация PATH с дублями разделителей и разным регистром .venv."""
+    from core.forge_locator import get_clean_forge_env
+
+    mock_env = {
+        "PATH": (
+            ";;"
+            r"C:\NEONROUTE\.VENV\SCRIPTS;;"
+            r"C:\NeonRoute\.\.venv\Scripts;"
+            r"C:\Windows\System32;"
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin;"
+        )
+    }
+    cleaned_path = get_clean_forge_env(mock_env).get("PATH", "")
+    assert ".venv" not in cleaned_path.lower()
+    assert "neonroute" not in cleaned_path.lower()
+    assert r"C:\Windows\System32" in cleaned_path
+    assert all(part.strip() != "" for part in cleaned_path.split(";"))
+
+
+

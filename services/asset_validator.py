@@ -569,9 +569,9 @@ class AssetValidator:
         if report["adetailer_missing"]:
             try:
                 from utils.config_manager import ConfigManager
-                ad_no_hf = bool(ConfigManager.load_config().get("forge_ad_no_huggingface", False))
+                ad_no_hf = bool(ConfigManager.load_config().get("forge_ad_no_huggingface", True))
             except Exception:
-                ad_no_hf = False
+                ad_no_hf = True
 
             if ad_no_hf:
                 logger.warning(

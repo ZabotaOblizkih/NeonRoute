@@ -649,3 +649,48 @@ def test_models_manager_civitai_model_installed_html_cleaning(qapp, isolated_sto
 
     dialog.reject()
 
+
+def test_clean_release_starts_empty_and_populates_from_forge_scan(qapp, isolated_storage):
+    """
+    При отсутствии data/art_director_models.json (чистый релиз):
+    1. load_art_director_models() и ModelRouter.load_profiles() возвращают [] и не создают файл с дефолтами.
+    2. ModelsManagerDialog открывается с пустой таблицей и пустым списком чекпоинтов.
+    3. После сканирования Forge добавляются только реально найденные чекпоинты.
+    """
+    from services.art_director_config import load_art_director_models
+    from services.model_router import ModelRouter
+
+    if isolated_storage.exists():
+        isolated_storage.unlink()
+
+    assert load_art_director_models() == []
+    assert not isolated_storage.exists()
+
+    ModelRouter.reset_instance()
+    router = ModelRouter(data_path=isolated_storage, auto_load=True)
+    assert router.load_profiles() == []
+    assert not isolated_storage.exists()
+
+    with patch.object(ModelsManagerDialog, "_start_forge_scan"):
+        dialog = ModelsManagerDialog()
+
+    assert dialog.table.rowCount() == 0
+    assert dialog.row_widgets == []
+    assert dialog.available_checkpoints == []
+
+    # Имитируем сканирование Forge, нашедшее 1 реальный чекпоинт
+    dialog._scan_silent = True
+    dialog._on_forge_scan_completed(
+        raw_models=[{"title": "my_custom_sdxl.safetensors", "filename": "C:/Forge/models/my_custom_sdxl.safetensors"}],
+        installed_list=["my_custom_sdxl.safetensors"],
+        upscalers=[],
+    )
+
+    assert dialog.table.rowCount() == 1
+    assert dialog.row_widgets[0]["checkpoint"] == "my_custom_sdxl.safetensors"
+    saved = load_art_director_models()
+    assert [m["checkpoint"] for m in saved] == ["my_custom_sdxl.safetensors"]
+
+    dialog.reject()
+
+

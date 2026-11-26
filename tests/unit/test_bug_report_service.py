@@ -27,6 +27,7 @@ from services.bug_report_service import (
     get_bug_report_endpoint,
     sanitize_text,
     send_bug_report,
+    _resolve_build_hash,
 )
 
 
@@ -244,3 +245,54 @@ def test_cloudflare_worker_files_structure():
     readme_text = readme_md.read_text(encoding="utf-8")
     assert "wrangler deploy" in readme_text
     assert "wrangler secret put GITHUB_TOKEN" in readme_text
+
+
+def test_resolve_build_hash_from_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    monkeypatch.delattr(config, "BUILD_HASH", raising=False)
+    monkeypatch.delattr(config, "APP_BUILD_HASH", raising=False)
+    monkeypatch.setattr(config, "GIT_COMMIT", "abcdef1234567890fedcba", raising=False)
+
+    assert _resolve_build_hash() == "abcdef123456"
+
+
+def test_resolve_build_hash_from_release_manifest(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    for attr in ("BUILD_HASH", "APP_BUILD_HASH", "GIT_COMMIT"):
+        monkeypatch.delattr(config, attr, raising=False)
+
+    (tmp_path / "release_manifest.json").write_text(
+        '{"app_version": "0.9.8.9-beta", "git_commit": "9876543210abcdef"}\n',
+        encoding="utf-8",
+    )
+    assert _resolve_build_hash() == "9876543210ab"
+
+
+def test_resolve_build_hash_from_git_head_and_ref(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    for attr in ("BUILD_HASH", "APP_BUILD_HASH", "GIT_COMMIT"):
+        monkeypatch.delattr(config, attr, raising=False)
+
+    git_heads = tmp_path / ".git" / "refs" / "heads"
+    git_heads.mkdir(parents=True)
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git_heads / "main").write_text("4e2fd38cf51a784b231636a740bc5c052f29a89d\n", encoding="utf-8")
+
+    assert _resolve_build_hash() == "4e2fd38cf51a"
+
+
+def test_resolve_build_hash_fallback_na(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    for attr in ("BUILD_HASH", "APP_BUILD_HASH", "GIT_COMMIT"):
+        monkeypatch.delattr(config, attr, raising=False)
+
+    assert _resolve_build_hash() == "N/A"
+
+
+def test_build_bug_report_payload_contains_build_hash_line(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(config, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(config, "BUILD_HASH", "1234abcd5678ef", raising=False)
+
+    payload = build_bug_report_payload(error_summary="Test error", log_tail_lines=0)
+    assert "- **Build Hash**: `1234abcd5678`" in payload.body

@@ -540,7 +540,7 @@ class ForgeClient(QObject):
                 launcher_path=target,
             )
             cmd.extend(startup_flags)
-            ad_no_hf_val = startup_meta.get("ad_no_huggingface", False)
+            ad_no_hf_val = startup_meta.get("ad_no_huggingface", True)
             logger.info(
                 f"[ForgeClient] Стартовые флаги Forge: VRAM={startup_meta['total_vram_gb']:.1f}GB | "
                 f"ad_no_huggingface={ad_no_hf_val} | "

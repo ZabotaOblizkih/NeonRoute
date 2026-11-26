@@ -35,12 +35,15 @@ class GitSandboxManager:
         return cls.get_git_executable() is not None
 
     @classmethod
-    def _get_safe_env(cls) -> dict:
+    def _get_safe_env(cls, ws_dir: Optional[Path] = None) -> dict:
         env = os.environ.copy()
         # Предотвращение любых блокирующих интерактивных запросов Git
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_PAGER"] = "cat"
         env["GIT_ASKPASS"] = "echo"
+        if ws_dir is not None:
+            # Блокируем поиск .git вверх по дереву папок (защита от коммитов в родительский репозиторий)
+            env["GIT_CEILING_DIRECTORIES"] = str(Path(ws_dir).resolve().parent)
         return env
 
     @classmethod
@@ -73,7 +76,7 @@ class GitSandboxManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    env=cls._get_safe_env(),
+                    env=cls._get_safe_env(ws_dir),
                     creationflags=flags,
                     timeout=timeout
                 )
@@ -126,7 +129,18 @@ class GitSandboxManager:
             return True
 
         git_dir = ws_dir / ".git"
-        if not git_dir.exists():
+        is_valid_git = (
+            git_dir.is_dir()
+            and (git_dir / "HEAD").is_file()
+            and (git_dir / "objects").is_dir()
+            and (git_dir / "refs").is_dir()
+        )
+        if git_dir.exists() and not is_valid_git:
+            logger.warning(f"[GitSandbox] Обнаружен повреждённый каталог .git в {ws_dir}, пересоздаём репозиторий.")
+            shutil.rmtree(git_dir, ignore_errors=True)
+            is_valid_git = (git_dir / "HEAD").is_file()
+
+        if not is_valid_git:
             ok, out = cls._run_git(ws_dir, ["init", "-b", "main"])
             if not ok:
                 cls._run_git(ws_dir, ["init"])
@@ -196,7 +210,7 @@ class GitSandboxManager:
         Учитывает как модифицированные, так и новые (untracked) файлы.
         """
         ws_dir = Path(ws_dir).resolve()
-        if not cls.is_git_available() or not (ws_dir / ".git").is_dir():
+        if not cls.is_git_available() or not (ws_dir / ".git" / "HEAD").is_file():
             return ""
 
         try:

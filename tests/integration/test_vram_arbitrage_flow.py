@@ -167,3 +167,18 @@ def test_vram_arbiter_schedule_and_cancel_llm_reload(monkeypatch):
     assert enqueued_task.task_type == "llm"
     assert enqueued_task.metadata.get("silent") is True
     assert enqueued_task.metadata.get("is_llm_reload") is True
+
+
+def test_vram_arbiter_stabilization_plateau_at_780mb(monkeypatch):
+    """VRAMArbiter._wait_for_vram_stabilization exits via plateau (< 1500 MB and delta < 15 MB)."""
+    import time
+    from services.layer_budgeter import LayerBudgeter
+
+    arbiter = VRAMArbiter.get_instance()
+    readings = iter([780.0, 778.5, 778.1, 778.1, 778.1, 778.1, 778.1])
+    monkeypatch.setattr(LayerBudgeter, "get_current_used_vram_mb", lambda: next(readings, 778.1))
+
+    start_t = time.monotonic()
+    arbiter._wait_for_vram_stabilization(timeout_s=1.0, step_s=0.01, dwell_s=0.05)
+    assert (time.monotonic() - start_t) < 0.5
+

@@ -85,6 +85,10 @@ def test_save_all_non_blocking_and_async(qapp, clean_router, monkeypatch):
     2. Синхронный update_embeddings() не вызывается в GUI-потоке.
     3. GUI не задерживается при сохранении.
     """
+    from services.art_director_config import save_art_director_models
+    save_art_director_models([
+        {"id": "m1", "name": "Model 1", "checkpoint": "model1.safetensors", "routing_description": "Desc 1", "active": True}
+    ])
     with patch.object(ModelsManagerDialog, "_start_forge_scan"):
         dialog = ModelsManagerDialog()
 

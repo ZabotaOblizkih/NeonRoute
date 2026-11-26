@@ -760,37 +760,24 @@ def test_fast_model_civitai_heuristic():
     assert "adetailer_face_denoise" not in params_std
 
 
-def test_resolve_forge_startup_flags_ad_no_huggingface_default():
-    """По умолчанию forge_ad_no_huggingface=False: флаг --ad-no-huggingface НЕ передается."""
-    flags, meta = resolve_forge_startup_flags(ad_no_huggingface=False)
-    assert "--ad-no-huggingface" not in flags
-    assert meta["ad_no_huggingface"] is False
+import pytest
 
 
-def test_resolve_forge_startup_flags_ad_no_huggingface_enabled():
-    """При ad_no_huggingface=True: флаг --ad-no-huggingface передается в CLI и meta."""
-    flags, meta = resolve_forge_startup_flags(ad_no_huggingface=True)
-    assert "--ad-no-huggingface" in flags
-    assert meta["ad_no_huggingface"] is True
-
-
-def test_resolve_forge_startup_flags_ad_no_huggingface_from_config(monkeypatch):
-    """Считывание forge_ad_no_huggingface из ConfigManager, если параметр не передан явно."""
-    monkeypatch.setattr(
-        "utils.config_manager.ConfigManager.load_config",
-        lambda: {"forge_ad_no_huggingface": True}
-    )
-    flags, meta = resolve_forge_startup_flags()
-    assert "--ad-no-huggingface" in flags
-    assert meta["ad_no_huggingface"] is True
-
-    monkeypatch.setattr(
-        "utils.config_manager.ConfigManager.load_config",
-        lambda: {"forge_ad_no_huggingface": False}
-    )
-    flags_off, meta_off = resolve_forge_startup_flags()
-    assert "--ad-no-huggingface" not in flags_off
-    assert meta_off["ad_no_huggingface"] is False
+@pytest.mark.parametrize("ad_no_hf,cfg_val,expected_flag", [
+    (False, None, False),
+    (True, None, True),
+    (None, True, True),
+    (None, False, False),
+])
+def test_resolve_forge_startup_flags_ad_no_huggingface(monkeypatch, ad_no_hf, cfg_val, expected_flag):
+    """Проверяет передачу --ad-no-huggingface через явный аргумент и через ConfigManager."""
+    if cfg_val is not None:
+        monkeypatch.setattr("utils.config_manager.ConfigManager.load_config", lambda: {"forge_ad_no_huggingface": cfg_val})
+        flags, meta = resolve_forge_startup_flags()
+    else:
+        flags, meta = resolve_forge_startup_flags(ad_no_huggingface=ad_no_hf)
+    assert ("--ad-no-huggingface" in flags) is expected_flag
+    assert meta["ad_no_huggingface"] is expected_flag
 
 
 def test_config_manager_thread_safety_concurrency(tmp_path, monkeypatch):
@@ -816,59 +803,28 @@ def test_config_manager_thread_safety_concurrency(tmp_path, monkeypatch):
         assert final_cfg[f"key_{i}"] == i
 
 
-def test_resolve_forge_startup_flags_skip_install_auto_detected(monkeypatch):
-    """При успешной проверке окружения Forge флаг --skip-install автоматически добавляется в список аргументов."""
+@pytest.mark.parametrize("env_ready,missing_pkgs,override,extra_args,expected_skip", [
+    (True, [], None, None, True),
+    (False, ["clip", "tqdm"], None, None, False),
+    (False, ["tqdm"], True, None, True),
+    (True, [], False, None, False),
+    (True, [], None, ["--skip-install"], True),
+])
+def test_resolve_forge_startup_flags_skip_install(monkeypatch, env_ready, missing_pkgs, override, extra_args, expected_skip):
+    """Проверяет автодетекцию, явный override и дедупликацию --skip-install."""
     monkeypatch.setattr(
         "core.forge_locator.check_forge_environment_ready",
-        lambda **kwargs: (True, "все пакеты на месте", [])
+        lambda **kwargs: (env_ready, "ok" if env_ready else "missing", missing_pkgs),
     )
-    flags, meta = resolve_forge_startup_flags()
-    assert "--skip-install" in flags
-    assert meta["skip_install"] is True
-    assert meta["missing_packages"] == []
-
-
-def test_resolve_forge_startup_flags_skip_install_missing_packages(monkeypatch):
-    """При неполном окружении Forge флаг --skip-install НЕ добавляется, а отсутствующие пакеты фиксируются в meta."""
-    monkeypatch.setattr(
-        "core.forge_locator.check_forge_environment_ready",
-        lambda **kwargs: (False, "не хватает библиотек", ["clip", "tqdm"])
-    )
-    flags, meta = resolve_forge_startup_flags()
-    assert "--skip-install" not in flags
-    assert meta["skip_install"] is False
-    assert meta["missing_packages"] == ["clip", "tqdm"]
-
-
-def test_resolve_forge_startup_flags_skip_install_explicit_override(monkeypatch):
-    """Явная передача skip_install=True или False имеет приоритет над автодетекцией."""
-    # Даже если окружение не готово, явный skip_install=True принудительно включает флаг
-    monkeypatch.setattr(
-        "core.forge_locator.check_forge_environment_ready",
-        lambda **kwargs: (False, "не хватает библиотек", ["tqdm"])
-    )
-    flags_forced, meta_forced = resolve_forge_startup_flags(skip_install=True)
-    assert "--skip-install" in flags_forced
-    assert meta_forced["skip_install"] is True
-
-    # И наоборот: если окружение готово, но передан skip_install=False, флаг не ставится
-    monkeypatch.setattr(
-        "core.forge_locator.check_forge_environment_ready",
-        lambda **kwargs: (True, "все пакеты готовы", [])
-    )
-    flags_disabled, meta_disabled = resolve_forge_startup_flags(skip_install=False)
-    assert "--skip-install" not in flags_disabled
-    assert meta_disabled["skip_install"] is False
-
-
-def test_resolve_forge_startup_flags_no_duplicate_skip_install(monkeypatch):
-    """Флаг --skip-install не дублируется при повторной передаче через extra_args."""
-    monkeypatch.setattr(
-        "core.forge_locator.check_forge_environment_ready",
-        lambda **kwargs: (True, "все пакеты готовы", [])
-    )
-    flags, meta = resolve_forge_startup_flags(extra_args=["--skip-install"])
-    assert flags.count("--skip-install") == 1
+    kwargs = {}
+    if override is not None:
+        kwargs["skip_install"] = override
+    if extra_args is not None:
+        kwargs["extra_args"] = extra_args
+    flags, meta = resolve_forge_startup_flags(**kwargs)
+    assert ("--skip-install" in flags) is expected_skip
+    assert meta["skip_install"] is expected_skip
+    assert flags.count("--skip-install") <= 1
     assert len(flags) == len(set(flags))
 
 

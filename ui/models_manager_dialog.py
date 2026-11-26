@@ -127,13 +127,6 @@ class ModelsManagerDialog(
             for m in self.models 
             if m.get("checkpoint", "").strip()
         })
-        if not self.available_checkpoints:
-            self.available_checkpoints = [
-                "realisticVisionV60B1_v51HyperVAE_pruned_fp16.safetensors",
-                "cyberrealistic_classic.safetensors",
-                "dreamshaper_8.safetensors",
-                "meinahentai_v5Final.safetensors"
-            ]
         self.row_widgets: List[Dict[str, Any]] = []
         self.current_selected_row: int = -1
         self._autofill_target_row: int = -1

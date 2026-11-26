@@ -284,7 +284,7 @@ class ForgeSettingsDialog(FramelessDialog):
         else:
             self.current_forge_root = str(get_default_forge_install_dir())
         self.current_sdxl_fp8 = bool(self.app_cfg.get("forge_sdxl_fp8_enabled", True))
-        self.current_ad_no_hf = bool(self.app_cfg.get("forge_ad_no_huggingface", False))
+        self.current_ad_no_hf = bool(self.app_cfg.get("forge_ad_no_huggingface", True))
         self.current_auto_art = bool(self.app_cfg.get("auto_generate_art", False))
 
     def _init_ui(self):
@@ -484,7 +484,7 @@ class ForgeSettingsDialog(FramelessDialog):
         ad_title.setStyleSheet("font-weight: 600; color: #E2E8F0;")
         ad_text_box.addWidget(ad_title)
 
-        ad_desc = CaptionLabel("Блокирует онлайн-обращения к Hugging Face. По умолчанию ВЫКЛ (автозагрузка разрешена).", self.card_opt)
+        ad_desc = CaptionLabel("Блокирует онлайн-обращения к Hugging Face. По умолчанию ВКЛ (только локальные веса).", self.card_opt)
         ad_desc.setStyleSheet("color: #94A3B8; font-size: 11px;")
         ad_text_box.addWidget(ad_desc)
         ad_row.addLayout(ad_text_box)
@@ -496,8 +496,8 @@ class ForgeSettingsDialog(FramelessDialog):
 
         ad_tooltip = (
             "Управление флагом запуска --ad-no-huggingface для SD WebUI Forge:\n"
-            "• ВЫКЛ (по умолчанию): флаг не передаётся — ADetailer может автоматически скачать недостающие модели (например, детекторы лиц или рук) с Hugging Face.\n"
-            "• ВКЛ: добавляется флаг --ad-no-huggingface — обращения к Hugging Face запрещены, используются только локально скачанные веса в папке adetailer (удобно при офлайн-работе или проблемах с сетью/доступом)."
+            "• ВКЛ (по умолчанию): добавляется флаг --ad-no-huggingface — обращения к Hugging Face запрещены, используются только локально скачанные веса в папке adetailer (удобно при офлайн-работе или проблемах с сетью/доступом).\n"
+            "• ВЫКЛ: флаг не передаётся — ADetailer может автоматически скачать недостающие модели (например, детекторы лиц или рук) с Hugging Face."
         )
         self.switch_ad_no_hf.setToolTip(ad_tooltip)
         ad_title.setToolTip(ad_tooltip)

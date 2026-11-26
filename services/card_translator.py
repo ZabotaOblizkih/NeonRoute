@@ -81,7 +81,7 @@ unmask_tags = unmask_card_tags
 
 def sanitize_repetition(text: str) -> tuple[str, bool]:
     """Детектирует и срезает зацикливания модели (например: ОКОКОК... или фразовые петли)."""
-    pattern = re.compile(r'((?:.{2,40}?)){5,}', re.DOTALL)
+    pattern = re.compile(r'((?:.{2,40}?))\1{5,}', re.DOTALL)
     match = pattern.search(text)
     if match:
         clean = text[:match.start()].rstrip()

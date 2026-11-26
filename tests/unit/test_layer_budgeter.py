@@ -483,3 +483,185 @@ class TestSafetyAndForgePreservation:
                 - audit["kv_cache_mb"]
             )
             assert audit["usable_vram_mb"] == expected_usable
+
+
+def _pack_gguf_str(s: str) -> bytes:
+    encoded = s.encode("utf-8")
+    return struct.pack("<Q", len(encoded)) + encoded
+
+
+def _build_test_gguf(kv_items: list) -> bytes:
+    buf = bytearray()
+    buf += b"GGUF"
+    buf += struct.pack("<I", 3)
+    buf += struct.pack("<Q", 0)
+    buf += struct.pack("<Q", len(kv_items))
+    for key, vtype, val in kv_items:
+        buf += _pack_gguf_str(key)
+        buf += struct.pack("<I", vtype)
+        if vtype == 4:
+            buf += struct.pack("<I", int(val))
+        elif vtype == 8:
+            buf += _pack_gguf_str(str(val))
+        elif vtype == 9:
+            item_type, items = val
+            buf += struct.pack("<I", item_type)
+            buf += struct.pack("<Q", len(items))
+            for item in items:
+                if item_type == 4:
+                    buf += struct.pack("<I", int(item))
+                elif item_type == 8:
+                    buf += _pack_gguf_str(str(item))
+    return bytes(buf)
+
+
+class TestAnalyticalBudgetAndGGUFStreaming:
+    """Аналитический расчёт compute_mb, KV cache (SWA / asymmetric) и стриминговый парсер GGUF."""
+
+    def test_compute_mb_and_safety_margin_for_large_vocab(self):
+        assert SAFETY_MARGIN_VRAM_MB == 170
+        mock_meta = {
+            "total_layers": 48,
+            "model_size_mb": 6698.65,
+            "architecture": "gemma",
+            "is_moe": False,
+            "context_length": 14336,
+            "vocab_size": 262144,
+        }
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=mock_meta):
+            ngl, can_run, _, audit = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy_gemma.gguf",
+                target_context=14336,
+                total_vram_mb=8151,
+                is_arbiter_managed=True,
+                current_used_vram_mb=682.1,
+                available_ram_mb=16000.0,
+            )
+            assert can_run is True
+            assert audit["compute_buffer_mb"] == 396
+            assert audit["logits_buffer_mb"] == 256
+            assert audit["ubatch_size"] == 256
+            assert audit["safety_margin_mb"] == 170
+            assert ngl == 40
+
+    @pytest.mark.parametrize("vocab_size,model_mb,ubatch,exp_logits,exp_compute", [
+        (32000, 7000.0, 256, 32, 172),
+        (152064, 7000.0, 256, 149, 289),
+        (32000, 4000.0, 256, 32, 132),
+        (262144, 7000.0, 512, 512, 652),
+    ])
+    def test_analytical_compute_mb_across_vocabularies(self, vocab_size, model_mb, ubatch, exp_logits, exp_compute):
+        meta = {"total_layers": 32, "model_size_mb": model_mb, "vocab_size": vocab_size}
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=meta):
+            _, _, _, audit = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy.gguf",
+                target_context=8192,
+                total_vram_mb=8192,
+                is_arbiter_managed=True,
+                current_used_vram_mb=200.0,
+                ubatch_size=ubatch,
+            )
+            assert audit["logits_buffer_mb"] == exp_logits
+            assert audit["compute_buffer_mb"] == exp_compute
+
+    def test_analytical_estimate_kv_cache_mb_swa_and_asymmetric(self):
+        meta_swa = {
+            "total_layers": 48,
+            "sliding_window": 1024,
+            "sliding_window_pattern": [True] * 40 + [False] * 8,
+            "head_count_kv": [8] * 40 + [1] * 8,
+            "key_length": 512,
+            "value_length": 512,
+            "key_length_swa": 256,
+            "value_length_swa": 256,
+        }
+        assert LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q8_0", gguf_meta=meta_swa) == 431
+        assert LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q4", gguf_meta=meta_swa) == 228
+        assert LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q8_0_q4_0", gguf_meta=meta_swa) == 329
+        assert LayerBudgeter.estimate_kv_cache_mb(24576, cache_type="q8_0_q4_0", gguf_meta=meta_swa) == 404
+
+        meta_no_dims = {"total_layers": 32, "sliding_window": 0}
+        assert LayerBudgeter.estimate_kv_cache_mb(8192, cache_type="q8_0", gguf_meta=meta_no_dims) == 589
+
+        meta_gemma4_3_5 = {
+            "total_layers": 48,
+            "head_count_kv": 3.5,
+            "key_length": 256,
+            "value_length": 256,
+            "sliding_window": 1024,
+        }
+        assert LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q8_0", gguf_meta=meta_gemma4_3_5) == 368
+        assert LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q8_0", gguf_meta={**meta_gemma4_3_5, "sliding_window": 0}) == 1437
+
+    def test_gemma4_offload_increases_with_ubatch_256(self):
+        gemma4_meta = {
+            "total_layers": 48,
+            "model_size_mb": 6850.0,
+            "architecture": "gemma4",
+            "is_moe": False,
+            "context_length": 131072,
+            "sliding_window": 1024,
+            "sliding_window_pattern": [True, True, True, True, True, False] * 8,
+            "head_count": 16,
+            "head_count_kv": [8, 8, 8, 8, 8, 1] * 8,
+            "key_length": 256,
+            "value_length": 256,
+            "vocab_size": 262144,
+        }
+        with patch.object(LayerBudgeter, "detect_gpu_topology", return_value=(True, 150)), \
+             patch.object(LayerBudgeter, "parse_gguf_metadata", return_value=gemma4_meta):
+            ngl_512, _, _, audit_512 = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy_gemma4.gguf", target_context=14336, total_vram_mb=8151,
+                current_used_vram_mb=553.0, available_ram_mb=16384.0, cache_type="q8_0",
+                is_arbiter_managed=True, ubatch_size=512,
+            )
+            assert ngl_512 == 44
+            assert audit_512["logits_buffer_mb"] == 512
+
+            ngl_256, can_run_256, _, audit_256 = LayerBudgeter.calculate_layer_offload(
+                model_path="dummy_gemma4.gguf", target_context=14336, total_vram_mb=8151,
+                current_used_vram_mb=553.0, available_ram_mb=16384.0, cache_type="q8_0",
+                is_arbiter_managed=True, ubatch_size=256,
+            )
+            assert ngl_256 == 46
+            assert can_run_256 is True
+            assert audit_256["compute_buffer_mb"] == 396
+
+    def test_gguf_streaming_parser_and_cache_invalidation(self, tmp_path, monkeypatch):
+        large_tokens = ["token_" + ("x" * 200) for _ in range(500)]
+        model_file = tmp_path / "streaming_test.gguf"
+        model_file.write_bytes(_build_test_gguf([
+            ("general.architecture", 8, "llama"),
+            ("llama.block_count", 4, 32),
+            ("tokenizer.ggml.tokens", 9, (8, large_tokens)),
+            ("llama.attention.sliding_window", 4, 1024),
+        ]))
+        meta = LayerBudgeter.parse_gguf_metadata(model_file)
+        assert meta["architecture"] == "llama"
+        assert meta["total_layers"] == 32
+        assert meta["sliding_window"] == 1024
+        assert meta["vocab_size"] == 500
+        assert meta["schema_version"] == 3
+
+        arr_file = tmp_path / "array_swa_test.gguf"
+        arr_file.write_bytes(_build_test_gguf([
+            ("general.architecture", 8, "gemma2"),
+            ("gemma2.block_count", 4, 6),
+            ("gemma2.attention.sliding_window", 9, (4, [1024, 1024, 1024, 1024, 1024, 0])),
+        ]))
+        meta_arr = LayerBudgeter.parse_gguf_metadata(arr_file)
+        assert meta_arr["sliding_window_pattern"] == [True, True, True, True, True, False]
+
+        stat = arr_file.stat()
+        cache_key = f"{str(arr_file.resolve())}::{stat.st_mtime}::{stat.st_size}"
+        monkeypatch.setattr(LayerBudgeter, "_read_models_cache", classmethod(lambda cls: {
+            cache_key: {"schema_version": 1, "total_layers": 999, "sliding_window": 0}
+        }))
+        written = {}
+        monkeypatch.setattr(LayerBudgeter, "_write_models_cache", classmethod(lambda cls, c: written.update(c)))
+        meta_re = LayerBudgeter.parse_gguf_metadata(arr_file)
+        assert meta_re["total_layers"] == 6
+        assert written[cache_key]["schema_version"] == 3
+

@@ -95,27 +95,21 @@ class TestHelperFunctionsAndErrors:
             telemetry = _get_vram_telemetry_str()
             assert telemetry == "[VRAM: N/A]"
 
-    def test_is_rtx_gpu_available_true(self):
-        mock_pynvml = MagicMock()
-        mock_pynvml.nvmlDeviceGetName.return_value = "NVIDIA GeForce RTX 4070"
-        with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
-            assert _is_rtx_gpu_available() is True
-
-    def test_is_rtx_gpu_available_bytes(self):
-        mock_pynvml = MagicMock()
-        mock_pynvml.nvmlDeviceGetName.return_value = b"NVIDIA GeForce RTX 3080"
-        with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
-            assert _is_rtx_gpu_available() is True
-
-    def test_is_rtx_gpu_available_false(self):
-        mock_pynvml = MagicMock()
-        mock_pynvml.nvmlDeviceGetName.return_value = "NVIDIA GeForce GTX 1080"
-        with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
-            assert _is_rtx_gpu_available() is False
-
-    def test_is_rtx_gpu_available_exception(self):
-        with patch.dict("sys.modules", {"pynvml": None}):
-            assert _is_rtx_gpu_available() is False
+    @pytest.mark.parametrize("gpu_name,expected", [
+        ("NVIDIA GeForce RTX 4070", True),
+        (b"NVIDIA GeForce RTX 3080", True),
+        ("NVIDIA GeForce GTX 1080", False),
+        (None, False),
+    ])
+    def test_is_rtx_gpu_available(self, gpu_name, expected):
+        if gpu_name is None:
+            with patch.dict("sys.modules", {"pynvml": None}):
+                assert _is_rtx_gpu_available() is expected
+        else:
+            mock_pynvml = MagicMock()
+            mock_pynvml.nvmlDeviceGetName.return_value = gpu_name
+            with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
+                assert _is_rtx_gpu_available() is expected
 
 
 # =========================================================================
@@ -141,85 +135,53 @@ class TestLMStudioClientInitAndSingleton:
 # =========================================================================
 
 class TestHealthAndModelDiscovery:
-    def test_check_health_online(self, lms_client, monkeypatch):
+    @pytest.mark.parametrize("behavior,exp_ok,exp_substr", [
+        (MagicMock(status_code=200), True, "LM Studio Online"),
+        (MagicMock(status_code=503), False, "HTTP 503"),
+        (requests.exceptions.ConnectionError("Connection refused"), False, "LM Studio Offline (Connection Refused)"),
+        (TimeoutError("Read timeout"), False, "Offline (Read timeout)"),
+    ])
+    def test_check_health(self, lms_client, monkeypatch, behavior, exp_ok, exp_substr):
+        if isinstance(behavior, Exception):
+            monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: (_ for _ in ()).throw(behavior))
+        else:
+            monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: behavior)
+        ok, msg = lms_client.check_health()
+        assert ok is exp_ok
+        assert exp_substr in msg
+
+    def test_get_models(self, lms_client, monkeypatch):
         mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"data": [{"id": "meta-llama-3-8b"}, {"id": "mistral-7b"}]}
         monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        ok, msg = lms_client.check_health()
-        assert ok is True
-        assert msg == "LM Studio Online"
+        assert lms_client.get_models() == ["meta-llama-3-8b", "mistral-7b"]
 
-    def test_check_health_http_error(self, lms_client, monkeypatch):
-        mock_resp = MagicMock(status_code=503)
-        monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        ok, msg = lms_client.check_health()
-        assert ok is False
-        assert "HTTP 503" in msg
-
-    def test_check_health_connection_error(self, lms_client, monkeypatch):
-        def _err(*a, **k):
-            raise requests.exceptions.ConnectionError("Connection refused")
-        monkeypatch.setattr(lms_client._persistent_session, "get", _err)
-        ok, msg = lms_client.check_health()
-        assert ok is False
-        assert msg == "LM Studio Offline (Connection Refused)"
-
-    def test_check_health_generic_exception(self, lms_client, monkeypatch):
-        def _err(*a, **k):
-            raise TimeoutError("Read timeout")
-        monkeypatch.setattr(lms_client._persistent_session, "get", _err)
-        ok, msg = lms_client.check_health()
-        assert ok is False
-        assert "Offline (Read timeout)" in msg
-
-    def test_get_models_success(self, lms_client, monkeypatch):
-        mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {
-            "data": [{"id": "meta-llama-3-8b"}, {"id": "mistral-7b"}]
-        }
-        monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        models = lms_client.get_models()
-        assert models == ["meta-llama-3-8b", "mistral-7b"]
-
-    def test_get_models_failure(self, lms_client, monkeypatch):
         monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: MagicMock(status_code=500))
         assert lms_client.get_models() == []
 
-    def test_get_active_model_id_preferred_explicit(self, lms_client, monkeypatch):
-        mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {"data": [{"id": "model-1"}]}
-        monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        chosen = lms_client.get_active_model_id(preferred_model="custom-expert-model")
-        assert chosen == "custom-expert-model"
-
-    def test_get_active_model_id_auto_select(self, lms_client, monkeypatch):
+    @pytest.mark.parametrize("preferred,expected", [
+        ("custom-expert-model", "custom-expert-model"),
+        ("default-placeholder", "primary-model"),
+    ])
+    def test_get_active_model_id_success(self, lms_client, monkeypatch, preferred, expected):
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {"data": [{"id": "primary-model"}]}
         monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        chosen = lms_client.get_active_model_id(preferred_model="default-placeholder")
-        assert chosen == "primary-model"
+        assert lms_client.get_active_model_id(preferred_model=preferred) == expected
 
-    def test_get_active_model_id_connection_error(self, lms_client, monkeypatch):
-        def _err(*a, **k):
-            raise requests.exceptions.ConnectionError()
-        monkeypatch.setattr(lms_client._persistent_session, "get", _err)
-        with pytest.raises(ConnectionError) as exc:
+    @pytest.mark.parametrize("behavior,exc_type,exp_substr", [
+        (requests.exceptions.ConnectionError(), ConnectionError, "Не удалось подключиться к LM Studio"),
+        (MagicMock(status_code=500, text="Internal Server Error"), RuntimeError, "HTTP 500"),
+        (MagicMock(status_code=200, json=lambda: {"data": []}), RuntimeError, "не загружена ни одна модель"),
+    ])
+    def test_get_active_model_id_errors(self, lms_client, monkeypatch, behavior, exc_type, exp_substr):
+        if isinstance(behavior, Exception):
+            monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: (_ for _ in ()).throw(behavior))
+        else:
+            monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: behavior)
+        with pytest.raises(exc_type) as exc:
             lms_client.get_active_model_id()
-        assert "Не удалось подключиться к LM Studio" in str(exc.value)
-
-    def test_get_active_model_id_http_error(self, lms_client, monkeypatch):
-        mock_resp = MagicMock(status_code=500, text="Internal Server Error")
-        monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        with pytest.raises(RuntimeError) as exc:
-            lms_client.get_active_model_id()
-        assert "HTTP 500" in str(exc.value)
-
-    def test_get_active_model_id_empty_models(self, lms_client, monkeypatch):
-        mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {"data": []}
-        monkeypatch.setattr(lms_client._persistent_session, "get", lambda *a, **k: mock_resp)
-        with pytest.raises(RuntimeError) as exc:
-            lms_client.get_active_model_id()
-        assert "не загружена ни одна модель" in str(exc.value)
+        assert exp_substr in str(exc.value)
 
 
 # =========================================================================
@@ -227,29 +189,24 @@ class TestHealthAndModelDiscovery:
 # =========================================================================
 
 class TestModelLoadedState:
-    def test_is_model_loaded_when_unloaded_flag_true(self, lms_client):
-        lms_client._is_model_unloaded = True
-        assert lms_client.is_model_loaded("any-model") is False
-
-    def test_is_model_loaded_exact_match(self, lms_client):
-        lms_client._last_loaded_model_id = "meta-llama-3-8b-instruct"
-        assert lms_client.is_model_loaded("meta-llama-3-8b-instruct") is True
-        assert lms_client.is_model_loaded("META-LLAMA-3-8B-INSTRUCT") is True
-
-    def test_is_model_loaded_stem_match_with_gguf_extensions(self, lms_client):
-        lms_client._last_loaded_model_id = "models/deepseek-coder-6.7b.gguf"
-        assert lms_client.is_model_loaded("deepseek-coder-6.7b") is True
-        assert lms_client.is_model_loaded("deepseek-coder-6.7b-gguf") is True
+    @pytest.mark.parametrize("unloaded,last_loaded,query,expected", [
+        (True, "any-model", "any-model", False),
+        (False, "meta-llama-3-8b-instruct", "meta-llama-3-8b-instruct", True),
+        (False, "meta-llama-3-8b-instruct", "META-LLAMA-3-8B-INSTRUCT", True),
+        (False, "models/deepseek-coder-6.7b.gguf", "deepseek-coder-6.7b", True),
+        (False, "models/deepseek-coder-6.7b.gguf", "deepseek-coder-6.7b-gguf", True),
+        (False, "model-alpha", "model-beta", False),
+    ])
+    def test_is_model_loaded_matching(self, lms_client, unloaded, last_loaded, query, expected):
+        lms_client._is_model_unloaded = unloaded
+        lms_client._last_loaded_model_id = last_loaded
+        assert lms_client.is_model_loaded(query) is expected
 
     def test_is_model_loaded_queries_models_if_no_last_loaded(self, lms_client, monkeypatch):
         lms_client._last_loaded_model_id = None
         monkeypatch.setattr(lms_client, "get_models", lambda: ["discovered-model-7b"])
         assert lms_client.is_model_loaded("discovered-model-7b") is True
         assert lms_client._last_loaded_model_id == "discovered-model-7b"
-
-    def test_is_model_loaded_mismatch(self, lms_client):
-        lms_client._last_loaded_model_id = "model-alpha"
-        assert lms_client.is_model_loaded("model-beta") is False
 
 
 # =========================================================================
@@ -792,5 +749,93 @@ class TestChatCompletion:
             respect_master_cap=False
         )
         assert captured_payloads[-1]["max_tokens"] == 8192
+
+
+class TestAuditRegressionCases:
+    """Регрессионные кейсы SSE, dead-process invalidation и OOM ошибок из инцидентов."""
+
+    def test_empty_sse_stream_raises_runtime_error_when_not_aborted(self, lms_client, monkeypatch):
+        lms_client._persistent_session = MagicMock()
+        mock_resp = MagicMock(status_code=200, content=b"")
+        mock_resp.iter_lines.return_value = []
+        lms_client._persistent_session.post.return_value = mock_resp
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m=None: True)
+
+        with pytest.raises(RuntimeError, match="LLM stream closed with 0 tokens"):
+            lms_client.chat_completion(model="test-model", messages=[{"role": "user", "content": "hello"}], stream=True)
+
+    def test_empty_sse_stream_handles_abort_without_empty_stream_error(self, lms_client, monkeypatch):
+        lms_client._persistent_session = MagicMock()
+        mock_resp = MagicMock(status_code=200, content=b"")
+
+        def _iter_lines(**kwargs):
+            lms_client.abort()
+            return []
+
+        mock_resp.iter_lines = _iter_lines
+        lms_client._persistent_session.post.return_value = mock_resp
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m=None: True)
+
+        with pytest.raises(InterruptedError):
+            lms_client.chat_completion(model="test-model", messages=[{"role": "user", "content": "hello"}], stream=True)
+
+    def test_is_model_loaded_returns_false_and_clears_id_when_process_manager_dead(self, lms_client):
+        lms_client._is_model_unloaded = False
+        lms_client._last_loaded_model_id = "test-model-id"
+        mock_pm = MagicMock()
+        mock_pm.is_lm_studio_running.return_value = False
+        lms_client.set_process_manager(mock_pm)
+        try:
+            assert lms_client.is_model_loaded("test-model-id") is False
+            assert lms_client._last_loaded_model_id is None
+        finally:
+            lms_client.set_process_manager(None)
+
+    def test_connection_error_marks_model_unloaded_and_checks_pm(self, lms_client, monkeypatch):
+        lms_client._is_model_unloaded = False
+        lms_client._last_loaded_model_id = "active-model"
+        mock_pm = MagicMock()
+        mock_pm.is_lm_studio_running.return_value = False
+        lms_client.set_process_manager(mock_pm)
+
+        lms_client._persistent_session = MagicMock()
+        lms_client._persistent_session.post.side_effect = requests.exceptions.ConnectionError("Connection refused")
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m=None: True)
+        try:
+            with pytest.raises(ConnectionError):
+                lms_client.chat_completion(messages=[{"role": "user", "content": "hi"}], stream=False)
+            assert lms_client._is_model_unloaded is True
+            assert lms_client._last_loaded_model_id is None
+            mock_pm.is_lm_studio_running.assert_called_once()
+        finally:
+            lms_client.set_process_manager(None)
+            lms_client._current_running_ngl = None
+            lms_client._current_total_layers = None
+
+    def test_sse_error_chunk_triggers_runtime_error_and_model_state_reset(self, lms_client, monkeypatch):
+        lms_client._is_model_unloaded = False
+        lms_client._last_loaded_model_id = "gemma-4-12b"
+        mock_pm = MagicMock()
+        mock_pm.is_lm_studio_running.return_value = True
+        lms_client.set_process_manager(mock_pm)
+
+        mock_resp = MagicMock(status_code=200, content=b"")
+        mock_resp.iter_lines.return_value = [
+            b'data: {"error": {"message": "got exception: bad allocation", "code": 500, "type": "server_error"}}\n\n'
+        ]
+        lms_client._persistent_session = MagicMock()
+        lms_client._persistent_session.post.return_value = mock_resp
+        monkeypatch.setattr(lms_client, "is_model_loaded", lambda m=None: True)
+
+        try:
+            with pytest.raises(RuntimeError, match="bad allocation"):
+                lms_client.chat_completion(model="gemma-4-12b", messages=[{"role": "user", "content": "hello"}], stream=True)
+            assert lms_client._is_model_unloaded is True
+            assert lms_client._last_loaded_model_id is None
+            assert mock_pm.is_oom_failure is True
+            assert "bad allocation" in str(mock_pm.last_error).lower()
+        finally:
+            lms_client.set_process_manager(None)
+
 
 

@@ -104,7 +104,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 4. SD WebUI Forge / Art Director Defaults
     "auto_generate_art": False,
     "forge_sdxl_fp8_enabled": True,
-    "forge_ad_no_huggingface": False,
+    "forge_ad_no_huggingface": True,
     "forge_onboarding_shown": False,
     "forge_patch_ignored_paths": [],
     "visualizer_settings": {

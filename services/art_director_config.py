@@ -69,27 +69,24 @@ DEFAULT_ART_DIRECTOR_MODELS: Dict[str, Any] = {
 def load_art_director_models() -> List[Dict[str, Any]]:
     """
     Loads list of registered models strictly from data/art_director_models.json.
-    Eliminates all legacy lookups in config/art_director_models.json.
+    Returns an empty list when the file is missing or contains no models,
+    so clean releases start empty until Forge checkpoints are scanned/registered.
     """
     if not ART_DIRECTOR_MODELS_PATH.exists():
-        save_art_director_models(DEFAULT_ART_DIRECTOR_MODELS["models"])
-        return list(DEFAULT_ART_DIRECTOR_MODELS["models"])
+        return []
 
     try:
         with open(ART_DIRECTOR_MODELS_PATH, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
 
         models = data.get("models")
-        if isinstance(models, list) and len(models) > 0:
+        if isinstance(models, list):
             return models
-        else:
-            logger.warning("art_director_models.json contained empty/invalid 'models' list, restoring defaults.")
-            save_art_director_models(DEFAULT_ART_DIRECTOR_MODELS["models"])
-            return list(DEFAULT_ART_DIRECTOR_MODELS["models"])
+        logger.warning("art_director_models.json contained invalid 'models' field, returning empty list.")
+        return []
     except Exception as e:
-        logger.error(f"Failed to read art_director_models.json: {e}. Restoring default configuration.")
-        save_art_director_models(DEFAULT_ART_DIRECTOR_MODELS["models"])
-        return list(DEFAULT_ART_DIRECTOR_MODELS["models"])
+        logger.error(f"Failed to read art_director_models.json: {e}. Returning empty list.")
+        return []
 
 
 def save_art_director_models(models: List[Dict[str, Any]]) -> bool:
@@ -151,7 +148,7 @@ def format_models_instruction(models: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def find_best_model_heuristic(raw_prompt: str, models: List[Dict[str, Any]]) -> Dict[str, Any]:
+def find_best_model_heuristic(raw_prompt: str, models: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
     Heuristically matches user prompt with model triggers using a strict 4-step cascade:
     Step 1: Anime/2D markers  -> anime_meina (MeinaHentai)
@@ -160,7 +157,7 @@ def find_best_model_heuristic(raw_prompt: str, models: List[Dict[str, Any]]) -> 
     Step 4: Default           -> realistic (Realistic Vision)
     """
     if not models:
-        return DEFAULT_ART_DIRECTOR_MODELS["models"][0]
+        return None
 
     lower_prompt = raw_prompt.lower()
 

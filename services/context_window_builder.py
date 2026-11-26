@@ -102,7 +102,7 @@ class ContextWindowBuilder:
                 if m.get("active", True) and (m.get("routing_description") or m.get("description") or "").strip()
             ]
             if not active:
-                return "   - cyberrealistic: фотореализм, студия, косплей\n   - realistic: повседневная жизнь"
+                return "   - (локальные модели генерации не настроены; используйте автоматический выбор)"
             lines = []
             for m in active:
                 m_id = str(m.get("id", "")).strip()
@@ -112,7 +112,7 @@ class ContextWindowBuilder:
             return "\n".join(lines)
         except Exception as e:
             logger.warning(f"[ContextWindowBuilder] Ошибка чтения моделей для промпта: {e}")
-            return "   - cyberrealistic: фотореализм, студия, косплей\n   - realistic: повседневная жизнь\n   - artistic: фэнтези, 3D\n   - anime: 2D аниме"
+            return "   - (локальные модели генерации не настроены; используйте автоматический выбор)"
 
     @staticmethod
     def build_system_prompt(

@@ -134,26 +134,17 @@ class TestHelperFunctions:
     def test_has_intimate_or_dynamic_triggers_negative_case(self):
         assert has_intimate_or_dynamic_triggers("a valiant knight standing on a green hill") is False
 
-    def test_detect_adetailer_needed_sdxl(self, forge_client):
-        res = forge_client._detect_adetailer_needed("1girl in city", target_model_name="sdxl_base.safetensors")
-        assert res is True
-
-    def test_detect_adetailer_needed_intimate_trigger(self, forge_client):
-        res = forge_client._detect_adetailer_needed("1girl, kneeling on floor", target_model_name="v1-5.safetensors")
-        assert res is False
-
-    def test_detect_adetailer_needed_anime_model(self, forge_client):
-        res = forge_client._detect_adetailer_needed("1girl, smiling", target_model_name="meinahentai_v4.safetensors")
-        assert res is False
-
-    def test_detect_adetailer_needed_no_human_markers(self, forge_client):
-        res = forge_client._detect_adetailer_needed("cyberpunk city landscape, neon lights, rainy street", target_model_name="v1-5.safetensors")
-        assert res is False
-
-    def test_detect_adetailer_needed_with_human_markers(self, forge_client):
-        assert forge_client._detect_adetailer_needed("portrait of a warrior", target_model_name="v1-5.safetensors") is True
-        assert forge_client._detect_adetailer_needed("1girl reading a book", target_model_name="v1-5.safetensors") is True
-        assert forge_client._detect_adetailer_needed("портрет чародея в замке", target_model_name="v1-5.safetensors") is True
+    @pytest.mark.parametrize("prompt,model,expected", [
+        ("1girl in city", "sdxl_base.safetensors", True),
+        ("1girl, kneeling on floor", "v1-5.safetensors", False),
+        ("1girl, smiling", "meinahentai_v4.safetensors", False),
+        ("cyberpunk city landscape, neon lights, rainy street", "v1-5.safetensors", False),
+        ("portrait of a warrior", "v1-5.safetensors", True),
+        ("1girl reading a book", "v1-5.safetensors", True),
+        ("портрет чародея в замке", "v1-5.safetensors", True),
+    ])
+    def test_detect_adetailer_needed(self, forge_client, prompt, model, expected):
+        assert forge_client._detect_adetailer_needed(prompt, target_model_name=model) is expected
 
 
 # =========================================================================
@@ -168,60 +159,41 @@ class TestForgeClientInitAndState:
         assert c1 is c2
         assert isinstance(c1, ForgeClient)
 
-    def test_check_health_online(self, forge_client, monkeypatch):
-        mock_resp = MagicMock(status_code=200)
-        monkeypatch.setattr("requests.get", lambda *a, **k: mock_resp)
+    @pytest.mark.parametrize("behavior,exp_ok,exp_substr", [
+        (MagicMock(status_code=200), True, "SD Forge Online"),
+        (MagicMock(status_code=502), False, "HTTP 502"),
+        (requests.exceptions.ConnectionError("Connection refused"), False, "SD Forge Offline"),
+        (TimeoutError("Connection timed out"), False, "Offline (Connection timed out)"),
+    ])
+    def test_check_health(self, forge_client, monkeypatch, behavior, exp_ok, exp_substr):
+        if isinstance(behavior, Exception):
+            monkeypatch.setattr("requests.get", lambda *a, **k: (_ for _ in ()).throw(behavior))
+        else:
+            monkeypatch.setattr("requests.get", lambda *a, **k: behavior)
         ok, msg = forge_client.check_health()
-        assert ok is True
-        assert msg == "SD Forge Online"
+        assert ok is exp_ok
+        assert exp_substr in msg
 
-    def test_check_health_http_error(self, forge_client, monkeypatch):
-        mock_resp = MagicMock(status_code=502)
-        monkeypatch.setattr("requests.get", lambda *a, **k: mock_resp)
-        ok, msg = forge_client.check_health()
-        assert ok is False
-        assert "HTTP 502" in msg
+    @pytest.mark.parametrize("sock_err,status_code,expected", [
+        (True, None, False),
+        (False, 200, True),
+        (False, 500, False),
+    ])
+    def test_is_server_ready(self, forge_client, monkeypatch, sock_err, status_code, expected):
+        if sock_err:
+            monkeypatch.setattr("socket.create_connection", MagicMock(side_effect=ConnectionRefusedError))
+        else:
+            monkeypatch.setattr("socket.create_connection", MagicMock())
+            monkeypatch.setattr("requests.get", lambda *a, **k: MagicMock(status_code=status_code))
+        assert forge_client.is_server_ready() is expected
 
-    def test_check_health_connection_error(self, forge_client, monkeypatch):
-        def _err(*a, **k):
-            raise requests.exceptions.ConnectionError("Connection refused")
-        monkeypatch.setattr("requests.get", _err)
-        ok, msg = forge_client.check_health()
-        assert ok is False
-        assert msg == "SD Forge Offline"
-
-    def test_check_health_generic_exception(self, forge_client, monkeypatch):
-        def _err(*a, **k):
-            raise TimeoutError("Connection timed out")
-        monkeypatch.setattr("requests.get", _err)
-        ok, msg = forge_client.check_health()
-        assert ok is False
-        assert "Offline (Connection timed out)" in msg
-
-    def test_is_server_ready_socket_fails(self, forge_client, monkeypatch):
-        monkeypatch.setattr("socket.create_connection", MagicMock(side_effect=ConnectionRefusedError))
-        assert forge_client.is_server_ready() is False
-
-    def test_is_server_ready_socket_ok_api_200(self, forge_client, monkeypatch):
-        monkeypatch.setattr("socket.create_connection", MagicMock())
-        monkeypatch.setattr("requests.get", lambda *a, **k: MagicMock(status_code=200))
-        assert forge_client.is_server_ready() is True
-
-    def test_is_server_ready_socket_ok_api_fails(self, forge_client, monkeypatch):
-        monkeypatch.setattr("socket.create_connection", MagicMock())
-        monkeypatch.setattr("requests.get", lambda *a, **k: MagicMock(status_code=500))
-        assert forge_client.is_server_ready() is False
-
-    def test_get_current_model_success(self, forge_client, monkeypatch):
+    def test_get_current_model(self, forge_client, monkeypatch):
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {"sd_model_checkpoint": "cyberrealistic_v4.safetensors"}
         monkeypatch.setattr("requests.get", lambda *a, **k: mock_resp)
         assert forge_client.get_current_model() == "cyberrealistic_v4.safetensors"
 
-    def test_get_current_model_failure(self, forge_client, monkeypatch):
-        def _err(*a, **k):
-            raise Exception("API error")
-        monkeypatch.setattr("requests.get", _err)
+        monkeypatch.setattr("requests.get", lambda *a, **k: (_ for _ in ()).throw(Exception("API error")))
         assert forge_client.get_current_model() is None
 
 
@@ -230,14 +202,13 @@ class TestForgeClientInitAndState:
 # =========================================================================
 
 class TestModelsAndCheckpoints:
-    def test_get_models_success(self, forge_client, monkeypatch):
+    def test_get_models(self, forge_client, monkeypatch):
         models_data = [{"title": "model_1", "model_name": "m1"}]
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = models_data
         monkeypatch.setattr("requests.get", lambda *a, **k: mock_resp)
         assert forge_client.get_models() == models_data
 
-    def test_get_models_error(self, forge_client, monkeypatch):
         monkeypatch.setattr("requests.get", lambda *a, **k: MagicMock(status_code=500))
         assert forge_client.get_models() == []
 
@@ -1413,5 +1384,47 @@ class TestTextToImageGeneration:
         # Аварийный повторный запрос отключил Hires и удалил hr_additional_modules
         assert fallback_payloads[1].get("enable_hr") is False
         assert "hr_additional_modules" not in fallback_payloads[1]
+
+    def test_unload_checkpoint_http_500_returns_false_and_keeps_flag(self, forge_client, monkeypatch):
+        forge_client._checkpoint_unloaded = False
+        mock_resp = MagicMock(status_code=500, text="IndexError: list index out of range")
+        monkeypatch.setattr("requests.post", lambda *a, **k: mock_resp)
+        free_vram_mock = MagicMock()
+        monkeypatch.setattr(forge_client, "free_vram", free_vram_mock)
+
+        assert forge_client.unload_checkpoint() is False
+        assert forge_client._checkpoint_unloaded is False
+        free_vram_mock.assert_called_once_with(force=True, unload_models=True)
+
+    def test_options_disable_checkpoints_keep_in_cpu_on_16gb_ram(self, forge_client, monkeypatch):
+        import psutil
+        sent_options = []
+
+        def mock_post(url, json=None, timeout=None):
+            if "/options" in url:
+                sent_options.append(json)
+                return MagicMock(status_code=200)
+            if "/sd-models" in url:
+                r = MagicMock(status_code=200)
+                r.json.return_value = [{"title": "test_ckpt.safetensors", "model_name": "test_ckpt", "filename": "test_ckpt.safetensors"}]
+                return r
+            return MagicMock(status_code=200)
+
+        monkeypatch.setattr("requests.post", mock_post)
+        monkeypatch.setattr("requests.get", mock_post)
+        monkeypatch.setattr(forge_client, "is_server_ready", lambda timeout=1.0: True)
+        monkeypatch.setattr(forge_client, "get_current_model", lambda: "other_model.safetensors")
+        monkeypatch.setattr(psutil, "virtual_memory", lambda: MagicMock(total=16.0 * (1024 ** 3), available=4.0 * (1024 ** 3)))
+
+        forge_client._system_options_ensured = False
+        assert forge_client.ensure_system_options(force=True) is True
+        assert sent_options[0].get("sd_checkpoints_keep_in_cpu") is False
+        assert sent_options[0].get("sd_checkpoint_cache") == 0
+        assert sent_options[0].get("sd_checkpoints_limit") == 1
+
+        sent_options.clear()
+        assert forge_client.set_model("test_ckpt.safetensors") is True
+        assert sent_options[0].get("sd_checkpoints_keep_in_cpu") is False
+
 
 
