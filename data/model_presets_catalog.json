@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-25T18:39:20Z",
+  "generated_at": "2026-11-26T05:31:03Z",
   "models": [
     {
       "match": {
@@ -68,13 +68,68 @@
     {
       "match": {
         "aliases": [
+          "cyberrealistic_classicV50Final_pruned_fp16",
+          "auto_cyberrealistic_classicv50final_pruned_fp16"
+        ],
+        "canonical_key": "sd15::cyberrealistic_classicv50final",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.42,
+        "adetailer_face_denoise": 0.34,
+        "adetailer_face_inpaint_size": 512,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.4,
+        "adetailer_hands_denoise": 0.37,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 512,
+        "architecture": "sd15",
+        "cfg_scale": 6.0,
+        "clip_skip": 1,
+        "enable_adetailer": true,
+        "enable_hr": false,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "4x-UltraSharp",
+        "hr_scale": 1.25,
+        "sampler": "DPM++ SDE",
+        "scheduler": "Normal",
+        "steps": 25
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "CyberRealistic_Negative-neg, bad-hands-5, worst quality, low quality, blurry, bad anatomy, bad proportions, deformed, extra limbs, plastic skin, doll, cgi, 2d, illustration",
+        "routing_description": "\"Raw photorealistic portrait and candid photography tags, natural skin texture, authentic analog lens grain, 85mm f/1.8 shallow depth of field, natural directional shadows; use grounded camera descriptors with `photorealistic, raw photo, sharp focus` and strictly avoid anime, 3D render, CGI, and painting terms.\"",
+        "style_triggers": [
+          "Photorealistic real-life portraits",
+          "everyday people",
+          "DSLR photography",
+          "natural skin texture",
+          "freckles",
+          "studio lighting",
+          "candid street photography",
+          "highly authentic Western and European realism."
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
           "dreamshaper_8",
           "dreamshaper",
           "ds8",
           "fantasy",
           "artistic",
           "DreamShaper 8",
-          "fantasy_art"
+          "fantasy_art",
+          "auto_dreamshaper_8"
         ],
         "canonical_key": "sd15::dreamshaper_8",
         "civitai_model_id": 4384,
@@ -102,7 +157,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "Latent (bicubic antialiased)",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 28
@@ -122,7 +177,14 @@
           "акварель",
           "иллюстрация",
           "painting",
-          "artstation"
+          "artstation",
+          "Versatile digital art",
+          "fantasy concept art",
+          "creative illustrations",
+          "vibrant stylized characters",
+          "sci-fi",
+          "oil painting",
+          "dramatic artistic lighting."
         ],
         "trained_words": []
       }
@@ -137,7 +199,8 @@
           "meina",
           "meinav5",
           "anime",
-          "anime_meina"
+          "anime_meina",
+          "auto_meinahentai_v5final"
         ],
         "canonical_key": "sd15::meinahentai_v5final",
         "civitai_model_id": 12606,
@@ -165,7 +228,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 25
@@ -185,7 +248,66 @@
           "2д",
           "вайфу",
           "тян",
-          "селл-шейдинг"
+          "селл-шейдинг",
+          "Authentic 2D Japanese anime",
+          "manga art style",
+          "cute anime girls",
+          "expressive eyes",
+          "colorful anime aesthetics",
+          "ecchi",
+          "stylized anime characters."
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "realcartoon3d_v18_pruned_fp16",
+          "auto_realcartoon3d_v18_pruned_fp16"
+        ],
+        "canonical_key": "sd15::realcartoon3d_v18",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.36,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sd15",
+        "cfg_scale": 7.0,
+        "clip_skip": 2,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "4x-UltraSharp",
+        "hr_scale": 1.25,
+        "sampler": "Euler a",
+        "scheduler": "Karras",
+        "steps": 40
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "easynegative,(badhandv4),(bad quality:1.3),(worst quality:1.3),watermark,(blurry),5-funny-looking-fingers,",
+        "routing_description": "\"3D animated character aesthetic, stylized Pixar and DreamWorks 3D look, smooth subsurface scattering on skin, expressive facial features, vibrant rim lighting, octane 3D render quality; avoid 2D flat lineart and live-action photography.\"",
+        "style_triggers": [
+          "Pixar and Disney 3D animation style",
+          "3D animated movie characters",
+          "cute stylized CGI",
+          "DreamWorks aesthetic",
+          "3D digital sculpt",
+          "Octane 3D render."
         ],
         "trained_words": []
       }
@@ -258,6 +380,350 @@
           "настоящ",
           "реальн"
         ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "uberRealisticPornMerge_v23Final",
+          "auto_uberrealisticpornmerge_v23final"
+        ],
+        "canonical_key": "sd15::uberrealisticpornmerge_v23final",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sd15",
+        "cfg_scale": 4.5,
+        "clip_skip": 1,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.34,
+        "hires_upscaler": "4x-UltraSharp",
+        "hr_scale": 1.25,
+        "sampler": "DPM++ 2M",
+        "scheduler": "Karras",
+        "steps": 35
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "cropped, deformed, child, childish, toddler, watermark, bad quality, low quality, worst quality, ugly, morphed, render,  blender, 3d_model, tongue. uberRealisticPornMerge",
+        "routing_description": "",
+        "style_triggers": [
+          "Raw photorealism",
+          "intimate boudoir photography",
+          "highly detailed human anatomy",
+          "sensual portraits",
+          "natural skin imperfections",
+          "soft dramatic studio lighting."
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "AAM_XL_Anime_Mix_fp8e4",
+          "AAM_XL_Anime_Mix",
+          "auto_aam_xl_anime_mix"
+        ],
+        "canonical_key": "sdxl::aam_xl_anime_mix",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sdxl",
+        "cfg_scale": 7.0,
+        "clip_skip": 2,
+        "enable_adetailer": false,
+        "enable_hr": false,
+        "hires_denoise": 0.32,
+        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hr_scale": 1.25,
+        "sampler": "Euler a",
+        "scheduler": "Karras",
+        "steps": 25
+      },
+      "style_and_prompts": {
+        "llm_guidance": "<lora:aesthetic_anime_v1s:0.7>",
+        "negative_prompt": "(low quality, worst quality:1.4), negativeXL_D, cgi,  text, signature, watermark, extra limbs",
+        "routing_description": "\"Lush semi-painterly anime illustration, rich volumetric lighting, glowing rim light, soft gradient shading, glossy highlights, atmospheric depth; avoid live-action photography, raw skin pores, flat unshaded cartoon, and plastic 3D render.\"",
+        "style_triggers": [],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "animagineXLV31_v31_fp8e4",
+          "animagineXLV31_v31",
+          "auto_animaginexlv31_v31"
+        ],
+        "canonical_key": "sdxl::animaginexlv31_v31",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sdxl",
+        "cfg_scale": 7.0,
+        "clip_skip": 2,
+        "enable_adetailer": false,
+        "enable_hr": false,
+        "hires_denoise": 0.32,
+        "hires_upscaler": "4x-UltraSharp",
+        "hr_scale": 1.25,
+        "sampler": "Euler a",
+        "scheduler": "Karras",
+        "steps": 25
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "wings, nsfw, low quality, worst quality, normal quality,",
+        "routing_description": "\"Strict Danbooru anime illustration tags, crisp clean lineart, vibrant modern anime cel-shading, expressive anime eyes, smooth gradients, dynamic composition; end scene tags with `masterpiece, best quality, very aesthetic, absurdres` and strictly avoid photorealistic, 3D render, and sketch terms.\"",
+        "style_triggers": [],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "dreamshaperXL_lightningDPMSDE",
+          "auto_dreamshaperxl_lightningdpmsde"
+        ],
+        "canonical_key": "sdxl::dreamshaperxl_lightningdpmsde",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.42,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.35,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 576,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sdxl",
+        "cfg_scale": 2.0,
+        "clip_skip": 1,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.3,
+        "hires_upscaler": "Latent (bicubic antialiased)",
+        "hr_scale": 1.25,
+        "sampler": "DPM++ SDE",
+        "scheduler": "Karras",
+        "steps": 5
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "(low quality, worst quality:1.4), cgi,  text, signature, watermark, extra limbs, ((nipples)), negativeXL_D",
+        "routing_description": "###WARNING Don't use negative prompts.",
+        "style_triggers": [
+          "Cinematic dark fantasy",
+          "RPG characters (Witcher",
+          "DnD",
+          "Cyberpunk)",
+          "semi-realistic digital art",
+          "rich chiaroscuro lighting",
+          "detailed tactile fabrics and armor",
+          "lightning-fast 5-step."
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "Juggernaut_XI_Light_byRunDiffusion_fp8e4",
+          "Juggernaut_XI_Light_byRunDiffusion",
+          "auto_juggernaut_xi_light_byrundiffusion"
+        ],
+        "canonical_key": "sdxl::juggernaut_xi_light_byrundiffusion",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.46,
+        "adetailer_face_denoise": 0.3,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.44,
+        "adetailer_hands_denoise": 0.35,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sdxl",
+        "cfg_scale": 2.0,
+        "clip_skip": 2,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.35,
+        "hires_upscaler": "Latent (bicubic antialiased)",
+        "hr_scale": 1.25,
+        "sampler": "DPM++ SDE",
+        "scheduler": "Karras",
+        "steps": 6
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "CGI, Unreal, Airbrushed, Digital",
+        "routing_description": "###WARNING Don't use negative prompts.",
+        "style_triggers": [],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "mopMixtureOfPerverts_instaV10DMD_fp8e4",
+          "auto_mopmixtureofperverts_instav10dmd_fp8e4"
+        ],
+        "canonical_key": "sdxl::mopmixtureofperverts_instav10dmd",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.5,
+        "adetailer_face_denoise": 0.3,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.4,
+        "adetailer_hands_denoise": 0.33,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sdxl",
+        "cfg_scale": 1.0,
+        "clip_skip": 2,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.4,
+        "hires_upscaler": "Latent (bicubic antialiased)",
+        "hr_scale": 1.25,
+        "sampler": "LCM",
+        "scheduler": "Karras",
+        "steps": 10
+      },
+      "style_and_prompts": {
+        "llm_guidance": "",
+        "negative_prompt": "text",
+        "routing_description": "Modern candid Instagram lifestyle photography, shot on iPhone Pro or 35mm prime lens, authentic natural skin texture with visible pores. Be sure to show beautiful angles, emphasize the beautiful kitchen, long arm, stockings, panties, bra. Don't use negative prompts.",
+        "style_triggers": [
+          "Hyper-realistic modern glamour photography",
+          "Instagram aesthetic",
+          "candid smartphone selfie",
+          "attractive models",
+          "chic fashion",
+          "swimwear",
+          "lingerie",
+          "natural indoor and hotel lighting."
+        ],
+        "trained_words": []
+      }
+    },
+    {
+      "match": {
+        "aliases": [
+          "WAI-Nsfw-Illustrious-17_fp8e4",
+          "WAI-Nsfw-Illustrious-17",
+          "auto_wai_nsfw_illustrious_17"
+        ],
+        "canonical_key": "sdxl::wai_nsfw_illustrious_17",
+        "civitai_model_id": null,
+        "civitai_version_id": null,
+        "sha256": null
+      },
+      "pipeline": {
+        "adetailer_face_confidence": 0.44,
+        "adetailer_face_denoise": 0.32,
+        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_model": "face_yolov8m.pt",
+        "adetailer_hands_confidence": 0.38,
+        "adetailer_hands_denoise": 0.4,
+        "adetailer_hands_enabled": true,
+        "adetailer_hands_inpaint_size": 512,
+        "adetailer_hands_mask_blur": 8,
+        "adetailer_hands_model": "hand_yolov9c.pt",
+        "adetailer_hands_negative_prompt": "",
+        "adetailer_hands_prompt": "",
+        "adetailer_inpaint_size": 768,
+        "architecture": "sdxl",
+        "cfg_scale": 7.0,
+        "clip_skip": 2,
+        "enable_adetailer": true,
+        "enable_hr": true,
+        "hires_denoise": 0.35,
+        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hr_scale": 1.25,
+        "sampler": "Euler a",
+        "scheduler": "SGM Uniform",
+        "steps": 30
+      },
+      "style_and_prompts": {
+        "llm_guidance": "masterpiece, best quality, amazing quality",
+        "negative_prompt": "bad quality,worst quality,worst detail,sketch,censor,",
+        "routing_description": "\"Dense Danbooru anime illustration tags, crisp modern anime lineart, vibrant cel-and-soft shading, dynamic lighting, expressive anime eyes; strictly avoid photorealistic, 3D render, 35mm, and sketch terms.\"",
+        "style_triggers": [],
         "trained_words": []
       }
     }
