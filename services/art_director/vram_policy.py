@@ -337,7 +337,25 @@ def resolve_safe_hires_scale(
     ratio = max(width / height, height / width) if (height > 0 and width > 0) else 1.0
     penalty_factor = (1.0 + (ratio - 1.8) * 0.1) if ratio > 1.8 else 1.0
 
-    # Формируем сетку кандидатов от requested_hr_scale вниз до 1.15 с шагом 0.05
+    arch_low = str(architecture or "sd15").strip().lower()
+    is_xl = "xl" in arch_low or any(m in arch_low for m in ("pony", "dmd", "insta", "mop"))
+    if not is_xl:
+        auto_scale_cap = 1.50
+    elif is_fp8:
+        auto_scale_cap = 1.35
+    else:
+        auto_scale_cap = req_scale
+
+    # Формируем сетку кандидатов:
+    # 1) при запасе VRAM — шаг 0.05 от архитектурного потолка вниз к requested_hr_scale (только FAST_KEEP_VRAM)
+    # 2) затем от requested_hr_scale вниз до 1.15 (FAST_KEEP_VRAM или SMART_SWAP)
+    upscale_candidates = []
+    if auto_scale_cap > req_scale + 1e-4:
+        curr_up = round(auto_scale_cap, 2)
+        while curr_up > req_scale + 1e-4:
+            upscale_candidates.append(round(curr_up, 2))
+            curr_up = round(curr_up - 0.05, 2)
+
     candidates = []
     curr = round(req_scale, 2)
     while curr >= 1.149:
@@ -346,8 +364,10 @@ def resolve_safe_hires_scale(
     if req_scale > 1.15 and 1.15 not in candidates:
         candidates.append(1.15)
 
+    ordered_candidates = [(s, True) for s in upscale_candidates] + [(s, False) for s in candidates]
+
     base_area = width * height
-    for s in candidates:
+    for s, is_upscale in ordered_candidates:
         cand_w = max(64, int(round((width * s) / 64.0)) * 64)
         cand_h = max(64, int(round((height * s) / 64.0)) * 64)
         cand_area = cand_w * cand_h
@@ -384,10 +404,13 @@ def resolve_safe_hires_scale(
         force_dis = bool(pol.get("force_disable_hr", False))
         mode = pol.get("mode", "")
 
-        if can_run and not force_dis and mode in ("FAST_KEEP_VRAM", "SMART_SWAP"):
+        allowed_modes = ("FAST_KEEP_VRAM",) if is_upscale else ("FAST_KEEP_VRAM", "SMART_SWAP")
+        if can_run and not force_dis and mode in allowed_modes:
             eff_s = round(s, 2)
             if abs(eff_s - req_scale) < 1e-4:
                 reason = "в пределах бюджета VRAM"
+            elif is_upscale:
+                reason = f"повышено под запас VRAM ({req_scale:.2f}x -> {eff_s:.2f}x, {mode})"
             else:
                 reason = f"подогнано под бюджет VRAM ({req_scale:.2f}x -> {eff_s:.2f}x, {mode})"
             return {

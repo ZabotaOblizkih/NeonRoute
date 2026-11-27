@@ -122,6 +122,15 @@ class MainWindow(
         self._is_initializing = True  # Флаг подавления фоновых триггеров при старте
         self.resize(1200, 820)
         self.setMinimumSize(960, 640)
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen:
+                avail = screen.availableGeometry()
+                geo = self.frameGeometry()
+                geo.moveCenter(avail.center())
+                self.move(geo.topLeft())
+        except Exception:
+            pass
         self.setStyleSheet(NEON_THEME_QSS)
 
         # Аппаратное размытие Mica / Acrylic под Windows 11

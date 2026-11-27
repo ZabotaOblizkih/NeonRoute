@@ -35,7 +35,9 @@ class ImagePreviewDialog(FramelessDialog):
     Включает в себя перенесённое меню с параметрами генерации (GenerationInfoAccordionWidget).
     """
     def __init__(self, image_path: Path, parent=None, generation_params: Optional[dict] = None):
-        super().__init__(parent=parent)
+        super().__init__(parent=None)
+        self._palette_source = parent
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.image_path = Path(image_path)
         self.setObjectName("ImagePreviewDialog")
 
@@ -133,7 +135,7 @@ class ImagePreviewDialog(FramelessDialog):
 
     def _resolve_pixmap(self) -> Optional[QPixmap]:
         """Ищет активные обои в иерархии родительских окон для адаптивной палитры."""
-        p = self.parent()
+        p = getattr(self, "_palette_source", None) or self.parent()
         while p:
             if hasattr(p, "background_pixmap") and p.background_pixmap:
                 return p.background_pixmap

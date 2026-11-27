@@ -804,3 +804,92 @@ def test_forge_vae_tiling_isolated_contract_and_options_emulation(tmp_path):
         for k, v in override_3.items():
             forge_opts.set(k, v)
 
+
+def test_hires_scale_adaptive_upscale_and_downscale_smoke():
+    """Смок-тест аккуратного повышения и понижения Hires.fix в vram_policy.resolve_safe_hires_scale.
+
+    Проверяет:
+    1. На 8 ГБ VRAM (Pure Compute) при запасе памяти SD 1.5 (1.25x -> 1.50x) и SDXL FP8 (1.25x -> 1.35x)
+       аккуратно повышаются строго в пределах FAST_KEEP_VRAM.
+    2. При выключенном Hires (1.0x) или SDXL FP16 на 8 ГБ повышение не срабатывает.
+    3. При дефиците VRAM (например, 4.5 ГБ для SD 1.5) масштаб аккуратно снижается ниже запрошенного (1.50x -> < 1.50x)
+       без перехода в STAGE_OFFLOAD.
+    """
+    vram_policy._hardware_budget_cache = None
+
+    with patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(8.0, 150)):
+        # 1a. SD 1.5: аккуратное повышение 1.25x -> 1.50x в FAST_KEEP_VRAM
+        res_sd15_up = vram_policy.resolve_safe_hires_scale(
+            width=512,
+            height=768,
+            requested_hr_scale=1.25,
+            architecture="sd15",
+            is_fp8=False,
+            enable_adetailer=True,
+            enable_hand_adetailer=True,
+            active_lora_count=1,
+            hr_upscaler="4x-UltraSharp",
+            vae_tiling=False,
+        )
+        assert res_sd15_up["allowed"] is True
+        assert res_sd15_up["effective_scale"] == 1.5
+        assert (res_sd15_up["hr_width"], res_sd15_up["hr_height"]) == (768, 1152)
+        assert res_sd15_up["policy"]["mode"] == "FAST_KEEP_VRAM"
+        assert "повышено под запас VRAM" in res_sd15_up["reason"]
+
+        # 1b. SDXL FP8: аккуратное повышение 1.25x -> 1.35x в FAST_KEEP_VRAM
+        res_sdxl_up = vram_policy.resolve_safe_hires_scale(
+            width=896,
+            height=1152,
+            requested_hr_scale=1.25,
+            architecture="sdxl",
+            is_fp8=True,
+            enable_adetailer=True,
+            enable_hand_adetailer=True,
+            active_lora_count=0,
+            hr_upscaler="Latent",
+            vae_tiling=True,
+        )
+        assert res_sdxl_up["allowed"] is True
+        assert res_sdxl_up["effective_scale"] == 1.35
+        assert res_sdxl_up["policy"]["mode"] == "FAST_KEEP_VRAM"
+        assert "повышено под запас VRAM" in res_sdxl_up["reason"]
+
+        # 2. Выключенный Hires и SDXL FP16 не повышаются
+        res_off = vram_policy.resolve_safe_hires_scale(
+            width=512,
+            height=768,
+            requested_hr_scale=1.0,
+            architecture="sd15",
+            is_fp8=False,
+        )
+        assert res_off["allowed"] is False
+        assert res_off["effective_scale"] == 1.0
+
+        res_fp16 = vram_policy.resolve_safe_hires_scale(
+            width=896,
+            height=1152,
+            requested_hr_scale=1.25,
+            architecture="sdxl",
+            is_fp8=False,
+        )
+        assert res_fp16["allowed"] is False
+
+    # 3. Аккуратное понижение при ограниченной VRAM (4.5 ГБ, Primary Display 700 МБ)
+    with patch("services.art_director.vram_policy.resolve_hardware_vram_budget", return_value=(4.5, 700)):
+        res_down = vram_policy.resolve_safe_hires_scale(
+            width=768,
+            height=512,
+            requested_hr_scale=1.50,
+            architecture="sd15",
+            is_fp8=False,
+            enable_adetailer=False,
+            hr_upscaler="Latent",
+            vae_tiling=False,
+        )
+        assert res_down["allowed"] is True
+        assert 1.15 <= res_down["effective_scale"] < 1.50
+        assert res_down["policy"]["mode"] in ("FAST_KEEP_VRAM", "SMART_SWAP")
+        assert "подогнано под бюджет VRAM" in res_down["reason"]
+
+
