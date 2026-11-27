@@ -364,6 +364,14 @@ def parse_civitai_meta(
     up_val = safe_str(m.get("Hires upscaler") or m.get("hires_upscaler"))
     if up_val:
         result["hires_upscaler"] = up_val.strip(' "')
+        result["enable_hr"] = True
+        has_real_meta = True
+
+    raw_hr_scale = m.get("Hires upscale") if m.get("Hires upscale") is not None else m.get("hr_scale")
+    hr_scale_val = safe_float(raw_hr_scale, default=None, min_val=1.0, max_val=4.0)
+    if hr_scale_val is not None and hr_scale_val > 1.0:
+        result["hr_scale"] = round(hr_scale_val, 2)
+        result["enable_hr"] = True
         has_real_meta = True
 
     raw_denoise = m.get("Denoising strength") if m.get("Denoising strength") is not None else m.get("denoise")
@@ -375,6 +383,8 @@ def parse_civitai_meta(
     arch = detect_architecture_from_name(base_model) or detect_architecture_from_name(f"{model_title} {checkpoint_name}")
     if arch:
         result["architecture"] = arch
+        if arch == "sd15" and hr_scale_val is None:
+            result["hr_scale"] = 1.5
 
     name_lower = f"{model_title} {checkpoint_name}".lower()
     is_anime = any(w in name_lower or w in tags_lower for w in ("anime", "hentai", "manga", "2d", "waifu"))
