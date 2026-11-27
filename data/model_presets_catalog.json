@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-26T05:31:03Z",
+  "generated_at": "2026-11-27T23:05:16Z",
   "models": [
     {
       "match": {
@@ -94,10 +94,10 @@
         "cfg_scale": 6.0,
         "clip_skip": 1,
         "enable_adetailer": true,
-        "enable_hr": false,
+        "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "DPM++ SDE",
         "scheduler": "Normal",
         "steps": 25
@@ -157,7 +157,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "Latent (bicubic antialiased)",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 28
@@ -228,7 +228,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "DPM++ SDE",
         "scheduler": "Karras",
         "steps": 25
@@ -292,7 +292,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "Euler a",
         "scheduler": "Karras",
         "steps": 40
@@ -415,7 +415,7 @@
         "enable_hr": true,
         "hires_denoise": 0.34,
         "hires_upscaler": "4x-UltraSharp",
-        "hr_scale": 1.5,
+        "hr_scale": 1.25,
         "sampler": "DPM++ 2M",
         "scheduler": "Karras",
         "steps": 35
@@ -465,9 +465,9 @@
         "cfg_scale": 7.0,
         "clip_skip": 2,
         "enable_adetailer": false,
-        "enable_hr": false,
+        "enable_hr": true,
         "hires_denoise": 0.32,
-        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hires_upscaler": "Latent",
         "hr_scale": 1.25,
         "sampler": "Euler a",
         "scheduler": "Karras",
@@ -511,9 +511,9 @@
         "cfg_scale": 7.0,
         "clip_skip": 2,
         "enable_adetailer": false,
-        "enable_hr": false,
+        "enable_hr": true,
         "hires_denoise": 0.32,
-        "hires_upscaler": "4x-UltraSharp",
+        "hires_upscaler": "Latent",
         "hr_scale": 1.25,
         "sampler": "Euler a",
         "scheduler": "Karras",
@@ -595,8 +595,8 @@
       },
       "pipeline": {
         "adetailer_face_confidence": 0.46,
-        "adetailer_face_denoise": 0.3,
-        "adetailer_face_inpaint_size": 768,
+        "adetailer_face_denoise": 0.35,
+        "adetailer_face_inpaint_size": 512,
         "adetailer_face_model": "face_yolov8m.pt",
         "adetailer_hands_confidence": 0.44,
         "adetailer_hands_denoise": 0.35,
@@ -606,7 +606,7 @@
         "adetailer_hands_model": "hand_yolov9c.pt",
         "adetailer_hands_negative_prompt": "",
         "adetailer_hands_prompt": "",
-        "adetailer_inpaint_size": 768,
+        "adetailer_inpaint_size": 512,
         "architecture": "sdxl",
         "cfg_scale": 2.0,
         "clip_skip": 2,
@@ -713,7 +713,7 @@
         "enable_adetailer": true,
         "enable_hr": true,
         "hires_denoise": 0.35,
-        "hires_upscaler": "R-ESRGAN 4x+ Anime6B",
+        "hires_upscaler": "Latent",
         "hr_scale": 1.25,
         "sampler": "Euler a",
         "scheduler": "SGM Uniform",
