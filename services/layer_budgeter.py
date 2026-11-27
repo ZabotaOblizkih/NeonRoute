@@ -1214,10 +1214,22 @@ class LayerBudgeter:
             available_ram_mb = cls.get_available_host_memory_mb()
 
         # Базовый запас памяти хоста под рантайм, WDDM paging, CUDA_Host pinned buffer и восстановление KV-слота
+        # При available_ram_mb < 4096 ProcessManager выставляет GGML_CUDA_NO_PINNED=1, поэтому pinned-буфер не выделяется.
+        # Буфер восстановления KV-слота (600 MB) требуется только если на диске реально есть сохраненный слот.
+        cuda_pinned_mb = cls.CUDA_HOST_PINNED_RAM_MB if available_ram_mb >= 4096.0 else 0.0
+        has_saved_slot = False
+        if is_arbiter_managed:
+            try:
+                from config import KV_SLOTS_DIR
+                has_saved_slot = (KV_SLOTS_DIR / "slot_metadata.json").is_file()
+            except Exception:
+                has_saved_slot = False
+        slot_restore_mb = cls.SLOT_RESTORE_HEADROOM_MB if (is_arbiter_managed and has_saved_slot) else 0.0
+
         base_host_required_mb = (
             cls.OS_HEADROOM_RAM_MB +
-            cls.CUDA_HOST_PINNED_RAM_MB +
-            (cls.SLOT_RESTORE_HEADROOM_MB if is_arbiter_managed else 0.0)
+            cuda_pinned_mb +
+            slot_restore_mb
         )
 
         cpu_weights_mb = 0.0
