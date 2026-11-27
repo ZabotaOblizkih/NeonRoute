@@ -50,11 +50,15 @@ class _LlamaDownloadThread(QThread):
     progress_signal = pyqtSignal(str, int, int)
     finished_signal = pyqtSignal(bool, str)
 
+    def __init__(self, parent=None, profile: str = "standard"):
+        super().__init__(parent)
+        self.profile = profile
+
     def run(self):
         def _prog(msg, cur, tot):
             self.progress_signal.emit(msg, cur, tot)
 
-        ok, res_str = download_and_extract_llama_server(progress_callback=_prog)
+        ok, res_str = download_and_extract_llama_server(progress_callback=_prog, profile=self.profile)
         self.finished_signal.emit(ok, res_str)
 
 
@@ -475,6 +479,23 @@ class LLMEngineSettingsDialog(FramelessDialog):
         row_server.addWidget(self.btn_download_server)
         engine_layout.addLayout(row_server)
 
+        # Ряд 1.5: статус кастомного PrismML llama-server (для PTQ1_0 / Ternary-Bonsai)
+        row_prism = QHBoxLayout()
+        row_prism.setSpacing(10)
+        prism_icon = IconWidget(FIF.DEVELOPER_TOOLS, self.engine_card)
+        prism_icon.setFixedSize(20, 20)
+        row_prism.addWidget(prism_icon)
+
+        self.lbl_prism_status = BodyLabel("", self.engine_card)
+        self.lbl_prism_status.setStyleSheet("font-weight: 600;")
+        row_prism.addWidget(self.lbl_prism_status)
+        row_prism.addStretch()
+
+        self.btn_download_prism_server = PushButton(FIF.DOWNLOAD, "Скачать / обновить PrismML (PTQ1_0)", self.engine_card)
+        self.btn_download_prism_server.clicked.connect(self._on_download_prism_server_clicked)
+        row_prism.addWidget(self.btn_download_prism_server)
+        engine_layout.addLayout(row_prism)
+
         # Разделитель внутри карточки
         sub_sep = QFrame(self.engine_card)
         sub_sep.setFrameShape(QFrame.Shape.HLine)
@@ -762,13 +783,21 @@ class LLMEngineSettingsDialog(FramelessDialog):
 
     def _refresh_engine_status(self):
         """Обновляет индикатор статуса llama-server.exe и путь к папке моделей."""
-        installed = is_llama_server_installed()
+        installed = is_llama_server_installed(profile="standard")
         if installed:
             self.lbl_server_status.setText("🟢 Движок llama-server установлен в bin/")
             self.lbl_server_status.setStyleSheet("color: #10B981; font-weight: 600;")
         else:
             self.lbl_server_status.setText("🟡 Движок llama-server отсутствует в bin/")
             self.lbl_server_status.setStyleSheet("color: #F59E0B; font-weight: 600;")
+
+        prism_installed = is_llama_server_installed(profile="prismml")
+        if prism_installed:
+            self.lbl_prism_status.setText("🟢 Кастомный PrismML (PTQ1_0) установлен в bin/prismml/")
+            self.lbl_prism_status.setStyleSheet("color: #10B981; font-weight: 600;")
+        else:
+            self.lbl_prism_status.setText("⚪ Кастомный PrismML (PTQ1_0) не установлен")
+            self.lbl_prism_status.setStyleSheet("color: #94A3B8; font-weight: 600;")
 
         ini_cfg = ServerConfigResolver.load_ini()
         custom_dir = ini_cfg.get("models_dir", "").strip()
@@ -791,31 +820,47 @@ class LLMEngineSettingsDialog(FramelessDialog):
                 if parent_win and hasattr(parent_win, "_refresh_models"):
                     parent_win._refresh_models()
 
-    def _on_download_server_clicked(self):
-        """Запускает фоновое скачивание и распаковку подходящего llama-server."""
+    def _start_server_download(self, profile: str):
+        """Запускает фоновое скачивание и распаковку llama-server для указанного профиля."""
         if self._dl_thread and self._dl_thread.isRunning():
             return
 
+        self._active_dl_profile = profile
         self.btn_download_server.setEnabled(False)
-        self.btn_download_server.setText("Скачивание...")
-        self.lbl_server_status.setText("⏳ Загрузка llama-server с GitHub...")
-        self.lbl_server_status.setStyleSheet("color: #38BDF8; font-weight: 600;")
+        self.btn_download_prism_server.setEnabled(False)
+        target_btn = self.btn_download_prism_server if profile == "prismml" else self.btn_download_server
+        target_lbl = self.lbl_prism_status if profile == "prismml" else self.lbl_server_status
+        target_btn.setText("Скачивание...")
+        target_lbl.setText(f"⏳ Загрузка {profile} с GitHub...")
+        target_lbl.setStyleSheet("color: #38BDF8; font-weight: 600;")
 
-        self._dl_thread = _LlamaDownloadThread(self)
+        self._dl_thread = _LlamaDownloadThread(self, profile=profile)
         self._dl_thread.progress_signal.connect(self._on_download_progress)
         self._dl_thread.finished_signal.connect(self._on_download_finished)
         self._dl_thread.start()
 
+    def _on_download_server_clicked(self):
+        """Запускает фоновое скачивание и распаковку основного llama-server."""
+        self._start_server_download("standard")
+
+    def _on_download_prism_server_clicked(self):
+        """Запускает фоновое скачивание и распаковку кастомного PrismML llama-server."""
+        self._start_server_download("prismml")
+
     def _on_download_progress(self, msg: str, cur: int, tot: int):
+        profile = getattr(self, "_active_dl_profile", "standard")
+        target_lbl = self.lbl_prism_status if profile == "prismml" else self.lbl_server_status
         if tot > 0:
             pct = (cur / tot) * 100
-            self.lbl_server_status.setText(f"⏳ {msg} ({pct:.0f}%)")
+            target_lbl.setText(f"⏳ {msg} ({pct:.0f}%)")
         else:
-            self.lbl_server_status.setText(f"⏳ {msg}")
+            target_lbl.setText(f"⏳ {msg}")
 
     def _on_download_finished(self, success: bool, msg: str):
         self.btn_download_server.setEnabled(True)
+        self.btn_download_prism_server.setEnabled(True)
         self.btn_download_server.setText("Скачать / обновить llama-server")
+        self.btn_download_prism_server.setText("Скачать / обновить PrismML (PTQ1_0)")
         self._refresh_engine_status()
         if success:
             toast_success(self, "llama-server", msg)

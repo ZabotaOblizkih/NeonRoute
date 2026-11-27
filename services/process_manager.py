@@ -148,6 +148,7 @@ class ProcessManager(QObject):
     forge_status_changed = pyqtSignal(bool, str)   # is_running, message
     action_completed = pyqtSignal(str, bool, str)  # action_name, success, message
     server_state_changed = pyqtSignal(str, str)    # state_name, message
+    custom_server_required = pyqtSignal(str, str)  # server_profile, model_name
     inspect_port_occupant = staticmethod(inspect_port_occupant)
 
     def __init__(self, parent=None):
@@ -165,6 +166,8 @@ class ProcessManager(QObject):
         self.last_error: str = ""
         self.is_vram_oom_failure: bool = False
         self.is_host_ram_oom_failure: bool = False
+        self.is_custom_server_required: bool = False
+        self.required_server_profile: Optional[str] = None
         self._force_cuda_no_pinned: bool = False
         self._last_attempted_ngl: Optional[int] = None
         self._current_running_ngl: Optional[int] = None
@@ -872,7 +875,16 @@ class ProcessManager(QObject):
                     parsed_message = l_s
                     break
 
-        if is_host_oom and is_vram_oom:
+        is_custom_tensor_err = any(
+            marker in (parsed_message or "").lower()
+            or any(marker in ln.lower() for ln in lines)
+            for marker in ("invalid ggml type", "unknown tensor type", "failed to read tensor info")
+        )
+        if is_custom_tensor_err:
+            self.is_custom_server_required = True
+            self.required_server_profile = "prismml"
+            final_msg = "Модель требует кастомный сервер PrismML llama.cpp (неподдерживаемый тип тензоров GGUF, например PTQ1_0)"
+        elif is_host_oom and is_vram_oom:
             final_msg = f"Out of Memory (VRAM + Host RAM): {parsed_message}" if parsed_message else "OOM (VRAM + Host RAM) при инициализации модели"
         elif is_host_oom:
             final_msg = f"Host RAM Out of Memory: {parsed_message}" if parsed_message else "Host RAM Out of Memory (CUDA_Host buffer / Commit Limit)"
@@ -970,6 +982,8 @@ class ProcessManager(QObject):
         with self._process_lock:
             self.last_error = ""
             self.is_oom_failure = False
+            self.is_custom_server_required = False
+            self.required_server_profile = None
             self._last_attempted_ngl = None
 
             # 1. Grab current running server's ngl for hysteresis before killing
@@ -1032,15 +1046,7 @@ class ProcessManager(QObject):
                         self.lms_status_changed.emit(False, err_msg)
                         return False
 
-                # 4. Resolve binary
-                server_exe = ServerConfigResolver.resolve_server_exe()
-                if not server_exe:
-                    logger.error("llama-server.exe executable not found on any cascade level.")
-                    self._set_server_state(ServerState.ERROR, "Бинарник llama-server.exe не найден.")
-                    self.lms_status_changed.emit(False, "Бинарник llama-server.exe не найден.")
-                    return False
-
-                # 5. Resolve model path
+                # 4. Resolve model path first to determine required server profile
                 target_id = model_identifier or getattr(self.lm_client, "_last_loaded_model_id", None)
                 if not target_id:
                     try:
@@ -1055,6 +1061,32 @@ class ProcessManager(QObject):
                     logger.error(f"Model '{target_id}' could not be resolved to a valid GGUF file.")
                     self._set_server_state(ServerState.ERROR, f"Модель '{target_id}' не найдена.")
                     self.lms_status_changed.emit(False, f"Модель '{target_id}' не найдена.")
+                    return False
+
+                # 5. Resolve binary for the model's server profile ('standard' or 'prismml')
+                server_profile = ServerConfigResolver.resolve_server_profile_for_model(model_path)
+                server_exe = ServerConfigResolver.resolve_server_exe(
+                    model_path=model_path,
+                    server_profile=server_profile,
+                )
+                if not server_exe:
+                    if server_profile == "prismml":
+                        err_msg = (
+                            f"Для модели '{model_path.name}' требуется кастомный сервер PrismML (PTQ1_0). "
+                            f"Установите его в bin/prismml/."
+                        )
+                        logger.warning(f"[ProcessManager] {err_msg}")
+                        self.is_custom_server_required = True
+                        self.required_server_profile = "prismml"
+                        self._set_server_state(ServerState.ERROR, err_msg)
+                        self.last_error = err_msg
+                        self._safe_emit("custom_server_required", "prismml", model_path.name)
+                        self._safe_emit("lms_status_changed", False, err_msg)
+                        return False
+
+                    logger.error("llama-server.exe executable not found on any cascade level.")
+                    self._set_server_state(ServerState.ERROR, "Бинарник llama-server.exe не найден.")
+                    self.lms_status_changed.emit(False, "Бинарник llama-server.exe не найден.")
                     return False
 
                 effective_ctx = context_length or ini_cfg.get("default_context", 14336)

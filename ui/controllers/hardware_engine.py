@@ -638,6 +638,89 @@ class HardwareEngineMixin:
         dlg = LLMEngineSettingsDialog(self)
         dlg.exec()
 
+    @pyqtSlot(str, str)
+    def _on_custom_server_required(self, server_profile: str, model_name: str):
+        """
+        Предлагает пользователю скачать кастомный llama-server (например, PrismML для PTQ1_0),
+        если выбрана модель с неподдерживаемым стандартным сервером форматом.
+        """
+        if getattr(self, "_custom_server_prompt_active", False):
+            return
+        if getattr(self, "_custom_dl_thread", None) and self._custom_dl_thread.isRunning():
+            return
+
+        if not self.isVisible():
+            QTimer.singleShot(500, lambda p=server_profile, m=model_name: self._on_custom_server_required(p, m))
+            return
+
+        logger.info(f"[HardwareEngine] Запрос пользователю на скачивание кастомного сервера '{server_profile}' для '{model_name}'.")
+        self._custom_server_prompt_active = True
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            from PyQt6.QtCore import QThread, pyqtSignal
+            from services.llama_downloader import get_profile_config, download_and_extract_llama_server
+            from ui.common.toast_helper import toast_success, toast_error, toast_info
+
+            self.raise_()
+            self.activateWindow()
+            prof_label = get_profile_config(server_profile).get("label", server_profile)
+            reply = QMessageBox.question(
+                self,
+                "Требуется кастомный llama-server",
+                f"Модель «{model_name}» требует специализированную сборку:\n"
+                f"{prof_label}\n\n"
+                f"Скачать и установить её автоматически под конфигурацию вашего ПК в bin/{server_profile}/?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            class _CustomServerDownloadThread(QThread):
+                progress_sig = pyqtSignal(str, int, int)
+                finished_sig = pyqtSignal(bool, str)
+
+                def __init__(self, prof: str):
+                    super().__init__(parent=None)
+                    self._prof = prof
+
+                def run(self):
+                    ok, msg = download_and_extract_llama_server(
+                        profile=self._prof,
+                        progress_callback=lambda m, c, t: self.progress_sig.emit(m, c, t),
+                    )
+                    self.finished_sig.emit(ok, msg)
+
+            self._custom_dl_thread = _CustomServerDownloadThread(server_profile)
+
+            def _on_prog(msg: str, cur: int, tot: int):
+                pct = f" ({(cur / tot) * 100:.0f}%)" if tot > 0 else ""
+                if hasattr(self, "statusBar") and callable(self.statusBar) and self.statusBar():
+                    self.statusBar().showMessage(f"⏳ {msg}{pct}")
+
+            def _on_done(ok: bool, msg: str):
+                try:
+                    if hasattr(self, "_custom_dl_thread") and self._custom_dl_thread:
+                        self._custom_dl_thread.deleteLater()
+                        self._custom_dl_thread = None
+                except Exception:
+                    pass
+                if ok:
+                    toast_success(self, "Кастомный llama-server", msg)
+                    if hasattr(self, "process_manager") and self.process_manager:
+                        target_model = getattr(self, "active_lms_model", "") or model_name
+                        device_mode = self.app_config.get("compute_device_mode", "Auto") if isinstance(getattr(self, "app_config", None), dict) else "Auto"
+                        self.process_manager.load_lms_model_async(target_model, device_mode=device_mode)
+                else:
+                    toast_error(self, "Ошибка загрузки", msg)
+
+            self._custom_dl_thread.progress_sig.connect(_on_prog)
+            self._custom_dl_thread.finished_sig.connect(_on_done)
+            toast_info(self, "Загрузка сервера", f"Скачивание {prof_label} под вашу конфигурацию ПК...")
+            self._custom_dl_thread.start()
+        finally:
+            self._custom_server_prompt_active = False
+
     def _open_forge_settings_dialog(self):
         """Открывает диалог настройки SD WebUI Forge (пути, FP8, VRAM)."""
         from ui.dialogs.forge_settings_dialog import ForgeSettingsDialog

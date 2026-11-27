@@ -601,6 +601,8 @@ class MainWindow(
         # Process Manager Signals
         self.process_manager.action_completed.connect(self._on_process_action_completed)
         self.process_manager.server_state_changed.connect(self._on_server_state_changed)
+        if hasattr(self.process_manager, "custom_server_required"):
+            self.process_manager.custom_server_required.connect(self._on_custom_server_required)
 
         # Health Checker Background Worker (Non-blocking)
         self.health_worker.health_updated.connect(self._on_health_updated)

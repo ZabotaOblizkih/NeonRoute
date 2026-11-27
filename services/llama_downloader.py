@@ -28,21 +28,43 @@ GITHUB_API_RELEASES_LATEST = "https://api.github.com/repos/ggml-org/llama.cpp/re
 GITHUB_API_RELEASES_LIST = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
 USER_AGENT = "NeonRoute-LlamaDownloader"
 
+SERVER_PROFILES: Dict[str, Dict[str, Any]] = {
+    "standard": {
+        "label": "llama.cpp (основной)",
+        "releases_latest": GITHUB_API_RELEASES_LATEST,
+        "releases_list": GITHUB_API_RELEASES_LIST,
+        "target_dir": config.LOCAL_BIN_DIR,
+    },
+    "prismml": {
+        "label": "PrismML llama.cpp (PTQ1_0 / Ternary-Bonsai)",
+        "releases_latest": "https://api.github.com/repos/PrismML-Eng/llama.cpp/releases/latest",
+        "releases_list": "https://api.github.com/repos/PrismML-Eng/llama.cpp/releases?per_page=5",
+        "target_dir": config.CUSTOM_BIN_PRISM_DIR,
+    },
+}
 
-def is_llama_server_installed(target_dir: Optional[Path] = None) -> bool:
+
+def get_profile_config(profile: str = "standard") -> Dict[str, Any]:
+    """Возвращает конфигурацию профиля сервера ('standard' или 'prismml')."""
+    return SERVER_PROFILES.get(profile, SERVER_PROFILES["standard"])
+
+
+def is_llama_server_installed(target_dir: Optional[Path] = None, profile: str = "standard") -> bool:
     """
-    Проверяет наличие рабочего llama-server.exe в bin/.
-    Если обнаружен ggml-cuda.dll, обязательно проверяет наличие cudart64_*.dll И cublas64_*.dll.
+    Проверяет наличие рабочего llama-server.exe в целевой папке профиля (bin/ или bin/prismml/).
+    Если обнаружен ggml-cuda.dll, обязательно проверяет наличие cudart64_*.dll И cublas64_*.dll
+    (рядом с бинарником или в основном bin/).
     """
-    bin_dir = target_dir or config.LOCAL_BIN_DIR
+    prof_cfg = get_profile_config(profile)
+    bin_dir = target_dir or prof_cfg["target_dir"]
     exe_path = bin_dir / "llama-server.exe"
     if not (exe_path.is_file() and exe_path.stat().st_size > 1024):
         return False
 
     cuda_backend = bin_dir / "ggml-cuda.dll"
     if cuda_backend.is_file():
-        has_cudart = any(bin_dir.glob("cudart64_*.dll"))
-        has_cublas = any(bin_dir.glob("cublas64_*.dll"))
+        has_cudart = any(bin_dir.glob("cudart64_*.dll")) or any(config.LOCAL_BIN_DIR.glob("cudart64_*.dll"))
+        has_cublas = any(bin_dir.glob("cublas64_*.dll")) or any(config.LOCAL_BIN_DIR.glob("cublas64_*.dll"))
         if not (has_cudart and has_cublas):
             return False
 
@@ -80,30 +102,33 @@ def resolve_required_build(vendor: Optional[str] = None) -> str:
         return "cpu"
 
 
-def fetch_release_assets(timeout: int = 10) -> Tuple[str, List[Dict[str, Any]]]:
+def fetch_release_assets(timeout: int = 10, profile: str = "standard") -> Tuple[str, List[Dict[str, Any]]]:
     """
-    Получает список релизных ассетов llama.cpp через GitHub REST API.
+    Получает список релизных ассетов llama.cpp через GitHub REST API для заданного профиля.
     Корректно обрабатывает пустые релизы (например, метаданные v1.0.0),
     обращаясь к списку последних релизов.
     """
+    prof_cfg = get_profile_config(profile)
+    latest_url = prof_cfg["releases_latest"]
+    list_url = prof_cfg["releases_list"]
     headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github.v3+json"}
 
     # 1. Попытка releases/latest
     try:
-        req = urllib.request.Request(GITHUB_API_RELEASES_LATEST, headers=headers)
+        req = urllib.request.Request(latest_url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             assets = data.get("assets", [])
             win_count = sum(1 for a in assets if "win" in a.get("name", "").lower() and "x64" in a.get("name", "").lower())
             if win_count > 0:
                 tag = data.get("tag_name", "latest")
-                logger.info(f"[LlamaDownloader] Найден релиз {tag} ({len(assets)} ассетов).")
+                logger.info(f"[LlamaDownloader] ({profile}) Найден релиз {tag} ({len(assets)} ассетов).")
                 return tag, assets
     except Exception as e:
-        logger.debug(f"[LlamaDownloader] releases/latest fallback: {e}")
+        logger.debug(f"[LlamaDownloader] ({profile}) releases/latest fallback: {e}")
 
     # 2. Попытка releases (список)
-    req = urllib.request.Request(GITHUB_API_RELEASES_LIST, headers=headers)
+    req = urllib.request.Request(list_url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         releases = json.loads(resp.read().decode("utf-8"))
         if not isinstance(releases, list):
@@ -386,22 +411,24 @@ def verify_llama_server_binary(target_dir: Path) -> Tuple[bool, str]:
 def download_and_extract_llama_server(
     target_dir: Optional[Path] = None,
     vendor: Optional[str] = None,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None
+    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    profile: str = "standard",
 ) -> Tuple[bool, str]:
     """
-    Главная функция: определяет сборку, скачивает архивы, распаковывает в target_dir
-    и проверяет запуск.
+    Главная функция: определяет сборку под конфигурацию ПК, скачивает архивы для профиля
+    ('standard' или 'prismml'), распаковывает в target_dir и проверяет запуск.
     """
-    dest_dir = target_dir or config.LOCAL_BIN_DIR
+    prof_cfg = get_profile_config(profile)
+    dest_dir = target_dir or prof_cfg["target_dir"]
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     build_type = resolve_required_build(vendor)
-    logger.info(f"[LlamaDownloader] Целевая сборка: {build_type.upper()}")
+    logger.info(f"[LlamaDownloader] ({profile}) Целевая сборка: {build_type.upper()} -> {dest_dir}")
 
     try:
-        tag, assets = fetch_release_assets()
+        tag, assets = fetch_release_assets(profile=profile)
     except Exception as e:
-        return False, f"Ошибка доступа к GitHub Releases: {e}"
+        return False, f"Ошибка доступа к GitHub Releases ({profile}): {e}"
 
     urls = select_download_urls(assets, build_type)
     if not urls:

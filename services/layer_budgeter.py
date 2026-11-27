@@ -31,7 +31,7 @@ from services.server_config import resolve_kv_cache_types
 
 logger = logging.getLogger("NeonRoute.LayerBudgeter")
 MODELS_CACHE_PATH = DATA_DIR / "models_cache.json"
-CURRENT_CACHE_SCHEMA_VERSION = 3
+CURRENT_CACHE_SCHEMA_VERSION = 5
 
 
 class LayerBudgeter:
@@ -461,6 +461,50 @@ class LayerBudgeter:
             except Exception:
                 break
 
+        # Чтение таблицы tensor_info (имя, dims, ggml_type, offset) для точного веса слоев и детекта квантизации
+        if tensor_count > 0:
+            try:
+                tensors = []
+                for _ in range(tensor_count):
+                    t_name = read_str()
+                    n_dims = struct.unpack("<I", _read_exact(4))[0]
+                    if n_dims > 8:
+                        raise ValueError(f"Suspicious tensor n_dims={n_dims}")
+                    if n_dims > 0:
+                        _read_exact(8 * n_dims)
+                    t_type = struct.unpack("<I", _read_exact(4))[0]
+                    t_offset = struct.unpack("<Q", _read_exact(8))[0]
+                    tensors.append((t_offset, t_name, t_type))
+
+                alignment = int(metadata.get("general.alignment") or 32)
+                if alignment <= 0:
+                    alignment = 32
+                cur_pos = f.tell()
+                data_start = ((cur_pos + alignment - 1) // alignment) * alignment
+                f.seek(0, io.SEEK_END)
+                total_len = f.tell()
+                total_data_bytes = max(0, total_len - data_start)
+
+                tensors.sort(key=lambda item: item[0])
+                base_bytes = 0
+                blocks_bytes = 0
+                tensor_types_set = set()
+                for idx, (t_off, t_name, t_type) in enumerate(tensors):
+                    tensor_types_set.add(int(t_type))
+                    next_off = tensors[idx + 1][0] if idx + 1 < len(tensors) else total_data_bytes
+                    t_size = max(0, next_off - t_off)
+                    if t_name.startswith("blk."):
+                        blocks_bytes += t_size
+                    else:
+                        base_bytes += t_size
+
+                if base_bytes > 0 and blocks_bytes > 0:
+                    metadata["__tensor_base_bytes__"] = base_bytes
+                    metadata["__tensor_blocks_bytes__"] = blocks_bytes
+                metadata["__tensor_types__"] = sorted(tensor_types_set)
+            except Exception as tensor_err:
+                logger.debug(f"[LayerBudgeter] Пропуск чтения tensor_info GGUF: {tensor_err}")
+
         return metadata
 
     @classmethod
@@ -481,11 +525,16 @@ class LayerBudgeter:
                 "schema_version": CURRENT_CACHE_SCHEMA_VERSION,
                 "total_layers": 28,
                 "model_size_mb": 0.0,
+                "base_overhead_mb": None,
+                "blocks_weight_mb": None,
+                "tensor_types": [],
+                "server_profile": "standard",
                 "architecture": "unknown",
                 "is_moe": False,
                 "context_length": None,
                 "sliding_window": 0,
                 "sliding_window_pattern": None,
+                "full_attention_interval": 0,
                 "head_count": None,
                 "head_count_kv": None,
                 "head_count_kv_layers": None,
@@ -523,6 +572,7 @@ class LayerBudgeter:
         context_length: Optional[int] = None
         sliding_window: int = 0
         sliding_window_pattern: Optional[list] = None
+        full_attention_interval: int = 0
         head_count: Optional[int] = None
         head_count_kv: Optional[Union[int, float]] = None
         head_count_kv_layers: Optional[list] = None
@@ -531,10 +581,18 @@ class LayerBudgeter:
         key_length_swa: Optional[int] = None
         value_length_swa: Optional[int] = None
         vocab_size: int = 0
+        base_overhead_mb: Optional[float] = None
+        blocks_weight_mb: Optional[float] = None
+        tensor_types: list = []
 
         try:
             with open(p, "rb") as f:
                 kv = cls._parse_gguf_header(f)
+            if isinstance(kv.get("__tensor_base_bytes__"), int) and isinstance(kv.get("__tensor_blocks_bytes__"), int):
+                base_overhead_mb = round(kv["__tensor_base_bytes__"] / (1024.0 * 1024.0), 2)
+                blocks_weight_mb = round(kv["__tensor_blocks_bytes__"] / (1024.0 * 1024.0), 2)
+            if isinstance(kv.get("__tensor_types__"), list):
+                tensor_types = [int(x) for x in kv["__tensor_types__"]]
             architecture = str(kv.get("general.architecture", "llama")).lower()
 
             # Ищем block_count: {arch}.block_count или любой *.block_count
@@ -558,6 +616,16 @@ class LayerBudgeter:
             # MoE check
             if kv.get(f"{architecture}.expert_count", 0) > 0 or "moe" in architecture:
                 is_moe = True
+
+            # Hybrid Full Attention / SSM interval (e.g. Qwen 3.5 full_attention_interval=4)
+            raw_fai = kv.get(f"{architecture}.full_attention_interval")
+            if raw_fai is None:
+                for k, v in kv.items():
+                    if k.endswith(".full_attention_interval") and isinstance(v, (int, float)):
+                        raw_fai = v
+                        break
+            if isinstance(raw_fai, (int, float)) and int(raw_fai) > 1:
+                full_attention_interval = int(raw_fai)
 
             # SWA pattern
             if f"{architecture}.attention.sliding_window_pattern" in kv:
@@ -749,11 +817,15 @@ class LayerBudgeter:
             "schema_version": CURRENT_CACHE_SCHEMA_VERSION,
             "total_layers": total_layers,
             "model_size_mb": model_size_mb,
+            "base_overhead_mb": base_overhead_mb,
+            "blocks_weight_mb": blocks_weight_mb,
+            "tensor_types": tensor_types,
             "architecture": architecture,
             "is_moe": is_moe,
             "context_length": context_length,
             "sliding_window": sliding_window,
             "sliding_window_pattern": sliding_window_pattern,
+            "full_attention_interval": full_attention_interval,
             "head_count": head_count,
             "head_count_kv": head_count_kv,
             "head_count_kv_layers": head_count_kv_layers,
@@ -763,12 +835,44 @@ class LayerBudgeter:
             "value_length_swa": value_length_swa,
             "vocab_size": vocab_size,
         }
+        result["server_profile"] = cls.detect_required_server_profile(p, gguf_meta=result)
 
         # 3. Сохранение в кэш
         cache[cache_key] = result
         cls._write_models_cache(cache)
 
         return result
+
+    @classmethod
+    def detect_required_server_profile(
+        cls,
+        model_path: Union[str, Path],
+        gguf_meta: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Определяет требуемый профиль llama-server для модели:
+        - 'prismml': если в GGUF обнаружены кастомные типы тензоров (например, PTQ1_0 type 143 / >= 100)
+          или имя файла содержит маркеры PTQ1_0 / PQ2_0 / Ternary-Bonsai.
+        - 'standard': стандартный ggml-org/llama.cpp.
+        """
+        if gguf_meta is None and model_path:
+            try:
+                p = Path(model_path)
+                if p.is_file():
+                    gguf_meta = cls.parse_gguf_metadata(p)
+            except Exception:
+                gguf_meta = None
+
+        if isinstance(gguf_meta, dict):
+            t_types = gguf_meta.get("tensor_types") or []
+            if any(isinstance(t, int) and t >= 100 for t in t_types):
+                return "prismml"
+
+        name_lower = Path(model_path).name.lower() if model_path else ""
+        if any(marker in name_lower for marker in ("ptq1_0", "pq2_0", "ternary-bonsai", "ternary_bonsai")):
+            return "prismml"
+
+        return "standard"
 
     # -------------------------------------------------------------------------
     # 3. Оценка размера KV-кэша
@@ -817,6 +921,7 @@ class LayerBudgeter:
         sliding_window = int(gguf_meta.get("sliding_window") or 0)
         total_layers = int(gguf_meta.get("total_layers") or 0)
         pattern = gguf_meta.get("sliding_window_pattern")
+        full_attn_interval = int(gguf_meta.get("full_attention_interval") or 0)
 
         # Head count KV (scalar and layers)
         raw_hkv_layers = gguf_meta.get("head_count_kv_layers")
@@ -873,6 +978,11 @@ class LayerBudgeter:
             local_layers_cnt = total_layers - global_layers_cnt
 
             for i in range(total_layers):
+                # В гибридных архитектурах (например, Qwen 3.5: full_attention_interval=4)
+                # KV-кэш выделяется только для слоёв с полноценным attention; SSM/DeltaNet-слои его не используют.
+                if full_attn_interval > 1 and (i + 1) % full_attn_interval != 0:
+                    continue
+
                 if sliding_window > 0:
                     if isinstance(pattern, (list, tuple)) and i < len(pattern):
                         is_swa = bool(pattern[i])
@@ -996,8 +1106,19 @@ class LayerBudgeter:
             total_layers = 28
         vocab_size = int(meta.get("vocab_size") or 0)
 
-        base_overhead_mb = model_size_mb * 0.20
-        blocks_weight_mb = model_size_mb * 0.80
+        meta_base = meta.get("base_overhead_mb")
+        meta_blocks = meta.get("blocks_weight_mb")
+        if (
+            isinstance(meta_base, (int, float))
+            and isinstance(meta_blocks, (int, float))
+            and meta_base > 0
+            and meta_blocks > 0
+        ):
+            base_overhead_mb = float(meta_base)
+            blocks_weight_mb = float(meta_blocks)
+        else:
+            base_overhead_mb = model_size_mb * 0.20
+            blocks_weight_mb = model_size_mb * 0.80
         layer_weight_mb = blocks_weight_mb / float(total_layers)
 
         # 3. Расчет Usable VRAM с учетом арбитража, занятости, буфера вычислений и SWA KV-кэша

@@ -643,7 +643,8 @@ class TestAnalyticalBudgetAndGGUFStreaming:
         assert meta["total_layers"] == 32
         assert meta["sliding_window"] == 1024
         assert meta["vocab_size"] == 500
-        assert meta["schema_version"] == 3
+        from services.layer_budgeter import CURRENT_CACHE_SCHEMA_VERSION
+        assert meta["schema_version"] == CURRENT_CACHE_SCHEMA_VERSION
 
         arr_file = tmp_path / "array_swa_test.gguf"
         arr_file.write_bytes(_build_test_gguf([
@@ -663,5 +664,26 @@ class TestAnalyticalBudgetAndGGUFStreaming:
         monkeypatch.setattr(LayerBudgeter, "_write_models_cache", classmethod(lambda cls, c: written.update(c)))
         meta_re = LayerBudgeter.parse_gguf_metadata(arr_file)
         assert meta_re["total_layers"] == 6
-        assert written[cache_key]["schema_version"] == 3
+        assert written[cache_key]["schema_version"] == CURRENT_CACHE_SCHEMA_VERSION
+
+    def test_hybrid_full_attention_interval_kv_cache_and_prismml_profile(self, tmp_path):
+        model_file = tmp_path / "Ternary-Bonsai-2.5-27B-PTQ1_0.gguf"
+        model_file.write_bytes(_build_test_gguf([
+            ("general.architecture", 8, "qwen35"),
+            ("qwen35.block_count", 4, 64),
+            ("qwen35.attention.head_count_kv", 4, 4),
+            ("qwen35.attention.key_length", 4, 256),
+            ("qwen35.attention.value_length", 4, 256),
+            ("qwen35.full_attention_interval", 4, 4),
+        ]))
+        meta = LayerBudgeter.parse_gguf_metadata(model_file)
+        assert meta["full_attention_interval"] == 4
+        assert meta["server_profile"] == "prismml"
+
+        # Hybrid 64-layer model with interval=4 has KV cache on 16 layers (4x smaller than all-64)
+        kv_hybrid = LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q8_0", gguf_meta=meta)
+        meta_full = dict(meta, full_attention_interval=0)
+        kv_full = LayerBudgeter.estimate_kv_cache_mb(14336, cache_type="q8_0", gguf_meta=meta_full)
+        assert kv_hybrid < kv_full
+        assert abs((kv_full / kv_hybrid) - 4.0) < 0.15
 

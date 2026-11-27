@@ -219,14 +219,66 @@ class ServerConfigResolver:
         return cfg
 
     @staticmethod
-    def resolve_server_exe() -> Optional[Path]:
+    def resolve_server_profile_for_model(model_path: Optional[Path | str] = None) -> str:
+        """
+        Determines which llama-server profile is required for the given model:
+        - 'prismml': PTQ1_0 / PQ2_0 / Ternary-Bonsai models requiring PrismML's fork
+        - 'standard': standard ggml-org/llama.cpp
+        """
+        if not model_path:
+            return "standard"
+        try:
+            from services.layer_budgeter import LayerBudgeter
+            return LayerBudgeter.detect_required_server_profile(model_path)
+        except Exception:
+            name_lower = Path(model_path).name.lower()
+            if any(m in name_lower for m in ("ptq1_0", "pq2_0", "ternary-bonsai", "ternary_bonsai")):
+                return "prismml"
+            return "standard"
+
+    @staticmethod
+    def resolve_server_exe(
+        model_path: Optional[Path | str] = None,
+        server_profile: Optional[str] = None,
+    ) -> Optional[Path]:
         """
         3-level cascade resolution for llama-server.exe:
-        Level 1: Local project folders (LOCAL_BIN_DIR / 'llama-server.exe' or BASE_DIR / 'llama-server.exe')
-        Level 2: server_bin_path from server_config.ini
-        Level 3: Recursive search in Path.home() / '.lmstudio' / 'extensions' / 'backends'
-                 (prioritizing *cuda*llama-server.exe, sorted by st_mtime descending)
+        - If server_profile == 'prismml' (or detected from model_path):
+          resolves exclusively from CUSTOM_BIN_PRISM_DIR ('bin/prismml/llama-server.exe')
+          or prism_server_bin_path in server_config.ini.
+        - Otherwise ('standard'):
+          Level 1: Local project folders (LOCAL_BIN_DIR / 'llama-server.exe' or BASE_DIR / 'llama-server.exe')
+          Level 2: server_bin_path from server_config.ini
+          Level 3: Recursive search in Path.home() / '.lmstudio' / 'extensions' / 'backends'
+                   (prioritizing *cuda*llama-server.exe, sorted by st_mtime descending)
         """
+        profile = server_profile or (
+            ServerConfigResolver.resolve_server_profile_for_model(model_path) if model_path else "standard"
+        )
+
+        if profile == "prismml":
+            prism_exe = config.CUSTOM_BIN_PRISM_DIR / "llama-server.exe"
+            if prism_exe.is_file():
+                return prism_exe.resolve()
+
+            ini_path = config.SERVER_CONFIG_INI_PATH
+            if ini_path.exists():
+                try:
+                    parser = configparser.ConfigParser(interpolation=None)
+                    with open(ini_path, "r", encoding="utf-8-sig") as f:
+                        parser.read_file(f)
+                    if parser.has_section("PATHS") and "prism_server_bin_path" in parser["PATHS"]:
+                        custom_prism = _sanitize_ini_value(parser["PATHS"].get("prism_server_bin_path"))
+                        if custom_prism:
+                            p = Path(custom_prism)
+                            if not p.is_absolute():
+                                p = config.BASE_DIR / p
+                            if p.is_file():
+                                return p.resolve()
+                except Exception:
+                    pass
+            return None
+
         # Level 1: Local project directory
         local_bin_exe = config.LOCAL_BIN_DIR / "llama-server.exe"
         if local_bin_exe.is_file():
